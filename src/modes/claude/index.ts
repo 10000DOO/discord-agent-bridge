@@ -5,8 +5,21 @@ import type {
   ModeSession,
   ResumableSession,
 } from '../../core/contracts.js';
+import { ClaudeSession, type QueryFn } from './session.js';
+import type { SendFileCallback } from './mcpFileTool.js';
 
-// TODO(Phase 1): ClaudeMode — wraps query(); maps SDK msgs → AgentEvent (§5a).
+// Injected once when the mode is registered (§4/§10). `queryFn` defaults to the
+// real SDK query inside ClaudeSession; tests inject a fake. `sendFile` is wired
+// by the Discord layer so the in-process attach_file MCP tool can deliver a file
+// to the channel — kept out of the mode so modes stay transport-agnostic.
+export interface ClaudeModeDeps {
+  queryFn?: QueryFn;
+  sendFile?: SendFileCallback;
+}
+
+// The Claude backend: wraps the Claude Agent SDK query() as a ModeSession and
+// maps SDK messages to normalized AgentEvents (§5a). Capabilities drive which
+// Discord renderers run (§6).
 export class ClaudeMode implements AgentMode {
   readonly name = 'claude';
 
@@ -21,18 +34,35 @@ export class ClaudeMode implements AgentMode {
     fileAttach: true,
     fileDiff: true,
     usagePanel: true,
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'],
+    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   };
 
-  start(_ctx: ModeContext): Promise<ModeSession> {
-    throw new Error('not implemented');
+  private readonly deps: ClaudeModeDeps;
+
+  constructor(deps: ClaudeModeDeps = {}) {
+    this.deps = deps;
   }
 
-  resume(_ctx: ModeContext, _sessionId: string): Promise<ModeSession> {
-    throw new Error('not implemented');
+  async start(ctx: ModeContext): Promise<ModeSession> {
+    return new ClaudeSession(ctx, this.sessionDeps());
   }
 
-  listResumable(_ctx: ModeContext): Promise<ResumableSession[]> {
-    throw new Error('not implemented');
+  async resume(ctx: ModeContext, sessionId: string): Promise<ModeSession> {
+    return new ClaudeSession(ctx, { ...this.sessionDeps(), resumeId: sessionId });
+  }
+
+  // Deferred (§9 on-demand resume). The SDK exposes session listing, but wiring a
+  // reliable, project-scoped resumable list is Discord-UX work; the boot-time
+  // resume path (orchestrator.resumeAll → resume(ctx, sessionId)) does not need
+  // it. Returns [] until the resume UX chunk fills it in.
+  async listResumable(_ctx: ModeContext): Promise<ResumableSession[]> {
+    return [];
+  }
+
+  private sessionDeps() {
+    return {
+      ...(this.deps.queryFn !== undefined ? { queryFn: this.deps.queryFn } : {}),
+      ...(this.deps.sendFile !== undefined ? { sendFile: this.deps.sendFile } : {}),
+    };
   }
 }
