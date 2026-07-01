@@ -1,7 +1,20 @@
 import { z } from 'zod';
 
-// TODO(Phase 1): AppState types + zod validation. See docs/DESIGN.md §8 (state.json).
-// Unknown fields tolerated on read, normalized on write.
+// AppState v2 zod schemas + inferred types. See docs/DESIGN.md §8 (state.json).
+// Runtime bindings keyed by "<guildId>:<channelId>"; enables resume-on-boot.
+// Unknown fields are tolerated on read and normalized (dropped) on write, since
+// z.object() strips keys not in the schema.
+
+// Permission modes (mirrors contracts.ts PermMode; §7A).
+export const permModeSchema = z.enum([
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+]);
+
+export const STATE_VERSION = 2;
 
 export const channelBindingSchema = z.object({
   guildId: z.string(),
@@ -9,7 +22,7 @@ export const channelBindingSchema = z.object({
   sessionId: z.string().nullable(),
   cwd: z.string(),
   ownerId: z.string(),
-  permissionMode: z.string(),
+  permissionMode: permModeSchema,
   permissionProfile: z.string().nullable(),
   projectAuth: z
     .object({
@@ -30,3 +43,8 @@ export const appStateSchema = z.object({
 
 export type AppState = z.infer<typeof appStateSchema>;
 export type ChannelBindingState = z.infer<typeof channelBindingSchema>;
+
+// A fresh, empty v2 state used when no state.json exists yet.
+export function emptyState(): AppState {
+  return { version: STATE_VERSION, channels: {}, scheduledCommands: [] };
+}
