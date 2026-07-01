@@ -206,13 +206,22 @@ export class InteractionRouter {
     const guildId = i.guildId as string;
     const backend = i.getString('backend');
     if (!backend) return;
+    // Validate the target backend BEFORE any teardown: an unregistered backend (e.g.
+    // Codex before Phase 2 registers it) must NOT stop/detach the running session.
+    if (!this.deps.modeRegistry.has(backend)) {
+      await safe(i.reply({ content: t('cmd.mode.unavailable', { backend }), ephemeral: true }));
+      return;
+    }
+    // Require an existing binding: there is no cwd/owner to carry over otherwise, and
+    // falling back to process.cwd() would start a session in the bot's own directory.
     const binding = this.deps.channelRegistry.get(guildId, i.channelId);
+    if (!binding) {
+      await safe(i.reply({ content: t('router.noSession'), ephemeral: true }));
+      return;
+    }
     // Switching the backend starts a fresh context (§9 step 3): stop the current
     // session, then start a new one on the same cwd/owner/permMode and re-wire.
-    const cwd = binding?.cwd ?? process.cwd();
-    const ownerId = binding?.ownerId ?? i.user.id;
-    const permMode = binding?.permMode;
-    const profile = binding?.profile ?? null;
+    const { cwd, ownerId, permMode, profile } = binding;
 
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
@@ -222,7 +231,7 @@ export class InteractionRouter {
       mode: backend,
       cwd,
       ownerId,
-      ...(permMode !== undefined ? { permMode } : {}),
+      permMode,
       profile,
     });
     // Fresh-context warning (§9 step 3) + confirmation.
@@ -286,10 +295,14 @@ export class InteractionRouter {
 
   private async handleComponent(i: ComponentInteraction): Promise<void> {
     // Permission buttons: perm:<reqId>:<action>. These are gated to execute tier
-    // (the driver decides). Route to the channel's PermissionButtonsHandler.
+    // (the driver decides). Route to the channel's PermissionButtonsHandler, passing
+    // the acting user id so the handler enforces that ONLY the prompt's approver
+    // (the session owner) can resolve it — a bystander click is ignored (§7.1/§7.5).
     if (parseCustomId(i.customId)) {
       if (!this.authorize(i, 'drive')) return;
-      if (i.guildId) await this.deps.wiring.resolvePermission(i.guildId, i.channelId, i.customId);
+      if (i.guildId) {
+        await this.deps.wiring.resolvePermission(i.guildId, i.channelId, i.customId, i.user.id);
+      }
       await safe(i.deferUpdate());
       return;
     }
@@ -302,7 +315,10 @@ export class InteractionRouter {
       return;
     }
     const wizard = this.wizards.get(channelKey(i.guildId, i.channelId));
-    if (!wizard) {
+    // Enforce wizard ownership: a component from anyone other than the driver who
+    // opened the wizard is acknowledged but ignored, so a bystander's stray select
+    // cannot corrupt another driver's flow (§7.1).
+    if (!wizard || wizard.ownerId !== i.user.id) {
       await safe(i.deferUpdate());
       return;
     }

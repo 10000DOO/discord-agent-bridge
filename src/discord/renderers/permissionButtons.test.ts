@@ -90,6 +90,29 @@ describe('PermissionButtonsHandler', () => {
     expect(await handler.resolve(buildCustomId('zzz', 'deny'))).toBeNull();
   });
 
+  it('ignores a resolve from the WRONG actor; the prompt stays pending', async () => {
+    const { channel } = fakeChannel();
+    const handler = new PermissionButtonsHandler({ channel });
+    const pending = handler.request(req, 'owner-1');
+
+    // A bystander (not the approver) clicks Allow → ignored, no decision, prompt open.
+    const wrong = await handler.resolve(buildCustomId('abc123', 'allow'), 'bystander-2');
+    expect(wrong).toBeNull();
+    // The pending is still resolvable by the correct approver afterwards.
+    const right = await handler.resolve(buildCustomId('abc123', 'allow'), 'owner-1');
+    expect(right).toEqual({ behavior: 'allow' });
+    await expect(pending).resolves.toEqual({ behavior: 'allow' });
+  });
+
+  it('an unbound prompt (no approver) resolves for any actor', async () => {
+    const { channel } = fakeChannel();
+    const handler = new PermissionButtonsHandler({ channel });
+    const pending = handler.request(req); // no approverId
+    const applied = await handler.resolve(buildCustomId('abc123', 'allow'), 'anyone');
+    expect(applied).toEqual({ behavior: 'allow' });
+    await expect(pending).resolves.toEqual({ behavior: 'allow' });
+  });
+
   it('posts buttons then disables them on decision', async () => {
     const { channel, sent, edits } = fakeChannel();
     const handler = new PermissionButtonsHandler({ channel });

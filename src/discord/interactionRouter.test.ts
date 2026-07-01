@@ -110,7 +110,7 @@ function fakeWiring() {
   const calls = {
     attach: vi.fn(async (_g: string, _c: string, _m: string) => {}),
     detach: vi.fn((_g: string, _c: string) => {}),
-    resolvePermission: vi.fn(async (_g: string, _c: string, _id: string) => ({ behavior: 'allow' as const })),
+    resolvePermission: vi.fn(async (_g: string, _c: string, _id: string, _actor?: string) => ({ behavior: 'allow' as const })),
   };
   return { wiring: calls as unknown as SessionWiring, calls };
 }
@@ -266,6 +266,43 @@ describe('InteractionRouter slash commands', () => {
     expect(replies[0].content).toContain('새 대화로 시작');
   });
 
+  it('/mode backend to an UNREGISTERED backend: ephemeral notice, session NOT stopped', async () => {
+    channelRegistry.set(binding(home));
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    // 'gemini' is not registered (only claude + codex are), so it must be rejected
+    // WITHOUT tearing down the running session.
+    const { interaction, replies } = slash({
+      commandName: 'mode',
+      subcommand: 'backend',
+      getStringValue: 'gemini',
+    });
+    await router.handle(interaction);
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    expect(replies[0].ephemeral).toBe(true);
+    expect(replies[0].content).toContain('gemini');
+  });
+
+  it('/mode backend with NO binding is rejected instead of falling back to cwd', async () => {
+    // No channelRegistry.set → no binding.
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({
+      commandName: 'mode',
+      subcommand: 'backend',
+      getStringValue: 'codex', // registered, but there is no session to switch
+    });
+    await router.handle(interaction);
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    expect(replies[0].ephemeral).toBe(true);
+  });
+
   it('/stop stops the channel session and detaches renderers', async () => {
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring, calls: wcalls } = fakeWiring();
@@ -278,13 +315,14 @@ describe('InteractionRouter slash commands', () => {
 });
 
 describe('InteractionRouter component interactions', () => {
-  it('perm:<id>:allow button routes to wiring.resolvePermission', async () => {
+  it('perm:<id>:allow button routes to wiring.resolvePermission with the acting user id', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring, calls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction } = component({ customId: 'perm:req-1:allow' });
+    const { interaction } = component({ customId: 'perm:req-1:allow', user: { id: 'u1' } });
     await router.handle(interaction);
-    expect(calls.resolvePermission).toHaveBeenCalledWith('g1', 'c1', 'perm:req-1:allow');
+    // The acting user id is threaded so the handler can enforce the approver binding.
+    expect(calls.resolvePermission).toHaveBeenCalledWith('g1', 'c1', 'perm:req-1:allow', 'u1');
   });
 
   it('a foreign (non-perm, no-wizard) component is safely ignored (deferUpdate, no resolve)', async () => {
@@ -304,5 +342,39 @@ describe('InteractionRouter component interactions', () => {
     await router.handle(interaction);
     expect(calls.resolvePermission).not.toHaveBeenCalled();
     expect(replies[0].content).toContain('권한이 없습니다');
+  });
+
+  it('a wizard component from a NON-owner is ignored; the owner advances it', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    // Owner 'u1' opens the wizard (browseRoots defaults to []; the browser starts at
+    // a resolvable root — 'dir:here' selects the current folder).
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+
+    const flow: { customId: string; value?: string }[] = [
+      { customId: 'dir:here' },
+      { customId: 'backend', value: 'claude' },
+      { customId: 'model', value: 'opus' },
+      { customId: 'perm.mode', value: 'default' },
+      { customId: 'confirm' },
+    ];
+
+    // A bystander 'u2' (also execute tier) runs the WHOLE flow → every input is
+    // ignored, so the session is never started.
+    for (const step of flow) {
+      const { interaction } = component({ ...step, user: { id: 'u2' } });
+      await router.handle(interaction);
+    }
+    expect(calls.start).not.toHaveBeenCalled();
+
+    // The owner 'u1' now advances the SAME wizard to completion → start is called.
+    for (const step of flow) {
+      const { interaction } = component({ ...step, user: { id: 'u1' } });
+      await router.handle(interaction);
+    }
+    expect(calls.start).toHaveBeenCalledOnce();
   });
 });

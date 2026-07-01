@@ -133,25 +133,66 @@ export class MessageRouter {
   }
 
   // Download each attachment under cwd/.dab-attachments so the orchestrator's
-  // realpath confinement accepts it. The directory itself is created inside the
-  // (already realpath-resolved) workspace, so nothing can escape.
+  // realpath confinement accepts it. The attachment dir is realpath-confined to the
+  // workspace BEFORE any write (mirroring fileDownload): a pre-planted symlink at
+  // cwd/.dab-attachments pointing outside the workspace is rejected, so attacker
+  // bytes can never be redirected outside cwd. The per-file destination is confined
+  // too, so a resolved name can never escape the confined dir either.
   private async downloadAttachments(
     cwd: string,
     attachments: IncomingAttachment[],
   ): Promise<TurnInput['files']> {
     if (attachments.length === 0) return undefined;
-    const dir = path.join(cwd, ATTACHMENT_DIR);
+    const root = realpathOrResolve(cwd);
+    const dir = confineWithin(root, path.join(root, ATTACHMENT_DIR));
     fs.mkdirSync(dir, { recursive: true });
+    // Re-confine the dir AFTER mkdir: if it (or an ancestor) is a symlink out of the
+    // workspace, its realpath now resolves and must still be inside the root.
+    confineWithin(root, dir);
     const files: NonNullable<TurnInput['files']> = [];
     for (const att of attachments) {
       const name = sanitizeName(att.name ?? 'attachment');
-      const dest = path.join(dir, name);
+      const dest = confineWithin(root, path.join(dir, name));
       const bytes = await this.fetchBytes(att.url);
       fs.writeFileSync(dest, bytes);
       files.push({ path: dest, ...(att.contentType ? { mime: att.contentType } : {}) });
     }
     return files;
   }
+}
+
+// Realpath a path, falling back to the realpath of its deepest existing ancestor
+// joined with the non-existent tail — so confinement holds for paths that do not
+// exist yet while still resolving symlinks in the part that does. (Same approach as
+// fileDownload.realpathOrResolve; duplicated locally to keep this a self-contained
+// router without a cross-file helper import.)
+function realpathOrResolve(target: string): string {
+  const abs = path.resolve(target);
+  let existing = abs;
+  const tail: string[] = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    tail.unshift(path.basename(existing));
+    existing = parent;
+  }
+  try {
+    const realExisting = fs.realpathSync(existing);
+    return tail.length > 0 ? path.join(realExisting, ...tail) : realExisting;
+  } catch {
+    return abs;
+  }
+}
+
+// Realpath-confine `candidate` to `root`; return the resolved path or throw when it
+// escapes. `root` is expected to already be realpath-resolved.
+function confineWithin(root: string, candidate: string): string {
+  const resolved = realpathOrResolve(candidate);
+  const rel = path.relative(root, resolved);
+  if (rel !== '' && (rel.startsWith('..') || path.isAbsolute(rel))) {
+    throw new Error(`Attachment path escapes the workspace: ${candidate}`);
+  }
+  return resolved;
 }
 
 // Reduce a Discord attachment filename to a safe basename (no path separators, no

@@ -5,8 +5,9 @@ import type { ModeRegistry } from '../core/modeRegistry.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
 import { codexUsageUnavailable } from '../core/usageService.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
+import type { AuditLog } from '../core/auditLog.js';
 import type { PermissionRequest } from '../core/sessionOrchestrator.js';
-import { RendererDispatcher, createDefaultRendererSet } from './renderers/index.js';
+import { RendererDispatcher, createDefaultRendererSet, type RendererSet } from './renderers/index.js';
 import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
 import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
@@ -23,13 +24,22 @@ import type { MessageChannel } from './ports.js';
 // discord.js is confined to client.ts adapters; this module resolves a channel to
 // a MessageChannel port via resolveChannelAdapter and everything else is port-level.
 
-// One channel's live wiring: its renderer subscription unsubscribe, its permission
-// handler, and the channel sink.
+// One channel's live wiring: its renderer subscription unsubscribe, its renderer
+// set (for dispose() on detach), its permission handler, and the channel sink.
 interface ChannelWiring {
   unsubscribe: () => void;
+  renderers: RendererSet;
   permission: PermissionButtonsHandler;
   channel: MessageChannel;
   mode: string;
+}
+
+// Who/where an always-allow was granted from, so the wiring can audit the GLOBAL
+// config write with the actor that triggered it (§7.5).
+export interface AlwaysAllowContext {
+  actorId: string;
+  guildId: string;
+  channelId: string;
 }
 
 export interface SessionWiringDeps {
@@ -38,16 +48,21 @@ export interface SessionWiringDeps {
   channelRegistry: ChannelRegistry;
   usageService: UsageService;
   logger: Logger;
+  // Append-only audit trail (§7.5). The always-allow persistence path records a
+  // who/when/what entry around the GLOBAL config write. Optional so tests that do
+  // not exercise always-allow need not supply it.
+  auditLog?: AuditLog;
   // Resolve a channelId to a sink. Defaults to resolveChannelAdapter over the live
   // client; injectable so tests supply a fake channel without a gateway.
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
   // Permission-request timeout in seconds (config limits.permissionTimeoutSec).
   permissionTimeoutSec: number;
   // Persist an "always-allow" tool so future turns auto-allow it (§7A). Called
-  // when a permission button resolves as `always`. App boot wires this to the
-  // ConfigStore's global autoAllowClaudeTools set (see app.ts persistAlwaysAllow).
-  // Optional so tests that do not exercise always-allow need not supply it.
-  onAlwaysAllow?: (toolName: string) => void;
+  // when a permission button resolves as `always`, with the actor/channel context
+  // for the surrounding audit record. App boot wires this to the ConfigStore's
+  // global autoAllowClaudeTools set. Optional so tests that do not exercise
+  // always-allow need not supply it.
+  onAlwaysAllow?: (toolName: string, ctx: AlwaysAllowContext) => void;
 }
 
 function channelKey(guildId: string, channelId: string): string {
@@ -65,7 +80,8 @@ export class SessionWiring {
   // resolveChannel is only used at attach()/sendFile time, i.e. after login).
   private resolveChannel: (channelId: string) => Promise<MessageChannel | null>;
   private readonly permissionTimeoutMs: number;
-  private readonly onAlwaysAllow?: (toolName: string) => void;
+  private readonly auditLog?: AuditLog;
+  private readonly onAlwaysAllow?: (toolName: string, ctx: AlwaysAllowContext) => void;
 
   private readonly channels = new Map<string, ChannelWiring>();
   // Latest usage snapshot, refreshed lazily; fed into the usage embed synchronously.
@@ -77,6 +93,7 @@ export class SessionWiring {
     this.channelRegistry = deps.channelRegistry;
     this.usageService = deps.usageService;
     this.logger = deps.logger;
+    this.auditLog = deps.auditLog;
     this.resolveChannel = deps.resolveChannel ?? (() => Promise.resolve(null));
     this.permissionTimeoutMs = Math.max(1, deps.permissionTimeoutSec) * 1000;
     this.onAlwaysAllow = deps.onAlwaysAllow;
@@ -115,16 +132,22 @@ export class SessionWiring {
       toolName: req.toolName,
       input: req.input,
     };
-    const decision = wiring.permission.request(ev);
+    // Bind the prompt to the session owner (driver): only they may resolve it, so a
+    // bystander in the channel cannot approve another driver's tool (§7.1/§7.5).
+    const decision = wiring.permission.request(ev, binding.ownerId);
     return this.withTimeout(decision, id, wiring);
   };
 
-  // Resolve a `perm:<reqId>:<action>` button for a channel. Returns the applied
-  // decision, or null when the id is foreign/unknown (safe on any interaction).
+  // Resolve a `perm:<reqId>:<action>` button for a channel. `actorId` is the Discord
+  // user who clicked; the prompt is bound to the session owner, so an actor other
+  // than the owner is ignored (resolve returns null, prompt stays pending). Returns
+  // the applied decision, or null when the id is foreign/unknown or the actor is not
+  // the approver (safe on any interaction).
   async resolvePermission(
     guildId: string,
     channelId: string,
     customId: string,
+    actorId?: string,
   ): Promise<PermissionDecision | null> {
     const wiring = this.channels.get(channelKey(guildId, channelId));
     if (!wiring) return null;
@@ -135,10 +158,16 @@ export class SessionWiring {
     const parsed = parseCustomId(customId);
     const alwaysTool =
       parsed?.action === 'always' ? wiring.permission.peekToolName(parsed.reqId) : null;
-    const decision = await wiring.permission.resolve(customId);
+    const decision = await wiring.permission.resolve(customId, actorId);
     if (alwaysTool && decision?.behavior === 'allow') {
+      // Audit the GLOBAL always-allow write (§7.5) around the persistence: record
+      // the actor, tool, and channel so the who/when/what of an always-allow is
+      // durable even though the config write itself is best-effort. The audit and
+      // the persist are independently guarded so neither failure breaks the turn
+      // (already allowed) nor the other side effect.
+      this.auditAlwaysAllow(actorId ?? '', guildId, channelId, alwaysTool);
       try {
-        this.onAlwaysAllow?.(alwaysTool);
+        this.onAlwaysAllow?.(alwaysTool, { actorId: actorId ?? '', guildId, channelId });
       } catch (err) {
         // Persisting the always-allow set is best-effort; a config write failure
         // must not break the interaction (the turn is already allowed).
@@ -146,6 +175,26 @@ export class SessionWiring {
       }
     }
     return decision;
+  }
+
+  // Record an always-allow grant to the audit trail. Best-effort: AuditLog.record
+  // never throws, but the whole call is still guarded so an absent/failing audit
+  // sink never breaks the interaction.
+  private auditAlwaysAllow(actorId: string, guildId: string, channelId: string, tool: string): void {
+    if (!this.auditLog) return;
+    try {
+      this.auditLog.record({
+        actorId,
+        roleTier: 'execute',
+        guildId,
+        channelId,
+        action: 'always-allow',
+        tool,
+        status: 'allowed',
+      });
+    } catch (err) {
+      this.logger.warn('failed to audit always-allow', { tool, err: String(err) });
+    }
   }
 
   // Attach renderers + permission handler for a channel that just started/resumed.
@@ -177,17 +226,25 @@ export class SessionWiring {
     const dispatcher = new RendererDispatcher(set, capabilities);
     const unsubscribe = dispatcher.subscribe(this.eventBus, guildId, channelId);
 
-    this.channels.set(key, { unsubscribe, permission, channel, mode });
+    this.channels.set(key, { unsubscribe, renderers: set, permission, channel, mode });
     // Kick a usage refresh so the first usage embed has data (Claude only).
     if (capabilities.usagePanel) void this.refreshUsage();
   }
 
-  // Tear down a channel's renderer subscription on stop/close.
+  // Tear down a channel's renderer subscription on stop/close. Unsubscribe first so
+  // no new event can arm a renderer, THEN dispose the renderer set so any already-
+  // armed stream/thinking debounce timer is cancelled — a /stop mid-stream must not
+  // fire a late send/edit or orphan a "Responding…" embed (§6).
   detach(guildId: string, channelId: string): void {
     const key = channelKey(guildId, channelId);
     const wiring = this.channels.get(key);
     if (!wiring) return;
     wiring.unsubscribe();
+    try {
+      wiring.renderers.dispose?.();
+    } catch (err) {
+      this.logger.warn('renderer dispose failed on detach', { guildId, channelId, err: String(err) });
+    }
     this.channels.delete(key);
   }
 

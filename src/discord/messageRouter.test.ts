@@ -171,6 +171,34 @@ describe('MessageRouter', () => {
     expect(path.basename(file!.path)).toBe('passwd');
   });
 
+  it('rejects an attachment dir that escapes the workspace (pre-planted symlink)', async () => {
+    // Plant a symlink at cwd/.dab-attachments → an OUTSIDE directory. Writing an
+    // attachment through it would redirect attacker bytes outside the workspace, so
+    // the router must reject before writing.
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dab-outside-')));
+    try {
+      fs.symlinkSync(outside, path.join(ws, '.dab-attachments'), 'dir');
+    } catch {
+      // If the platform forbids symlinks, skip — the confinement is still exercised
+      // by the traversal-name test above.
+      return;
+    }
+
+    const { router, orchestrator } = makeDeps({ binding: binding(ws) });
+    const { message, replies } = fakeMessage({
+      attachments: [{ url: 'https://cdn/x', name: 'evil.txt', contentType: 'text/plain' }],
+    });
+    await router.handle(message);
+
+    // No turn was sent (the download failed the confinement check) and the actor
+    // got a notice; nothing was written into the outside directory.
+    expect(orchestrator.send).not.toHaveBeenCalled();
+    expect(replies.some((r) => r.includes('escapes the workspace'))).toBe(true);
+    expect(fs.readdirSync(outside)).toHaveLength(0);
+
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
   it('an orchestrator confinement/no-session throw is surfaced as a notice, not a crash', async () => {
     const { router } = makeDeps({
       binding: binding(ws),

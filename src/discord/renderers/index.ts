@@ -43,6 +43,11 @@ export interface RendererSet {
   mention(ev: Extract<AgentEvent, { kind: 'result' }>): void;
   // Always: surface an error.
   error(ev: Extract<AgentEvent, { kind: 'error' }>): void;
+  // Tear down any armed timers (stream/thinking debounce) so a detach mid-stream
+  // cannot fire a late send/edit or leave an orphan "Responding…" embed. Called by
+  // the wiring layer on detach, after unsubscribe. Optional so a partial spy set
+  // used in a dispatch test need not implement it.
+  dispose?(): void;
 }
 
 export class RendererDispatcher {
@@ -166,6 +171,12 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
     },
     error(ev) {
       swallow(channel.send({ content: `⚠️ ${ev.message}` }));
+    },
+    dispose() {
+      // Cancel the streaming/thinking debounce timers so a detach mid-stream cannot
+      // fire a late edit/send against a channel that is being torn down.
+      textStream.cancel();
+      thinkingStream.cancel();
     },
   };
 }

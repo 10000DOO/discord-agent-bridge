@@ -12,6 +12,8 @@ import type {
   PermissionDecision,
 } from '../core/contracts.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
+import type { AuditLog } from '../core/auditLog.js';
+import type { AuditEntry } from '../core/contracts.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { EditableMessage, MessageChannel, OutgoingMessage } from './ports.js';
 
@@ -61,13 +63,16 @@ function makeWiring(opts: {
   channel: MessageChannel;
   permissionTimeoutSec?: number;
   usage?: UsageResult;
+  ownerId?: string;
+  auditLog?: AuditLog;
+  onAlwaysAllow?: (tool: string, ctx: { actorId: string; guildId: string; channelId: string }) => void;
 }) {
   const eventBus = new EventBus();
   const modeRegistry = new ModeRegistry();
   modeRegistry.register(new StubMode('claude', CLAUDE_CAPS));
   modeRegistry.register(new StubMode('codex', { ...CLAUDE_CAPS, usagePanel: false }));
   const channelRegistry = {
-    get: () => ({ ownerId: 'owner' }),
+    get: () => ({ ownerId: opts.ownerId ?? 'owner' }),
   } as unknown as ChannelRegistry;
   const usageService = {
     isAvailable: () => opts.usage !== undefined,
@@ -81,8 +86,24 @@ function makeWiring(opts: {
     logger,
     resolveChannel: async () => opts.channel,
     permissionTimeoutSec: opts.permissionTimeoutSec ?? 60,
+    ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),
+    ...(opts.onAlwaysAllow ? { onAlwaysAllow: opts.onAlwaysAllow } : {}),
   });
   return { wiring, eventBus };
+}
+
+// A fake AuditLog that captures recorded entries in memory (no fs). Only record()
+// is exercised by the wiring, so the rest is left unimplemented.
+function fakeAuditLog(): { auditLog: AuditLog; records: (AuditEntry & { timestamp: string })[] } {
+  const records: (AuditEntry & { timestamp: string })[] = [];
+  const auditLog = {
+    record: (entry: AuditEntry) => {
+      const rec = { ...entry, timestamp: 't0' };
+      records.push(rec);
+      return rec;
+    },
+  } as unknown as AuditLog;
+  return { auditLog, records };
 }
 
 // Extract the perm request id from the buttons the handler posted (customId
@@ -122,6 +143,62 @@ describe('SessionWiring.requestPermission', () => {
 
     const decision = await decisionP;
     expect(decision.behavior).toBe('allow');
+  });
+
+  it('a resolve from a NON-owner actor is ignored; the owner resolves it', async () => {
+    const { channel, sent } = fakeChannel();
+    // The prompt is bound to the session owner via binding.ownerId.
+    const { wiring } = makeWiring({ channel, ownerId: 'owner' });
+    await wiring.attach('g1', 'c1', 'claude');
+
+    const decisionP = wiring.requestPermission(binding, { toolName: 'Bash', input: { command: 'rm' } });
+    await Promise.resolve();
+    await Promise.resolve();
+    const reqId = reqIdFromSent(sent)!;
+
+    // A bystander (different execute-tier user) clicks Allow → ignored, stays pending.
+    const bystander = await wiring.resolvePermission('g1', 'c1', `perm:${reqId}:allow`, 'bystander');
+    expect(bystander).toBeNull();
+
+    // The owner clicks Allow → now it resolves.
+    const owner = await wiring.resolvePermission('g1', 'c1', `perm:${reqId}:allow`, 'owner');
+    expect(owner).toEqual({ behavior: 'allow' });
+    const decision = await decisionP;
+    expect(decision.behavior).toBe('allow');
+  });
+
+  it('always-allow records an audit entry with the actor id before persisting', async () => {
+    const { channel, sent } = fakeChannel();
+    const { auditLog, records } = fakeAuditLog();
+    const persisted: { tool: string; actorId: string }[] = [];
+    const { wiring } = makeWiring({
+      channel,
+      ownerId: 'owner',
+      auditLog,
+      onAlwaysAllow: (tool, ctx) => persisted.push({ tool, actorId: ctx.actorId }),
+    });
+    await wiring.attach('g1', 'c1', 'claude');
+
+    const decisionP = wiring.requestPermission(binding, { toolName: 'Bash', input: {} });
+    await Promise.resolve();
+    await Promise.resolve();
+    const reqId = reqIdFromSent(sent)!;
+
+    await wiring.resolvePermission('g1', 'c1', `perm:${reqId}:always`, 'owner');
+    await decisionP;
+
+    // The GLOBAL always-allow write is audited with the actor + tool + channel.
+    const entry = records.find((r) => r.action === 'always-allow');
+    expect(entry).toBeDefined();
+    expect(entry).toMatchObject({
+      actorId: 'owner',
+      action: 'always-allow',
+      tool: 'Bash',
+      guildId: 'g1',
+      channelId: 'c1',
+    });
+    // And the persistence still ran with the same actor.
+    expect(persisted).toEqual([{ tool: 'Bash', actorId: 'owner' }]);
   });
 
   it('a simulated Deny button resolves to deny', async () => {
@@ -179,6 +256,31 @@ describe('SessionWiring rendering + sendFile', () => {
     eventBus.emit('g1', 'c1', { kind: 'error', message: 'again', retryable: false });
     await Promise.resolve();
     expect(sent.length).toBe(before); // no new render after detach
+  });
+
+  it('detach cancels an armed stream timer: no late channel.send after stop', async () => {
+    vi.useFakeTimers();
+    try {
+      const { channel, sent } = fakeChannel();
+      const { wiring, eventBus } = makeWiring({ channel });
+      await wiring.attach('g1', 'c1', 'claude');
+
+      // A streaming text delta arms the debounce timer (default 1s) but does not
+      // send yet. This is a turn in flight.
+      eventBus.emit('g1', 'c1', { kind: 'text', text: 'partial…', delta: true });
+      const before = sent.length;
+
+      // /stop mid-stream: detach must cancel the armed timer.
+      wiring.detach('g1', 'c1');
+
+      // Fire everything the debounce could have scheduled.
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // No streaming embed was ever posted — the timer was cancelled on detach.
+      expect(sent.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('sendFileFor posts the confined file to the bound channel', async () => {

@@ -20,6 +20,9 @@ export class MentionOnCompleteHandler {
   }
 
   async handle(_ev: Extract<AgentEvent, { kind: 'result' }>): Promise<void> {
+    // No owner bound (e.g. a resumed binding missing its ownerId) → skip the mention
+    // rather than post a broken `<@>` that pings no one.
+    if (!this.ownerId) return;
     await this.channel.send({
       content: `<@${this.ownerId}>`,
       mentionUserIds: [this.ownerId],

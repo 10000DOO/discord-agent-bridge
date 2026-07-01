@@ -102,6 +102,7 @@ const ko: Catalog = {
   'cmd.stopAll.done': '모든 세션을 중지했어요 ({count}개).',
   'cmd.mode.switched': '백엔드를 {backend} 로 바꿨어요.',
   'cmd.mode.freshContext': '⚠️ {backend} 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다.',
+  'cmd.mode.unavailable': '`{backend}` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요.',
   'cmd.perm.switched': '권한 설정을 바꿨어요: {perm}',
   'cmd.error': '명령을 처리하지 못했어요: {error}',
 };

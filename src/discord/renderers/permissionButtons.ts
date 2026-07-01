@@ -40,6 +40,12 @@ interface Pending {
   // resolve() still settles the decision; only the button-disabling edit is skipped.
   message: EditableMessage | null;
   toolName: string;
+  // The Discord user id allowed to resolve this prompt — the session owner
+  // (driver) who is running the turn. A resolve() from any other actor is ignored,
+  // so an execute-tier bystander in the channel cannot approve another driver's
+  // tool (and cannot trigger a global always-allow write). null = unbound (no
+  // approver enforced; used by the dispatcher's fire-and-forget request path).
+  approverId: string | null;
 }
 
 export interface PermissionButtonsDeps {
@@ -61,13 +67,28 @@ export class PermissionButtonsHandler {
     return this.pending.get(reqId)?.toolName ?? null;
   }
 
+  // The approver bound to a still-pending request, or null when unbound/unknown.
+  peekApproverId(reqId: string): string | null {
+    return this.pending.get(reqId)?.approverId ?? null;
+  }
+
   // Post the buttons for a permission_request and return a promise that settles when
   // the user decides. The pending resolver is registered SYNCHRONOUSLY (before the
   // send completes) so a decision that races the post still resolves; the message
   // handle used to disable the buttons is filled in once send resolves. `ev.id` is
-  // the AgentEvent id (stable across the round-trip).
-  request(ev: Extract<AgentEvent, { kind: 'permission_request' }>): Promise<PermissionDecision> {
-    const entry: Pending = { resolve: () => {}, message: null, toolName: ev.toolName };
+  // the AgentEvent id (stable across the round-trip). `approverId` binds the prompt
+  // to the one actor allowed to resolve it (the session owner/driver); when omitted
+  // the prompt is unbound (resolve() enforces no actor).
+  request(
+    ev: Extract<AgentEvent, { kind: 'permission_request' }>,
+    approverId?: string,
+  ): Promise<PermissionDecision> {
+    const entry: Pending = {
+      resolve: () => {},
+      message: null,
+      toolName: ev.toolName,
+      approverId: approverId ?? null,
+    };
     const decision = new Promise<PermissionDecision>((resolve) => {
       entry.resolve = resolve;
     });
@@ -98,12 +119,20 @@ export class PermissionButtonsHandler {
 
   // Settle a pending request from a button custom_id. Returns the decision applied,
   // or null if the id is unknown/foreign/already-resolved (idempotent, safe to call
-  // on any interaction). Disables the buttons and marks the outcome on resolve.
-  async resolve(customId: string): Promise<PermissionDecision | null> {
+  // on any interaction). When the prompt is bound to an approver and `actorId` is
+  // supplied, an actor other than the approver is IGNORED (returns null, prompt stays
+  // pending) — a bystander cannot resolve another driver's prompt (§7.1/§7.5).
+  // Disables the buttons and marks the outcome on resolve.
+  async resolve(customId: string, actorId?: string): Promise<PermissionDecision | null> {
     const parsed = parseCustomId(customId);
     if (!parsed) return null;
     const entry = this.pending.get(parsed.reqId);
     if (!entry) return null;
+    // Enforce the approver binding: if the prompt is bound and the caller passed an
+    // actor id, only that actor may resolve it. Leave the entry pending otherwise.
+    if (entry.approverId !== null && actorId !== undefined && actorId !== entry.approverId) {
+      return null;
+    }
     this.pending.delete(parsed.reqId);
 
     const decision: PermissionDecision =

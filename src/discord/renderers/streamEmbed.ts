@@ -125,6 +125,18 @@ export class StreamEmbedHandler {
     }
   }
 
+  // Cancel the debounce timer WITHOUT flushing/finalizing and mark the handler
+  // finalized so no further push/flush can fire a late send/edit. Used when a
+  // channel is detached mid-stream (e.g. /stop): the live "Responding…" embed must
+  // not receive a further edit and no orphan message must be posted. Idempotent.
+  cancel(): void {
+    if (this.timer !== null) {
+      this.clearTimer(this.timer);
+      this.timer = null;
+    }
+    this.finalized = true;
+  }
+
   private footer(): string {
     const sec = this.elapsedSec();
     return `${sec}s · ${this.deltaCount}`;

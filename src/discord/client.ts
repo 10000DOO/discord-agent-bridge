@@ -61,7 +61,18 @@ const INTENTS = [
 // re-shaped to this project's /agent start|resume|close, /mode, /stop, /stop-all.
 // ---------------------------------------------------------------------------
 
-export function buildSlashCommands(): RESTPostAPIApplicationCommandsJSONBody[] {
+// Human-readable choice labels for known backends; an unknown backend falls back to
+// its raw id, so a newly registered backend still appears (just un-prettified).
+const BACKEND_LABELS: Record<string, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+};
+
+// Build the slash commands. `backends` is the list of REGISTERED backend ids
+// (modeRegistry.list()): only these appear as `/mode backend` choices, so a backend
+// that is not yet registered (e.g. Codex before Phase 2) is not offered. Generic —
+// a backend registered later automatically becomes a choice.
+export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCommandsJSONBody[] {
   const agent = new SlashCommandBuilder()
     .setName('agent')
     .setDescription('Manage the agent session in this channel')
@@ -69,6 +80,7 @@ export function buildSlashCommands(): RESTPostAPIApplicationCommandsJSONBody[] {
     .addSubcommand((s) => s.setName('resume').setDescription('Resume a prior session in this channel'))
     .addSubcommand((s) => s.setName('close').setDescription('Stop and archive this channel’s session'));
 
+  const backendChoices = backends.map((b) => ({ name: BACKEND_LABELS[b] ?? b, value: b }));
   const mode = new SlashCommandBuilder()
     .setName('mode')
     .setDescription('Switch the backend or permission mode')
@@ -81,7 +93,7 @@ export function buildSlashCommands(): RESTPostAPIApplicationCommandsJSONBody[] {
             .setName('backend')
             .setDescription('Backend to switch to')
             .setRequired(true)
-            .addChoices({ name: 'Claude Code', value: 'claude' }, { name: 'Codex', value: 'codex' }),
+            .addChoices(...backendChoices),
         ),
     )
     .addSubcommand((s) =>
@@ -256,6 +268,10 @@ export interface DiscordClientDeps {
   logger: Logger;
   messageRouter: MessageRouter;
   interactionRouter: InteractionRouter;
+  // The REGISTERED backend ids offered as `/mode backend` choices. Evaluated at
+  // command-registration time (on ready / guild join), so a backend registered
+  // before login appears. Wired to modeRegistry.list by the app boot.
+  backends: () => string[];
   // Called once on ClientReady (after commands register) to rebind persisted
   // sessions (§9 step 4). Wired to orchestrator.resumeAll by the app boot.
   onReady: (client: Client) => Promise<void>;
@@ -270,6 +286,7 @@ export class DiscordClient {
   private readonly logger: Logger;
   private readonly messageRouter: MessageRouter;
   private readonly interactionRouter: InteractionRouter;
+  private readonly backends: () => string[];
   private readonly onReady: (client: Client) => Promise<void>;
 
   constructor(deps: DiscordClientDeps) {
@@ -278,6 +295,7 @@ export class DiscordClient {
     this.logger = deps.logger;
     this.messageRouter = deps.messageRouter;
     this.interactionRouter = deps.interactionRouter;
+    this.backends = deps.backends;
     this.onReady = deps.onReady;
     this.registerHandlers();
   }
@@ -332,7 +350,7 @@ export class DiscordClient {
     const token = this.client.token;
     if (!token) throw new Error('Cannot register commands before login (no token).');
     const rest = new REST({ version: '10' }).setToken(token);
-    const body = buildSlashCommands();
+    const body = buildSlashCommands(this.backends());
     await rest.put(Routes.applicationGuildCommands(this.clientId, guildId), { body });
     this.logger.info('slash commands registered', { guildId, count: body.length });
   }

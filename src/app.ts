@@ -100,10 +100,12 @@ export function createApp(deps: CreateAppDeps): App {
     channelRegistry,
     usageService,
     logger,
+    auditLog,
     permissionTimeoutSec: config.limits.permissionTimeoutSec,
     // Always-allow persistence (§7A): a tool the operator chose "always-allow" for
     // is written into the GLOBAL autoAllowClaudeTools set, so the next turn (on any
     // channel) auto-allows it via PermissionResolver → orchestrator → canUseTool.
+    // The wiring layer audits the GLOBAL write (who/where) before this runs.
     onAlwaysAllow: (toolName: string) => {
       configStore.addAutoAllowClaudeTool(toolName);
     },
@@ -156,6 +158,9 @@ export function createApp(deps: CreateAppDeps): App {
     logger,
     messageRouter,
     interactionRouter,
+    // Only registered backends are offered as `/mode backend` choices (Codex is not
+    // registered until Phase 2). Evaluated at command-registration time.
+    backends: () => modeRegistry.list(),
     onReady: async (client: Client) => {
       // Resume every persisted, non-archived channel binding (fixes A2), then
       // re-attach its renderers so the live UX survives a restart (§9 step 4).

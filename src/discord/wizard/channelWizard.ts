@@ -74,10 +74,14 @@ export class ChannelWizard {
   private readonly browser: DirectoryBrowser;
   private step: WizardStep = 'folder';
   private readonly selection: Selection;
+  // The Discord user who opened this wizard (the driver). Only they advance it, so a
+  // bystander's stray select/button cannot corrupt another driver's flow (§7.1).
+  readonly ownerId: string;
 
   constructor(options: ChannelWizardOptions) {
     this.opts = options;
     this.browser = options.browser;
+    this.ownerId = options.ownerId;
     this.selection = {
       cwd: null,
       backend: options.defaults.backend,
