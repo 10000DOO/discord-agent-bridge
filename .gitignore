@@ -48,3 +48,6 @@ pids/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local docs (design + progress) — kept out of the repo
+docs/
