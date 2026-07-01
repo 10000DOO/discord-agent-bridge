@@ -106,16 +106,21 @@ export interface Logger {
   error(message: string, ...meta: unknown[]): void;
 }
 
-// Append-only audit entry (see core/auditLog.ts, §7.5).
+// Append-only audit entry (see core/auditLog.ts, §7.5). The caller supplies the
+// who/what; AuditLog stamps the `when` (timestamp) at record time.
 export interface AuditEntry {
   actorId: string;
   roleTier: 'admin' | 'execute' | 'read-only';
   guildId: string;
   channelId: string;
   action: string; // command | tool | turn
+  command?: string; // the raw command line, when action is a command
+  tool?: string; // the tool name, when action is a tool use
+  mode?: string; // backend that handled it (claude | codex | …)
   permMode?: PermMode;
   cwd?: string;
-  outcome?: string;
+  outcome?: string; // free-form result note
+  status?: 'allowed' | 'denied' | 'ok' | 'error'; // coarse result/status
 }
 
 export interface ModeContext {
