@@ -24,13 +24,15 @@ const SENSITIVE_KEYS = new Set([
 
 // Value-shape patterns for secrets that may appear inside free-form strings.
 const VALUE_PATTERNS: RegExp[] = [
-  // Discord bot token: <base64 userId>.<base64 timestamp>.<base64 hmac>.
-  // Real shape is ~18-26 . ~6 . ~27-38 chars; the middle segment is short.
-  /[A-Za-z0-9_-]{17,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{20,}/g,
+  // Discord bot token: <base64 userId>.<base64 timestamp>.<base64 hmac>. The real
+  // shape is tight (~23-28 . ~6-7 . ~27-40 chars) with word boundaries, so benign
+  // dotted strings (e.g. file hashes like "deadbeef.sig.0123456789") are not
+  // clobbered.
+  /\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,40}\b/g,
   // Anthropic / OAuth style bearer tokens (sk-..., sk-ant-..., long opaque tokens).
   /\bsk-[A-Za-z0-9-]{16,}\b/g,
-  // "Authorization: Bearer <token>" / "Bearer <token>".
-  /(?<=Bearer\s)[A-Za-z0-9._-]{8,}/gi,
+  // "Authorization: Bearer <token>" / "Bearer <token>" (allow multiple spaces).
+  /(?<=Bearer\s{1,4})[A-Za-z0-9._-]{8,}/gi,
 ];
 
 function redactString(input: string): string {

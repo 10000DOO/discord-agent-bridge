@@ -23,8 +23,29 @@ function defaultBaseDir(): string {
   return path.join(os.homedir(), DEFAULT_DIR_NAME);
 }
 
+// A plain object (not array, not primitive), or undefined otherwise. Used by
+// mergeNested to decide whether a raw nested value is safe to spread.
+function obj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+// Merge one nested section over its default. When absent, the default stands.
+// When present AND a plain object, the raw fields win over the default. When
+// present but malformed (an array or a primitive where an object is expected), the
+// raw value is passed THROUGH unchanged so zod rejects it with a clear error for
+// that field, instead of spreading garbage (array indices / nothing) into an
+// otherwise-valid default and silently swallowing the mistake.
+function mergeNested(raw: unknown, def: Record<string, unknown>): unknown {
+  if (raw === undefined) return def;
+  const asObj = obj(raw);
+  if (asObj === undefined) return raw; // malformed: let zod report it
+  return { ...def, ...asObj };
+}
+
 // Fill missing fields from CONFIG_DEFAULTS. Present values win; secrets (discord)
-// carry no default and must be supplied by the raw object.
+// carry no default and must be supplied by the raw object. Malformed nested values
+// (array/primitive where an object is expected) are surfaced to zod rather than
+// silently merged (see mergeNested).
 function applyDefaults(raw: Record<string, unknown>): unknown {
   const discord = raw['discord'];
   return {
@@ -32,12 +53,12 @@ function applyDefaults(raw: Record<string, unknown>): unknown {
     ...raw,
     version: typeof raw['version'] === 'number' ? raw['version'] : CONFIG_VERSION,
     discord,
-    auth: { ...CONFIG_DEFAULTS.auth, ...(raw['auth'] as object | undefined) },
-    defaults: { ...CONFIG_DEFAULTS.defaults, ...(raw['defaults'] as object | undefined) },
-    limits: { ...CONFIG_DEFAULTS.limits, ...(raw['limits'] as object | undefined) },
-    policy: { ...CONFIG_DEFAULTS.policy, ...(raw['policy'] as object | undefined) },
-    usage: { ...CONFIG_DEFAULTS.usage, ...(raw['usage'] as object | undefined) },
-    audit: { ...CONFIG_DEFAULTS.audit, ...(raw['audit'] as object | undefined) },
+    auth: mergeNested(raw['auth'], CONFIG_DEFAULTS.auth),
+    defaults: mergeNested(raw['defaults'], CONFIG_DEFAULTS.defaults),
+    limits: mergeNested(raw['limits'], CONFIG_DEFAULTS.limits),
+    policy: mergeNested(raw['policy'], CONFIG_DEFAULTS.policy),
+    usage: mergeNested(raw['usage'], CONFIG_DEFAULTS.usage),
+    audit: mergeNested(raw['audit'], CONFIG_DEFAULTS.audit),
   };
 }
 
@@ -85,11 +106,20 @@ export class ConfigStore {
     this.writeSecure(this.configPath, validated);
   }
 
+  // Fail-safe: a corrupt/hand-edited server file (bad JSON or failing zod) is
+  // treated as NO override — return null so the caller falls through to global —
+  // with a loud warning. This runs at request time inside authorize()/resolve(),
+  // so a broken server file must never throw and take down a live request.
   loadServerConfig(guildId: string): ServerConfig | null {
     const filePath = this.serverConfigPath(guildId);
     if (!fs.existsSync(filePath)) return null;
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
-    return serverConfigSchema.parse(raw);
+    try {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
+      return serverConfigSchema.parse(raw);
+    } catch (err) {
+      console.warn(`[config] ignoring corrupt server config ${filePath}; falling back to global: ${String(err)}`);
+      return null;
+    }
   }
 
   saveServerConfig(config: ServerConfig): void {

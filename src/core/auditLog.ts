@@ -57,13 +57,20 @@ export class AuditLog {
   }
 
   // Stamp the timestamp, redact secrets, append one JSON line. The dir is created
-  // if missing. The optional sink runs after a successful append so a sink failure
-  // cannot lose the durable record.
+  // if missing. Best-effort: a transient fs failure (mkdir/append) is logged
+  // loudly but NEVER thrown to the caller — audit is on the fire-and-forget turn
+  // pipeline (sessionOrchestrator drain), so a write failure must not stall a
+  // channel's turn queue. The optional sink still runs and the record is still
+  // returned even when the durable append failed.
   record(entry: AuditEntry): AuditRecord {
     const record: AuditRecord = { ...entry, timestamp: this.now() };
     const scrubbed = redact(record) as AuditRecord;
-    this.ensureDir();
-    fs.appendFileSync(this.filePath, JSON.stringify(scrubbed) + '\n', { encoding: 'utf-8' });
+    try {
+      this.ensureDir();
+      fs.appendFileSync(this.filePath, JSON.stringify(scrubbed) + '\n', { encoding: 'utf-8' });
+    } catch (err) {
+      console.error(`[audit] failed to write ${this.filePath}: ${String(err)}`);
+    }
     this.sink?.(scrubbed);
     return scrubbed;
   }

@@ -82,7 +82,14 @@ export class Authorizer {
 
   // Layer server auth over global. A server allowlist, when present, replaces that
   // tier's global list (server-scoped override, §7.1/§8.1); an absent server field
-  // falls through to global. Auth NARROWING happens at the project layer, not here.
+  // falls through to global.
+  //
+  // AUTH MODEL (decided 2026-07-01): the server layer OVERRIDES per tier — a
+  // present server list REPLACES the global list for that tier and MAY WIDEN or
+  // NARROW it (it is not constrained to an intersection). The project-level ACL
+  // (projectAuth on the channel binding) then INTERSECTS on top (narrows only).
+  // So widening happens only at the server layer; the project layer can only
+  // further restrict. See auth.test.ts (server override widens) + §7.1/§8.1.
   private effectiveAuth(global: AppConfig, server: ServerConfig | null): EffectiveAuth {
     const g = global.auth;
     const s = server?.auth;

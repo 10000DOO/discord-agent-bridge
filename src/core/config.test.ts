@@ -98,6 +98,51 @@ describe('ConfigStore', () => {
     expect(() => store.load()).toThrow();
   });
 
+  it('surfaces a clear validation error for a malformed nested section (not silently merged)', () => {
+    const store = new ConfigStore(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    // `auth` is an array, not an object — must be rejected by zod, not merged.
+    fs.writeFileSync(
+      store.configPath,
+      JSON.stringify({ discord: { token: 't', clientId: 'c' }, auth: ['x'] }),
+      'utf-8',
+    );
+    expect(() => store.load()).toThrow();
+
+    // A primitive where an object is expected is likewise rejected.
+    fs.writeFileSync(
+      store.configPath,
+      JSON.stringify({ discord: { token: 't', clientId: 'c' }, defaults: 5 }),
+      'utf-8',
+    );
+    expect(() => store.load()).toThrow();
+  });
+
+  it('fail-safe: a corrupt server config is ignored (falls back to global, no throw)', () => {
+    const store = new ConfigStore(dir);
+    fs.mkdirSync(path.dirname(store.serverConfigPath('g1')), { recursive: true });
+    // Not valid JSON — a hand-edited broken file.
+    fs.writeFileSync(store.serverConfigPath('g1'), '{ this is not json', 'utf-8');
+    const orig = console.warn;
+    const warnings: unknown[] = [];
+    console.warn = (...a: unknown[]) => warnings.push(a);
+    try {
+      expect(store.loadServerConfig('g1')).toBeNull();
+    } finally {
+      console.warn = orig;
+    }
+    expect(warnings.length).toBe(1);
+
+    // A well-formed JSON that fails the schema is also treated as no override.
+    fs.writeFileSync(store.serverConfigPath('g1'), JSON.stringify({ version: 'nope' }), 'utf-8');
+    console.warn = () => {};
+    try {
+      expect(store.loadServerConfig('g1')).toBeNull();
+    } finally {
+      console.warn = orig;
+    }
+  });
+
   it('round-trips a per-server config', () => {
     const store = new ConfigStore(dir);
     const server = {

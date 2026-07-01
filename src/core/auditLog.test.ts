@@ -74,9 +74,9 @@ describe('AuditLog', () => {
 
   it('redacts secrets in the written line', () => {
     const log = build();
-    // Synthetic Discord-token-SHAPE value (>=17 . >=5 . >=20 chars), assembled at
-    // runtime so no realistic token literal lives in source.
-    const fakeToken = ['X'.repeat(20), 'Y'.repeat(6), 'Z'.repeat(24)].join('.');
+    // Synthetic Discord-token-SHAPE value (23-28 . 6-7 . 27-40 chars), assembled
+    // at runtime so no realistic token literal lives in source.
+    const fakeToken = ['X'.repeat(24), 'Y'.repeat(6), 'Z'.repeat(28)].join('.');
     log.record(entry({ action: 'command', command: `login ${fakeToken}` }));
     const raw = fs.readFileSync(log.filePath, 'utf-8');
     expect(raw).not.toContain(fakeToken);
@@ -85,10 +85,48 @@ describe('AuditLog', () => {
     expect((JSON.parse(readLines(log)[0]) as AuditRecord).actorId).toBe('u1');
   });
 
+  it('is best-effort: a forced write failure does not throw out of record()', () => {
+    // Plant a regular FILE where the audit dir would go, so mkdir is skipped
+    // (existsSync true) and the append under it fails with ENOTDIR. record()
+    // must swallow this — a transient audit failure cannot stall the turn queue.
+    const log = build();
+    fs.writeFileSync(log.dir, 'not a directory');
+    const errors: unknown[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => errors.push(a);
+    try {
+      const rec = log.record(entry({ action: 'turn' }));
+      // No throw; the record is still returned and the sink still runs.
+      expect(rec.action).toBe('turn');
+      expect(rec.timestamp).toBe(FIXED_NOW);
+    } finally {
+      console.error = orig;
+    }
+    // The failure was logged loudly.
+    expect(errors.length).toBe(1);
+    // Nothing was durably written (the append failed).
+    expect(fs.existsSync(log.filePath)).toBe(false);
+  });
+
+  it('still runs the sink even when the durable append fails', () => {
+    const seen: AuditRecord[] = [];
+    const log = build((r) => seen.push(r));
+    fs.writeFileSync(log.dir, 'not a directory');
+    const orig = console.error;
+    console.error = () => {};
+    try {
+      log.record(entry({ action: 'turn' }));
+    } finally {
+      console.error = orig;
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0].timestamp).toBe(FIXED_NOW);
+  });
+
   it('invokes the optional sink with the redacted record', () => {
     const seen: AuditRecord[] = [];
     const log = build((r) => seen.push(r));
-    const fakeToken = ['A'.repeat(20), 'B'.repeat(6), 'C'.repeat(24)].join('.');
+    const fakeToken = ['A'.repeat(24), 'B'.repeat(6), 'C'.repeat(28)].join('.');
     log.record(entry({ action: 'command', command: `run ${fakeToken}` }));
     expect(seen).toHaveLength(1);
     expect(seen[0].timestamp).toBe(FIXED_NOW);

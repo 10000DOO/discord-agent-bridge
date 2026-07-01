@@ -26,9 +26,9 @@ describe('redact()', () => {
 
   it('scrubs Discord-token-shaped strings in free text', () => {
     // Synthetic, zero-entropy value matching the Discord-token SHAPE
-    // (>=17 . >=5 . >=20 chars). Assembled at runtime so no realistic
+    // (23-28 . 6-7 . 27-40 chars). Assembled at runtime so no realistic
     // token literal lives in source (avoids secret scanners).
-    const fake = ['X'.repeat(20), 'Y'.repeat(6), 'Z'.repeat(24)].join('.');
+    const fake = ['X'.repeat(24), 'Y'.repeat(6), 'Z'.repeat(28)].join('.');
     const out = redact(`connecting with ${fake} now`) as string;
     expect(out).not.toContain(fake);
     expect(out).toContain('[REDACTED]');
@@ -39,6 +39,22 @@ describe('redact()', () => {
     // Synthetic sk--prefixed key (>=16 tail chars) matching the pattern shape.
     const skKey = 'sk-' + 'k'.repeat(20);
     expect(redact(`key ${skKey} here`)).not.toContain(skKey);
+  });
+
+  it('does NOT over-redact a benign dotted string that only resembles a token', () => {
+    // Short segments (8 . 3 . 10) fall well below the Discord-token shape
+    // (23-28 . 6-7 . 27-40), so a file-hash-like value must survive intact.
+    const benign = 'deadbeef.sig.0123456789';
+    expect(redact(`artifact ${benign} built`)).toBe(`artifact ${benign} built`);
+  });
+
+  it('scrubs a Bearer token separated by multiple spaces', () => {
+    // The lookbehind allows 1-4 spaces after "Bearer" so a hand-spaced header
+    // is still redacted. Assembled at runtime; not a realistic secret.
+    const tok = 'sometoken12345';
+    const out = redact(`Bearer   ${tok}`) as string;
+    expect(out).not.toContain(tok);
+    expect(out).toContain('[REDACTED]');
   });
 
   it('handles nested structures and circular references', () => {

@@ -128,7 +128,15 @@ export class SessionOrchestrator {
     });
 
     const agentMode = this.modeRegistry.get(mode);
-    const ctx = this.buildContext({ guildId, channelId, cwd, ownerId, mode, permMode: perm.permMode });
+    const ctx = this.buildContext({
+      guildId,
+      channelId,
+      cwd,
+      ownerId,
+      mode,
+      permMode: perm.permMode,
+      allowedTools: perm.allowedTools,
+    });
     const session = await agentMode.start(ctx);
 
     // Persist the binding (source of truth for resume-on-boot) then track live.
@@ -271,7 +279,19 @@ export class SessionOrchestrator {
       const { guildId, channelId, mode, cwd, ownerId, permMode, sessionId } = binding;
       try {
         const agentMode = this.modeRegistry.get(mode);
-        const ctx = this.buildContext({ guildId, channelId, cwd, ownerId, mode, permMode });
+        // Re-resolve the layered tool allowlist for the resumed channel (no live
+        // session override on boot — the persisted profile/mode drive it) so a
+        // resumed session gets the same allowlist a fresh start() would.
+        const perm = this.permissionResolver.resolve(guildId, channelId);
+        const ctx = this.buildContext({
+          guildId,
+          channelId,
+          cwd,
+          ownerId,
+          mode,
+          permMode,
+          allowedTools: perm.allowedTools,
+        });
         // A binding with no backend sessionId cannot be resumed against a
         // specific id; skip it (the channel starts fresh on its next turn).
         if (sessionId === null) {
@@ -373,6 +393,9 @@ export class SessionOrchestrator {
   // Build the ModeContext handed to a mode's start()/resume(): emit → EventBus,
   // requestPermission → the injectable resolver, config → the resolved layered
   // view, audit → AuditLog. guildId/channelId/cwd/ownerId/permMode are carried.
+  // The resolved tool allowlist (from PermissionResolver: the global auto-allow
+  // set, narrowed by any active profile) is threaded onto the config view so the
+  // Claude mode reads the layered allowlist instead of re-hardcoding one (A8).
   private buildContext(args: {
     guildId: string;
     channelId: string;
@@ -380,9 +403,12 @@ export class SessionOrchestrator {
     ownerId: string;
     mode: string;
     permMode: PermMode;
+    allowedTools: string[];
   }): ModeContext {
-    const { guildId, channelId, cwd, ownerId, permMode } = args;
+    const { guildId, channelId, cwd, ownerId, permMode, allowedTools } = args;
     const modeConfig = this.configResolver.resolveModeConfig(guildId, channelId);
+    modeConfig.allowedTools = allowedTools;
+    modeConfig.autoAllowClaudeTools = allowedTools;
     return {
       guildId,
       channelId,
@@ -408,6 +434,10 @@ export class SessionOrchestrator {
   // or null if every file is confined. Resolves symlinks by realpath-ing the
   // deepest existing ancestor of each path (a file need not exist yet), so a
   // symlink pointing outside the workspace is caught, not just a literal `..`.
+  // NOTE: this is a pre-filter only and is subject to TOCTOU (a tail component
+  // could be swapped for a symlink after this check). The authoritative guard
+  // belongs at the mode's file-open site (Phase 2); do not treat this as the
+  // sole confinement enforcement.
   private findConfinementViolation(cwd: string, turn: TurnInput): string | null {
     if (!turn.files || turn.files.length === 0) return null;
     const root = realpathOrResolve(cwd);

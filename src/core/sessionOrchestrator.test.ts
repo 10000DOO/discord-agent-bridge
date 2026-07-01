@@ -75,6 +75,7 @@ class MockSession implements ModeSession {
 class MockMode implements AgentMode {
   readonly capabilities: Capabilities = CLAUDE_CAPS;
   readonly startedCtx: ModeContext[] = [];
+  readonly resumedCtx: ModeContext[] = [];
   readonly resumedIds: string[] = [];
   lastSession: MockSession | null = null;
 
@@ -92,6 +93,7 @@ class MockMode implements AgentMode {
 
   async resume(ctx: ModeContext, sessionId: string): Promise<ModeSession> {
     if (this.opts.resumeThrows) throw new Error('resume boom');
+    this.resumedCtx.push(ctx);
     this.resumedIds.push(sessionId);
     const session = new MockSession(ctx, sessionId);
     this.lastSession = session;
@@ -200,6 +202,39 @@ describe('SessionOrchestrator', () => {
       archived: false,
     });
     expect(readAudit(h.dir).some((r) => r.action === 'start')).toBe(true);
+  });
+
+  it('threads the resolved tool allowlist onto the started ctx.config (prevents A8)', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    await h.orchestrator.start({
+      guildId: 'g1',
+      channelId: 'c1',
+      mode: 'claude',
+      cwd: h.workspace,
+      ownerId: 'u1',
+    });
+
+    // The mode captured the ctx it was started with; the layered allowlist (the
+    // config's autoAllowClaudeTools, since no profile narrows it) must be present
+    // on config.allowedTools so the mode reads it instead of re-hardcoding one.
+    const ctx = h.mode.startedCtx[0];
+    expect(ctx.config.allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(ctx.config.autoAllowClaudeTools).toEqual(['Read', 'Glob', 'Grep']);
+  });
+
+  it('threads the resolved tool allowlist onto a resumed ctx.config too', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'sess-c1', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
+
+    await h.orchestrator.resumeAll();
+
+    // resume() built its ctx via the same buildContext path; the resumed mode
+    // gets the layered allowlist even though there is no live session override.
+    expect(h.mode.resumedCtx).toHaveLength(1);
+    expect(h.mode.resumedCtx[0].config.allowedTools).toEqual(['Read', 'Glob', 'Grep']);
   });
 
   it('processes queued turns sequentially, in order, dropping none (fixes A4)', async () => {

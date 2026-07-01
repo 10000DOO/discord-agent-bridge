@@ -98,6 +98,23 @@ describe('ChannelRegistry', () => {
     expect(got?.projectAuth).toEqual({ allowedRoleIds: ['r1'], allowedUserIds: [] });
   });
 
+  it('preserves other top-level state fields (scheduledCommands) across a mutation', () => {
+    // Seed state.json with a non-channel top-level field, then construct a
+    // registry over it (holds the full state in memory) and mutate a binding.
+    const store = new StateStore(dir);
+    const seeded = store.load();
+    seeded.scheduledCommands = [{ id: 'sched-1', cron: '0 9 * * *', command: 'status' }];
+    store.save(seeded);
+
+    const reg = new ChannelRegistry(new StateStore(dir), now);
+    reg.set(input({ sessionId: 'sess-mut' }));
+
+    // The mutation persisted the binding WITHOUT clobbering scheduledCommands.
+    const onDisk = new StateStore(dir).load();
+    expect(onDisk.channels['g1:c1']?.sessionId).toBe('sess-mut');
+    expect(onDisk.scheduledCommands).toEqual([{ id: 'sched-1', cron: '0 9 * * *', command: 'status' }]);
+  });
+
   it('preserves createdAt but refreshes updatedAt on replace', () => {
     const reg = new ChannelRegistry(new StateStore(dir), now);
     clock = '2026-01-01T00:00:00.000Z';
