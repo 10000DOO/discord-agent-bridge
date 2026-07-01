@@ -38,6 +38,7 @@ export const configSchema = z.object({
   defaults: z.object({
     mode: z.enum(['claude', 'codex']),
     claudeModel: z.string(),
+    codexModel: z.string(),
     permissionMode: permModeSchema,
     permissionProfile: z.string().nullable(),
     codexHome: z.string(),
@@ -85,6 +86,7 @@ export const serverConfigSchema = z.object({
     .object({
       mode: z.enum(['claude', 'codex']),
       claudeModel: z.string(),
+      codexModel: z.string(),
       permissionMode: permModeSchema,
       permissionProfile: z.string().nullable(),
     })
@@ -120,6 +122,9 @@ export const CONFIG_DEFAULTS = {
   defaults: {
     mode: 'claude' as const,
     claudeModel: 'opus',
+    // Empty → the CodexMode omits `-m`, so `codex` uses its own config.toml default
+    // model (operator-configured). Set a value here to force a specific Codex model.
+    codexModel: '',
     permissionMode: 'default' as const,
     permissionProfile: null,
     codexHome: '~/.codex',

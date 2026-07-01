@@ -89,13 +89,25 @@ describe('createApp — composition root', () => {
     expect(app.discord).toBeDefined();
   });
 
-  it('registers the Claude mode (and NOT Codex — Phase 2) in the mode registry', () => {
+  it('registers BOTH the Claude and Codex modes in the mode registry', () => {
     const fc = fakeClient();
     const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
     expect(app.modeRegistry.has('claude')).toBe(true);
     expect(app.modeRegistry.get('claude').name).toBe('claude');
-    expect(app.modeRegistry.has('codex')).toBe(false);
-    expect(app.modeRegistry.list()).toEqual(['claude']);
+    expect(app.modeRegistry.has('codex')).toBe(true);
+    expect(app.modeRegistry.get('codex').name).toBe('codex');
+    // Both registered → both offered as /mode backend choices and in the wizard.
+    expect(app.modeRegistry.list().sort()).toEqual(['claude', 'codex']);
+  });
+
+  it('exposes Codex capabilities (no permission prompts, no usage panel, transcript UX)', () => {
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const caps = app.modeRegistry.get('codex').capabilities;
+    expect(caps.permissionPrompts).toBe(false);
+    expect(caps.usagePanel).toBe(false);
+    expect(caps.transcript).toBe(true);
+    expect(caps.streaming).toBe(false);
   });
 
   it('wires orchestrator.requestPermission to the wiring layer (denies when unwired)', async () => {

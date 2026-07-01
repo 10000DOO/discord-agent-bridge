@@ -88,7 +88,8 @@ export interface AgentMode {
 
 // Layered (global → server → project) view of resolved mode config handed to a mode.
 export interface ModeConfigView {
-  model?: string;
+  model?: string; // Claude model (backend-specific; Codex reads codexModel instead)
+  codexModel?: string; // Codex model; empty/absent → let `codex` use its own config default
   codexHome?: string;
   codexCliCommand?: string;
   codexCliVersion?: string;

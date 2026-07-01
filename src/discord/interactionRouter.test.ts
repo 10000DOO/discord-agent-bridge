@@ -68,6 +68,7 @@ function writeConfig(dir: string): void {
     defaults: {
       mode: 'claude',
       claudeModel: 'opus',
+      codexModel: '',
       permissionMode: 'default',
       permissionProfile: null,
       codexHome: '~/.codex',

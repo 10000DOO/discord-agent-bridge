@@ -16,6 +16,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     defaults: {
       mode: 'claude',
       claudeModel: 'opus',
+      codexModel: '',
       permissionMode: 'default',
       permissionProfile: null,
       codexHome: '~/.codex',

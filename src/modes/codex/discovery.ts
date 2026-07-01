@@ -50,6 +50,10 @@ export interface CodexDiscoveryOptions {
 // The rollout filename UUID is the last 36 chars before .jsonl.
 const ROLLOUT_UUID = /-([0-9a-f-]{36})\.jsonl$/i;
 
+// Any 36-char UUID embedded in an archived filename (its naming may differ from a
+// live rollout, so match the UUID anywhere, not just before .jsonl).
+const ANY_UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
 export class CodexDiscovery {
   private readonly reader: CodexSqliteReader;
   private readonly fs: DiscoveryFs;
@@ -90,6 +94,12 @@ export class CodexDiscovery {
     }
     const subAgentChildIds = states?.subAgentChildIds ?? new Set<string>();
 
+    // In the index-only fallback (sqlite unavailable → no `archived` column to
+    // read), still exclude ids whose UUID appears under ~/.codex/archived_sessions/
+    // so archived threads don't reappear when the db can't be read (P2-2 Q3).
+    // Best-effort: a missing/unreadable dir yields an empty set (tolerate ENOENT).
+    const archivedIds = stateAvailable ? new Set<string>() : await this.readArchivedIds(codexHome);
+
     const sessions: ResumableSession[] = [];
     for (const entry of entries) {
       const row = rowById.get(entry.id);
@@ -101,6 +111,10 @@ export class CodexDiscovery {
         if (!opts.includeSubAgents && isSubAgent(entry.id, row, subAgentChildIds)) continue;
         // Non-interactive sources are not resumable user threads.
         if (row.source === 'exec') continue;
+      } else if (archivedIds.has(entry.id)) {
+        // Fallback path: the db is unreadable but the file layout still tells us
+        // this thread was archived — keep it excluded.
+        continue;
       }
 
       const cwd = row?.cwd ?? cwdById.get(entry.id) ?? '';
@@ -184,6 +198,26 @@ export class CodexDiscovery {
     const firstLine = text.split('\n', 1)[0];
     if (!firstLine) return undefined;
     return parseSessionMetaCwd(firstLine);
+  }
+
+  // Best-effort scan of ~/.codex/archived_sessions/ for the UUIDs of archived
+  // threads (used only in the index-only fallback). Walks the tree the same way as
+  // rollout files and collects every 36-char UUID found in a filename. A missing
+  // dir (ENOENT) or any other read error yields an empty set — this must never
+  // fail discovery, since it is only a fallback refinement.
+  private async readArchivedIds(codexHome: string): Promise<Set<string>> {
+    const ids = new Set<string>();
+    let files: string[];
+    try {
+      files = await this.listRolloutFiles(path.join(codexHome, 'archived_sessions'));
+    } catch {
+      return ids;
+    }
+    for (const file of files) {
+      const match = ANY_UUID.exec(path.basename(file));
+      if (match) ids.add(match[1]);
+    }
+    return ids;
   }
 }
 

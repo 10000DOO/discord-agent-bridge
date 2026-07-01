@@ -17,6 +17,7 @@ import type { ChannelRegistry, ChannelBinding } from './channelRegistry.js';
 export interface ResolvedConfig {
   mode: 'claude' | 'codex';
   claudeModel: string;
+  codexModel: string;
   permissionMode: AppConfig['defaults']['permissionMode'];
   permissionProfile: string | null;
   codexHome: string;
@@ -78,6 +79,7 @@ export class ConfigResolver {
     const r = this.resolve(guildId, channelId);
     return {
       model: r.claudeModel,
+      codexModel: r.codexModel,
       codexHome: r.codexHome,
       codexCliCommand: r.codexCliCommand,
       codexCliVersion: r.codexCliVersion ?? undefined,
@@ -96,6 +98,7 @@ export class ConfigResolver {
     let result: ResolvedConfig = {
       mode: global.defaults.mode,
       claudeModel: global.defaults.claudeModel,
+      codexModel: global.defaults.codexModel,
       permissionMode: global.defaults.permissionMode,
       permissionProfile: global.defaults.permissionProfile,
       codexHome: global.defaults.codexHome,
@@ -109,6 +112,7 @@ export class ConfigResolver {
       result = deepMerge(result, {
         mode: server.defaults?.mode,
         claudeModel: server.defaults?.claudeModel,
+        codexModel: server.defaults?.codexModel,
         permissionMode: server.defaults?.permissionMode,
         permissionProfile: server.defaults?.permissionProfile,
         limits: server.limits,

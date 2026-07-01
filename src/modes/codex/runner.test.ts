@@ -447,6 +447,59 @@ describe('runCodexTurn', () => {
     expect(events).toContainEqual({ kind: 'error', message: 'ENOENT: codex not found', retryable: false });
   });
 
+  it('aborts an in-flight turn: kills the child and resolves as status:aborted', async () => {
+    const { logger } = makeLogger();
+    const { emit, events } = collect();
+    const { spawn, child } = fakeSpawn({ stdoutChunks: [], stall: true });
+    const controller = new AbortController();
+    // Abort shortly after the run starts (the stalled child never closes on its own).
+    setTimeout(() => controller.abort(), 10);
+
+    const result = await runCodexTurn({
+      prompt: 'hi',
+      cwd: '/tmp/ws',
+      permMode: 'default',
+      timeoutMs: 5_000, // long: the abort, not the timeout, must end it
+      emit,
+      logger,
+      spawn,
+      readFile: async () => 'should-not-be-used',
+      tmpDir,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe('aborted');
+    expect(child.killed).toBe('SIGTERM');
+    const errs = events.filter((e) => e.kind === 'error');
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toMatchObject({ kind: 'error', retryable: false });
+    expect((errs[0] as { message: string }).message).toMatch(/stopped/);
+  });
+
+  it('an already-aborted signal kills the child before it can complete', async () => {
+    const { logger } = makeLogger();
+    const { emit } = collect();
+    const { spawn, child } = fakeSpawn({ stdoutChunks: [], stall: true });
+    const controller = new AbortController();
+    controller.abort(); // pre-aborted
+
+    const result = await runCodexTurn({
+      prompt: 'hi',
+      cwd: '/tmp/ws',
+      permMode: 'default',
+      timeoutMs: 5_000,
+      emit,
+      logger,
+      spawn,
+      readFile: async () => '',
+      tmpDir,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe('aborted');
+    expect(child.killed).toBe('SIGTERM');
+  });
+
   it('resumes with the session id and omits -a/-s/--cd in the spawned argv', async () => {
     const { logger } = makeLogger();
     const { emit } = collect();

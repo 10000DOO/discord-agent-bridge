@@ -87,6 +87,9 @@ function rolloutMeta(id: string, cwd: string): string {
 interface FixtureOptions {
   writeState?: boolean;
   corruptState?: boolean;
+  // UUIDs to drop into archived_sessions/ (a rollout-*.jsonl per id) so the
+  // index-only fallback can still exclude them.
+  archivedIds?: string[];
 }
 
 // Lay out a temp ~/.codex: session_index.jsonl, a few rollout files under
@@ -116,6 +119,17 @@ async function makeCodexHome(dir: string, opts: FixtureOptions = {}): Promise<vo
     await writeFile(path.join(dir, 'state_2.sqlite'), Buffer.from('corrupt', 'utf8'));
   } else if (opts.writeState) {
     await writeFile(path.join(dir, 'state_2.sqlite'), Buffer.from(buildStateBytes()));
+  }
+
+  if (opts.archivedIds && opts.archivedIds.length > 0) {
+    const archivedDay = path.join(dir, 'archived_sessions', '2026', '07', '01');
+    await mkdir(archivedDay, { recursive: true });
+    for (const id of opts.archivedIds) {
+      await writeFile(
+        path.join(archivedDay, `rollout-2026-07-01T05-00-00-${id}.jsonl`),
+        rolloutMeta(id, '/archived') + '\n',
+      );
+    }
   }
 }
 
@@ -201,6 +215,29 @@ describe('CodexDiscovery.listResumable (fallback)', () => {
       const sessions = await discovery.listResumable(dir);
       expect(sessions.length).toBe(5);
       expect(warnCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('still EXCLUDES ids present under archived_sessions/ in the index-only fallback (P2-2 Q3)', async () => {
+    // db unreadable → fallback; but ID.archived also lives under archived_sessions/,
+    // so it must not reappear.
+    await withCodexHome({ corruptState: true, archivedIds: [ID.archived] }, async (dir) => {
+      const { logger } = makeLogger();
+      const discovery = new CodexDiscovery({ reader: makeReader(), logger });
+      const sessions = await discovery.listResumable(dir);
+      const ids = sessions.map((s) => s.sessionId);
+      expect(ids).not.toContain(ID.archived);
+      // The other (non-archived) index entries are still listed.
+      expect(ids.sort()).toEqual([ID.user1, ID.user2, ID.sub, ID.exec].sort());
+    });
+  });
+
+  it('tolerates a missing archived_sessions/ dir in the fallback (no exclusion, no throw)', async () => {
+    await withCodexHome({ corruptState: true }, async (dir) => {
+      const { logger } = makeLogger();
+      const discovery = new CodexDiscovery({ reader: makeReader(), logger });
+      const sessions = await discovery.listResumable(dir);
+      expect(sessions.length).toBe(5); // no archived_sessions/ → nothing excluded
     });
   });
 });

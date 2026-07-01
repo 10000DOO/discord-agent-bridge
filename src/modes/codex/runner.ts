@@ -45,6 +45,11 @@ export interface RunCodexTurnOptions {
   codexHome?: string; // sets CODEX_HOME for the child
   emit: (ev: AgentEvent) => void; // → EventBus → Discord renderers
   logger: Logger;
+  // When set, aborting it kills the in-flight `codex` child (SIGTERM) and the turn
+  // resolves as 'aborted' — the ModeSession.stop() / kill-switch path (§7.5). An
+  // already-aborted signal kills as soon as the child spawns. Optional so the
+  // existing turn tests run unchanged.
+  signal?: AbortSignal;
   // Injectables (default to the real implementations).
   spawn?: SpawnFn;
   readFile?: ReadFileFn;
@@ -52,7 +57,7 @@ export interface RunCodexTurnOptions {
   now?: () => number; // clock; defaults to Date.now
 }
 
-export type CodexTurnStatus = 'completed' | 'error' | 'timeout';
+export type CodexTurnStatus = 'completed' | 'error' | 'timeout' | 'aborted';
 
 export interface RunCodexTurnResult {
   status: CodexTurnStatus;
@@ -140,6 +145,7 @@ export async function runCodexTurn(opts: RunCodexTurnOptions): Promise<RunCodexT
   const start = now();
   let sessionId: string | null = opts.resumeId ?? null;
   let timedOut = false;
+  let aborted = false;
 
   try {
     const child = spawn(codexCommand, args, {
@@ -153,6 +159,7 @@ export async function runCodexTurn(opts: RunCodexTurnOptions): Promise<RunCodexT
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (onAbort) opts.signal?.removeEventListener('abort', onAbort);
         resolve(r);
       };
 
@@ -160,6 +167,19 @@ export async function runCodexTurn(opts: RunCodexTurnOptions): Promise<RunCodexT
         timedOut = true;
         child.kill('SIGTERM');
       }, opts.timeoutMs);
+
+      // Kill on external abort (ModeSession.stop / kill switch). If the signal is
+      // already aborted, kill on the next tick so the child's close still drains.
+      const onAbort = opts.signal
+        ? (): void => {
+            aborted = true;
+            child.kill('SIGTERM');
+          }
+        : undefined;
+      if (opts.signal && onAbort) {
+        if (opts.signal.aborted) setImmediate(onAbort);
+        else opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
 
       let lineBuffer = '';
       const consumeLine = (line: string): void => {
@@ -190,6 +210,14 @@ export async function runCodexTurn(opts: RunCodexTurnOptions): Promise<RunCodexT
     if (closeResult.spawnError) {
       opts.emit({ kind: 'error', message: closeResult.spawnError.message, retryable: false });
       return { status: 'error', sessionId, finalMessage: '', exitCode: null };
+    }
+
+    // An external abort (stop/kill switch) is expected shutdown, surfaced as a
+    // non-retryable error and reported as 'aborted' (checked before the timeout so
+    // a kill-triggered close is not misreported as a natural timeout).
+    if (aborted && !timedOut) {
+      opts.emit({ kind: 'error', message: 'Codex turn was stopped.', retryable: false });
+      return { status: 'aborted', sessionId, finalMessage: '', exitCode: closeResult.code };
     }
 
     if (timedOut) {

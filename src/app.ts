@@ -13,6 +13,7 @@ import { SessionOrchestrator } from './core/sessionOrchestrator.js';
 import { createLogger } from './core/logger.js';
 import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
+import { CodexMode } from './modes/codex/index.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
@@ -61,6 +62,19 @@ export interface App {
   login(): Promise<void>;
   // Tear down the gateway (tests / graceful shutdown).
   destroy(): Promise<void>;
+}
+
+// Common Codex CLI model ids offered in the wizard's model step so it isn't empty.
+// Codex accepts a free-form -m value (verified against CLI 0.142.4), so this is a
+// convenience list, not an enforced enum; the operator can pin any model via
+// config.defaults.codexModel. A configured non-empty codexModel is offered first
+// and de-duplicated against the defaults.
+const CODEX_MODEL_CHOICES = ['gpt-5.1-codex', 'gpt-5-codex', 'o3'];
+
+function codexModelChoices(configured: string): string[] {
+  const trimmed = configured.trim();
+  if (trimmed.length === 0) return CODEX_MODEL_CHOICES;
+  return [trimmed, ...CODEX_MODEL_CHOICES.filter((m) => m !== trimmed)];
 }
 
 export function createApp(deps: CreateAppDeps): App {
@@ -124,13 +138,19 @@ export function createApp(deps: CreateAppDeps): App {
     requestPermission: wiring.requestPermission,
   });
 
-  // ---- Register the Claude mode (§4/§10). Codex is Phase 2 — not registered. ----
-  // sendFileFor is wired to the wiring layer's per-channel sink factory so the
-  // in-process attach_file MCP tool can deliver a confined file to the channel a
+  // ---- Register the backends (§4/§10). Registering a mode automatically surfaces
+  // it as a `/mode backend` choice and in the channel wizard (both read
+  // modeRegistry.list()). ----
+  // Claude: sendFileFor is wired to the wiring layer's per-channel sink factory so
+  // the in-process attach_file MCP tool can deliver a confined file to the channel a
   // session is bound to (kept out of the mode so modes stay transport-agnostic).
   modeRegistry.register(
     new ClaudeMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
   );
+  // Codex: no transport-specific deps (fileAttach:false → no sendFile); the runner
+  // and ~/.codex discovery are wired inside the mode. Its capabilities disable the
+  // Discord renderers Codex doesn't support (§5b/§6).
+  modeRegistry.register(new CodexMode());
 
   // ---- Discord client (§2/§4). onReady resumes persisted sessions AND re-attaches a
   // RendererDispatcher per resumed channel so a restart restores the live UX (§9). ----
@@ -147,10 +167,15 @@ export function createApp(deps: CreateAppDeps): App {
     logger,
     // Folder-browser roots + per-backend model list are config-driven (§8.1): the
     // saved project favorites seed the browse roots; the model step offers the
-    // resolved default model for the backend.
+    // per-backend model list. Codex's list is a small documented default (the
+    // config `defaults.codexModel` — when set — plus common Codex model ids), so the
+    // wizard's model step isn't empty; a configured value is offered first. Selecting
+    // a Codex model here is cosmetic (like Claude's): the effective Codex model comes
+    // from config.defaults.codexModel — empty means `codex` uses its own config.toml
+    // default (operator-set). Override defaults.codexModel to force a model.
     browseRoots: config.favorites,
     modelsFor: (backend: string) =>
-      backend === 'claude' ? [config.defaults.claudeModel] : [config.defaults.claudeModel],
+      backend === 'codex' ? codexModelChoices(config.defaults.codexModel) : [config.defaults.claudeModel],
   });
 
   const discord = new DiscordClient({
@@ -158,8 +183,8 @@ export function createApp(deps: CreateAppDeps): App {
     logger,
     messageRouter,
     interactionRouter,
-    // Only registered backends are offered as `/mode backend` choices (Codex is not
-    // registered until Phase 2). Evaluated at command-registration time.
+    // Only registered backends are offered as `/mode backend` choices. Evaluated at
+    // command-registration time, so both Claude and Codex now appear.
     backends: () => modeRegistry.list(),
     onReady: async (client: Client) => {
       // Resume every persisted, non-archived channel binding (fixes A2), then
