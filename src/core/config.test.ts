@@ -162,4 +162,16 @@ describe('ConfigStore', () => {
     const mode = fs.statSync(store.configPath).mode & 0o777;
     expect(mode).toBe(0o600);
   });
+
+  it('addAutoAllowClaudeTool appends a new tool and persists (idempotent)', () => {
+    const store = new ConfigStore(dir);
+    store.save(makeConfig());
+    expect(store.addAutoAllowClaudeTool('Bash')).toBe(true);
+    expect(store.load().autoAllowClaudeTools).toContain('Bash');
+    // A tool already present is a no-op.
+    expect(store.addAutoAllowClaudeTool('Bash')).toBe(false);
+    expect(store.load().autoAllowClaudeTools.filter((t) => t === 'Bash')).toHaveLength(1);
+    // Existing tools are preserved.
+    expect(store.load().autoAllowClaudeTools).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep', 'Bash']));
+  });
 });

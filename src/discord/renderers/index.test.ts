@@ -30,7 +30,7 @@ const claudeCaps: Capabilities = {
   fileAttach: true,
   fileDiff: true,
   usagePanel: true,
-  permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'],
+  permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
 const codexCaps: Capabilities = {

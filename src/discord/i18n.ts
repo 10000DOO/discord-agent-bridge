@@ -42,7 +42,6 @@ const ko: Catalog = {
   'perm.acceptEdits': '편집 자동 승인',
   'perm.bypassPermissions': '전체 자동 승인 (⚠️ 위험)',
   'perm.plan': '플랜 (읽기 전용)',
-  'perm.dontAsk': '확인 안 함',
   // Directory browser
   'dir.up': '상위 폴더',
   'dir.select': '폴더 선택',

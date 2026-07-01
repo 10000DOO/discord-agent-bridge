@@ -7,7 +7,7 @@ import { codexUsageUnavailable } from '../core/usageService.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { PermissionRequest } from '../core/sessionOrchestrator.js';
 import { RendererDispatcher, createDefaultRendererSet } from './renderers/index.js';
-import { PermissionButtonsHandler } from './renderers/permissionButtons.js';
+import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
 import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
 
@@ -43,6 +43,11 @@ export interface SessionWiringDeps {
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
   // Permission-request timeout in seconds (config limits.permissionTimeoutSec).
   permissionTimeoutSec: number;
+  // Persist an "always-allow" tool so future turns auto-allow it (§7A). Called
+  // when a permission button resolves as `always`. App boot wires this to the
+  // ConfigStore's global autoAllowClaudeTools set (see app.ts persistAlwaysAllow).
+  // Optional so tests that do not exercise always-allow need not supply it.
+  onAlwaysAllow?: (toolName: string) => void;
 }
 
 function channelKey(guildId: string, channelId: string): string {
@@ -55,8 +60,12 @@ export class SessionWiring {
   private readonly channelRegistry: ChannelRegistry;
   private readonly usageService: UsageService;
   private readonly logger: Logger;
-  private readonly resolveChannel: (channelId: string) => Promise<MessageChannel | null>;
+  // Mutable so app boot can bind it to the live gateway AFTER the client is
+  // constructed (the client depends on the routers which depend on this wiring —
+  // resolveChannel is only used at attach()/sendFile time, i.e. after login).
+  private resolveChannel: (channelId: string) => Promise<MessageChannel | null>;
   private readonly permissionTimeoutMs: number;
+  private readonly onAlwaysAllow?: (toolName: string) => void;
 
   private readonly channels = new Map<string, ChannelWiring>();
   // Latest usage snapshot, refreshed lazily; fed into the usage embed synchronously.
@@ -70,12 +79,19 @@ export class SessionWiring {
     this.logger = deps.logger;
     this.resolveChannel = deps.resolveChannel ?? (() => Promise.resolve(null));
     this.permissionTimeoutMs = Math.max(1, deps.permissionTimeoutSec) * 1000;
+    this.onAlwaysAllow = deps.onAlwaysAllow;
   }
 
   // Build the live resolveChannel over a real gateway client (used by app boot).
   static resolveOverClient(client: Client): (channelId: string) => Promise<MessageChannel | null> {
     return (channelId: string): Promise<MessageChannel | null> =>
       resolveChannelAdapter(client, channelId) as Promise<ChannelAdapter | null>;
+  }
+
+  // Bind (or rebind) the channel resolver. App boot calls this once the gateway
+  // client exists to point the wiring at the live client's channel lookup.
+  setResolveChannel(resolveChannel: (channelId: string) => Promise<MessageChannel | null>): void {
+    this.resolveChannel = resolveChannel;
   }
 
   // The orchestrator's requestPermission hook (§7.5): post the buttons on the bound
@@ -112,9 +128,23 @@ export class SessionWiring {
   ): Promise<PermissionDecision | null> {
     const wiring = this.channels.get(channelKey(guildId, channelId));
     if (!wiring) return null;
+    // When the action is "always-allow", read the tool name BEFORE resolve()
+    // removes the pending entry, then persist it into the config auto-allow set so
+    // future turns skip the prompt (§7A). resolve() itself still settles the turn's
+    // decision as a plain allow (permissionButtons.resolve).
+    const parsed = parseCustomId(customId);
+    const alwaysTool =
+      parsed?.action === 'always' ? wiring.permission.peekToolName(parsed.reqId) : null;
     const decision = await wiring.permission.resolve(customId);
-    // Always-allow persistence is deferred to chunk 8 (config-driven auto-allow set);
-    // here `always` resolves as allow for this turn (see permissionButtons.resolve).
+    if (alwaysTool && decision?.behavior === 'allow') {
+      try {
+        this.onAlwaysAllow?.(alwaysTool);
+      } catch (err) {
+        // Persisting the always-allow set is best-effort; a config write failure
+        // must not break the interaction (the turn is already allowed).
+        this.logger.warn('failed to persist always-allow tool', { tool: alwaysTool, err: String(err) });
+      }
+    }
     return decision;
   }
 

@@ -25,14 +25,25 @@ export interface ClaudeSessionDeps {
   resumeId?: string;
 }
 
-// Maps SDK permission modes onto what the SDK's query() accepts. Only 'plan' is
-// passed through verbatim; every other resolved mode maps to 'default' so the
-// config-driven canUseTool gate (permissions.ts) stays the single control point,
-// mirroring A4D (sessionManager.ts:83). acceptEdits/bypassPermissions are honored
-// via canUseTool auto-allow (the resolved allowlist), not by handing the SDK a
-// blanket bypass.
+// Map our PermMode straight onto the SDK's native `permissionMode` (§7A). The 4
+// canonical modes are all SDK-native values (verified against the installed SDK's
+// PermissionMode type: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'),
+// so we pass them through verbatim instead of collapsing everything to 'default'
+// and emulating — this is faithful to terminal `claude`. The config-driven
+// canUseTool auto-allow (permissions.ts) still governs the 'default' mode's gate
+// (fixes A8). 'bypassPermissions' additionally requires allowDangerouslySkipPermissions
+// (see options below).
 function toSdkPermissionMode(permMode: string): Options['permissionMode'] {
-  return permMode === 'plan' ? 'plan' : 'default';
+  switch (permMode) {
+    case 'acceptEdits':
+      return 'acceptEdits';
+    case 'bypassPermissions':
+      return 'bypassPermissions';
+    case 'plan':
+      return 'plan';
+    default:
+      return 'default';
+  }
 }
 
 // A running Claude session (§9): one persistent query() whose prompt is an async
@@ -68,9 +79,15 @@ export class ClaudeSession implements ModeSession {
       }
     }
 
+    const permissionMode = toSdkPermissionMode(ctx.permMode);
     const options: Options = {
       cwd: ctx.cwd,
-      permissionMode: toSdkPermissionMode(ctx.permMode),
+      permissionMode,
+      // The SDK REQUIRES this flag to be true when permissionMode is
+      // 'bypassPermissions' (sdk.d.ts: "Must be set to true when using
+      // permissionMode: 'bypassPermissions'"). Set it only for that mode so the
+      // dangerous bypass is never enabled implicitly.
+      ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       includePartialMessages: true,
       abortController: this.abortController,
       canUseTool: makeCanUseTool(ctx),

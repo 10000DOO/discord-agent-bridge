@@ -33,7 +33,7 @@ const CLAUDE_CAPS: Capabilities = {
   fileAttach: true,
   fileDiff: true,
   usagePanel: true,
-  permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'],
+  permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
 // A mock ModeSession that records the turns it received (in order) and emits a

@@ -106,6 +106,21 @@ export class ConfigStore {
     this.writeSecure(this.configPath, validated);
   }
 
+  // Persist an "always-allow" Claude tool into the GLOBAL autoAllowClaudeTools set
+  // (§7A/§8.1) so future turns auto-allow it without a prompt. Scope decision: the
+  // global auto-allow set — §8.1 lists autoAllowClaudeTools as a global default the
+  // orchestrator already threads into every ModeContext, so a globally-persisted
+  // tool takes effect for every channel's next turn with no per-project plumbing.
+  // Idempotent: a tool already present is a no-op (no rewrite). Returns whether the
+  // config was changed.
+  addAutoAllowClaudeTool(toolName: string): boolean {
+    const config = this.load();
+    if (config.autoAllowClaudeTools.includes(toolName)) return false;
+    config.autoAllowClaudeTools = [...config.autoAllowClaudeTools, toolName];
+    this.save(config);
+    return true;
+  }
+
   // Fail-safe: a corrupt/hand-edited server file (bad JSON or failing zod) is
   // treated as NO override — return null so the caller falls through to global —
   // with a loud warning. This runs at request time inside authorize()/resolve(),

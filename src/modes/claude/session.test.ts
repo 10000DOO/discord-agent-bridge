@@ -317,13 +317,29 @@ describe('ClaudeSession — query options', () => {
     await session.stop();
   });
 
-  it('maps a non-plan permMode to the SDK default mode', async () => {
-    const { ctx } = makeCtx({ permMode: 'acceptEdits' });
-    const { queryFn, captured } = fakeQueryFn([]);
-    const session = new ClaudeSession(ctx, { queryFn });
-    const options = captured.options as { permissionMode: string };
-    expect(options.permissionMode).toBe('default');
-    await session.stop();
+  it('passes each PermMode natively to the SDK permissionMode', async () => {
+    for (const mode of ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const) {
+      const { ctx } = makeCtx({ permMode: mode });
+      const { queryFn, captured } = fakeQueryFn([]);
+      const session = new ClaudeSession(ctx, { queryFn });
+      const options = captured.options as { permissionMode: string };
+      expect(options.permissionMode).toBe(mode);
+      await session.stop();
+    }
+  });
+
+  it('sets allowDangerouslySkipPermissions only for bypassPermissions', async () => {
+    const { ctx: bypassCtx } = makeCtx({ permMode: 'bypassPermissions' });
+    const bypass = fakeQueryFn([]);
+    const bypassSession = new ClaudeSession(bypassCtx, { queryFn: bypass.queryFn });
+    expect((bypass.captured.options as { allowDangerouslySkipPermissions?: boolean }).allowDangerouslySkipPermissions).toBe(true);
+    await bypassSession.stop();
+
+    const { ctx: defaultCtx } = makeCtx({ permMode: 'default' });
+    const def = fakeQueryFn([]);
+    const defaultSession = new ClaudeSession(defaultCtx, { queryFn: def.queryFn });
+    expect((def.captured.options as { allowDangerouslySkipPermissions?: boolean }).allowDangerouslySkipPermissions).toBeUndefined();
+    await defaultSession.stop();
   });
 
   it('exposes the attach_file MCP tool and allowlists it when sendFile is wired', async () => {

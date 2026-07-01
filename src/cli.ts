@@ -1,25 +1,45 @@
 #!/usr/bin/env node
-import { boot } from './app.js';
-import { runSetupWizard } from './setup/wizard.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { startBot } from './app.js';
+import { runSetup } from './setup/wizard.js';
 
-// TODO(Phase 1): entrypoint — `--setup` | run | `--version` (§4).
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+// Thin entrypoint (§4): `--version` prints the package version, `--setup` runs the
+// first-run wizard (a stub until chunk 8b), and the default/no-flag path boots the
+// bot. All real work lives in app.ts / setup/wizard.ts; this file only parses argv
+// and dispatches, so it stays trivial to reason about.
 
-  if (args.includes('--version')) {
-    // TODO(Phase 1): print version from package.json.
-    throw new Error('not implemented');
-  }
-
-  if (args.includes('--setup')) {
-    await runSetupWizard();
-    return;
-  }
-
-  await boot();
+// Read the package version from package.json (two levels up from dist/cli.js, and
+// from src/cli.ts in dev). Kept as a function so a test can call it directly.
+export function readVersion(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // dist/cli.js → ../package.json ; src/cli.ts → ../package.json
+  const pkgPath = path.join(here, '..', 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version?: string };
+  return pkg.version ?? '0.0.0';
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+export async function run(argv: string[]): Promise<void> {
+  if (argv.includes('--version')) {
+    console.log(readVersion());
+    return;
+  }
+  if (argv.includes('--setup')) {
+    await runSetup();
+    return;
+  }
+  await startBot();
+}
+
+// Only auto-run when invoked as the CLI, not when imported by a test.
+const isMain =
+  typeof process.argv[1] === 'string' &&
+  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+
+if (isMain) {
+  run(process.argv.slice(2)).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

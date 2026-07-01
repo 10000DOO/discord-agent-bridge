@@ -54,6 +54,13 @@ export class PermissionButtonsHandler {
     this.channel = deps.channel;
   }
 
+  // The tool name of a still-pending request, or null once it has resolved/expired.
+  // Lets the wiring layer read the tool for an always-allow persistence decision
+  // before resolve() removes the pending entry.
+  peekToolName(reqId: string): string | null {
+    return this.pending.get(reqId)?.toolName ?? null;
+  }
+
   // Post the buttons for a permission_request and return a promise that settles when
   // the user decides. The pending resolver is registered SYNCHRONOUSLY (before the
   // send completes) so a decision that races the post still resolves; the message

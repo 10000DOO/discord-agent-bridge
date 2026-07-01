@@ -10,7 +10,6 @@ export const permModeSchema = z.enum([
   'acceptEdits',
   'bypassPermissions',
   'plan',
-  'dontAsk',
 ]);
 
 // A named permission profile (§7A). policyTier maps onto the command-policy tier.

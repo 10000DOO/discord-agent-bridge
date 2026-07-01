@@ -17,14 +17,14 @@ export interface Capabilities {
   permissionModes: PermMode[]; // which permission modes this backend accepts (see below)
 }
 
-// Permission modes — Claude uses A4D's set; Codex maps these onto its own
-// approval-policy + sandbox flags (VERIFY against installed codex CLI in Phase 2, §7A).
+// Permission modes — the canonical set is the 4 SDK-native modes (passed straight
+// to the Claude SDK `permissionMode`); Codex maps these onto its own approval-policy
+// + sandbox flags (VERIFY against installed codex CLI in Phase 2, §7A).
 export type PermMode =
   | 'default' // Claude: interactive canUseTool Allow/Deny buttons
   | 'acceptEdits' // Claude: auto-approve file edits
   | 'bypassPermissions' // Claude: auto-approve all  (⚠ dangerous)
-  | 'plan' // Claude: read-only / planning
-  | 'dontAsk'; // Claude: no prompts
+  | 'plan'; // Claude: read-only / planning
 
 // ---- Normalized event stream every mode emits (superset union) ----
 export type AgentEvent =

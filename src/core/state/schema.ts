@@ -11,7 +11,6 @@ export const permModeSchema = z.enum([
   'acceptEdits',
   'bypassPermissions',
   'plan',
-  'dontAsk',
 ]);
 
 export const STATE_VERSION = 2;
