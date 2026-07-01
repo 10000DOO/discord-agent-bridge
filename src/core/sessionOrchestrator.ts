@@ -1,24 +1,448 @@
-import type { ModeSession, PermMode, TurnInput } from './contracts.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type {
+  AgentEvent,
+  AuditEntry,
+  Logger,
+  ModeContext,
+  ModeSession,
+  PermissionDecision,
+  PermMode,
+  TurnInput,
+} from './contracts.js';
+import type { ChannelRegistry } from './channelRegistry.js';
+import type { ModeRegistry } from './modeRegistry.js';
+import type { EventBus } from './eventBus.js';
+import type { ConfigResolver } from './configResolver.js';
+import type { PermissionResolver } from './permissionResolver.js';
+import type { AuditLog } from './auditLog.js';
 
-// TODO(Phase 1): turn lifecycle, per-channel queue, resume-on-boot, /stop kill switch (§7.5, §9).
+// The orchestrator owns the turn lifecycle for every channel (§2, §4, §9): it
+// starts/resumes mode sessions, funnels user turns through a strict per-channel
+// QUEUE (fixes A4 — no dropped turns), confines TurnInput file paths to the
+// session workspace (§7.5 baseline), and provides the /stop + /stop-all kill
+// switch. Core stays transport- and backend-agnostic: it talks to modes only
+// via the AgentMode/ModeSession/ModeContext contracts and never imports the SDK
+// or the Codex CLI.
+
+// The Discord layer wires the real interactive Allow/Deny flow; until then the
+// orchestrator hands each ModeContext a placeholder that denies (§9 permission
+// prompts are resolved by Discord). Injectable so tests and the Discord chunk
+// can substitute a real resolver.
+export type PermissionRequest = { toolName: string; input: unknown };
+export type RequestPermission = (
+  binding: { guildId: string; channelId: string; ownerId: string },
+  req: PermissionRequest,
+) => Promise<PermissionDecision>;
+
+// Default: deny, so an unwired permission prompt fails safe rather than
+// auto-approving a tool the operator never saw (§7.5, deny-by-default).
+const denyByDefault: RequestPermission = async () => ({
+  behavior: 'deny',
+  message: 'Permission prompts are not wired yet; denying by default.',
+});
+
+export interface SessionOrchestratorDeps {
+  channelRegistry: ChannelRegistry;
+  modeRegistry: ModeRegistry;
+  eventBus: EventBus;
+  configResolver: ConfigResolver;
+  permissionResolver: PermissionResolver;
+  auditLog: AuditLog;
+  logger: Logger;
+  // Wired by the Discord layer; defaults to deny-by-default (see above).
+  requestPermission?: RequestPermission;
+}
+
+export interface StartParams {
+  guildId: string;
+  channelId: string;
+  mode: string;
+  cwd: string;
+  ownerId: string;
+  permMode?: PermMode;
+  profile?: string | null;
+}
+
+// Result of a send(): whether the turn ran immediately or was queued behind a
+// turn already in flight, plus its position (1-based) in the queue. The Discord
+// layer uses this to tell the user "queued (#2)" vs "running".
+export interface SendResult {
+  status: 'started' | 'queued';
+  queueDepth: number;
+}
+
+// A live channel: its session, resolved metadata, and its FIFO turn queue.
+interface ActiveChannel {
+  guildId: string;
+  channelId: string;
+  mode: string;
+  cwd: string;
+  ownerId: string;
+  permMode: PermMode;
+  session: ModeSession;
+  // Turns waiting behind the one in flight, in arrival order.
+  queue: TurnInput[];
+  // A turn (running or queued) is being processed; guards against re-entrant
+  // draining so turns run strictly one at a time (fixes A4).
+  running: boolean;
+}
+
+function channelKey(guildId: string, channelId: string): string {
+  return `${guildId}:${channelId}`;
+}
+
 export class SessionOrchestrator {
-  start(_guildId: string, _channelId: string, _mode: string, _cwd: string, _ownerId: string, _permMode: PermMode, _profile: string | null): Promise<ModeSession> {
-    throw new Error('not implemented');
+  private readonly channelRegistry: ChannelRegistry;
+  private readonly modeRegistry: ModeRegistry;
+  private readonly eventBus: EventBus;
+  private readonly configResolver: ConfigResolver;
+  private readonly permissionResolver: PermissionResolver;
+  private readonly auditLog: AuditLog;
+  private readonly logger: Logger;
+  private readonly requestPermission: RequestPermission;
+
+  // Live sessions keyed by "<guildId>:<channelId>". This is the in-memory
+  // counterpart to the persisted ChannelRegistry binding; resumeAll() rebuilds
+  // it on boot (fixes A2).
+  private readonly active = new Map<string, ActiveChannel>();
+
+  constructor(deps: SessionOrchestratorDeps) {
+    this.channelRegistry = deps.channelRegistry;
+    this.modeRegistry = deps.modeRegistry;
+    this.eventBus = deps.eventBus;
+    this.configResolver = deps.configResolver;
+    this.permissionResolver = deps.permissionResolver;
+    this.auditLog = deps.auditLog;
+    this.logger = deps.logger;
+    this.requestPermission = deps.requestPermission ?? denyByDefault;
   }
 
-  enqueueTurn(_guildId: string, _channelId: string, _turn: TurnInput): Promise<void> {
-    throw new Error('not implemented');
+  // §9 step 1. Resolve effective config + permission, start a fresh mode
+  // session, persist the binding, and track it live. Returns the ModeSession.
+  async start(params: StartParams): Promise<ModeSession> {
+    const { guildId, channelId, mode, cwd, ownerId } = params;
+    const perm = this.permissionResolver.resolve(guildId, channelId, {
+      ...(params.permMode !== undefined ? { permMode: params.permMode } : {}),
+      ...(params.profile !== undefined ? { profile: params.profile } : {}),
+    });
+
+    const agentMode = this.modeRegistry.get(mode);
+    const ctx = this.buildContext({ guildId, channelId, cwd, ownerId, mode, permMode: perm.permMode });
+    const session = await agentMode.start(ctx);
+
+    // Persist the binding (source of truth for resume-on-boot) then track live.
+    this.channelRegistry.set({
+      guildId,
+      channelId,
+      mode: mode as 'claude' | 'codex',
+      sessionId: session.sessionId,
+      cwd,
+      ownerId,
+      permMode: perm.permMode,
+      profile: perm.profile,
+    });
+    this.active.set(channelKey(guildId, channelId), {
+      guildId,
+      channelId,
+      mode,
+      cwd,
+      ownerId,
+      permMode: perm.permMode,
+      session,
+      queue: [],
+      running: false,
+    });
+
+    this.auditLog.record({
+      actorId: ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'start',
+      mode,
+      permMode: perm.permMode,
+      cwd,
+      status: 'ok',
+    });
+    this.logger.info('session started', { guildId, channelId, mode });
+    return session;
   }
 
-  resumeAll(): Promise<void> {
-    throw new Error('not implemented');
+  // §9 step 2. Enqueue a user turn. If a turn is already in flight for this
+  // channel it is queued (never dropped, fixing A4) and processed strictly in
+  // arrival order once the current turn completes. Files are realpath-confined
+  // to the session workspace before the turn reaches the mode (§7.5); a turn
+  // whose file escapes the workspace is rejected outright (an error event is
+  // emitted and the turn is not sent).
+  async send(guildId: string, channelId: string, turn: TurnInput): Promise<SendResult> {
+    const key = channelKey(guildId, channelId);
+    const channel = this.active.get(key);
+    if (!channel) {
+      throw new Error(`No active session for channel ${key}. Run /agent start first.`);
+    }
+
+    const violation = this.findConfinementViolation(channel.cwd, turn);
+    if (violation) {
+      this.emit(guildId, channelId, {
+        kind: 'error',
+        message: `File path escapes the workspace and was rejected: ${violation}`,
+        retryable: false,
+      });
+      this.auditLog.record({
+        actorId: channel.ownerId,
+        roleTier: 'execute',
+        guildId,
+        channelId,
+        action: 'turn',
+        mode: channel.mode,
+        permMode: channel.permMode,
+        cwd: channel.cwd,
+        outcome: `path confinement rejected: ${violation}`,
+        status: 'denied',
+      });
+      throw new Error(`File path escapes the workspace: ${violation}`);
+    }
+
+    channel.queue.push(turn);
+    const wasIdle = !channel.running;
+    // If a turn is in flight we simply leave ours queued; the running drain
+    // loop will pick it up in order. Otherwise we kick off the drain.
+    if (wasIdle) {
+      // Fire-and-forget: the drain loop owns error handling and audit per turn.
+      void this.drain(key);
+    }
+    return {
+      status: wasIdle ? 'started' : 'queued',
+      queueDepth: channel.queue.length,
+    };
   }
 
-  stop(_guildId: string, _channelId: string): Promise<void> {
-    throw new Error('not implemented');
+  // §9 step 5 / §7.5 kill switch. Abort the running session, drain (clear) the
+  // channel's queue, archive the binding, and drop the live tracking. Audited.
+  async stop(guildId: string, channelId: string): Promise<void> {
+    const key = channelKey(guildId, channelId);
+    const channel = this.active.get(key);
+    if (!channel) return;
+
+    channel.queue.length = 0;
+    try {
+      await channel.session.stop();
+    } catch (err) {
+      this.logger.error('session stop failed', { guildId, channelId, err: String(err) });
+    }
+    this.active.delete(key);
+    this.channelRegistry.markArchived(guildId, channelId);
+
+    this.auditLog.record({
+      actorId: channel.ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'stop',
+      mode: channel.mode,
+      permMode: channel.permMode,
+      cwd: channel.cwd,
+      status: 'ok',
+    });
+    this.logger.info('session stopped', { guildId, channelId });
   }
 
-  stopAll(): Promise<void> {
-    throw new Error('not implemented');
+  // §7.5 admin kill switch. Stop every active session across all guilds. The
+  // tier check happens at the router; the orchestrator just executes. Each stop
+  // is isolated so one failure does not abort the rest.
+  async stopAll(): Promise<void> {
+    const keys = [...this.active.keys()];
+    for (const key of keys) {
+      const channel = this.active.get(key);
+      if (!channel) continue;
+      await this.stop(channel.guildId, channel.channelId);
+    }
+    this.logger.info('all sessions stopped', { count: keys.length });
   }
+
+  // §9 step 4 (fixes A2). Boot recovery: re-bind every non-archived channel from
+  // persisted state via mode.resume(ctx, sessionId). A mode/session that fails
+  // to resume is logged and skipped so one bad binding never crashes boot.
+  async resumeAll(): Promise<void> {
+    const bindings = this.channelRegistry.list().filter((b) => !b.archived);
+    let resumed = 0;
+    for (const binding of bindings) {
+      const { guildId, channelId, mode, cwd, ownerId, permMode, sessionId } = binding;
+      try {
+        const agentMode = this.modeRegistry.get(mode);
+        const ctx = this.buildContext({ guildId, channelId, cwd, ownerId, mode, permMode });
+        // A binding with no backend sessionId cannot be resumed against a
+        // specific id; skip it (the channel starts fresh on its next turn).
+        if (sessionId === null) {
+          this.logger.warn('skipping resume: no sessionId', { guildId, channelId, mode });
+          continue;
+        }
+        const session = await agentMode.resume(ctx, sessionId);
+        this.active.set(channelKey(guildId, channelId), {
+          guildId,
+          channelId,
+          mode,
+          cwd,
+          ownerId,
+          permMode,
+          session,
+          queue: [],
+          running: false,
+        });
+        this.auditLog.record({
+          actorId: ownerId,
+          roleTier: 'execute',
+          guildId,
+          channelId,
+          action: 'resume',
+          mode,
+          permMode,
+          cwd,
+          status: 'ok',
+        });
+        resumed++;
+      } catch (err) {
+        // Tolerate a mode/session that fails to resume: log + skip, never crash.
+        this.logger.error('resume failed; skipping channel', {
+          guildId,
+          channelId,
+          mode,
+          err: String(err),
+        });
+      }
+    }
+    this.logger.info('resume-on-boot complete', { resumed, total: bindings.length });
+  }
+
+  // Drain a channel's queue one turn at a time, strictly in FIFO order. Marked
+  // running for the whole drain so a concurrent send() cannot start a second
+  // drain (single-threaded JS + this flag = no interleaving). Each turn is
+  // audited; a send() failure is surfaced as an error event but does not stop
+  // the queue (the next turn still runs).
+  private async drain(key: string): Promise<void> {
+    const channel = this.active.get(key);
+    if (!channel || channel.running) return;
+    channel.running = true;
+    try {
+      while (channel.queue.length > 0) {
+        const turn = channel.queue.shift() as TurnInput;
+        try {
+          await channel.session.send(turn);
+          this.auditLog.record({
+            actorId: channel.ownerId,
+            roleTier: 'execute',
+            guildId: channel.guildId,
+            channelId: channel.channelId,
+            action: 'turn',
+            mode: channel.mode,
+            permMode: channel.permMode,
+            cwd: channel.cwd,
+            status: 'ok',
+          });
+        } catch (err) {
+          this.logger.error('turn failed', {
+            guildId: channel.guildId,
+            channelId: channel.channelId,
+            err: String(err),
+          });
+          this.emit(channel.guildId, channel.channelId, {
+            kind: 'error',
+            message: `Turn failed: ${String(err)}`,
+            retryable: true,
+          });
+          this.auditLog.record({
+            actorId: channel.ownerId,
+            roleTier: 'execute',
+            guildId: channel.guildId,
+            channelId: channel.channelId,
+            action: 'turn',
+            mode: channel.mode,
+            permMode: channel.permMode,
+            cwd: channel.cwd,
+            outcome: String(err),
+            status: 'error',
+          });
+        }
+      }
+    } finally {
+      channel.running = false;
+    }
+  }
+
+  // Build the ModeContext handed to a mode's start()/resume(): emit → EventBus,
+  // requestPermission → the injectable resolver, config → the resolved layered
+  // view, audit → AuditLog. guildId/channelId/cwd/ownerId/permMode are carried.
+  private buildContext(args: {
+    guildId: string;
+    channelId: string;
+    cwd: string;
+    ownerId: string;
+    mode: string;
+    permMode: PermMode;
+  }): ModeContext {
+    const { guildId, channelId, cwd, ownerId, permMode } = args;
+    const modeConfig = this.configResolver.resolveModeConfig(guildId, channelId);
+    return {
+      guildId,
+      channelId,
+      cwd,
+      ownerId,
+      ...(modeConfig.model !== undefined ? { model: modeConfig.model } : {}),
+      permMode,
+      emit: (ev: AgentEvent) => this.emit(guildId, channelId, ev),
+      requestPermission: (req) => this.requestPermission({ guildId, channelId, ownerId }, req),
+      config: modeConfig,
+      logger: this.logger,
+      audit: (entry: AuditEntry) => {
+        this.auditLog.record(entry);
+      },
+    };
+  }
+
+  private emit(guildId: string, channelId: string, ev: AgentEvent): void {
+    this.eventBus.emit(guildId, channelId, ev);
+  }
+
+  // Return the first TurnInput file whose realpath escapes the workspace root,
+  // or null if every file is confined. Resolves symlinks by realpath-ing the
+  // deepest existing ancestor of each path (a file need not exist yet), so a
+  // symlink pointing outside the workspace is caught, not just a literal `..`.
+  private findConfinementViolation(cwd: string, turn: TurnInput): string | null {
+    if (!turn.files || turn.files.length === 0) return null;
+    const root = realpathOrResolve(cwd);
+    for (const file of turn.files) {
+      const resolved = realpathOrResolve(path.resolve(cwd, file.path));
+      if (!isWithin(root, resolved)) return file.path;
+    }
+    return null;
+  }
+}
+
+// Realpath a path, falling back to the realpath of its deepest existing ancestor
+// joined with the non-existent tail — so confinement holds for paths that do not
+// exist yet while still resolving symlinks in the part that does.
+function realpathOrResolve(target: string): string {
+  const abs = path.resolve(target);
+  let existing = abs;
+  const tail: string[] = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break; // reached the filesystem root
+    tail.unshift(path.basename(existing));
+    existing = parent;
+  }
+  try {
+    const realExisting = fs.realpathSync(existing);
+    return tail.length > 0 ? path.join(realExisting, ...tail) : realExisting;
+  } catch {
+    return abs;
+  }
+}
+
+// True when `child` is the same as, or nested under, `root`. Uses path.relative
+// so it is not fooled by shared string prefixes (e.g. /ws vs /ws-evil).
+function isWithin(root: string, child: string): boolean {
+  const rel = path.relative(root, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
