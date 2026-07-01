@@ -1,0 +1,5 @@
+node_modules/
+dist/
+~/.discord-agent-bridge/
+*.tsbuildinfo
+.env
