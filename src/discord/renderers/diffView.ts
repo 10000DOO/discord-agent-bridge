@@ -1,7 +1,83 @@
 import type { AgentEvent } from '../../core/contracts.js';
+import type { MessageChannel } from '../ports.js';
+import { chunkMessage } from '../format.js';
 
-// TODO(Phase 1): file-change diff view — auto diff thread on file edits.
-// Cap: fileDiff (Claude only) (§6, §5a).
-export function renderDiffView(_ev: Extract<AgentEvent, { kind: 'tool_result' }>): void {
-  throw new Error('not implemented');
+// File-change diff view (§6, §5a — Claude, cap fileDiff): when a file-editing tool
+// (Edit/Write/NotebookEdit) completes successfully, post a diff of the change. The
+// diff must be built from the tool INPUT (old/new strings), which lives on the
+// `tool_use` event, not the `tool_result` — so this handler tracks edit inputs by
+// id and renders on the matching successful result (mirrors A4D's changeTracker →
+// diffViewer flow). No discord.js: the sink is the MessageChannel port.
+
+const FILE_EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+
+interface EditInput {
+  filePath: string;
+  oldString?: string;
+  newString?: string;
+  content?: string;
+}
+
+export interface DiffViewDeps {
+  channel: MessageChannel;
+}
+
+export class DiffViewHandler {
+  private readonly channel: MessageChannel;
+  // toolUseId → the edit input, kept until the matching result arrives.
+  private readonly edits = new Map<string, EditInput>();
+
+  constructor(deps: DiffViewDeps) {
+    this.channel = deps.channel;
+  }
+
+  // Record a file-edit tool_use so its result can be diffed. Non-edit tools are
+  // ignored (nothing tracked → nothing rendered).
+  noteToolUse(ev: Extract<AgentEvent, { kind: 'tool_use' }>): void {
+    if (!FILE_EDIT_TOOLS.has(ev.name)) return;
+    const parsed = parseEditInput(ev.input);
+    if (parsed) this.edits.set(ev.id, parsed);
+  }
+
+  // On a successful result for a tracked edit, post its diff. A failed result or an
+  // untracked id renders nothing.
+  async handleResult(ev: Extract<AgentEvent, { kind: 'tool_result' }>): Promise<void> {
+    const edit = this.edits.get(ev.id);
+    if (!edit) return;
+    this.edits.delete(ev.id);
+    if (!ev.ok) return;
+    const diff = renderDiff(edit);
+    if (!diff) return;
+    for (const chunk of chunkMessage('```diff\n' + diff + '\n```')) {
+      await this.channel.send({ content: chunk });
+    }
+  }
+}
+
+// Build a unified-ish diff body (no headers) from an edit input. Write/create with
+// only `content` renders all lines as additions; an Edit renders old→new.
+function renderDiff(edit: EditInput): string | null {
+  const header = `--- ${edit.filePath}`;
+  if (edit.oldString !== undefined || edit.newString !== undefined) {
+    const removed = (edit.oldString ?? '').split('\n').map((l) => `- ${l}`);
+    const added = (edit.newString ?? '').split('\n').map((l) => `+ ${l}`);
+    return [header, ...removed, ...added].join('\n');
+  }
+  if (edit.content !== undefined) {
+    const added = edit.content.split('\n').map((l) => `+ ${l}`);
+    return [header, ...added].join('\n');
+  }
+  return null;
+}
+
+function parseEditInput(input: unknown): EditInput | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
+  const obj = input as Record<string, unknown>;
+  const filePath = typeof obj.file_path === 'string' ? obj.file_path : undefined;
+  if (!filePath) return null;
+  const out: EditInput = { filePath };
+  if (typeof obj.old_string === 'string') out.oldString = obj.old_string;
+  if (typeof obj.new_string === 'string') out.newString = obj.new_string;
+  if (typeof obj.content === 'string') out.content = obj.content;
+  return out;
 }
