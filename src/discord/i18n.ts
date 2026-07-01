@@ -91,6 +91,20 @@ const ko: Catalog = {
   'file.notFile': '파일이 아닙니다.',
   // Transcript feed (Codex)
   'transcript.working': '작업 중…',
+  // Router notices (7b)
+  'auth.denied': '권한이 없습니다: {reason}',
+  'router.noSession': '이 채널에는 활성 세션이 없어요. 먼저 `/agent start` 를 실행하세요.',
+  'router.turn.queued': '대기열에 추가했어요 (#{depth}).',
+  'cmd.start.launched': '세션 시작 마법사를 열었어요.',
+  'cmd.resume.none': '재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.',
+  'cmd.resume.rebound': '이 채널을 다시 연결했어요.',
+  'cmd.close.done': '세션을 종료하고 보관했어요.',
+  'cmd.stop.done': '세션을 중지했어요.',
+  'cmd.stopAll.done': '모든 세션을 중지했어요 ({count}개).',
+  'cmd.mode.switched': '백엔드를 {backend} 로 바꿨어요.',
+  'cmd.mode.freshContext': '⚠️ {backend} 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다.',
+  'cmd.perm.switched': '권한 설정을 바꿨어요: {perm}',
+  'cmd.error': '명령을 처리하지 못했어요: {error}',
 };
 
 const en: Catalog = {
