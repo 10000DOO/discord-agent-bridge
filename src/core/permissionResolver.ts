@@ -1,21 +1,83 @@
 import type { PermMode } from './contracts.js';
 import type { PolicyTier } from './commandPolicy.js';
+import type { ConfigStore } from './config.js';
+import type { ConfigResolver } from './configResolver.js';
 
-// TODO(Phase 1): permission mode + named profiles; layered global→server→project (§7A, §8).
-export interface PermissionProfile {
-  permissionMode: PermMode;
-  allowedTools: string[];
-  policyTier: PolicyTier | 'normal' | 'relaxed';
-}
+// Resolve the effective permission MODE + profile for a channel by the same
+// global→server→project layering as ConfigResolver (§7A/§8), with a per-session
+// override on top. See docs/DESIGN.md §7A.
+//
+// Order of precedence (later wins):
+//   1. layered defaults (global → server → project binding) via ConfigResolver
+//   2. if a named profile resolves, its bundled permissionMode/allowedTools/tier
+//   3. an explicit per-session override (mode and/or profile set live via /mode)
+
+// The tier a profile maps onto. §8.1 profiles use 'read-only' | 'normal' |
+// 'relaxed'; a profile may also name a raw PolicyTier.
+export type ProfilePolicyTier = PolicyTier | 'read-only' | 'normal' | 'relaxed';
 
 export interface ResolvedPermission {
   permMode: PermMode;
   profile: string | null;
   allowedTools: string[];
+  // Present only when the resolved profile declares a policy tier.
+  policyTier?: ProfilePolicyTier;
+}
+
+// Live, per-session overrides applied on top of the layered defaults. Any field
+// left undefined falls through to the layered value.
+export interface SessionOverride {
+  permMode?: PermMode;
+  profile?: string | null;
 }
 
 export class PermissionResolver {
-  resolve(_guildId: string, _channelId: string): ResolvedPermission {
-    throw new Error('not implemented');
+  constructor(
+    private readonly configStore: ConfigStore,
+    private readonly configResolver: ConfigResolver,
+  ) {}
+
+  resolve(
+    guildId: string,
+    channelId: string,
+    override?: SessionOverride,
+  ): ResolvedPermission {
+    const config = this.configStore.load();
+    const layered = this.configResolver.resolve(guildId, channelId);
+
+    // Profile: session override wins, else layered value. `null` explicitly
+    // clears the profile; `undefined` falls through.
+    const profileName =
+      override && 'profile' in override ? (override.profile ?? null) : layered.permissionProfile;
+
+    // Base permission mode from the layered defaults; the global auto-allow set
+    // is the default tool allowlist when no profile narrows it.
+    let permMode: PermMode = layered.permissionMode;
+    let allowedTools: string[] = [...config.autoAllowClaudeTools];
+    let policyTier: ProfilePolicyTier | undefined;
+
+    // A named profile bundles mode + tools + tier (§7A). Applied over the base.
+    if (profileName) {
+      const profile = config.profiles[profileName];
+      if (!profile) {
+        throw new Error(`Unknown permission profile '${profileName}'.`);
+      }
+      permMode = profile.permissionMode;
+      allowedTools = [...profile.allowedTools];
+      policyTier = profile.policyTier as ProfilePolicyTier;
+    }
+
+    // A directly-set per-session permission mode wins over everything, including
+    // a profile's bundled mode (the operator explicitly overrode it via /mode).
+    if (override?.permMode !== undefined) {
+      permMode = override.permMode;
+    }
+
+    return {
+      permMode,
+      profile: profileName,
+      allowedTools,
+      ...(policyTier ? { policyTier } : {}),
+    };
   }
 }
