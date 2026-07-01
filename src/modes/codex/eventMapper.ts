@@ -126,17 +126,17 @@ function mapItemStarted(event: Record<string, unknown>): MappedLine {
 function progressForItem(itemType: string, item: Record<string, unknown>): AgentEvent | null {
   switch (itemType) {
     case 'command_execution': {
-      const detail = firstString(item.command);
+      const detail = optString(item.command);
       return progress(PROGRESS_LABELS.commandExecution, detail);
     }
     case 'file_change':
       return progress(PROGRESS_LABELS.fileChange, fileChangeDetail(item));
     case 'web_search': {
-      const detail = firstString(item.query);
+      const detail = optString(item.query);
       return progress(PROGRESS_LABELS.webSearch, detail);
     }
     case 'mcp_tool_call': {
-      const detail = firstString(item.tool) ?? firstString(item.server);
+      const detail = optString(item.tool) ?? optString(item.server);
       return progress(PROGRESS_LABELS.mcpToolCall, detail);
     }
     case 'image':
@@ -156,7 +156,7 @@ function mapItemCompleted(event: Record<string, unknown>, idFor: (item: Record<s
 
   switch (itemType) {
     case 'agent_message': {
-      const text = firstString(item.text);
+      const text = optString(item.text);
       return text !== undefined ? { events: [{ kind: 'text', text, delta: false }] } : EMPTY;
     }
 
@@ -166,8 +166,8 @@ function mapItemCompleted(event: Record<string, unknown>, idFor: (item: Record<s
 
     case 'command_execution': {
       const id = idFor(item);
-      const command = firstString(item.command) ?? '';
-      const output = firstString(item.aggregated_output) ?? '';
+      const command = optString(item.command) ?? '';
+      const output = optString(item.aggregated_output) ?? '';
       const exitCode = typeof item.exit_code === 'number' ? item.exit_code : null;
       return {
         events: [
@@ -185,10 +185,10 @@ function mapItemCompleted(event: Record<string, unknown>, idFor: (item: Record<s
 
     case 'mcp_tool_call': {
       const id = idFor(item);
-      const name = firstString(item.tool) ?? firstString(item.name) ?? 'mcp_tool_call';
+      const name = optString(item.tool) ?? optString(item.name) ?? 'mcp_tool_call';
       const input = item.arguments ?? item.input ?? {};
       const events: AgentEvent[] = [{ kind: 'tool_use', id, name, input }];
-      const result = firstString(item.result) ?? firstString(item.output);
+      const result = optString(item.result) ?? optString(item.output);
       if (result !== undefined) {
         const ok = item.status !== 'failed' && item.error === undefined;
         events.push({ kind: 'tool_result', id, ok, content: result });
@@ -198,12 +198,12 @@ function mapItemCompleted(event: Record<string, unknown>, idFor: (item: Record<s
 
     case 'web_search': {
       const id = idFor(item);
-      const query = firstString(item.query);
+      const query = optString(item.query);
       return { events: [{ kind: 'tool_use', id, name: 'web_search', input: query !== undefined ? { query } : {} }] };
     }
 
     case 'error': {
-      const message = firstString(item.message) ?? 'Codex reported an error.';
+      const message = optString(item.message) ?? 'Codex reported an error.';
       return { events: [{ kind: 'error', message, retryable: false }] };
     }
 
@@ -230,7 +230,7 @@ function mapTurnCompleted(event: Record<string, unknown>): MappedLine {
 // `turn.failed` / `thread.failed` → a non-retryable error event.
 function mapFailure(event: Record<string, unknown>): MappedLine {
   const error = asRecord(event.error);
-  const message = (error && firstString(error.message)) ?? firstString(event.message) ?? 'Codex turn failed.';
+  const message = (error && optString(error.message)) ?? optString(event.message) ?? 'Codex turn failed.';
   return { events: [{ kind: 'error', message, retryable: false }] };
 }
 
@@ -244,11 +244,11 @@ function fallbackAgentMessage(event: Record<string, unknown>): string | null {
 
   if (event.type === 'event_msg') {
     if (payloadType === 'agent_message') {
-      const text = firstString(payload.message);
+      const text = optString(payload.message);
       if (text !== undefined && text.trim().length > 0) return text.trim();
     }
     if (payloadType === 'task_complete') {
-      const text = firstString(payload.last_agent_message);
+      const text = optString(payload.last_agent_message);
       if (text !== undefined && text.trim().length > 0) return text.trim();
     }
     return null;
@@ -285,7 +285,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 // A non-empty trimmed string, or undefined. Used to guard optional string fields.
-function firstString(value: unknown): string | undefined {
+function optString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 

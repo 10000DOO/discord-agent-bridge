@@ -1,9 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import * as os from 'node:os';
 import type { AgentEvent, Logger } from '../../core/contracts.js';
 import { mapCodexLine } from './eventMapper.js';
 import { runCodexTurn, buildCodexArgs, permModeArgs, type SpawnFn, type SpawnedProcess } from './runner.js';
+
+// Is a real `codex` binary on PATH? The parse smoke test is skipped when not, so
+// CI without codex still passes. `codex --version` exits 0 only when the binary
+// resolves; ENOENT (not on PATH) surfaces as probe.error.
+function codexOnPath(): boolean {
+  const probe = spawnSync('codex', ['--version'], { stdio: 'ignore', timeout: 10_000 });
+  return probe.error === undefined && probe.status === 0;
+}
 
 // ---- Test doubles ------------------------------------------------------------
 
@@ -44,13 +53,14 @@ function fakeSpawn(opts: {
   exitCode?: number;
   stall?: boolean;
   spawnError?: Error;
-}): { spawn: SpawnFn; captured: { command?: string; args?: readonly string[]; env?: NodeJS.ProcessEnv }; child: FakeChild } {
+}): { spawn: SpawnFn; captured: { command?: string; args?: readonly string[]; env?: NodeJS.ProcessEnv; stdio?: import('node:child_process').StdioOptions }; child: FakeChild } {
   const child = new FakeChild();
-  const captured: { command?: string; args?: readonly string[]; env?: NodeJS.ProcessEnv } = {};
+  const captured: { command?: string; args?: readonly string[]; env?: NodeJS.ProcessEnv; stdio?: import('node:child_process').StdioOptions } = {};
   const spawn: SpawnFn = (command, args, options) => {
     captured.command = command;
     captured.args = args;
     captured.env = options.env;
+    captured.stdio = options.stdio;
     setImmediate(() => {
       if (opts.spawnError) {
         child.emit('error', opts.spawnError);
@@ -70,7 +80,7 @@ function fakeSpawn(opts: {
 // file_change + mcp_tool_call, an unknown-type line, and turn.completed w/ usage.
 function scriptedStdout(): string {
   const lines = [
-    'warning: `--full-auto` is deprecated; use `-a`/`-s` instead', // non-JSON deprecation
+    'warning: `--full-auto` is deprecated; set approval and sandbox explicitly instead', // non-JSON deprecation
     JSON.stringify({ type: 'thread.started', thread_id: 'thread-xyz' }),
     JSON.stringify({ type: 'turn.started' }),
     JSON.stringify({ type: 'item.started', item: { type: 'command_execution', command: 'ls -la' } }),
@@ -231,22 +241,30 @@ describe('mapCodexLine', () => {
 // ---- permModeArgs / buildCodexArgs ------------------------------------------
 
 describe('permModeArgs (PermMode → codex flags, fresh turn)', () => {
-  it('maps default to on-request + workspace-write', () => {
-    expect(permModeArgs('default')).toEqual(['-a', 'on-request', '-s', 'workspace-write']);
+  // The approval policy is set via `-c approval_policy="…"` — `-a` is NOT a valid
+  // `codex exec` flag. `-s`/--sandbox IS valid on exec.
+  it('maps default to on-request approval + workspace-write sandbox', () => {
+    expect(permModeArgs('default')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'workspace-write']);
   });
-  it('maps acceptEdits to never + workspace-write', () => {
-    expect(permModeArgs('acceptEdits')).toEqual(['-a', 'never', '-s', 'workspace-write']);
+  it('maps acceptEdits to never approval + workspace-write sandbox', () => {
+    expect(permModeArgs('acceptEdits')).toEqual(['-c', 'approval_policy="never"', '-s', 'workspace-write']);
   });
-  it('maps bypassPermissions to the single bypass flag (no -a/-s)', () => {
+  it('maps bypassPermissions to the single bypass flag (no -a/-s/-c)', () => {
     expect(permModeArgs('bypassPermissions')).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
   });
-  it('maps plan to on-request + read-only', () => {
-    expect(permModeArgs('plan')).toEqual(['-a', 'on-request', '-s', 'read-only']);
+  it('maps plan to on-request approval + read-only sandbox', () => {
+    expect(permModeArgs('plan')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'read-only']);
+  });
+  it('never emits the invalid `-a`/--ask-for-approval flag for any mode', () => {
+    for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const) {
+      expect(permModeArgs(mode)).not.toContain('-a');
+      expect(permModeArgs(mode)).not.toContain('--ask-for-approval');
+    }
   });
 });
 
 describe('buildCodexArgs', () => {
-  it('builds a fresh-turn argv with permission flags, model, --cd, and -o', () => {
+  it('builds a fresh-turn argv with approval-via-c, sandbox, model, --cd, and a -- before the prompt', () => {
     const args = buildCodexArgs({
       prompt: 'do it',
       cwd: '/tmp/ws',
@@ -257,8 +275,8 @@ describe('buildCodexArgs', () => {
     expect(args).toEqual([
       'exec',
       '--json',
-      '-a',
-      'on-request',
+      '-c',
+      'approval_policy="on-request"',
       '-s',
       'workspace-write',
       '-m',
@@ -268,26 +286,53 @@ describe('buildCodexArgs', () => {
       '/tmp/ws',
       '-o',
       '/tmp/out.txt',
+      '--',
       'do it',
     ]);
+    // The prompt sits immediately after the `--` separator.
+    expect(args[args.length - 2]).toBe('--');
+    expect(args[args.length - 1]).toBe('do it');
+    // `-a`/--ask-for-approval must never appear (invalid on exec).
+    expect(args).not.toContain('-a');
+    expect(args).not.toContain('--ask-for-approval');
   });
 
-  it('each fresh PermMode produces the correct -a/-s (or bypass) argv', () => {
+  it('each fresh PermMode produces the correct approval/sandbox (or bypass) argv', () => {
     const base = { prompt: 'p', cwd: '/ws', outputPath: '/o.txt' };
-    expect(buildCodexArgs({ ...base, permMode: 'default' })).toContain('on-request');
+    expect(buildCodexArgs({ ...base, permMode: 'default' })).toEqual(
+      expect.arrayContaining(['-c', 'approval_policy="on-request"', '-s', 'workspace-write']),
+    );
     expect(buildCodexArgs({ ...base, permMode: 'acceptEdits' })).toEqual(
-      expect.arrayContaining(['-a', 'never', '-s', 'workspace-write']),
+      expect.arrayContaining(['-c', 'approval_policy="never"', '-s', 'workspace-write']),
     );
     expect(buildCodexArgs({ ...base, permMode: 'plan' })).toEqual(
-      expect.arrayContaining(['-a', 'on-request', '-s', 'read-only']),
+      expect.arrayContaining(['-c', 'approval_policy="on-request"', '-s', 'read-only']),
     );
     const bypass = buildCodexArgs({ ...base, permMode: 'bypassPermissions' });
     expect(bypass).toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(bypass).not.toContain('-a');
     expect(bypass).not.toContain('-s');
+    expect(bypass).not.toContain('-c');
   });
 
-  it('builds a resume argv that omits -a/-s/--cd and passes the session id positionally', () => {
+  it('places a prompt beginning with `-` after the `--` separator, not as a flag (fresh)', () => {
+    const args = buildCodexArgs({ prompt: '--help', cwd: '/ws', permMode: 'default', outputPath: '/o.txt' });
+    const sep = args.indexOf('--');
+    expect(sep).toBeGreaterThan(-1);
+    expect(args.slice(sep + 1)).toEqual(['--help']);
+    // The dangerous-looking prompt is strictly the last positional.
+    expect(args[args.length - 1]).toBe('--help');
+  });
+
+  it('places a prompt beginning with `-` after the `--` separator, not as a flag (resume)', () => {
+    const args = buildCodexArgs({ prompt: '--help', cwd: '/ws', permMode: 'default', resumeId: 't1', outputPath: '/o.txt' });
+    const sep = args.indexOf('--');
+    expect(sep).toBeGreaterThan(-1);
+    expect(args.slice(sep + 1)).toEqual(['--help']);
+    expect(args[args.length - 1]).toBe('--help');
+  });
+
+  it('builds a resume argv that omits -a/-s/--cd, keeps --skip-git-repo-check, and passes the session id positionally', () => {
     const args = buildCodexArgs({
       prompt: 'continue',
       cwd: '/tmp/ws',
@@ -296,7 +341,20 @@ describe('buildCodexArgs', () => {
       resumeId: 'thread-xyz',
       outputPath: '/tmp/out.txt',
     });
-    expect(args).toEqual(['exec', 'resume', '--json', 'thread-xyz', '-m', 'gpt-5-codex', '-o', '/tmp/out.txt', 'continue']);
+    expect(args).toEqual([
+      'exec',
+      'resume',
+      '--json',
+      '--skip-git-repo-check',
+      'thread-xyz',
+      '-m',
+      'gpt-5-codex',
+      '-o',
+      '/tmp/out.txt',
+      '--',
+      'continue',
+    ]);
+    expect(args).toContain('--skip-git-repo-check');
     expect(args).not.toContain('-a');
     expect(args).not.toContain('-s');
     expect(args).not.toContain('--cd');
@@ -378,7 +436,12 @@ describe('runCodexTurn', () => {
       tmpDir,
     });
     expect(captured.env?.CODEX_HOME).toBe('/custom/.codex');
-    expect(captured.args).toEqual(expect.arrayContaining(['-m', 'gpt-5-codex', '-a', 'on-request', '-s', 'read-only']));
+    expect(captured.args).toEqual(
+      expect.arrayContaining(['-m', 'gpt-5-codex', '-c', 'approval_policy="on-request"', '-s', 'read-only']),
+    );
+    expect(captured.args).not.toContain('-a');
+    // Child stdin is ignored so `codex exec` doesn't hang waiting on stdin EOF.
+    expect(captured.stdio).toEqual(['ignore', 'pipe', 'pipe']);
   });
 
   it('reports status:error and emits an error event on a non-zero exit', async () => {
@@ -517,8 +580,27 @@ describe('runCodexTurn', () => {
       tmpDir,
     });
     expect(result.finalMessage).toBe('resumed final');
-    expect(captured.args?.slice(0, 4)).toEqual(['exec', 'resume', '--json', 'thread-xyz']);
+    expect(captured.args?.slice(0, 5)).toEqual(['exec', 'resume', '--json', '--skip-git-repo-check', 'thread-xyz']);
+    expect(captured.args).toContain('--skip-git-repo-check');
     expect(captured.args).not.toContain('-a');
     expect(captured.args).not.toContain('--cd');
+    // The prompt is guarded behind a `--` separator here too.
+    expect(captured.args?.[captured.args.length - 2]).toBe('--');
+    expect(captured.args?.[captured.args.length - 1]).toBe('more');
+    expect(captured.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+  });
+});
+
+// ---- Real-CLI parse smoke (skipped when `codex` is not on PATH) ---------------
+// Catches an invalid `codex exec` flag (a C1-class regression) with no network or
+// API cost: appending `--help` makes the CLI print usage and exit 0 WITHOUT
+// making an API turn. If codex ever rejects our flags again (e.g. re-adding the
+// invalid `-a`), the parse fails before `--help` is honored and this goes red.
+describe.runIf(codexOnPath())('codex exec argv parses against the real CLI', () => {
+  it('accepts the fresh-turn permission/skip/json flags (exit 0 via --help, no API turn)', () => {
+    const args = ['exec', ...permModeArgs('default'), '--skip-git-repo-check', '--json', '--help'];
+    const res = spawnSync('codex', args, { stdio: 'ignore', timeout: 30_000 });
+    expect(res.error).toBeUndefined();
+    expect(res.status).toBe(0);
   });
 });

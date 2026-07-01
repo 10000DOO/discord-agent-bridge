@@ -28,7 +28,7 @@ export interface SpawnedProcess {
 export type SpawnFn = (
   command: string,
   args: readonly string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv },
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: import('node:child_process').StdioOptions },
 ) => SpawnedProcess;
 
 export type ReadFileFn = (filePath: string) => Promise<string>;
@@ -39,7 +39,7 @@ export interface RunCodexTurnOptions {
   cwd: string; // used only for a fresh turn (--cd); ignored on resume
   permMode: PermMode; // fresh-turn approval/sandbox mapping (ignored on resume)
   model?: string;
-  resumeId?: string; // when set, a `codex exec resume` turn (no -a/-s/--cd)
+  resumeId?: string; // when set, a `codex exec resume` turn (no -s/--cd; policy is the thread's)
   timeoutMs: number; // from config limits.codexTimeoutMs
   codexCommand?: string; // defaults to 'codex'
   codexHome?: string; // sets CODEX_HOME for the child
@@ -67,27 +67,31 @@ export interface RunCodexTurnResult {
 }
 
 // PermMode → codex approval/sandbox flags for a FRESH turn (verified against
-// codex CLI 0.142.4; --full-auto is deprecated and intentionally unused).
-// bypassPermissions omits -a/-s and passes the single bypass flag — that mode is
-// gated behind an admin check elsewhere (§7A), not here.
+// codex CLI 0.142.4). `-a`/`--ask-for-approval` is a top-level TUI flag and is
+// NOT accepted by `codex exec` (passing it fails the turn with exit 2), so the
+// approval policy is set via `-c approval_policy="…"`; `-s`/`--sandbox` IS valid
+// on exec. bypassPermissions omits both and passes the single bypass flag — that
+// mode is gated behind an admin check elsewhere (§7A), not here.
 export function permModeArgs(permMode: PermMode): string[] {
   switch (permMode) {
     case 'acceptEdits':
-      return ['-a', 'never', '-s', 'workspace-write'];
+      return ['-c', 'approval_policy="never"', '-s', 'workspace-write'];
     case 'bypassPermissions':
       return ['--dangerously-bypass-approvals-and-sandbox'];
     case 'plan':
-      return ['-a', 'on-request', '-s', 'read-only'];
+      return ['-c', 'approval_policy="on-request"', '-s', 'read-only'];
     case 'default':
     default:
-      return ['-a', 'on-request', '-s', 'workspace-write'];
+      return ['-c', 'approval_policy="on-request"', '-s', 'workspace-write'];
   }
 }
 
 // Build the full argv (excluding the command itself). Fresh and resume differ:
-// resume takes the session id positionally and does NOT accept -a/-s/--cd — the
+// resume takes the session id positionally and does NOT accept -s/--cd — the
 // thread's persisted approval/sandbox policy governs it, so we deliberately omit
-// those flags on resume and rely on the thread's stored policy (§5b).
+// those flags on resume and rely on the thread's stored policy (§5b). Both put a
+// `--` before the prompt so a prompt that begins with `-` can't be parsed as a
+// flag.
 export function buildCodexArgs(opts: {
   prompt: string;
   cwd: string;
@@ -99,7 +103,7 @@ export function buildCodexArgs(opts: {
   const modelArgs = opts.model ? ['-m', opts.model] : [];
 
   if (opts.resumeId) {
-    return ['exec', 'resume', '--json', opts.resumeId, ...modelArgs, '-o', opts.outputPath, opts.prompt];
+    return ['exec', 'resume', '--json', '--skip-git-repo-check', opts.resumeId, ...modelArgs, '-o', opts.outputPath, '--', opts.prompt];
   }
 
   return [
@@ -112,6 +116,7 @@ export function buildCodexArgs(opts: {
     opts.cwd,
     '-o',
     opts.outputPath,
+    '--',
     opts.prompt,
   ];
 }
@@ -148,9 +153,13 @@ export async function runCodexTurn(opts: RunCodexTurnOptions): Promise<RunCodexT
   let aborted = false;
 
   try {
+    // Ignore the child's stdin: the prompt is passed as an argv positional, but
+    // `codex exec` still waits for stdin EOF ("Reading additional input from
+    // stdin…") and would otherwise hang until the timeout.
     const child = spawn(codexCommand, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...(opts.codexHome ? { CODEX_HOME: opts.codexHome } : {}) },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const closeResult = await new Promise<{ code: number | null; spawnError?: Error }>((resolve) => {
