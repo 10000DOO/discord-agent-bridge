@@ -120,6 +120,8 @@ const ko: Catalog = {
   'cmd.mode.unavailable': '`{backend}` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요.',
   'cmd.perm.switched': '권한 설정을 바꿨어요: {perm}',
   'cmd.error': '명령을 처리하지 못했어요: {error}',
+  // Generic ack for an interaction that failed before/while routing (no detail leaked).
+  'cmd.error.generic': '명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.',
   // Startup guidance (boot path): config missing / token missing → point at --setup.
   'boot.noConfig': '설정이 없습니다. 먼저 셋업을 실행하세요:  node dist/cli.js --setup',
   'boot.noToken': '토큰이 설정되지 않았습니다 — --setup을 다시 실행하세요.',

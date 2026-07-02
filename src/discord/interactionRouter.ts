@@ -33,15 +33,29 @@ const ACTION_TIER: Record<string, AuthAction> = {
 
 // ---- Narrow interaction shapes (real discord.js interactions satisfy these) ----
 
+// The shape of a reply/edit/follow-up payload. `content` is optional so an
+// interactive panel (embed + component rows) can be sent without a text body;
+// `embeds`/`components` carry the /config panel UI.
+export interface AckPayload {
+  content?: string;
+  ephemeral?: boolean;
+  embeds?: EmbedSpec[];
+  components?: ComponentRow[];
+}
+
 interface Replier {
-  // `content` is optional so an interactive panel (embed + component rows) can be
-  // replied without a text body; `embeds`/`components` carry the /config panel UI.
-  reply: (options: {
-    content?: string;
-    ephemeral?: boolean;
-    embeds?: EmbedSpec[];
-    components?: ComponentRow[];
-  }) => Promise<unknown>;
+  reply: (options: AckPayload) => Promise<unknown>;
+  // Acknowledge the interaction WITHOUT a visible message yet, buying the full
+  // 15-minute follow-up window (Discord's 3s ack rule). `editReply` then fills in
+  // the deferred reply; `followUp` posts an additional message (e.g. a second row
+  // batch that would overflow the 5-action-row-per-message limit).
+  deferReply: (options?: { ephemeral?: boolean }) => Promise<unknown>;
+  editReply: (options: AckPayload) => Promise<unknown>;
+  followUp: (options: AckPayload) => Promise<unknown>;
+  // True once this interaction has been acknowledged (replied or deferred). The
+  // adapter reads discord.js's own `replied`/`deferred` flags; a fake test double
+  // tracks it so the guaranteed-error-ack path picks reply vs editReply correctly.
+  readonly acknowledged: boolean;
 }
 
 // Common actor/context fields present on every interaction we handle.
@@ -112,6 +126,9 @@ export class InteractionRouter {
   }
 
   async handle(interaction: RouterInteraction): Promise<void> {
+    // Operator visibility (§7.3): log EVERY received interaction to the terminal so
+    // `node dist/cli.js` shows exactly what fired. Redaction is handled by the logger.
+    this.logReceipt(interaction);
     if (interaction.kind === 'component') {
       await this.handleComponent(interaction);
       return;
@@ -119,16 +136,46 @@ export class InteractionRouter {
     await this.handleSlash(interaction);
   }
 
+  // One info line per interaction: type + command/customId + guild + user. This is
+  // the operator's window into what the gateway delivered (see the bug where a slash
+  // command silently timed out — now the terminal shows it fired).
+  private logReceipt(i: RouterInteraction): void {
+    if (i.kind === 'slash') {
+      this.deps.logger.info('interaction received', {
+        type: 'slash',
+        command: i.subcommand ? `${i.commandName} ${i.subcommand}` : i.commandName,
+        guildId: i.guildId,
+        userId: i.user.id,
+      });
+    } else {
+      this.deps.logger.info('interaction received', {
+        type: 'component',
+        customId: i.customId,
+        guildId: i.guildId,
+        userId: i.user.id,
+      });
+    }
+  }
+
   // ---- Slash commands -----------------------------------------------------
 
   private async handleSlash(i: SlashInteraction): Promise<void> {
     const actionKey = i.subcommand ? `${i.commandName}.${i.subcommand}` : i.commandName;
 
+    // Acknowledge IMMEDIATELY, before any slow work (auth, disk reads, panel/wizard
+    // build, session start/stop). Deferring buys the 15-minute follow-up window so we
+    // never miss Discord's 3-second ack deadline — the root cause of "application did
+    // not respond". Every subsequent user-facing message is an editReply/followUp.
+    // The defer is ephemeral (only the actor sees the ack + any notices); a command
+    // that needs a PUBLIC message (e.g. /mode backend's fresh-context warning) posts
+    // it as a non-ephemeral followUp.
+    if (!(await this.ackDefer(i, { ephemeral: true }))) return;
+
     // /config has a bespoke bootstrap gate (Administrator OR admin tier) so it works
     // on first run with an empty allowlist AND later for configured admins — handled
     // outside the tier-per-action table below.
     if (actionKey === 'config') {
-      await this.openConfigPanel(i);
+      await this.guarded(i, () => this.openConfigPanel(i));
       return;
     }
 
@@ -136,7 +183,7 @@ export class InteractionRouter {
 
     if (!this.authorize(i, action)) return;
 
-    try {
+    await this.guarded(i, async () => {
       switch (actionKey) {
         case 'agent.start':
           await this.startWizard(i);
@@ -162,9 +209,44 @@ export class InteractionRouter {
         default:
           break;
       }
+    });
+  }
+
+  // Defer the interaction (the first ack) with a best-effort guard. Returns false if
+  // the defer itself failed (a stale/expired interaction) so the caller bails out
+  // rather than doing work whose result can never be delivered. Logs the failure with
+  // its stack so the operator sees it in the terminal.
+  private async ackDefer(i: RouterInteraction, options?: { ephemeral?: boolean }): Promise<boolean> {
+    try {
+      await i.deferReply(options);
+      return true;
     } catch (err) {
-      this.deps.logger.error('slash command failed', { actionKey, err: String(err) });
-      await safe(i.reply({ content: t('cmd.error', { error: String(err) }), ephemeral: true }));
+      this.logError('interaction defer failed', err);
+      return false;
+    }
+  }
+
+  // Run a handler with a GUARANTEED user-visible ack: any thrown error becomes an
+  // ephemeral error message (editReply when already deferred/replied, else reply), so
+  // Discord never shows "did not respond" — worst case the user sees the error. The
+  // error is logged WITH its stack to the operator terminal (redacted by the logger).
+  private async guarded(i: RouterInteraction, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      this.logError('interaction handler failed', err);
+      const payload: AckPayload = { content: t('cmd.error', { error: String(err) }), ephemeral: true };
+      await safe(i.acknowledged ? i.editReply(payload) : i.reply(payload));
+    }
+  }
+
+  // Log an error to the operator terminal WITH its stack trace (the logger redacts
+  // secrets). A bare `String(err)` drops the stack, so pass the Error through.
+  private logError(message: string, err: unknown): void {
+    if (err instanceof Error) {
+      this.deps.logger.error(message, { error: err.message, stack: err.stack });
+    } else {
+      this.deps.logger.error(message, { error: String(err) });
     }
   }
 
@@ -202,7 +284,7 @@ export class InteractionRouter {
       browser,
     });
     this.wizards.set(channelKey(guildId, i.channelId), wizard);
-    await safe(i.reply({ content: t('cmd.start.launched'), ephemeral: true }));
+    await i.editReply({ content: t('cmd.start.launched') });
   }
 
   // Open the /config role-tier + defaults panel. Bootstrap gate: allowed if the actor
@@ -212,11 +294,11 @@ export class InteractionRouter {
   // cannot advance it (owner-bound, mirroring the wizard).
   private async openConfigPanel(i: SlashInteraction): Promise<void> {
     if (i.guildId === null) {
-      await safe(i.reply({ content: t('auth.denied', { reason: 'DM' }), ephemeral: true }));
+      await i.editReply({ content: t('auth.denied', { reason: 'DM' }) });
       return;
     }
     if (!this.authorizeConfig(i)) {
-      await safe(i.reply({ content: t('cmd.config.denied'), ephemeral: true }));
+      await i.editReply({ content: t('cmd.config.denied') });
       return;
     }
     const guildId = i.guildId;
@@ -245,8 +327,12 @@ export class InteractionRouter {
       permModes,
     });
     this.configPanels.set(channelKey(guildId, i.channelId), panel);
-    const { embed, rows } = panel.render();
-    await safe(i.reply({ content: t('cmd.config.opened'), embeds: [embed], components: rows, ephemeral: true }));
+    // A single Discord message allows at most 5 action rows; the panel has 7 (3 role
+    // tiers + 3 default selects + Save). Deliver the role tiers + Save on the deferred
+    // reply (4 rows) and the defaults on a follow-up (3 rows). Both are ephemeral.
+    const { embed, roleRows, defaultRows } = panel.render();
+    await i.editReply({ content: t('cmd.config.opened'), embeds: [embed], components: roleRows });
+    await i.followUp({ components: defaultRows, ephemeral: true });
   }
 
   // Route a /config panel component (role/string select or Save) to its panel. Gated
@@ -274,6 +360,8 @@ export class InteractionRouter {
     const result = panel.handle(input);
     if (result.kind === 'saved') {
       this.configPanels.delete(channelKey(i.guildId, i.channelId));
+      // Save is a button on the primary (ephemeral) message; a fresh ephemeral reply
+      // carries the confirmation summary without disturbing the still-open panel.
       await safe(i.reply({ content: result.summary, ephemeral: true }));
       return;
     }
@@ -307,19 +395,19 @@ export class InteractionRouter {
     const guildId = i.guildId as string;
     const binding = this.deps.channelRegistry.get(guildId, i.channelId);
     if (!binding || binding.archived) {
-      await safe(i.reply({ content: t('cmd.resume.none'), ephemeral: true }));
+      await i.editReply({ content: t('cmd.resume.none') });
       return;
     }
     // For Claude, listResumable is currently [] — re-bind/inform gracefully.
     await this.deps.wiring.attach(guildId, i.channelId, binding.mode);
-    await safe(i.reply({ content: t('cmd.resume.rebound'), ephemeral: true }));
+    await i.editReply({ content: t('cmd.resume.rebound') });
   }
 
   private async close(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string;
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
-    await safe(i.reply({ content: t('cmd.close.done'), ephemeral: true }));
+    await i.editReply({ content: t('cmd.close.done') });
   }
 
   private async switchBackend(i: SlashInteraction): Promise<void> {
@@ -329,14 +417,14 @@ export class InteractionRouter {
     // Validate the target backend BEFORE any teardown: an unregistered backend (e.g.
     // Codex before Phase 2 registers it) must NOT stop/detach the running session.
     if (!this.deps.modeRegistry.has(backend)) {
-      await safe(i.reply({ content: t('cmd.mode.unavailable', { backend }), ephemeral: true }));
+      await i.editReply({ content: t('cmd.mode.unavailable', { backend }) });
       return;
     }
     // Require an existing binding: there is no cwd/owner to carry over otherwise, and
     // falling back to process.cwd() would start a session in the bot's own directory.
     const binding = this.deps.channelRegistry.get(guildId, i.channelId);
     if (!binding) {
-      await safe(i.reply({ content: t('router.noSession'), ephemeral: true }));
+      await i.editReply({ content: t('router.noSession') });
       return;
     }
     // Switching the backend starts a fresh context (§9 step 3): stop the current
@@ -354,13 +442,11 @@ export class InteractionRouter {
       permMode,
       profile,
     });
-    // Fresh-context warning (§9 step 3) + confirmation.
-    await safe(
-      i.reply({
-        content: `${t('cmd.mode.freshContext', { backend })}\n${t('cmd.mode.switched', { backend })}`,
-        ephemeral: false,
-      }),
-    );
+    // Confirmation closes the ephemeral deferred reply (only the actor sees it). The
+    // fresh-context warning (§9 step 3) is PUBLIC so the whole channel sees the context
+    // reset — posted as a non-ephemeral followUp since the deferred reply is ephemeral.
+    await i.editReply({ content: t('cmd.mode.switched', { backend }) });
+    await safe(i.followUp({ content: t('cmd.mode.freshContext', { backend }), ephemeral: false }));
   }
 
   private async switchPerm(i: SlashInteraction): Promise<void> {
@@ -369,7 +455,7 @@ export class InteractionRouter {
     if (!value) return;
     const binding = this.deps.channelRegistry.get(guildId, i.channelId);
     if (!binding) {
-      await safe(i.reply({ content: t('router.noSession'), ephemeral: true }));
+      await i.editReply({ content: t('router.noSession') });
       return;
     }
     // A value that names a known profile switches the profile; otherwise it is a raw
@@ -391,16 +477,14 @@ export class InteractionRouter {
       profile: resolved.profile,
       ...(binding.projectAuth ? { projectAuth: binding.projectAuth } : {}),
     });
-    await safe(
-      i.reply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }), ephemeral: true }),
-    );
+    await i.editReply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }) });
   }
 
   private async stop(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string;
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
-    await safe(i.reply({ content: t('cmd.stop.done'), ephemeral: true }));
+    await i.editReply({ content: t('cmd.stop.done') });
   }
 
   private async stopAll(i: SlashInteraction): Promise<void> {
@@ -408,53 +492,70 @@ export class InteractionRouter {
     const bindings = this.deps.channelRegistry.list().filter((b) => !b.archived);
     for (const b of bindings) this.deps.wiring.detach(b.guildId, b.channelId);
     await this.deps.orchestrator.stopAll();
-    await safe(i.reply({ content: t('cmd.stopAll.done', { count: bindings.length }), ephemeral: true }));
+    await i.editReply({ content: t('cmd.stopAll.done', { count: bindings.length }) });
   }
 
   // ---- Component interactions (buttons / selects) -------------------------
 
   private async handleComponent(i: ComponentInteraction): Promise<void> {
+    // /config panel components own their own ack flow (deferUpdate on a pending pick,
+    // an ephemeral reply on Save / denial). Fast work only (in-memory panel state plus
+    // one small JSON write on Save), so they ack within the window without a leading
+    // defer. Same bootstrap gate as opening the panel; owner-bound.
+    if (isConfigPanelId(i.customId)) {
+      await this.handleConfigComponent(i);
+      return;
+    }
+
     // Permission buttons: perm:<reqId>:<action>. These are gated to execute tier
     // (the driver decides). Route to the channel's PermissionButtonsHandler, passing
     // the acting user id so the handler enforces that ONLY the prompt's approver
     // (the session owner) can resolve it — a bystander click is ignored (§7.1/§7.5).
     if (parseCustomId(i.customId)) {
       if (!this.authorize(i, 'drive')) return;
-      if (i.guildId) {
-        await this.deps.wiring.resolvePermission(i.guildId, i.channelId, i.customId, i.user.id);
-      }
-      await safe(i.deferUpdate());
-      return;
-    }
-
-    // /config panel components (role/string selects + Save). Same bootstrap gate as
-    // opening the panel (Administrator OR admin tier) and owner-bound like the wizard.
-    if (isConfigPanelId(i.customId)) {
-      await this.handleConfigComponent(i);
+      // Acknowledge FIRST (deferUpdate keeps the existing message), THEN resolve the
+      // permission — resolvePermission touches the session and must never delay the
+      // ack past Discord's 3s window.
+      if (!(await this.ackDeferUpdate(i))) return;
+      await this.guarded(i, async () => {
+        if (i.guildId) {
+          await this.deps.wiring.resolvePermission(i.guildId, i.channelId, i.customId, i.user.id);
+        }
+      });
       return;
     }
 
     // Otherwise it is a wizard component (folder/backend/model/perm/confirm/cancel).
     // The wizard flow is a drive action; only the driver who opened it advances it.
     if (!this.authorize(i, 'drive')) return;
-    if (!i.guildId) {
-      await safe(i.deferUpdate());
-      return;
+    // Acknowledge FIRST: the confirm step calls orchestrator.start (spawns an agent),
+    // which can exceed 3s — deferUpdate now, do the work after.
+    if (!(await this.ackDeferUpdate(i))) return;
+    if (!i.guildId) return;
+    await this.guarded(i, async () => {
+      const wizard = this.wizards.get(channelKey(i.guildId as string, i.channelId));
+      // Enforce wizard ownership: a component from anyone other than the driver who
+      // opened the wizard is acknowledged but ignored, so a bystander's stray select
+      // cannot corrupt another driver's flow (§7.1).
+      if (!wizard || wizard.ownerId !== i.user.id) return;
+      const input: WizardInput = { id: i.customId, ...(i.value !== undefined ? { value: i.value } : {}) };
+      const step = await wizard.handle(input);
+      if (step === 'done' || step === 'cancelled') {
+        this.wizards.delete(channelKey(i.guildId as string, i.channelId));
+      }
+    });
+  }
+
+  // deferUpdate the component interaction (the first ack, keeping its message). Returns
+  // false when the ack itself failed (stale interaction) so the caller bails out.
+  private async ackDeferUpdate(i: ComponentInteraction): Promise<boolean> {
+    try {
+      await i.deferUpdate();
+      return true;
+    } catch (err) {
+      this.logError('interaction deferUpdate failed', err);
+      return false;
     }
-    const wizard = this.wizards.get(channelKey(i.guildId, i.channelId));
-    // Enforce wizard ownership: a component from anyone other than the driver who
-    // opened the wizard is acknowledged but ignored, so a bystander's stray select
-    // cannot corrupt another driver's flow (§7.1).
-    if (!wizard || wizard.ownerId !== i.user.id) {
-      await safe(i.deferUpdate());
-      return;
-    }
-    const input: WizardInput = { id: i.customId, ...(i.value !== undefined ? { value: i.value } : {}) };
-    const step = await wizard.handle(input);
-    if (step === 'done' || step === 'cancelled') {
-      this.wizards.delete(channelKey(i.guildId, i.channelId));
-    }
-    await safe(i.deferUpdate());
   }
 
   // ---- Auth ---------------------------------------------------------------
@@ -470,8 +571,10 @@ export class InteractionRouter {
       context: { ...(i.guildId ? { guildId: i.guildId } : {}), channelId: i.channelId },
     });
     if (!decision.allowed) {
-      // A slash interaction replies; a component interaction also replies ephemerally.
-      void safe(i.reply({ content: t('auth.denied', { reason: decision.reason ?? '' }), ephemeral: true }));
+      // Ephemeral denial. A slash interaction is already deferred (edit its reply); a
+      // component interaction is not yet acked (send a fresh ephemeral reply).
+      const payload: AckPayload = { content: t('auth.denied', { reason: decision.reason ?? '' }), ephemeral: true };
+      void safe(i.acknowledged ? i.editReply(payload) : i.reply(payload));
       return false;
     }
     return true;

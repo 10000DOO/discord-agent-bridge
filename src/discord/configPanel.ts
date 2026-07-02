@@ -192,10 +192,13 @@ export class ConfigPanel {
     });
   }
 
-  // Render the panel as plain component specs (embed + rows). The 7b adapter maps
-  // it onto a discord.js reply; tests assert on it directly. Each role-select is
-  // prefilled with the tier's current effective role IDs.
-  render(): { embed: EmbedSpec; rows: ComponentRow[] } {
+  // Render the panel as plain component specs. The panel has 7 action rows (3 role
+  // tiers + 3 default selects + Save), but a single Discord message allows at most 5,
+  // so the rows are returned in two groups: `roleRows` (3 role tiers + Save = 4 rows)
+  // go on the primary reply, `defaultRows` (3 default selects) on a follow-up. Each
+  // role-select is prefilled with the tier's current effective role IDs. The adapter
+  // maps these onto discord.js; tests assert on them directly.
+  render(): { embed: EmbedSpec; roleRows: ComponentRow[]; defaultRows: ComponentRow[] } {
     const d = this.opts.defaults;
     const adminSelect: RoleSelectSpec = this.roleSelect(IDS.roleAdmin, 'config.role.admin.placeholder', this.pending.adminRoleIds ?? d.adminRoleIds);
     const execSelect: RoleSelectSpec = this.roleSelect(IDS.roleExecute, 'config.role.execute.placeholder', this.pending.executeRoleIds ?? d.executeRoleIds);
@@ -235,14 +238,16 @@ export class ConfigPanel {
 
     return {
       embed: { title: t('config.title'), description: t('config.intro') },
-      rows: [
+      roleRows: [
         { components: [adminSelect] },
         { components: [execSelect] },
         { components: [readSelect] },
+        { components: [save] },
+      ],
+      defaultRows: [
         { components: [backendSelect] },
         { components: [modelSelect] },
         { components: [permSelect] },
-        { components: [save] },
       ],
     };
   }

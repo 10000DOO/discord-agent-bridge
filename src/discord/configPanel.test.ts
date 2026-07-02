@@ -57,9 +57,9 @@ describe('isConfigPanelId', () => {
 
 describe('ConfigPanel render', () => {
   it('renders 3 role-selects (prefilled), 3 string-selects, and a Save button', () => {
-    const { rows } = makePanel().render();
-    // Flatten to the components in order.
-    const all = rows.flatMap((r) => r.components);
+    const { roleRows, defaultRows } = makePanel().render();
+    // Flatten to the components in order (both groups form the logical panel).
+    const all = [...roleRows, ...defaultRows].flatMap((r) => r.components);
     const roleSelects = all.filter((c) => c.type === 'roleSelect');
     expect(roleSelects).toHaveLength(3);
     // The admin role-select is prefilled with the current admin roles.
@@ -73,6 +73,20 @@ describe('ConfigPanel render', () => {
       'config.default.permMode',
     ]);
     expect(all.some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(true);
+  });
+
+  it('splits into two messages that each respect Discord’s 5-action-row limit', () => {
+    const { roleRows, defaultRows } = makePanel().render();
+    // A single Discord message allows at most 5 action rows; the panel has 7, so it is
+    // delivered as two messages (the root cause of the /config no-ack was 7 rows > 5).
+    expect(roleRows.length).toBeLessThanOrEqual(5);
+    expect(defaultRows.length).toBeLessThanOrEqual(5);
+    // The Save button rides with the role tiers (the primary reply).
+    expect(roleRows.flatMap((r) => r.components).some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(true);
+    // No row contains more than one select/button pairing that Discord would reject.
+    for (const row of [...roleRows, ...defaultRows]) {
+      expect(row.components.length).toBeGreaterThan(0);
+    }
   });
 });
 

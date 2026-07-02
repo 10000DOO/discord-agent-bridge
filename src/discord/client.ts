@@ -25,6 +25,7 @@ import {
   type TextBasedChannel,
 } from 'discord.js';
 import type { Logger } from '../core/contracts.js';
+import { t } from './i18n.js';
 import type {
   ButtonSpec,
   ComponentRow,
@@ -38,6 +39,7 @@ import type {
 } from './ports.js';
 import type { MessageRouter } from './messageRouter.js';
 import type {
+  AckPayload,
   ComponentInteraction,
   InteractionRouter,
   RouterInteraction,
@@ -355,12 +357,47 @@ export class DiscordClient {
     });
 
     this.client.on(Events.InteractionCreate, (interaction: Interaction) => {
-      const adapted = adaptInteraction(interaction);
+      // Earliest-possible operator log: record that the gateway delivered SOMETHING,
+      // even if adaptation/routing below fails. This is the line that was missing when
+      // /config showed "application did not respond" with a silent terminal.
+      this.logInteractionArrival(interaction);
+      let adapted: RouterInteraction | null;
+      try {
+        adapted = adaptInteraction(interaction);
+      } catch (err) {
+        // Adaptation itself threw (unexpected member/permissions shape). Never let this
+        // leave the interaction unacknowledged — best-effort ack, then log with stack.
+        this.logger.error('interaction adaptation failed', { err: errWithStack(err) });
+        void ackFailedInteraction(interaction);
+        return;
+      }
       if (!adapted) return; // modal / autocomplete / unsupported: ignored
       void this.interactionRouter.handle(adapted).catch((err) => {
-        this.logger.error('interaction router failed', { err: String(err) });
+        this.logger.error('interaction router failed', { err: errWithStack(err) });
+        void ackFailedInteraction(interaction);
       });
     });
+  }
+
+  // Log the raw arrival of an interaction at the gateway (before adaptation). The
+  // router logs a richer receipt line too; this one guarantees a trace even if
+  // adaptation throws. discord.js type guards read command/customId safely.
+  private logInteractionArrival(interaction: Interaction): void {
+    if (interaction.isChatInputCommand()) {
+      this.logger.info('interaction arrived', {
+        type: 'slash',
+        command: interaction.commandName,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+      });
+    } else if (interaction.isMessageComponent()) {
+      this.logger.info('interaction arrived', {
+        type: 'component',
+        customId: interaction.customId,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+      });
+    }
   }
 
   private async handleReady(ready: Client<true>): Promise<void> {
@@ -392,37 +429,91 @@ export class DiscordClient {
   }
 }
 
+// Serialize an error to a redaction-friendly shape that KEEPS the stack, so the
+// operator terminal shows where a failure originated (a bare String(err) drops it).
+function errWithStack(err: unknown): { message: string; stack?: string } {
+  return err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) };
+}
+
+// Last-resort acknowledgment for a raw interaction whose adaptation or routing threw
+// BEFORE the router could ack it. Discord must never show "application did not
+// respond": if the interaction is repliable and not yet acked, send an ephemeral
+// error; if already deferred/replied, edit it. Best-effort — swallow any failure (the
+// interaction may already be expired). No secrets are surfaced (a generic message).
+async function ackFailedInteraction(interaction: Interaction): Promise<void> {
+  try {
+    if (!interaction.isRepliable()) return;
+    const content = t('cmd.error.generic');
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content });
+    } else {
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+    }
+  } catch {
+    // best-effort: nothing more we can do for an already-expired interaction.
+  }
+}
+
 // Adapt a raw discord.js Interaction onto the router's narrow RouterInteraction, so
 // the router never imports discord.js as a value. Returns null for interactions the
 // router does not handle (modals, autocomplete). The `ephemeral` flag on reply is
 // translated to MessageFlags.Ephemeral here — the single discord.js-aware boundary.
 export function adaptInteraction(interaction: Interaction): RouterInteraction | null {
-  const base = {
+  // Build the shared discord.js message-body (content + embeds + component rows) from
+  // a plain AckPayload. Embeds and component rows are mapped through the same adapters
+  // as channel sends, so a malformed payload cannot slip past this seam. The Ephemeral
+  // flag is applied ONLY by reply/followUp (deferReply sets visibility separately);
+  // editReply cannot carry it (the deferReply already fixed the reply's visibility).
+  const buildBody = (options: AckPayload) => ({
+    ...(options.content !== undefined ? { content: options.content } : {}),
+    ...(options.embeds && options.embeds.length > 0 ? { embeds: options.embeds.map(toEmbed) } : {}),
+    ...(options.components && options.components.length > 0 ? { components: options.components.map(toRow) } : {}),
+  });
+  const withEphemeral = (options: AckPayload) => ({
+    ...buildBody(options),
+    ...(options.ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
+  });
+
+  const repliable = () => interaction as ChatInputCommandInteraction | MessageComponentInteraction;
+
+  // Shared actor/context + ack methods. `acknowledged` is a GETTER (reads discord.js's
+  // live deferred/replied flags) — it must be attached with defineProperty on the final
+  // object rather than spread, since spreading an object evaluates a getter ONCE and
+  // freezes its value (which would wrongly report the interaction as never acked and
+  // send reply() after a defer → discord.js throws). base() returns fresh fields; the
+  // getter is defined on each concrete object below.
+  const base = () => ({
     guildId: interaction.guildId,
     channelId: interaction.channelId ?? '',
     user: { id: interaction.user.id },
     member: adaptMember(interaction),
     hasAdminPermission: hasAdminPermission(interaction),
-    reply: (options: { content?: string; ephemeral?: boolean; embeds?: EmbedSpec[]; components?: ComponentRow[] }) => {
-      const replyable = interaction as ChatInputCommandInteraction | MessageComponentInteraction;
-      return replyable.reply({
-        ...(options.content !== undefined ? { content: options.content } : {}),
-        ...(options.embeds && options.embeds.length > 0 ? { embeds: options.embeds.map(toEmbed) } : {}),
-        ...(options.components && options.components.length > 0 ? { components: options.components.map(toRow) } : {}),
-        ...(options.ephemeral ? { flags: MessageFlags.Ephemeral } : {}),
-      });
-    },
-  };
+    reply: (options: AckPayload) => repliable().reply(withEphemeral(options)),
+    deferReply: (options?: { ephemeral?: boolean }) =>
+      repliable().deferReply(options?.ephemeral ? { flags: MessageFlags.Ephemeral } : {}),
+    editReply: (options: AckPayload) => repliable().editReply(buildBody(options)),
+    followUp: (options: AckPayload) => repliable().followUp(withEphemeral(options)),
+  });
+
+  // Define the live `acknowledged` getter on the concrete object (not via spread).
+  const withAcknowledged = <T extends object>(obj: T): T & { readonly acknowledged: boolean } =>
+    Object.defineProperty(obj, 'acknowledged', {
+      get: () => {
+        const r = repliable();
+        return r.deferred || r.replied;
+      },
+      enumerable: true,
+    }) as T & { readonly acknowledged: boolean };
 
   if (interaction.isChatInputCommand()) {
-    const slash: SlashInteraction = {
-      ...base,
-      kind: 'slash',
+    const slash = {
+      ...base(),
+      kind: 'slash' as const,
       commandName: interaction.commandName,
       subcommand: safeSubcommand(interaction),
       getString: (name: string) => interaction.options.getString(name),
     };
-    return slash;
+    return withAcknowledged(slash) as SlashInteraction;
   }
 
   if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu()) {
@@ -432,15 +523,15 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
       ? interaction.values
       : undefined;
     const value = interaction.isStringSelectMenu() ? interaction.values[0] : undefined;
-    const component: ComponentInteraction = {
-      ...base,
-      kind: 'component',
+    const component = {
+      ...base(),
+      kind: 'component' as const,
       customId: interaction.customId,
       ...(value !== undefined ? { value } : {}),
       ...(values !== undefined ? { values } : {}),
       deferUpdate: () => interaction.deferUpdate(),
     };
-    return component;
+    return withAcknowledged(component) as ComponentInteraction;
   }
 
   return null;
@@ -448,24 +539,33 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
 
 // True when the acting member has the Discord Administrator permission. Used as the
 // /config bootstrap gate (server admins can open /config before the role allowlist
-// is set). Robust to both a cached GuildMember (permissions is a PermissionsBitField
-// with .has) and an uncached APIInteractionGuildMember (permissions is a string
-// bitfield). Absent member / DM → false.
+// is set). PREFER interaction.memberPermissions — discord.js resolves it to a
+// PermissionsBitField on EVERY guild interaction, cached or not, so it avoids the
+// brittle raw-permissions branches below. Falls back to member.permissions (a
+// PermissionsBitField on a cached GuildMember, or a string bitfield on an uncached
+// APIInteractionGuildMember). Any read error → false (never throw before the ack, or
+// the interaction dies unacknowledged → "application did not respond"). DM → false.
 function hasAdminPermission(interaction: Interaction): boolean {
-  const member = interaction.member;
-  if (!member) return false;
-  const perms = (member as { permissions?: unknown }).permissions;
-  if (perms && typeof perms === 'object' && 'has' in perms) {
-    return (perms as { has: (bit: bigint) => boolean }).has(PermissionFlagsBits.Administrator);
-  }
-  if (typeof perms === 'string') {
-    try {
-      return (BigInt(perms) & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
-    } catch {
-      return false;
+  try {
+    // memberPermissions is present on guild interactions (null in DMs); it is already
+    // a resolved PermissionsBitField for both cached and uncached members.
+    const memberPerms = (interaction as { memberPermissions?: { has?: (bit: bigint) => boolean } }).memberPermissions;
+    if (memberPerms && typeof memberPerms.has === 'function') {
+      return memberPerms.has(PermissionFlagsBits.Administrator);
     }
+    const member = interaction.member;
+    if (!member) return false;
+    const perms = (member as { permissions?: unknown }).permissions;
+    if (perms && typeof perms === 'object' && 'has' in perms) {
+      return (perms as { has: (bit: bigint) => boolean }).has(PermissionFlagsBits.Administrator);
+    }
+    if (typeof perms === 'string') {
+      return (BigInt(perms) & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
+    }
+    return false;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 // The acting member's role ids, or null when unavailable (DMs). Discord may deliver

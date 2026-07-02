@@ -19,6 +19,7 @@ import { createLogger } from '../core/logger.js';
 import type {
   AgentMode,
   Capabilities,
+  Logger,
   ModeContext,
   ModeSession,
 } from '../core/contracts.js';
@@ -130,10 +131,17 @@ function fakeOrchestrator() {
 // with embeds + component rows and no text body.
 type Reply = { content?: string; ephemeral?: boolean; embeds?: unknown[]; components?: unknown[] };
 
+// A recording of every ack call, in order, so a test can assert the ack came BEFORE
+// the slow handler work (the defer-first contract) and that no path leaves the
+// interaction unacknowledged. `kind` is the discord.js method that fired.
+type AckEvent = { kind: 'deferReply' | 'reply' | 'editReply' | 'followUp' | 'deferUpdate'; payload?: Reply };
+
 function slash(
   over: Partial<SlashInteraction> & { roles?: string[]; getStringValue?: string; hasAdminPermission?: boolean },
-): { interaction: SlashInteraction; replies: Reply[] } {
+): { interaction: SlashInteraction; replies: Reply[]; acks: AckEvent[] } {
   const replies: Reply[] = [];
+  const acks: AckEvent[] = [];
+  let acked = false;
   const roles = over.roles ?? [EXEC_ROLE];
   const interaction: SlashInteraction = {
     kind: 'slash',
@@ -146,16 +154,37 @@ function slash(
     subcommand: over.subcommand ?? null,
     getString: () => over.getStringValue ?? null,
     reply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'reply', payload: o });
       replies.push(o);
     },
+    deferReply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'deferReply', payload: o });
+    },
+    editReply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'editReply', payload: o });
+      replies.push(o);
+    },
+    followUp: async (o) => {
+      acked = true;
+      acks.push({ kind: 'followUp', payload: o });
+      replies.push(o);
+    },
+    get acknowledged() {
+      return acked;
+    },
   };
-  return { interaction, replies };
+  return { interaction, replies, acks };
 }
 
 function component(
   over: Partial<ComponentInteraction> & { roles?: string[]; hasAdminPermission?: boolean },
-): { interaction: ComponentInteraction; replies: Reply[] } {
+): { interaction: ComponentInteraction; replies: Reply[]; acks: AckEvent[] } {
   const replies: Reply[] = [];
+  const acks: AckEvent[] = [];
+  let acked = false;
   const roles = over.roles ?? [EXEC_ROLE];
   const interaction: ComponentInteraction = {
     kind: 'component',
@@ -168,11 +197,33 @@ function component(
     ...(over.value !== undefined ? { value: over.value } : {}),
     ...(over.values !== undefined ? { values: over.values } : {}),
     reply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'reply', payload: o });
       replies.push(o);
     },
-    deferUpdate: async () => {},
+    deferReply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'deferReply', payload: o });
+    },
+    editReply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'editReply', payload: o });
+      replies.push(o);
+    },
+    followUp: async (o) => {
+      acked = true;
+      acks.push({ kind: 'followUp', payload: o });
+      replies.push(o);
+    },
+    deferUpdate: async () => {
+      acked = true;
+      acks.push({ kind: 'deferUpdate' });
+    },
+    get acknowledged() {
+      return acked;
+    },
   };
-  return { interaction, replies };
+  return { interaction, replies, acks };
 }
 
 let home: string;
@@ -187,6 +238,7 @@ let authorizer: Authorizer;
 function buildRouter(deps: {
   orchestrator: SessionOrchestrator;
   wiring: SessionWiring;
+  logger?: Logger;
 }): InteractionRouter {
   return new InteractionRouter({
     authorizer,
@@ -197,7 +249,7 @@ function buildRouter(deps: {
     permissionResolver,
     modeRegistry,
     wiring: deps.wiring,
-    logger,
+    logger: deps.logger ?? logger,
     modelsFor: () => ['opus', 'sonnet'],
   });
 }
@@ -224,11 +276,13 @@ describe('InteractionRouter slash commands', () => {
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction, replies } = slash({ commandName: 'stop-all', roles: [EXEC_ROLE] });
+    const { interaction, replies, acks } = slash({ commandName: 'stop-all', roles: [EXEC_ROLE] });
     await router.handle(interaction);
     expect(calls.stopAll).not.toHaveBeenCalled();
+    // Deferred ephemerally FIRST, then the denial edits that ephemeral reply.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
     expect(replies[0].content).toContain('권한이 없습니다');
-    expect(replies[0].ephemeral).toBe(true);
   });
 
   it('/stop-all by an admin stops all sessions', async () => {
@@ -259,7 +313,7 @@ describe('InteractionRouter slash commands', () => {
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring, calls: wcalls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction, replies } = slash({
+    const { interaction, acks } = slash({
       commandName: 'mode',
       subcommand: 'backend',
       getStringValue: 'codex',
@@ -269,7 +323,11 @@ describe('InteractionRouter slash commands', () => {
     expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
     expect(calls.start).toHaveBeenCalledOnce();
     expect(wcalls.attach).toHaveBeenCalledWith('g1', 'c1', 'codex');
-    expect(replies[0].content).toContain('새 대화로 시작');
+    // The public fresh-context warning is a NON-ephemeral followUp (deferred reply is
+    // ephemeral); the confirmation edits the deferred reply.
+    const freshFollowUp = acks.find((a) => a.kind === 'followUp');
+    expect(freshFollowUp?.payload?.content).toContain('새 대화로 시작');
+    expect(freshFollowUp?.payload?.ephemeral).toBe(false);
   });
 
   it('/mode backend to an UNREGISTERED backend: ephemeral notice, session NOT stopped', async () => {
@@ -279,7 +337,7 @@ describe('InteractionRouter slash commands', () => {
     const router = buildRouter({ orchestrator, wiring });
     // 'gemini' is not registered (only claude + codex are), so it must be rejected
     // WITHOUT tearing down the running session.
-    const { interaction, replies } = slash({
+    const { interaction, replies, acks } = slash({
       commandName: 'mode',
       subcommand: 'backend',
       getStringValue: 'gemini',
@@ -288,7 +346,9 @@ describe('InteractionRouter slash commands', () => {
     expect(calls.stop).not.toHaveBeenCalled();
     expect(wcalls.detach).not.toHaveBeenCalled();
     expect(calls.start).not.toHaveBeenCalled();
-    expect(replies[0].ephemeral).toBe(true);
+    // Deferred ephemerally first; the notice edits that ephemeral reply.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
     expect(replies[0].content).toContain('gemini');
   });
 
@@ -297,7 +357,7 @@ describe('InteractionRouter slash commands', () => {
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring, calls: wcalls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction, replies } = slash({
+    const { interaction, acks } = slash({
       commandName: 'mode',
       subcommand: 'backend',
       getStringValue: 'codex', // registered, but there is no session to switch
@@ -306,7 +366,9 @@ describe('InteractionRouter slash commands', () => {
     expect(calls.stop).not.toHaveBeenCalled();
     expect(wcalls.detach).not.toHaveBeenCalled();
     expect(calls.start).not.toHaveBeenCalled();
-    expect(replies[0].ephemeral).toBe(true);
+    // Deferred ephemerally first; the no-session notice edits that ephemeral reply.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
   });
 
   it('/stop stops the channel session and detaches renderers', async () => {
@@ -391,16 +453,23 @@ describe('InteractionRouter /config command', () => {
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
     // A user with NO allowlisted role but the Discord Administrator permission.
-    const { interaction, replies } = slash({
+    const { interaction, replies, acks } = slash({
       commandName: 'config',
       roles: ['role-nobody'],
       hasAdminPermission: true,
     });
     await router.handle(interaction);
-    // The panel reply carries embeds + component rows (the role-select pickers).
-    expect(replies).toHaveLength(1);
-    expect(replies[0].ephemeral).toBe(true);
-    expect(replies[0].components && replies[0].components.length).toBeGreaterThan(0);
+    // Deferred ephemerally first (so the 3s window is never missed), then the panel is
+    // delivered as an editReply (role tiers + Save) plus a followUp (defaults). Both
+    // together stay within Discord's 5-action-row-per-message limit.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
+    const edit = replies[0];
+    const follow = replies[1];
+    expect(edit.components && edit.components.length).toBeGreaterThan(0);
+    expect((edit.components as unknown[]).length).toBeLessThanOrEqual(5);
+    expect(follow.ephemeral).toBe(true);
+    expect((follow.components as unknown[]).length).toBeLessThanOrEqual(5);
   });
 
   it('opens the panel for an admin-tier user (configured allowlist)', async () => {
@@ -413,6 +482,7 @@ describe('InteractionRouter /config command', () => {
       hasAdminPermission: false,
     });
     await router.handle(interaction);
+    // The panel (role tiers + Save) is edited into the deferred ephemeral reply.
     expect(replies[0].components && replies[0].components.length).toBeGreaterThan(0);
   });
 
@@ -420,14 +490,16 @@ describe('InteractionRouter /config command', () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction, replies } = slash({
+    const { interaction, replies, acks } = slash({
       commandName: 'config',
       roles: [EXEC_ROLE], // execute tier is NOT admin
       hasAdminPermission: false,
     });
     await router.handle(interaction);
+    // Deferred ephemerally first, then the denial edits that ephemeral reply.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
     expect(replies).toHaveLength(1);
-    expect(replies[0].ephemeral).toBe(true);
     // No panel components were sent.
     expect(replies[0].components).toBeUndefined();
     expect(replies[0].content).toContain('admin');
@@ -490,5 +562,118 @@ describe('InteractionRouter /config command', () => {
     });
     await router.handle(hijack);
     expect(store.loadServerConfig('g1')).toBeNull();
+  });
+});
+
+// A logger whose calls are recorded, for the interaction-receipt + error-logging tests.
+function fakeLogger(): { logger: Logger; info: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> } {
+  const info = vi.fn();
+  const error = vi.fn();
+  const logger: Logger = { debug: vi.fn(), info, warn: vi.fn(), error };
+  return { logger, info, error };
+}
+
+// These tests assert the ACK-ORDERING CONTRACT — the fix for Discord's 3-second
+// deadline ("application did not respond"). Because CI cannot reach the real gateway,
+// they verify that the router acknowledges (defers) BEFORE the slow handler work and
+// that no path (including a thrown handler) leaves the interaction unacknowledged. The
+// real fix is validated by a live retest against Discord.
+describe('InteractionRouter acknowledgment contract (3s window fix)', () => {
+  it('/stop DEFERS before doing the slow orchestrator/wiring work', async () => {
+    channelRegistry.set(binding(home));
+    const order: string[] = [];
+    const { wiring } = fakeWiring();
+    const orchestrator = {
+      start: vi.fn(),
+      stop: vi.fn(async () => {
+        order.push('stop');
+      }),
+      stopAll: vi.fn(),
+    } as unknown as SessionOrchestrator;
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, acks } = slash({ commandName: 'stop' });
+    // Record the defer relative to the orchestrator work.
+    const origDefer = interaction.deferReply;
+    interaction.deferReply = async (o) => {
+      order.push('defer');
+      return origDefer(o);
+    };
+    await router.handle(interaction);
+    // The ack (defer) fired FIRST, before orchestrator.stop.
+    expect(order).toEqual(['defer', 'stop']);
+    expect(acks[0].kind).toBe('deferReply');
+  });
+
+  it('a slash handler that THROWS still produces a user-visible ack (no unhandled rejection)', async () => {
+    channelRegistry.set(binding(home));
+    const { wiring } = fakeWiring();
+    // orchestrator.stop throws → the /stop handler body throws after the defer.
+    const orchestrator = {
+      start: vi.fn(),
+      stop: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+      stopAll: vi.fn(),
+    } as unknown as SessionOrchestrator;
+    const { logger, error } = fakeLogger();
+    const router = buildRouter({ orchestrator, wiring, logger });
+    const { interaction, replies, acks } = slash({ commandName: 'stop' });
+    // Must not reject.
+    await expect(router.handle(interaction)).resolves.toBeUndefined();
+    // Deferred first, then the error was edited into the deferred reply.
+    expect(acks[0].kind).toBe('deferReply');
+    const errorReply = replies.find((r) => r.content && r.content.includes('처리하지 못했'));
+    expect(errorReply).toBeTruthy();
+    // The error was logged WITH its stack to the operator terminal.
+    expect(error).toHaveBeenCalled();
+    const errMeta = error.mock.calls.find((c) => typeof c[1] === 'object') as unknown[] | undefined;
+    expect(errMeta && (errMeta[1] as { stack?: string }).stack).toContain('boom');
+  });
+
+  it('logs a receipt line for EVERY received interaction (slash + component)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { logger, info } = fakeLogger();
+    const router = buildRouter({ orchestrator, wiring, logger });
+
+    const { interaction: s } = slash({ commandName: 'stop' });
+    await router.handle(s);
+    const slashReceipt = info.mock.calls.find(
+      (c) => c[0] === 'interaction received' && (c[1] as { type?: string })?.type === 'slash',
+    );
+    expect(slashReceipt).toBeTruthy();
+    expect((slashReceipt?.[1] as { command?: string }).command).toBe('stop');
+    expect((slashReceipt?.[1] as { userId?: string }).userId).toBe('u1');
+
+    const { interaction: c } = component({ customId: 'perm:req-1:allow' });
+    await router.handle(c);
+    const compReceipt = info.mock.calls.find(
+      (call) => call[0] === 'interaction received' && (call[1] as { type?: string })?.type === 'component',
+    );
+    expect(compReceipt).toBeTruthy();
+    expect((compReceipt?.[1] as { customId?: string }).customId).toBe('perm:req-1:allow');
+  });
+
+  it('a perm button DEFERS (deferUpdate) before resolving the permission', async () => {
+    const order: string[] = [];
+    const orchestrator = fakeOrchestrator().orchestrator;
+    const wiring = {
+      attach: vi.fn(),
+      detach: vi.fn(),
+      resolvePermission: vi.fn(async () => {
+        order.push('resolve');
+        return { behavior: 'allow' as const };
+      }),
+    } as unknown as SessionWiring;
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction } = component({ customId: 'perm:req-1:allow' });
+    const origDefer = interaction.deferUpdate;
+    interaction.deferUpdate = async () => {
+      order.push('defer');
+      return origDefer();
+    };
+    await router.handle(interaction);
+    // deferUpdate fired BEFORE resolvePermission (never miss the 3s window).
+    expect(order).toEqual(['defer', 'resolve']);
   });
 });
