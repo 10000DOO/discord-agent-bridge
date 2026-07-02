@@ -15,6 +15,7 @@ import type { ConfigResolver } from '../core/configResolver.js';
 import type { PermissionResolver } from '../core/permissionResolver.js';
 import type { ModeRegistry } from '../core/modeRegistry.js';
 import type { SessionOrchestrator, StartParams } from '../core/sessionOrchestrator.js';
+import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { SessionWiring } from './wiring.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { ResumeWizard } from './wizard/resumeWizard.js';
@@ -42,6 +43,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   'agent.start': 'drive',
   'agent.resume': 'drive',
   'agent.close': 'drive',
+  'agent.stats': 'drive',
   'mode.backend': 'drive',
   'mode.perm': 'drive',
   stop: 'drive',
@@ -133,6 +135,9 @@ export interface InteractionRouterDeps {
   permissionResolver: PermissionResolver;
   modeRegistry: ModeRegistry;
   wiring: SessionWiring;
+  // Claude usage/limits service (§7.4). Read by /agent stats for the usage summary
+  // (Claude-global; unavailable line when OAuth is not logged in).
+  usageService: UsageService;
   logger: Logger;
   // Allowed roots for the wizard's folder browser (config-driven; app boot supplies).
   browseRoots?: string[];
@@ -262,6 +267,9 @@ export class InteractionRouter {
           break;
         case 'agent.close':
           await this.close(i);
+          break;
+        case 'agent.stats':
+          await this.stats(i);
           break;
         case 'mode.backend':
           await this.switchBackend(i);
@@ -664,6 +672,64 @@ export class InteractionRouter {
     } catch (err) {
       this.logError('failed to delete session channel', err);
     }
+  }
+
+  // /agent stats: an EPHEMERAL summary (only the requester sees it) of this guild's
+  // live sessions, session bindings, and Claude usage. Usage is Claude-GLOBAL (not
+  // per-guild), so it is labelled as such; when Claude OAuth is not logged in, a line
+  // says the panel only shows after login. Read-only — builds one embed, no side effects.
+  private async stats(i: SlashInteraction): Promise<void> {
+    const guildId = i.guildId as string; // authorize() rejected DMs (no guild)
+    const fields: { name: string; value: string; inline?: boolean }[] = [];
+
+    // Active sessions (this guild): count + up to 10 channel lines.
+    const active = this.deps.orchestrator.listActive(guildId);
+    const lines = active.slice(0, 10).map((a) => {
+      const base = `<#${a.channelId}> · ${a.mode} · \`${path.basename(a.cwd)}\` · queue ${a.queueDepth}`;
+      return a.running ? `${base} · running` : base;
+    });
+    if (active.length > 10) lines.push(t('stats.more', { n: active.length - 10 }));
+    fields.push({
+      name: t('stats.active', { n: active.length }),
+      value: lines.length > 0 ? lines.join('\n') : t('stats.none'),
+    });
+
+    // Session bindings (this guild): active vs archived.
+    const bindings = this.deps.channelRegistry.list().filter((b) => b.guildId === guildId);
+    const archived = bindings.filter((b) => b.archived).length;
+    fields.push({
+      name: t('stats.bindings'),
+      value: t('stats.bindings.value', { active: bindings.length - archived, archived }),
+    });
+
+    // Claude usage (global — labelled). Only shown when Claude OAuth is logged in.
+    fields.push({ name: t('stats.usage'), value: await this.usageStatsLine() });
+
+    await i.editReply({ embeds: [{ title: t('stats.title'), fields }] });
+  }
+
+  // The Claude usage line for /agent stats: 5-hour + weekly utilization (with reset
+  // times when present) when Claude OAuth is available, else a notice that usage only
+  // shows after Claude login. Best-effort: a usage-fetch failure degrades to the notice.
+  private async usageStatsLine(): Promise<string> {
+    if (!this.deps.usageService.isAvailable()) return t('stats.usage.unavailable');
+    let usage: UsageResult;
+    try {
+      usage = await this.deps.usageService.getUsage();
+    } catch {
+      return t('stats.usage.unavailable');
+    }
+    if (!('fetchedAt' in usage)) return t('stats.usage.unavailable');
+    const parts: string[] = [];
+    if (usage.fiveHour) parts.push(this.usageSegment(t('usage.fiveHour'), usage.fiveHour));
+    if (usage.sevenDay) parts.push(this.usageSegment(t('usage.weekly'), usage.sevenDay));
+    return parts.length > 0 ? parts.join(' · ') : t('stats.usage.unavailable');
+  }
+
+  // One "<label> <util>% (초기화 <reset>)" segment for the usage stats line.
+  private usageSegment(label: string, limit: { utilization: number; resetsAt?: string }): string {
+    const base = `${label} ${Math.round(limit.utilization)}%`;
+    return limit.resetsAt ? `${base} (${t('usage.resets', { reset: limit.resetsAt })})` : base;
   }
 
   private async switchBackend(i: SlashInteraction): Promise<void> {

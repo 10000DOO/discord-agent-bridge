@@ -161,6 +161,15 @@ const ko: Catalog = {
   'cmd.config.denied': '`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.',
   'cmd.resume.none': '재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.',
   'cmd.resume.rebound': '이 채널을 다시 연결했어요.',
+  // /agent stats — 활성 세션·바인딩·사용량 요약 (요청자에게만 보이는 ephemeral 임베드).
+  'stats.title': '📊 Agent Stats',
+  'stats.active': '활성 세션 ({n})',
+  'stats.none': '활성 세션이 없어요.',
+  'stats.more': '외 {n}개 더…',
+  'stats.bindings': '세션 바인딩',
+  'stats.bindings.value': '활성 {active} · 보관 {archived}',
+  'stats.usage': 'Claude 사용량 (전역)',
+  'stats.usage.unavailable': 'Claude 구독 로그인(OAuth) 상태에서만 표시됩니다.',
   // Resume-from-folder flow (Resume Session button on the folder step).
   'resume.step.backend': '재개할 백엔드를 선택하고 "다음"을 누르세요.',
   'resume.step.pick': '재개할 세션을 선택하세요.',

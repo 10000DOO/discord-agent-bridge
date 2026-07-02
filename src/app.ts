@@ -167,6 +167,7 @@ export function createApp(deps: CreateAppDeps): App {
     permissionResolver,
     modeRegistry,
     wiring,
+    usageService,
     logger,
     // Folder-browser roots + per-backend model list are config-driven (§8.1): the
     // saved project favorites seed the browse roots; the model step offers the

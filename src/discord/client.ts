@@ -95,7 +95,8 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
     .setDescription('Manage the agent session in this channel')
     .addSubcommand((s) => s.setName('start').setDescription('Start a new agent session (wizard)'))
     .addSubcommand((s) => s.setName('resume').setDescription('Resume a prior session in this channel'))
-    .addSubcommand((s) => s.setName('close').setDescription('Stop and archive this channel’s session'));
+    .addSubcommand((s) => s.setName('close').setDescription('Stop and archive this channel’s session'))
+    .addSubcommand((s) => s.setName('stats').setDescription('활성 세션·바인딩·사용량 요약 보기'));
 
   const backendChoices = backends.map((b) => ({ name: BACKEND_LABELS[b] ?? b, value: b }));
   const mode = new SlashCommandBuilder()

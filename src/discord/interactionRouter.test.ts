@@ -27,7 +27,8 @@ import type {
   ModeSession,
   ResumableSession,
 } from '../core/contracts.js';
-import type { SessionOrchestrator } from '../core/sessionOrchestrator.js';
+import type { ActiveChannelInfo, SessionOrchestrator } from '../core/sessionOrchestrator.js';
+import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { SessionWiring } from './wiring.js';
 
 const logger = createLogger('test', { level: 'error', sink: { write() {} } });
@@ -133,12 +134,13 @@ function fakeWiring() {
 }
 
 // A recording orchestrator double.
-function fakeOrchestrator() {
+function fakeOrchestrator(active: ActiveChannelInfo[] = []) {
   const calls = {
     start: vi.fn(async () => ({ sessionId: 'new-sess', async send() {}, async stop() {} }) as ModeSession),
     resume: vi.fn(async (_p: unknown, sessionId: string) => ({ sessionId, async send() {}, async stop() {} }) as ModeSession),
     stop: vi.fn(async (_g: string, _c: string) => {}),
     stopAll: vi.fn(async () => {}),
+    listActive: vi.fn((_guildId: string) => active),
     // A minimal read-only ModeContext for listResumable (cwd/config/logger only).
     buildListContext: vi.fn((_mode: string, cwd: string) => ({
       guildId: '',
@@ -327,7 +329,16 @@ function buildRouter(deps: {
   browseRoots?: string[];
   resolveGuildProvisioner?: (guildId: string) => Promise<GuildChannelProvisioner | null>;
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
+  usageService?: UsageService;
 }): InteractionRouter {
+  // Default: Claude usage unavailable (API-key-only / no OAuth) so /agent stats shows the
+  // login notice; a test can inject a usage snapshot to exercise the utilization lines.
+  const usageService =
+    deps.usageService ??
+    ({
+      isAvailable: () => false,
+      getUsage: async () => ({ available: false as const, reason: 'no-credentials' as const }),
+    } as unknown as UsageService);
   return new InteractionRouter({
     authorizer,
     orchestrator: deps.orchestrator,
@@ -337,6 +348,7 @@ function buildRouter(deps: {
     permissionResolver,
     modeRegistry,
     wiring: deps.wiring,
+    usageService,
     logger: deps.logger ?? logger,
     modelsFor: () => [
       { value: 'opus', label: 'opus' },
@@ -1051,6 +1063,83 @@ describe('InteractionRouter /agent close deletes the session channel', () => {
     const { interaction } = slash({ commandName: 'agent', subcommand: 'close', channelId: 'ctrl' });
     await router.handle(interaction);
     expect(prov.deleted).not.toContain('ctrl');
+  });
+});
+
+describe('InteractionRouter /agent stats', () => {
+  function activeInfo(over: Partial<ActiveChannelInfo> = {}): ActiveChannelInfo {
+    return {
+      guildId: 'g1',
+      channelId: 'sess-a',
+      mode: 'claude',
+      cwd: '/home/me/my-project',
+      ownerId: 'owner',
+      queueDepth: 0,
+      running: false,
+      ...over,
+    };
+  }
+  function usageService(over: { available?: boolean; usage?: UsageResult } = {}): UsageService {
+    return {
+      isAvailable: () => over.available ?? false,
+      getUsage: async () => over.usage ?? { available: false as const, reason: 'no-credentials' as const },
+    } as unknown as UsageService;
+  }
+
+  it('replies EPHEMERALLY with an embed summarizing active sessions + bindings', async () => {
+    channelRegistry.set(binding(home, { channelId: 'sess-a' }));
+    const { orchestrator } = fakeOrchestrator([
+      activeInfo({ channelId: 'sess-a', queueDepth: 2, running: true }),
+    ]);
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies, acks } = slash({ commandName: 'agent', subcommand: 'stats' });
+    await router.handle(interaction);
+
+    // Deferred ephemerally, then filled with the embed.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
+    const embed = (replies[0].embeds as { title?: string; fields?: { name: string; value: string }[] }[])[0];
+    expect(embed.title).toContain('Agent Stats');
+    const active = embed.fields?.find((f) => f.name.includes('활성 세션'));
+    expect(active?.value).toContain('<#sess-a>');
+    expect(active?.value).toContain('queue 2');
+    expect(active?.value).toContain('running');
+    expect(active?.value).toContain('my-project');
+    // The usage field shows the login notice when Claude OAuth is unavailable.
+    const usage = embed.fields?.find((f) => f.name.includes('Claude'));
+    expect(usage?.value).toContain('로그인');
+  });
+
+  it('shows Claude usage utilization when OAuth is available', async () => {
+    const { orchestrator } = fakeOrchestrator([]);
+    const { wiring } = fakeWiring();
+    const router = buildRouter({
+      orchestrator,
+      wiring,
+      usageService: usageService({
+        available: true,
+        usage: { fetchedAt: 1, fiveHour: { utilization: 42 }, sevenDay: { utilization: 7, resetsAt: '2026-07-10' } },
+      }),
+    });
+    const { interaction, replies } = slash({ commandName: 'agent', subcommand: 'stats' });
+    await router.handle(interaction);
+    const embed = (replies[0].embeds as { fields?: { name: string; value: string }[] }[])[0];
+    const usage = embed.fields?.find((f) => f.name.includes('Claude'));
+    expect(usage?.value).toContain('42%');
+    expect(usage?.value).toContain('7%');
+    expect(usage?.value).toContain('2026-07-10');
+  });
+
+  it('reports no active sessions when the guild has none', async () => {
+    const { orchestrator } = fakeOrchestrator([]);
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({ commandName: 'agent', subcommand: 'stats' });
+    await router.handle(interaction);
+    const embed = (replies[0].embeds as { fields?: { name: string; value: string }[] }[])[0];
+    const active = embed.fields?.find((f) => f.name.includes('활성 세션'));
+    expect(active?.value).toContain('없어요');
   });
 });
 

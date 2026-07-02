@@ -75,6 +75,18 @@ export interface SendResult {
   queueDepth: number;
 }
 
+// A read-only snapshot of one live channel, exposed for the /agent stats command.
+// Derived from the private `active` map; carries no ModeSession handle.
+export interface ActiveChannelInfo {
+  guildId: string;
+  channelId: string;
+  mode: string;
+  cwd: string;
+  ownerId: string;
+  queueDepth: number;
+  running: boolean;
+}
+
 // A live channel: its session, resolved metadata, and its FIFO turn queue.
 interface ActiveChannel {
   guildId: string;
@@ -334,6 +346,26 @@ export class SessionOrchestrator {
       await this.stop(channel.guildId, channel.channelId);
     }
     this.logger.info('all sessions stopped', { count: keys.length });
+  }
+
+  // Read-only view of the live sessions for a guild (for /agent stats). Derived from
+  // the private `active` map; returns plain snapshots with no session handle so the
+  // Discord layer cannot mutate live state.
+  listActive(guildId: string): ActiveChannelInfo[] {
+    const out: ActiveChannelInfo[] = [];
+    for (const channel of this.active.values()) {
+      if (channel.guildId !== guildId) continue;
+      out.push({
+        guildId: channel.guildId,
+        channelId: channel.channelId,
+        mode: channel.mode,
+        cwd: channel.cwd,
+        ownerId: channel.ownerId,
+        queueDepth: channel.queue.length,
+        running: channel.running,
+      });
+    }
+    return out;
   }
 
   // §9 step 4 (fixes A2). Boot recovery: re-bind every non-archived channel from
