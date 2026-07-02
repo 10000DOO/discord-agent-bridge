@@ -18,7 +18,7 @@ import { getClaudeModels, getClaudeModelsCachedOrFallback, getCodexModels } from
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
-import { DiscordClient } from './discord/client.js';
+import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
 import { setLocale, t, type Locale } from './discord/i18n.js';
 
 // The application composition root (§2, §4, §9). createApp() builds the full core
@@ -208,6 +208,10 @@ export function createApp(deps: CreateAppDeps): App {
 
   // Bind the wiring's channel resolver to the live gateway now that the client exists.
   wiring.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));
+  // Bind the interaction router's guild/channel resolvers for /init + auto-created
+  // session channels (same late-binding pattern: the client depends on the router).
+  interactionRouter.setResolveGuildProvisioner((guildId) => resolveGuildProvisioner(discord.raw, guildId));
+  interactionRouter.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));
 
   return {
     discord,

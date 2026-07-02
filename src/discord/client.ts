@@ -3,6 +3,7 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   Client,
   EmbedBuilder,
   Events,
@@ -18,6 +19,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
   type ChatInputCommandInteraction,
+  type Guild,
   type Interaction,
   type Message,
   type MessageActionRowComponentBuilder,
@@ -30,6 +32,7 @@ import {
   type TextBasedChannel,
 } from 'discord.js';
 import type { Logger } from '../core/contracts.js';
+import type { GuildChannelProvisioner, ProvisionedChannel } from './guildChannels.js';
 import { t } from './i18n.js';
 import type {
   ButtonSpec,
@@ -134,7 +137,14 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
     .setDescription('Configure role tiers and defaults for this server')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON()];
+  // /init creates the A4D-style channel structure (control channel + sessions
+  // category). Administrator-gated: it creates channels, so only server admins run it.
+  const init = new SlashCommandBuilder()
+    .setName('init')
+    .setDescription('Create the agent control channel and sessions category')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+  return [agent.toJSON(), mode.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +324,66 @@ export async function resolveChannelAdapter(
     return new ChannelAdapter(channel as SendableChannels);
   }
   return null;
+}
+
+// A discord.js Guild adapted onto the GuildChannelProvisioner port — the single place
+// that touches guild.channels.create/delete for the /init + session-channel flows.
+// Every ensure* checks the guild's channel cache for the given id first (idempotency)
+// and only creates when absent, mirroring A4D's init.
+class GuildProvisionerAdapter implements GuildChannelProvisioner {
+  constructor(private readonly guild: Guild) {}
+
+  get guildId(): string {
+    return this.guild.id;
+  }
+
+  channelExists(id: string): boolean {
+    return this.guild.channels.cache.has(id);
+  }
+
+  async ensureCategory(name: string, existingId?: string): Promise<ProvisionedChannel> {
+    if (existingId) {
+      const cached = this.guild.channels.cache.get(existingId);
+      if (cached) return { id: cached.id, name: cached.name };
+    }
+    const created = await this.guild.channels.create({ name, type: ChannelType.GuildCategory });
+    return { id: created.id, name: created.name };
+  }
+
+  async ensureTextChannel(name: string, parentId: string, existingId?: string): Promise<ProvisionedChannel> {
+    if (existingId) {
+      const cached = this.guild.channels.cache.get(existingId);
+      if (cached) return { id: cached.id, name: cached.name };
+    }
+    const created = await this.guild.channels.create({ name, type: ChannelType.GuildText, parent: parentId });
+    return { id: created.id, name: created.name };
+  }
+
+  async createTextChannel(name: string, parentId?: string): Promise<ProvisionedChannel> {
+    const created = await this.guild.channels.create({
+      name,
+      type: ChannelType.GuildText,
+      ...(parentId ? { parent: parentId } : {}),
+    });
+    return { id: created.id, name: created.name };
+  }
+
+  async deleteChannel(id: string): Promise<void> {
+    const channel = this.guild.channels.cache.get(id) ?? (await this.guild.channels.fetch(id).catch(() => null));
+    if (channel) await channel.delete().catch(() => {});
+  }
+}
+
+// Resolve a guildId to a GuildChannelProvisioner over the live client, or null when
+// the guild is unknown (not cached / bot no longer a member). Used by the interaction
+// router for /init and /agent start's session-channel creation.
+export async function resolveGuildProvisioner(
+  client: Client,
+  guildId: string,
+): Promise<GuildChannelProvisioner | null> {
+  const guild = client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId).catch(() => null));
+  if (!guild) return null;
+  return new GuildProvisionerAdapter(guild);
 }
 
 // ---------------------------------------------------------------------------

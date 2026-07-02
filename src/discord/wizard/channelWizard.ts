@@ -25,7 +25,16 @@ export interface StartParams {
   permMode?: PermMode;
   profile?: string | null;
 }
-export type StartFn = (params: StartParams) => Promise<ModeSession>;
+// The wizard's start callback returns the session AND the channel id the session was
+// actually bound to. A4D-style, the router CREATES a fresh session channel from the
+// picked folder and binds there — so the effective channel id differs from the one the
+// wizard was opened in. The wizard surfaces it (createdChannelId) so the router can
+// reply with a link to the new channel.
+export interface StartResult {
+  session: ModeSession;
+  channelId: string;
+}
+export type StartFn = (params: StartParams) => Promise<StartResult>;
 
 // Prefill + option sources, resolved from the config hierarchy by 7b/8.
 export interface WizardDefaults {
@@ -80,6 +89,10 @@ export class ChannelWizard {
   // The Discord user who opened this wizard (the driver). Only they advance it, so a
   // bystander's stray select/button cannot corrupt another driver's flow (§7.1).
   readonly ownerId: string;
+  // The channel id the confirmed session was bound to (the freshly created session
+  // channel, A4D-style). Null until confirm succeeds; the router reads it to link the
+  // new channel back to the driver.
+  private createdChannelId: string | null = null;
 
   constructor(options: ChannelWizardOptions) {
     this.opts = options;
@@ -177,7 +190,7 @@ export class ChannelWizard {
       this.step = 'folder';
       return;
     }
-    await this.opts.start({
+    const result = await this.opts.start({
       guildId: this.opts.guildId,
       channelId: this.opts.channelId,
       mode: this.selection.backend,
@@ -186,7 +199,14 @@ export class ChannelWizard {
       permMode: this.selection.permMode,
       profile: this.selection.profile,
     });
+    this.createdChannelId = result.channelId;
     this.step = 'done';
+  }
+
+  // The channel id the confirmed session was bound to (the created session channel),
+  // or null before a successful confirm. The router links it back to the driver.
+  sessionChannelId(): string | null {
+    return this.createdChannelId;
   }
 
   // Render the current step as a plain component spec (embed + rows). 7b maps it onto

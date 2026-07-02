@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ChannelWizard, type StartParams } from './channelWizard.js';
+import { ChannelWizard, type StartFn, type StartParams, type StartResult } from './channelWizard.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
 import type { ModeSession } from '../../core/contracts.js';
 import { permissionModeChoices } from '../../core/providerCatalog.js';
@@ -21,7 +21,13 @@ function fakeSession(): ModeSession {
   return { sessionId: 'sess-1', async send() {}, async stop() {} };
 }
 
-function makeWizard(start: (p: StartParams) => Promise<ModeSession>) {
+// The router creates a dedicated session channel and binds there; the wizard's start
+// callback returns that new channel id alongside the session.
+function fakeStartResult(): StartResult {
+  return { session: fakeSession(), channelId: 'new-session-channel' };
+}
+
+function makeWizard(start: StartFn) {
   const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
   return new ChannelWizard({
     guildId: 'g1',
@@ -43,7 +49,7 @@ function makeWizard(start: (p: StartParams) => Promise<ModeSession>) {
 
 describe('ChannelWizard state machine', () => {
   it('transitions folder → backend → model → perm → confirm and starts', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
 
     expect(wizard.currentStep()).toBe('folder');
@@ -81,7 +87,7 @@ describe('ChannelWizard state machine', () => {
   });
 
   it('advanced path: raw permission mode clears any profile', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     await wizard.handle({ id: 'dir:here' }); // select root as cwd
     await wizard.handle({ id: 'backend', value: 'claude' });
@@ -97,8 +103,20 @@ describe('ChannelWizard state machine', () => {
     );
   });
 
+  it('exposes the created session channel id after confirm', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizard(start);
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'backend', value: 'claude' });
+    await wizard.handle({ id: 'model', value: 'opus' });
+    await wizard.handle({ id: 'perm.mode', value: 'default' });
+    expect(wizard.sessionChannelId()).toBeNull(); // not confirmed yet
+    await wizard.handle({ id: 'confirm' });
+    expect(wizard.sessionChannelId()).toBe('new-session-channel');
+  });
+
   it('cancel from any step ends the flow without starting', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     await wizard.handle({ id: 'dir:here' });
     expect(await wizard.handle({ id: 'cancel' })).toBe('cancelled');
@@ -106,7 +124,7 @@ describe('ChannelWizard state machine', () => {
   });
 
   it('ignores a stray input for the current step', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     // A 'backend' input during the folder step is ignored.
     expect(await wizard.handle({ id: 'backend', value: 'codex' })).toBe('folder');
@@ -120,7 +138,7 @@ describe('ChannelWizard render (step guidance + labels)', () => {
   }
 
   it('the folder step renders the browser guidance + current path, and a ✅ start button', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     const { embed, rows } = wizard.render();
     // The folder step is A4D-style: guidance + current path + a dir:here start button.
@@ -131,7 +149,7 @@ describe('ChannelWizard render (step guidance + labels)', () => {
   });
 
   it('"이 폴더로 시작" selects the current folder as cwd and advances to the backend step', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     // Descend into a subfolder, then select it with dir:here.
     await wizard.handle({ id: 'dir:into', value: 'project' });
@@ -142,7 +160,7 @@ describe('ChannelWizard render (step guidance + labels)', () => {
   });
 
   it('the model + permission OPTION labels are the original ENGLISH (no Korean)', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     await wizard.handle({ id: 'dir:here' });
     await wizard.handle({ id: 'backend', value: 'claude' });
@@ -170,7 +188,7 @@ describe('ChannelWizard render (step guidance + labels)', () => {
   });
 
   it('the confirm step uses a ✅ 시작 button, not a folder label', async () => {
-    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
     await wizard.handle({ id: 'dir:here' });
     await wizard.handle({ id: 'backend', value: 'claude' });

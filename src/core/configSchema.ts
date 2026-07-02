@@ -110,6 +110,18 @@ export const serverConfigSchema = z.object({
   locale: z.string().optional(),
   auditChannelId: z.string().nullable().optional(),
   favorites: z.array(z.string()).optional(),
+  // A4D-style channel structure created by /init and persisted here so it can be
+  // reused (idempotent re-init) and so /agent start knows where to put new session
+  // channels. Absent until /init runs. controlChannelId is where the session-start UI
+  // lives; sessionsCategoryId parents auto-created per-project session channels.
+  channels: z
+    .object({
+      categoryId: z.string(),
+      controlChannelId: z.string(),
+      sessionsCategoryId: z.string(),
+      statusChannelId: z.string().nullable(),
+    })
+    .optional(),
 });
 
 export type ServerConfig = z.infer<typeof serverConfigSchema>;

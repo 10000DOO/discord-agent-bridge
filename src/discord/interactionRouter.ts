@@ -12,7 +12,14 @@ import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
-import type { ComponentRow, EmbedSpec, ModalSpec } from './ports.js';
+import type { ComponentRow, EmbedSpec, MessageChannel, ModalSpec } from './ports.js';
+import { buildStatusEmbed } from './renderers/statusEmbed.js';
+import {
+  ensureGuildChannels,
+  createSessionChannel,
+  type GuildChannelProvisioner,
+  type GuildChannels,
+} from './guildChannels.js';
 import { setLocale, t, type Locale } from './i18n.js';
 
 // InteractionCreate router (§4, §7.1, §9). Authorizes FIRST (tier per action), then
@@ -123,6 +130,16 @@ export interface InteractionRouterDeps {
   // Models offered per backend, as English {value,label} pairs from the provider
   // catalog (app boot supplies: Claude = dynamic/cached; Codex = documented default).
   modelsFor?: (backend: string) => ModelChoice[];
+  // Resolve a guildId to a channel provisioner over the live gateway (A4D-style /init
+  // + auto-created session channels). Returns null when the guild is unknown or the
+  // client is not connected yet (tests inject a fake). Optional so the pre-gateway
+  // graph builds without it; when absent, /init and session-channel creation report a
+  // graceful notice instead of throwing.
+  resolveGuildProvisioner?: (guildId: string) => Promise<GuildChannelProvisioner | null>;
+  // Resolve a channelId to a message sink (to post the status embed + intro into a
+  // freshly created session channel). Defaults to the wiring's resolver; app boot
+  // binds it to the live gateway. Optional for the same reason as above.
+  resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
 }
 
 function channelKey(guildId: string, channelId: string): string {
@@ -140,6 +157,17 @@ export class InteractionRouter {
 
   constructor(deps: InteractionRouterDeps) {
     this.deps = deps;
+  }
+
+  // Bind the live-gateway resolvers AFTER construction (app boot). The client depends
+  // on this router, so the router cannot capture the client at construction — these
+  // setters mirror wiring.setResolveChannel. Used by /init and /agent start's session-
+  // channel creation + intro post.
+  setResolveGuildProvisioner(fn: (guildId: string) => Promise<GuildChannelProvisioner | null>): void {
+    this.deps.resolveGuildProvisioner = fn;
+  }
+  setResolveChannel(fn: (channelId: string) => Promise<MessageChannel | null>): void {
+    this.deps.resolveChannel = fn;
   }
 
   async handle(interaction: RouterInteraction): Promise<void> {
@@ -197,6 +225,14 @@ export class InteractionRouter {
     // outside the tier-per-action table below.
     if (actionKey === 'config') {
       await this.guarded(i, () => this.openConfigPanel(i));
+      return;
+    }
+
+    // /init creates the guild channel structure (control channel + sessions category).
+    // Same bootstrap gate as /config (Administrator OR admin tier) so a fresh server
+    // admin can run it before any role is configured.
+    if (actionKey === 'init') {
+      await this.guarded(i, () => this.runInit(i));
       return;
     }
 
@@ -368,6 +404,31 @@ export class InteractionRouter {
     await i.followUp({ components: defaultRows, ephemeral: true });
   }
 
+  // /init: idempotently create the A4D-style channel structure (control channel +
+  // sessions category) and persist the ids to servers/<guildId>.json. Re-running
+  // reuses existing channels by their stored ids. Same bootstrap gate as /config.
+  private async runInit(i: SlashInteraction): Promise<void> {
+    if (i.guildId === null) {
+      await i.editReply({ content: t('auth.denied', { reason: 'DM' }) });
+      return;
+    }
+    if (!this.authorizeConfig(i)) {
+      await i.editReply({ content: t('cmd.config.denied') });
+      return;
+    }
+    const provisioner = this.deps.resolveGuildProvisioner
+      ? await this.deps.resolveGuildProvisioner(i.guildId)
+      : null;
+    if (!provisioner) {
+      await i.editReply({ content: t('cmd.init.unavailable') });
+      return;
+    }
+    const channels = await ensureGuildChannels(provisioner, this.deps.configStore);
+    await i.editReply({
+      content: t('cmd.init.done', { control: `<#${channels.controlChannelId}>` }),
+    });
+  }
+
   // Route a /config panel component (role/string select or Save) to its panel. Gated
   // by the same bootstrap rule as opening it and owner-bound: a bystander's stray
   // select is acknowledged but ignored, so it cannot corrupt an admin's pending edit.
@@ -442,11 +503,72 @@ export class InteractionRouter {
     }).allowed;
   }
 
-  // orchestrator.start + wire renderers/permission/sendFile for the new session.
-  private async startSession(params: StartParams): Promise<ModeSession> {
+  // A4D-style session start: CREATE a dedicated session channel from the picked
+  // folder, start the session bound to THAT new channel (not the command's channel),
+  // wire renderers/permission/sendFile there, and post the status embed + intro. Falls
+  // back to the command's channel when the guild has no /init structure and no
+  // provisioner is available (so a session can still start), but the channel is created
+  // under the sessions category when /init has run. Returns the effective channel id so
+  // the wizard/router can link the new channel to the driver.
+  private async startSession(params: StartParams): Promise<{ session: ModeSession; channelId: string }> {
+    const channelId = await this.resolveSessionChannelId(params);
+    const session = await this.startInChannel({ ...params, channelId });
+    await this.postSessionIntro(channelId, params, session);
+    return { session, channelId };
+  }
+
+  // orchestrator.start + wire renderers/permission/sendFile for the given channel. The
+  // /mode backend switch reuses this to restart IN PLACE (same channel) — it must not
+  // create a new session channel.
+  private async startInChannel(params: StartParams): Promise<ModeSession> {
     const session = await this.deps.orchestrator.start(params);
     await this.deps.wiring.attach(params.guildId, params.channelId, params.mode);
     return session;
+  }
+
+  // Create the dedicated session channel for this start, or fall back to the command's
+  // channel when no provisioner is wired. When /init has run, the new channel is placed
+  // under the guild's sessions category; otherwise it is created without a parent (or,
+  // if creation is impossible, the command's channel is reused).
+  private async resolveSessionChannelId(params: StartParams): Promise<string> {
+    const provisioner = this.deps.resolveGuildProvisioner
+      ? await this.deps.resolveGuildProvisioner(params.guildId)
+      : null;
+    if (!provisioner) return params.channelId;
+    const channels = this.guildChannels(params.guildId);
+    const created = await createSessionChannel(provisioner, params.cwd, channels?.sessionsCategoryId);
+    return created.id;
+  }
+
+  // The persisted /init channel structure for a guild, or undefined when /init has not
+  // run. A corrupt server file is treated as absent (loadServerConfig returns null).
+  private guildChannels(guildId: string): GuildChannels | undefined {
+    return this.deps.configStore.loadServerConfig(guildId)?.channels;
+  }
+
+  // Post the pinned-style status embed + a short intro into the new session channel so
+  // the conversation happens there (A4D behavior). Best-effort: a resolve/post failure
+  // is logged but never fails the start (the session is already live).
+  private async postSessionIntro(channelId: string, params: StartParams, session: ModeSession): Promise<void> {
+    const resolve = this.deps.resolveChannel;
+    if (!resolve) return;
+    try {
+      const channel = await resolve(channelId);
+      if (!channel) return;
+      const usagePanel = this.deps.modeRegistry.has(params.mode)
+        ? this.deps.modeRegistry.get(params.mode).capabilities.usagePanel
+        : true;
+      const embed = buildStatusEmbed({
+        mode: params.mode,
+        cwd: params.cwd,
+        sessionId: session.sessionId,
+        permMode: params.permMode ?? 'default',
+        usagePanel,
+      });
+      await channel.send({ content: t('cmd.start.intro'), embeds: [embed] });
+    } catch (err) {
+      this.logError('failed to post session intro', err);
+    }
   }
 
   private async resume(i: SlashInteraction): Promise<void> {
@@ -465,7 +587,29 @@ export class InteractionRouter {
     const guildId = i.guildId as string;
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
+    // A4D behavior: delete the dedicated session channel on close. Guarded — never
+    // delete the control channel or a channel that isn't the closed session's, and
+    // skip when no provisioner is wired. Best-effort: a delete failure still reports
+    // the session closed (the reply may not survive if this channel is the one deleted,
+    // which is expected). Reply BEFORE deleting so the ack lands first.
     await i.editReply({ content: t('cmd.close.done') });
+    await this.deleteSessionChannel(guildId, i.channelId);
+  }
+
+  // Delete the session channel that was closed, unless it is the guild's control
+  // channel (never delete /init's control channel). No-op when no provisioner is wired.
+  private async deleteSessionChannel(guildId: string, channelId: string): Promise<void> {
+    const channels = this.guildChannels(guildId);
+    if (channels && channelId === channels.controlChannelId) return;
+    const provisioner = this.deps.resolveGuildProvisioner
+      ? await this.deps.resolveGuildProvisioner(guildId)
+      : null;
+    if (!provisioner) return;
+    try {
+      await provisioner.deleteChannel(channelId);
+    } catch (err) {
+      this.logError('failed to delete session channel', err);
+    }
   }
 
   private async switchBackend(i: SlashInteraction): Promise<void> {
@@ -491,7 +635,7 @@ export class InteractionRouter {
 
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
-    await this.startSession({
+    await this.startInChannel({
       guildId,
       channelId: i.channelId,
       mode: backend,
@@ -600,6 +744,14 @@ export class InteractionRouter {
       const step = await wizard.handle(input);
       if (step === 'done' || step === 'cancelled') {
         this.wizards.delete(channelKey(i.guildId as string, i.channelId));
+      }
+      // On a successful confirm the session was bound to a freshly created channel;
+      // link it back to the driver (A4D-style "session started in <#newChannel>").
+      if (step === 'done') {
+        const newChannelId = wizard.sessionChannelId();
+        if (newChannelId) {
+          await safe(i.editReply({ content: t('cmd.start.channelCreated', { channel: `<#${newChannelId}>` }) }));
+        }
       }
     });
   }
