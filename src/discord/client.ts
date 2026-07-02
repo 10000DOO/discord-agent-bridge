@@ -8,7 +8,9 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  PermissionFlagsBits,
   REST,
+  RoleSelectMenuBuilder,
   Routes,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
@@ -31,6 +33,7 @@ import type {
   MessageChannel,
   MessageThread,
   OutgoingMessage,
+  RoleSelectSpec,
   SelectSpec,
 } from './ports.js';
 import type { MessageRouter } from './messageRouter.js';
@@ -113,7 +116,16 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
     .setName('stop-all')
     .setDescription('Stop every active session (admin)');
 
-  return [agent.toJSON(), mode.toJSON(), stop.toJSON(), stopAll.toJSON()];
+  // /config opens the role-tier + defaults panel. Bootstrap gate: only members with
+  // the Discord Administrator permission see/use it by default, since the role
+  // allowlist may still be empty on first run (the interaction router additionally
+  // allows the admin tier once it is configured — see interactionRouter.authorize).
+  const config = new SlashCommandBuilder()
+    .setName('config')
+    .setDescription('Configure role tiers and defaults for this server')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+  return [agent.toJSON(), mode.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON()];
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +169,9 @@ function toEmbed(spec: EmbedSpec): EmbedBuilder {
 function toRow(row: ComponentRow): ActionRowBuilder<MessageActionRowComponentBuilder> {
   const builder = new ActionRowBuilder<MessageActionRowComponentBuilder>();
   for (const c of row.components) {
-    builder.addComponents(c.type === 'button' ? toButton(c) : toSelect(c));
+    if (c.type === 'button') builder.addComponents(toButton(c));
+    else if (c.type === 'roleSelect') builder.addComponents(toRoleSelect(c));
+    else builder.addComponents(toSelect(c));
   }
   return builder;
 }
@@ -188,6 +202,20 @@ function toSelect(spec: SelectSpec): StringSelectMenuBuilder {
     })),
   );
   if (spec.placeholder !== undefined) select.setPlaceholder(spec.placeholder);
+  return select;
+}
+
+// A Discord Role Select menu (the /config role-tier pickers). min/maxValues bound
+// the multi-select; defaultRoleIds prefill the tier's current roles so the panel
+// shows the effective values. The user picks role NAMES; the values are role IDs.
+function toRoleSelect(spec: RoleSelectSpec): RoleSelectMenuBuilder {
+  const select = new RoleSelectMenuBuilder().setCustomId(spec.customId);
+  if (spec.placeholder !== undefined) select.setPlaceholder(spec.placeholder);
+  if (spec.minValues !== undefined) select.setMinValues(spec.minValues);
+  if (spec.maxValues !== undefined) select.setMaxValues(spec.maxValues);
+  if (spec.defaultRoleIds && spec.defaultRoleIds.length > 0) {
+    select.setDefaultRoles(spec.defaultRoleIds);
+  }
   return select;
 }
 
@@ -374,10 +402,13 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
     channelId: interaction.channelId ?? '',
     user: { id: interaction.user.id },
     member: adaptMember(interaction),
-    reply: (options: { content: string; ephemeral?: boolean }) => {
+    hasAdminPermission: hasAdminPermission(interaction),
+    reply: (options: { content?: string; ephemeral?: boolean; embeds?: EmbedSpec[]; components?: ComponentRow[] }) => {
       const replyable = interaction as ChatInputCommandInteraction | MessageComponentInteraction;
       return replyable.reply({
-        content: options.content,
+        ...(options.content !== undefined ? { content: options.content } : {}),
+        ...(options.embeds && options.embeds.length > 0 ? { embeds: options.embeds.map(toEmbed) } : {}),
+        ...(options.components && options.components.length > 0 ? { components: options.components.map(toRow) } : {}),
         ...(options.ephemeral ? { flags: MessageFlags.Ephemeral } : {}),
       });
     },
@@ -394,19 +425,47 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
     return slash;
   }
 
-  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+  if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu()) {
+    // String-select: single `value` (first) for legacy callers; also expose all
+    // `values`. Role-select: `values` are the picked role IDs (no single `value`).
+    const values = interaction.isStringSelectMenu() || interaction.isRoleSelectMenu()
+      ? interaction.values
+      : undefined;
     const value = interaction.isStringSelectMenu() ? interaction.values[0] : undefined;
     const component: ComponentInteraction = {
       ...base,
       kind: 'component',
       customId: interaction.customId,
       ...(value !== undefined ? { value } : {}),
+      ...(values !== undefined ? { values } : {}),
       deferUpdate: () => interaction.deferUpdate(),
     };
     return component;
   }
 
   return null;
+}
+
+// True when the acting member has the Discord Administrator permission. Used as the
+// /config bootstrap gate (server admins can open /config before the role allowlist
+// is set). Robust to both a cached GuildMember (permissions is a PermissionsBitField
+// with .has) and an uncached APIInteractionGuildMember (permissions is a string
+// bitfield). Absent member / DM → false.
+function hasAdminPermission(interaction: Interaction): boolean {
+  const member = interaction.member;
+  if (!member) return false;
+  const perms = (member as { permissions?: unknown }).permissions;
+  if (perms && typeof perms === 'object' && 'has' in perms) {
+    return (perms as { has: (bit: bigint) => boolean }).has(PermissionFlagsBits.Administrator);
+  }
+  if (typeof perms === 'string') {
+    try {
+      return (BigInt(perms) & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 // The acting member's role ids, or null when unavailable (DMs). Discord may deliver

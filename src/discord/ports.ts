@@ -41,10 +41,11 @@ export interface EmbedSpec {
   footer?: string;
 }
 
-// One action row of interactive components. Only buttons and string-selects are
-// used by this layer (permission buttons; wizard/browser selects).
+// One action row of interactive components. Buttons, string-selects, and Discord
+// role-selects are used by this layer (permission buttons; wizard/browser selects;
+// /config role-tier pickers).
 export interface ComponentRow {
-  components: (ButtonSpec | SelectSpec)[];
+  components: (ButtonSpec | SelectSpec | RoleSelectSpec)[];
 }
 
 export interface ButtonSpec {
@@ -60,6 +61,21 @@ export interface SelectSpec {
   customId: string;
   placeholder?: string;
   options: { label: string; value: string; description?: string; default?: boolean }[];
+}
+
+// A Discord Role Select menu (discord.js RoleSelectMenuBuilder). The user picks
+// server ROLES by name; the selected values are role IDs. `defaultRoleIds` prefill
+// the currently-effective roles for a tier. Used by the /config panel so operators
+// configure role tiers by clicking role names instead of pasting IDs. The 7b
+// adapter maps this onto a discord.js RoleSelectMenuBuilder.
+export interface RoleSelectSpec {
+  type: 'roleSelect';
+  customId: string;
+  placeholder?: string;
+  minValues?: number;
+  maxValues?: number;
+  // Role IDs to show pre-selected (the tier's current effective roles).
+  defaultRoleIds?: string[];
 }
 
 // A message already posted to a channel that the layer can edit in place (used

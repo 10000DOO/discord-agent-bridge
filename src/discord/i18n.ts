@@ -35,6 +35,19 @@ const ko: Catalog = {
   'wizard.started': '세션을 시작했어요. 백엔드 {backend} · 폴더 `{cwd}`',
   'wizard.cancelled': '세션 시작을 취소했어요.',
   'wizard.profile.advanced': '고급: 권한 모드 직접 선택',
+  // /config panel (role tiers + defaults, clicked in Discord)
+  'config.title': '역할·기본값 설정',
+  'config.intro':
+    '역할 이름을 클릭해 티어를 지정하세요. admin ⊇ execute ⊇ read-only 순으로 권한이 포함됩니다. 다 고른 뒤 **저장**을 누르세요.',
+  'config.role.admin.placeholder': 'admin 역할 (설정·stop-all)',
+  'config.role.execute.placeholder': 'execute 역할 (세션 시작·명령 실행)',
+  'config.role.readOnly.placeholder': 'read-only 역할 (읽기 전용)',
+  'config.default.backend.placeholder': '기본 백엔드',
+  'config.default.model.placeholder': '기본 모델',
+  'config.default.permMode.placeholder': '기본 권한 모드',
+  'config.save': '저장',
+  'config.saved':
+    '이 서버 설정을 저장했어요.\n• admin: {admin}\n• execute: {execute}\n• read-only: {readOnly}\n• 기본 백엔드: {backend} · 모델: {model} · 권한: {perm}',
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',
@@ -95,6 +108,8 @@ const ko: Catalog = {
   'router.noSession': '이 채널에는 활성 세션이 없어요. 먼저 `/agent start` 를 실행하세요.',
   'router.turn.queued': '대기열에 추가했어요 (#{depth}).',
   'cmd.start.launched': '세션 시작 마법사를 열었어요.',
+  'cmd.config.opened': '역할·기본값 설정 패널을 열었어요. 역할 이름을 클릭해 지정한 뒤 저장하세요.',
+  'cmd.config.denied': '`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.',
   'cmd.resume.none': '재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.',
   'cmd.resume.rebound': '이 채널을 다시 연결했어요.',
   'cmd.close.done': '세션을 종료하고 보관했어요.',
@@ -108,6 +123,8 @@ const ko: Catalog = {
   // Startup guidance (boot path): config missing / token missing → point at --setup.
   'boot.noConfig': '설정이 없습니다. 먼저 셋업을 실행하세요:  node dist/cli.js --setup',
   'boot.noToken': '토큰이 설정되지 않았습니다 — --setup을 다시 실행하세요.',
+  // Terminal setup guidance: roles move from the terminal to Discord `/config`.
+  'setup.rolesInDiscord': '역할은 봇을 서버에 초대한 뒤 Discord에서 `/config` 명령으로 클릭 설정하세요.',
 };
 
 const en: Catalog = {

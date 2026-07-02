@@ -31,3 +31,17 @@ describe('buildSlashCommands — /mode backend choices', () => {
     expect(backendChoiceValues(['claude'])).not.toContain('codex');
   });
 });
+
+describe('buildSlashCommands — /config', () => {
+  it('registers /config gated to the Administrator default member permission', () => {
+    const commands = buildSlashCommands(['claude']);
+    const config = commands.find((c) => c.name === 'config') as unknown as {
+      name: string;
+      default_member_permissions?: string | null;
+    };
+    expect(config).toBeTruthy();
+    // Administrator is bit 3 (0x8); default_member_permissions is the string bitfield.
+    expect(config.default_member_permissions).toBeTruthy();
+    expect((BigInt(config.default_member_permissions as string) & 0x8n) === 0x8n).toBe(true);
+  });
+});

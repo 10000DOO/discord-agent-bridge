@@ -55,7 +55,7 @@ Discord 채널에서 대화하듯 메시지를 보내면, 내 컴퓨터에서 Cl
 
 ### (완성 후) npx로 실행
 ```bash
-# 최초 1회: 셋업 마법사 (토큰/Client ID 입력, 인텐트 확인, 역할 설정, 초대 링크 생성)
+# 최초 1회: 셋업 마법사 (토큰/Client ID 입력, 인텐트 확인, 초대 링크 생성)
 npx discord-agent-bridge@latest --setup
 
 # 봇 실행
@@ -73,14 +73,15 @@ node dist/cli.js --setup   # 셋업 마법사
 node dist/cli.js           # 봇 실행
 ```
 
-**셋업 마법사(`--setup`)** 가 물어보는 것:
-1. Discord 봇 **토큰**
+**셋업 마법사(`--setup`)** 가 물어보는 것 — **비밀(토큰)은 터미널에서만 입력**합니다:
+1. Discord 봇 **토큰** (비밀 → 터미널에서만 붙여넣기)
 2. **Client ID**
 3. Message Content Intent 켰는지 확인
-4. 봇을 쓸 수 있는 **역할(Role)** — 관리자 / 실행 / 읽기전용 (아래 "권한" 참고)
-5. 초대 URL 생성 → 서버에 초대
+4. 초대 URL 생성 → 서버에 초대
 
-설정은 `~/.discord-agent-bridge/` 에 저장됩니다(토큰 파일 권한 600).
+> **역할은 터미널에서 안 정합니다.** 봇을 서버에 초대한 뒤 Discord에서 **`/config`** 명령으로 역할 이름을 **클릭**해서 지정하세요(역할 ID 복사·개발자 모드 불필요). 지정 전에는 **모두 거부(deny-by-default)** 입니다.
+
+설정은 `~/.discord-agent-bridge/` 에 저장됩니다(토큰 파일 권한 600). 역할·기본값은 서버별로 `servers/<guildId>.json` 에 저장됩니다.
 
 ---
 
@@ -103,6 +104,7 @@ node dist/cli.js           # 봇 실행
 | `/mode perm <모드\|프로필>` | 권한 모드/프로필 전환 (세션 유지) |
 | `/stop` | 현재 세션 즉시 중단 (킬 스위치) |
 | `/stop-all` | (관리자) 모든 세션 중단 |
+| `/config` | (관리자) 역할 티어·기본값 설정 — 역할 이름을 **클릭**해 지정 |
 
 ### 권한 모드 (세션이 얼마나 자율적인지)
 - `default` — 도구 실행 전마다 **Allow/Deny 버튼**으로 확인 (가장 안전)
@@ -118,11 +120,12 @@ node dist/cli.js           # 봇 실행
 
 이 봇은 **당신 PC에서, 당신 계정 권한으로** 코드를 실행합니다. 즉 봇에게 명령할 수 있는 사람은 **당신 컴퓨터에서 명령을 실행할 수 있는 사람**입니다. 그래서 역할 통제가 필수입니다.
 
-- **역할 티어 3단계** (셋업에서 Discord 역할 ID로 지정):
-  - **admin** — 설정/`stop-all` 등 관리
+- **역할 티어 3단계** — Discord에서 **`/config`** 로 역할 이름을 **클릭**해 지정합니다(역할 ID·개발자 모드 불필요). admin ⊇ execute ⊇ read-only:
+  - **admin** — 설정/`stop-all`/`config` 등 관리
   - **execute** — 세션 시작·명령 실행
   - **read-only** — 읽기만
-- **기본은 거부(deny-by-default)** — 허용 목록에 없는 사람은 아무것도 못 합니다.
+  - > `/config` 는 처음엔 **서버 관리자(Administrator)** 권한이 있는 사람만 열 수 있고(허용 목록이 비어 있어도 부트스트랩 가능), 이후엔 admin 티어도 사용할 수 있습니다.
+- **기본은 거부(deny-by-default)** — 허용 목록에 없는 사람은 아무것도 못 합니다. `/config` 로 지정하기 전에는 아무도 실행할 수 없습니다.
 - **프로젝트별 접근 제어(ACL)** — 특정 프로젝트를 지정한 역할/사람만 쓰게 할 수 있습니다.
 - **감사 로그** — 누가 언제 무엇을 했는지 `~/.discord-agent-bridge/audit/` 에 기록됩니다.
 
@@ -151,8 +154,8 @@ node dist/cli.js           # 봇 실행
 
 ```
 ~/.discord-agent-bridge/
-├─ config.json            # 봇 토큰·Client ID·기본값·역할·한도 (권한 600)
-├─ servers/<guildId>.json # 서버별 설정 오버라이드
+├─ config.json            # 봇 토큰·Client ID·기본값·한도 (권한 600)
+├─ servers/<guildId>.json # 서버별 역할 티어·기본값 (/config 로 저장, 권한 600)
 ├─ state.json             # 채널↔세션 바인딩 (재시작 후 자동 복구)
 └─ audit/audit.jsonl      # 감사 로그
 ```

@@ -10,6 +10,8 @@ import type { SessionWiring } from './wiring.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
+import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
+import type { ComponentRow, EmbedSpec } from './ports.js';
 import { t } from './i18n.js';
 
 // InteractionCreate router (§4, §7.1, §9). Authorizes FIRST (tier per action), then
@@ -32,7 +34,14 @@ const ACTION_TIER: Record<string, AuthAction> = {
 // ---- Narrow interaction shapes (real discord.js interactions satisfy these) ----
 
 interface Replier {
-  reply: (options: { content: string; ephemeral?: boolean }) => Promise<unknown>;
+  // `content` is optional so an interactive panel (embed + component rows) can be
+  // replied without a text body; `embeds`/`components` carry the /config panel UI.
+  reply: (options: {
+    content?: string;
+    ephemeral?: boolean;
+    embeds?: EmbedSpec[];
+    components?: ComponentRow[];
+  }) => Promise<unknown>;
 }
 
 // Common actor/context fields present on every interaction we handle.
@@ -41,6 +50,11 @@ interface BaseInteraction extends Replier {
   channelId: string;
   user: { id: string };
   member: { roles: { cache: { map: (fn: (r: { id: string }) => string) => string[] } } } | null;
+  // True when the acting member has the Discord Administrator permission. Populated
+  // by the client.ts adapter from member.permissions. Used ONLY as the /config
+  // bootstrap gate (server admins can open /config even before the role allowlist
+  // is set). Absent/false in DMs and for non-admins.
+  hasAdminPermission?: boolean;
 }
 
 export interface SlashInteraction extends BaseInteraction {
@@ -55,6 +69,9 @@ export interface ComponentInteraction extends BaseInteraction {
   customId: string;
   // Selected value for a string-select; empty for a button.
   value?: string;
+  // Selected values for a multi-select (string- or role-select). For a role-select
+  // these are the picked role IDs. Absent for a button.
+  values?: string[];
   // Acknowledge a component interaction without a new reply (defer update).
   deferUpdate: () => Promise<unknown>;
 }
@@ -86,6 +103,9 @@ export class InteractionRouter {
   // Active wizards keyed by guildId:channelId, so follow-up component interactions
   // (folder/backend/model/perm selects, confirm/cancel) route back to the same flow.
   private readonly wizards = new Map<string, ChannelWizard>();
+  // Active /config panels keyed by guildId:channelId, so follow-up role/string
+  // selects + Save route back to the panel that holds the pending selections.
+  private readonly configPanels = new Map<string, ConfigPanel>();
 
   constructor(deps: InteractionRouterDeps) {
     this.deps = deps;
@@ -103,6 +123,15 @@ export class InteractionRouter {
 
   private async handleSlash(i: SlashInteraction): Promise<void> {
     const actionKey = i.subcommand ? `${i.commandName}.${i.subcommand}` : i.commandName;
+
+    // /config has a bespoke bootstrap gate (Administrator OR admin tier) so it works
+    // on first run with an empty allowlist AND later for configured admins — handled
+    // outside the tier-per-action table below.
+    if (actionKey === 'config') {
+      await this.openConfigPanel(i);
+      return;
+    }
+
     const action = ACTION_TIER[actionKey] ?? 'drive';
 
     if (!this.authorize(i, action)) return;
@@ -174,6 +203,97 @@ export class InteractionRouter {
     });
     this.wizards.set(channelKey(guildId, i.channelId), wizard);
     await safe(i.reply({ content: t('cmd.start.launched'), ephemeral: true }));
+  }
+
+  // Open the /config role-tier + defaults panel. Bootstrap gate: allowed if the actor
+  // has the Discord Administrator permission OR our admin tier — so it works on first
+  // run with an empty allowlist AND later for configured admins (§7.1). Prefills the
+  // panel from the guild's current server-layer auth + resolved defaults; a bystander
+  // cannot advance it (owner-bound, mirroring the wizard).
+  private async openConfigPanel(i: SlashInteraction): Promise<void> {
+    if (i.guildId === null) {
+      await safe(i.reply({ content: t('auth.denied', { reason: 'DM' }), ephemeral: true }));
+      return;
+    }
+    if (!this.authorizeConfig(i)) {
+      await safe(i.reply({ content: t('cmd.config.denied'), ephemeral: true }));
+      return;
+    }
+    const guildId = i.guildId;
+    const global = this.deps.configStore.load();
+    const server = this.deps.configStore.loadServerConfig(guildId);
+    const resolved = this.deps.configResolver.resolve(guildId, i.channelId);
+    const backends = this.deps.modeRegistry.list();
+    const models = this.deps.modelsFor?.(resolved.mode) ?? [resolved.claudeModel];
+    const permModes = this.deps.modeRegistry.get(resolved.mode).capabilities.permissionModes;
+
+    // Current effective role tiers = server override when present, else global.
+    const panel = new ConfigPanel({
+      guildId,
+      ownerId: i.user.id,
+      configStore: this.deps.configStore,
+      defaults: {
+        adminRoleIds: server?.auth?.adminRoleIds ?? global.auth.adminRoleIds,
+        executeRoleIds: server?.auth?.executeRoleIds ?? global.auth.executeRoleIds,
+        readOnlyRoleIds: server?.auth?.readOnlyRoleIds ?? global.auth.readOnlyRoleIds,
+        backend: resolved.mode,
+        model: resolved.claudeModel,
+        permMode: resolved.permissionMode,
+      },
+      backends,
+      models,
+      permModes,
+    });
+    this.configPanels.set(channelKey(guildId, i.channelId), panel);
+    const { embed, rows } = panel.render();
+    await safe(i.reply({ content: t('cmd.config.opened'), embeds: [embed], components: rows, ephemeral: true }));
+  }
+
+  // Route a /config panel component (role/string select or Save) to its panel. Gated
+  // by the same bootstrap rule as opening it and owner-bound: a bystander's stray
+  // select is acknowledged but ignored, so it cannot corrupt an admin's pending edit.
+  private async handleConfigComponent(i: ComponentInteraction): Promise<void> {
+    if (!i.guildId) {
+      await safe(i.deferUpdate());
+      return;
+    }
+    if (!this.authorizeConfig(i)) {
+      await safe(i.reply({ content: t('cmd.config.denied'), ephemeral: true }));
+      return;
+    }
+    const panel = this.configPanels.get(channelKey(i.guildId, i.channelId));
+    if (!panel || panel.ownerId !== i.user.id) {
+      await safe(i.deferUpdate());
+      return;
+    }
+    const input: ConfigPanelInput = {
+      id: i.customId,
+      ...(i.value !== undefined ? { value: i.value } : {}),
+      ...(i.values !== undefined ? { values: i.values } : {}),
+    };
+    const result = panel.handle(input);
+    if (result.kind === 'saved') {
+      this.configPanels.delete(channelKey(i.guildId, i.channelId));
+      await safe(i.reply({ content: result.summary, ephemeral: true }));
+      return;
+    }
+    // A pending selection or an ignored input: just acknowledge (keep the panel open).
+    await safe(i.deferUpdate());
+  }
+
+  // The /config bootstrap gate: allow if the actor has the Discord Administrator
+  // permission (works on first run with an empty allowlist) OR clears the admin tier
+  // (works once the allowlist is configured). Never uses the generic tier-denial
+  // reply — the caller sends the /config-specific notice.
+  private authorizeConfig(i: RouterInteraction): boolean {
+    if (i.hasAdminPermission === true) return true;
+    const roleIds = i.member ? i.member.roles.cache.map((r) => r.id) : [];
+    return this.deps.authorizer.authorize({
+      userId: i.user.id,
+      roleIds,
+      action: 'admin',
+      context: { ...(i.guildId ? { guildId: i.guildId } : {}), channelId: i.channelId },
+    }).allowed;
   }
 
   // orchestrator.start + wire renderers/permission/sendFile for the new session.
@@ -304,6 +424,13 @@ export class InteractionRouter {
         await this.deps.wiring.resolvePermission(i.guildId, i.channelId, i.customId, i.user.id);
       }
       await safe(i.deferUpdate());
+      return;
+    }
+
+    // /config panel components (role/string selects + Save). Same bootstrap gate as
+    // opening the panel (Administrator OR admin tier) and owner-bound like the wizard.
+    if (isConfigPanelId(i.customId)) {
+      await this.handleConfigComponent(i);
       return;
     }
 

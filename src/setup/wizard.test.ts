@@ -12,19 +12,20 @@ import type { Logger } from '../core/contracts.js';
 const FIXTURE_TOKEN = 'test-token-value';
 const FIXTURE_CLIENT_ID = '100000000000000001';
 
-// A scripted prompt double: pops one answer per prompt call, in order. The wizard
-// calls password → input(clientId) → confirm(intent) → input(admin) → input(execute)
-// → input(readOnly) → input(model) → input(codexHome) → input(locale). Kept as three
-// per-kind queues so a test states exactly what each kind returns.
+// A scripted prompt double: pops one answer per prompt call, in order. Role tiers are
+// no longer prompted (they move to Discord `/config`), so the wizard now calls:
+//   password(token) → input(clientId) → confirm(intent) → input(model) →
+//   input(codexHome) → input(locale).
 function scriptedPrompts(answers: {
   passwords: string[];
   inputs: string[];
   confirms: boolean[];
-}): { prompts: SetupPrompts; passwordMessages: string[] } {
+}): { prompts: SetupPrompts; passwordMessages: string[]; inputMessages: string[] } {
   const passwords = [...answers.passwords];
   const inputs = [...answers.inputs];
   const confirms = [...answers.confirms];
   const passwordMessages: string[] = [];
+  const inputMessages: string[] = [];
   const prompts: SetupPrompts = {
     async password(config) {
       passwordMessages.push(config.message);
@@ -33,6 +34,7 @@ function scriptedPrompts(answers: {
       return v;
     },
     async input(config) {
+      inputMessages.push(config.message);
       const v = inputs.shift();
       return v ?? config.default ?? '';
     },
@@ -41,7 +43,7 @@ function scriptedPrompts(answers: {
       return v ?? config.default ?? false;
     },
   };
-  return { prompts, passwordMessages };
+  return { prompts, passwordMessages, inputMessages };
 }
 
 // A logger double that records every message + meta it is handed, so a test can
@@ -88,11 +90,11 @@ describe('buildInviteUrl', () => {
 });
 
 describe('runSetup', () => {
-  it('writes a config with the entered token, clientId, roles, and defaults', async () => {
+  it('writes a config with the entered token, clientId, and defaults', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      // clientId, admin, execute, readOnly, model, codexHome, locale
-      inputs: [FIXTURE_CLIENT_ID, '10, 11', '20, 21, 20', '30', 'sonnet', '/tmp/codex', 'en'],
+      // clientId, model, codexHome, locale — NO role prompts.
+      inputs: [FIXTURE_CLIENT_ID, 'sonnet', '/tmp/codex', 'en'],
       confirms: [true],
     });
     const opened: string[] = [];
@@ -109,10 +111,6 @@ describe('runSetup', () => {
     const config = store.load();
     expect(config.discord.token).toBe(FIXTURE_TOKEN);
     expect(config.discord.clientId).toBe(FIXTURE_CLIENT_ID);
-    expect(config.auth.adminRoleIds).toEqual(['10', '11']);
-    // de-duplicated: "20, 21, 20" → ["20","21"].
-    expect(config.auth.executeRoleIds).toEqual(['20', '21']);
-    expect(config.auth.readOnlyRoleIds).toEqual(['30']);
     expect(config.defaults.mode).toBe('claude');
     expect(config.defaults.claudeModel).toBe('sonnet');
     expect(config.defaults.codexHome).toBe('/tmp/codex');
@@ -127,11 +125,46 @@ describe('runSetup', () => {
     expect(BigInt(parsed.searchParams.get('permissions') as string) > 0n).toBe(true);
   });
 
+  it('no longer prompts for role tiers; writes EMPTY role allowlists', async () => {
+    const { prompts, inputMessages } = scriptedPrompts({
+      passwords: [FIXTURE_TOKEN],
+      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      confirms: [true],
+    });
+
+    await runSetup({ prompts, store, open: async () => {}, log: () => {} });
+
+    // No prompt message mentions admin/execute/read-only role tiers anymore.
+    for (const msg of inputMessages) {
+      expect(msg).not.toMatch(/역할|role/i);
+    }
+
+    // Role allowlists are all empty (deny-by-default until `/config` sets them).
+    const config = store.load();
+    expect(config.auth.adminRoleIds).toEqual([]);
+    expect(config.auth.executeRoleIds).toEqual([]);
+    expect(config.auth.readOnlyRoleIds).toEqual([]);
+  });
+
+  it('prints the `/config` guidance line pointing roles at Discord', async () => {
+    const { prompts } = scriptedPrompts({
+      passwords: [FIXTURE_TOKEN],
+      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      confirms: [true],
+    });
+    const logs: string[] = [];
+
+    await runSetup({ prompts, store, open: async () => {}, log: (m) => logs.push(m) });
+
+    // The guidance line tells the operator to set roles in Discord via `/config`.
+    expect(logs.some((l) => l.includes('/config') && l.includes('Discord'))).toBe(true);
+  });
+
   it('writes 0600 config with defaults when optional fields are left blank', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      // clientId given; roles + defaults all blank → wizard applies CONFIG_DEFAULTS
-      inputs: [FIXTURE_CLIENT_ID, '', '', '', '', '', ''],
+      // clientId given; defaults all blank → wizard applies CONFIG_DEFAULTS
+      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
       confirms: [true],
     });
 
@@ -149,28 +182,10 @@ describe('runSetup', () => {
     }
   });
 
-  it('still writes config when the execute-role list is empty (warning path exercised)', async () => {
-    const { prompts } = scriptedPrompts({
-      passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '10', '', '', '', '', ''],
-      confirms: [true],
-    });
-    const logs: string[] = [];
-
-    await runSetup({ prompts, store, open: async () => {}, log: (m) => logs.push(m) });
-
-    // config is written despite the empty execute tier ...
-    const config = store.load();
-    expect(config.auth.executeRoleIds).toEqual([]);
-    expect(store.exists()).toBe(true);
-    // ... and the empty-execute warning was surfaced to the user.
-    expect(logs.some((l) => l.includes('execute') && l.includes('⚠️'))).toBe(true);
-  });
-
   it('never leaks the token to the operational logger or user output', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '', '', '', '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
       confirms: [true],
     });
     const { logger, entries } = recordingLogger();
@@ -195,7 +210,7 @@ describe('runSetup', () => {
   it('proceeds even if opening the browser throws', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '', '', '', '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
       confirms: [true],
     });
 

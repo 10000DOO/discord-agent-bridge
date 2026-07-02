@@ -126,11 +126,14 @@ function fakeOrchestrator() {
   return { orchestrator: calls as unknown as SessionOrchestrator, calls };
 }
 
-function slash(over: Partial<SlashInteraction> & { roles?: string[]; getStringValue?: string }): {
-  interaction: SlashInteraction;
-  replies: { content: string; ephemeral?: boolean }[];
-} {
-  const replies: { content: string; ephemeral?: boolean }[] = [];
+// A captured reply payload. `content` is optional now that a panel can be replied
+// with embeds + component rows and no text body.
+type Reply = { content?: string; ephemeral?: boolean; embeds?: unknown[]; components?: unknown[] };
+
+function slash(
+  over: Partial<SlashInteraction> & { roles?: string[]; getStringValue?: string; hasAdminPermission?: boolean },
+): { interaction: SlashInteraction; replies: Reply[] } {
+  const replies: Reply[] = [];
   const roles = over.roles ?? [EXEC_ROLE];
   const interaction: SlashInteraction = {
     kind: 'slash',
@@ -138,6 +141,7 @@ function slash(over: Partial<SlashInteraction> & { roles?: string[]; getStringVa
     channelId: over.channelId ?? 'c1',
     user: over.user ?? { id: 'u1' },
     member: { roles: { cache: { map: (fn) => roles.map((id) => fn({ id })) } } },
+    ...(over.hasAdminPermission !== undefined ? { hasAdminPermission: over.hasAdminPermission } : {}),
     commandName: over.commandName ?? 'agent',
     subcommand: over.subcommand ?? null,
     getString: () => over.getStringValue ?? null,
@@ -148,11 +152,10 @@ function slash(over: Partial<SlashInteraction> & { roles?: string[]; getStringVa
   return { interaction, replies };
 }
 
-function component(over: Partial<ComponentInteraction> & { roles?: string[] }): {
-  interaction: ComponentInteraction;
-  replies: { content: string; ephemeral?: boolean }[];
-} {
-  const replies: { content: string; ephemeral?: boolean }[] = [];
+function component(
+  over: Partial<ComponentInteraction> & { roles?: string[]; hasAdminPermission?: boolean },
+): { interaction: ComponentInteraction; replies: Reply[] } {
+  const replies: Reply[] = [];
   const roles = over.roles ?? [EXEC_ROLE];
   const interaction: ComponentInteraction = {
     kind: 'component',
@@ -160,8 +163,10 @@ function component(over: Partial<ComponentInteraction> & { roles?: string[] }): 
     channelId: over.channelId ?? 'c1',
     user: over.user ?? { id: 'u1' },
     member: { roles: { cache: { map: (fn) => roles.map((id) => fn({ id })) } } },
+    ...(over.hasAdminPermission !== undefined ? { hasAdminPermission: over.hasAdminPermission } : {}),
     customId: over.customId ?? 'x',
     ...(over.value !== undefined ? { value: over.value } : {}),
+    ...(over.values !== undefined ? { values: over.values } : {}),
     reply: async (o) => {
       replies.push(o);
     },
@@ -377,5 +382,113 @@ describe('InteractionRouter component interactions', () => {
       await router.handle(interaction);
     }
     expect(calls.start).toHaveBeenCalledOnce();
+  });
+});
+
+describe('InteractionRouter /config command', () => {
+  it('opens the panel for a Discord Administrator (empty allowlist bootstrap)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    // A user with NO allowlisted role but the Discord Administrator permission.
+    const { interaction, replies } = slash({
+      commandName: 'config',
+      roles: ['role-nobody'],
+      hasAdminPermission: true,
+    });
+    await router.handle(interaction);
+    // The panel reply carries embeds + component rows (the role-select pickers).
+    expect(replies).toHaveLength(1);
+    expect(replies[0].ephemeral).toBe(true);
+    expect(replies[0].components && replies[0].components.length).toBeGreaterThan(0);
+  });
+
+  it('opens the panel for an admin-tier user (configured allowlist)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({
+      commandName: 'config',
+      roles: [ADMIN_ROLE],
+      hasAdminPermission: false,
+    });
+    await router.handle(interaction);
+    expect(replies[0].components && replies[0].components.length).toBeGreaterThan(0);
+  });
+
+  it('denies a non-admin, non-allowlisted user; panel not opened', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({
+      commandName: 'config',
+      roles: [EXEC_ROLE], // execute tier is NOT admin
+      hasAdminPermission: false,
+    });
+    await router.handle(interaction);
+    expect(replies).toHaveLength(1);
+    expect(replies[0].ephemeral).toBe(true);
+    // No panel components were sent.
+    expect(replies[0].components).toBeUndefined();
+    expect(replies[0].content).toContain('admin');
+  });
+
+  it('a role-select component routes to the panel and persists on Save', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    // Admin opens the panel.
+    const { interaction: open } = slash({
+      commandName: 'config',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(open);
+
+    // The admin picks execute roles via the role-select, then Saves.
+    const { interaction: pick } = component({
+      customId: 'config.role.execute',
+      values: ['picked-exec'],
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(pick);
+
+    const { interaction: save, replies } = component({
+      customId: 'config.save',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(save);
+
+    // The picked role landed in this guild's server config auth.
+    const saved = store.loadServerConfig('g1');
+    expect(saved?.auth?.executeRoleIds).toEqual(['picked-exec']);
+    // A confirmation summary was sent.
+    expect(replies[0].content).toContain('picked-exec');
+  });
+
+  it('a role-select from a NON-owner is ignored (does not persist)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    const { interaction: open } = slash({
+      commandName: 'config',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(open);
+
+    // A different admin (u2) tries to Save without any pick — the panel is owned by
+    // 'admin-user', so u2's interaction is acknowledged but ignored (no save).
+    const { interaction: hijack } = component({
+      customId: 'config.save',
+      user: { id: 'u2' },
+      hasAdminPermission: true,
+    });
+    await router.handle(hijack);
+    expect(store.loadServerConfig('g1')).toBeNull();
   });
 });

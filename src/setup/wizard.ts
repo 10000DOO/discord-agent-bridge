@@ -1,5 +1,11 @@
-// Interactive first-run config (token, Client ID, role tiers, defaults) via
-// @inquirer/prompts (§4, §8). Writes config.json through ConfigStore (0600).
+// Interactive first-run config (token, Client ID, defaults) via @inquirer/prompts
+// (§4, §8). Writes config.json through ConfigStore (0600).
+//
+// Role tiers are NO LONGER set here: the terminal step needs only the secret (the
+// bot token, which must be pasted in the terminal, never through Discord) plus the
+// Client ID and the Message Content Intent confirmation. Role allowlists are left
+// empty (deny-by-default) and the operator configures them AFTER inviting the bot,
+// in Discord via the `/config` command (clicking role names — no IDs). See §7.1.
 //
 // Everything the wizard touches — the prompt functions, the browser opener, the
 // output sink, the ConfigStore, and the logger — is injectable through `deps` so
@@ -13,6 +19,7 @@ import { ConfigStore } from '../core/config.js';
 import { CONFIG_DEFAULTS, CONFIG_VERSION, type AppConfig } from '../core/configSchema.js';
 import { createLogger } from '../core/logger.js';
 import type { Logger } from '../core/contracts.js';
+import { setLocale, t, type Locale } from '../discord/i18n.js';
 
 // The bot's required permission bitfield, computed from the exact permission set
 // documented in README ("초대 링크 만들기" → Bot Permissions). Kept as the discord.js
@@ -49,17 +56,6 @@ export interface SetupDeps {
   store?: ConfigStore;
   logger?: Logger;
   log?: (message: string) => void;
-}
-
-// Parse a comma-separated role-id list into a trimmed, de-duplicated array. Empty
-// entries are dropped so "111, ,222" → ["111","222"] and "" → [].
-function parseRoleIds(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const part of raw.split(',')) {
-    const id = part.trim();
-    if (id.length > 0) seen.add(id);
-  }
-  return [...seen];
 }
 
 // Build the OAuth2 bot-invite URL for the given client id with the bot +
@@ -112,20 +108,12 @@ export async function runSetup(deps: SetupDeps = {}): Promise<void> {
     default: true,
   });
 
-  // Step 4 — role tiers (comma-separated Discord role IDs; empty allowed).
-  log('\n4단계 — 역할 티어 (Discord 역할 ID, 쉼표로 구분 · 비워둘 수 있음)');
-  const adminRaw = await prompts.input({ message: 'admin 역할 ID (설정/stop-all):' });
-  const executeRaw = await prompts.input({ message: 'execute 역할 ID (세션 시작·명령 실행):' });
-  const readOnlyRaw = await prompts.input({ message: 'read-only 역할 ID (읽기 전용):' });
-  const adminRoleIds = parseRoleIds(adminRaw);
-  const executeRoleIds = parseRoleIds(executeRaw);
-  const readOnlyRoleIds = parseRoleIds(readOnlyRaw);
-  if (executeRoleIds.length === 0) {
-    log('  ⚠️ execute 역할이 비어 있습니다 — 아무도 세션을 시작/실행할 수 없습니다. 나중에 config.json 에서 채워주세요.');
-  }
+  // Role tiers are NOT prompted here anymore. They are left empty (deny-by-default)
+  // and configured in Discord via `/config` after the bot is invited (§7.1). The
+  // guidance is printed near the invite step below, once the bot can be added.
 
-  // Step 5 — defaults (backend, Claude model, codexHome, locale).
-  log('\n5단계 — 기본값');
+  // Step 4 — defaults (Claude model, codexHome, locale).
+  log('\n4단계 — 기본값');
   const claudeModel = await prompts.input({
     message: '기본 Claude 모델:',
     default: CONFIG_DEFAULTS.defaults.claudeModel,
@@ -139,9 +127,9 @@ export async function runSetup(deps: SetupDeps = {}): Promise<void> {
     default: CONFIG_DEFAULTS.locale,
   });
 
-  // Step 6 — invite URL: print, then open in the browser (skipped/mocked in tests).
+  // Step 5 — invite URL: print, then open in the browser (skipped/mocked in tests).
   const inviteUrl = buildInviteUrl(clientId.trim());
-  log('\n6단계 — 봇 초대 링크');
+  log('\n5단계 — 봇 초대 링크');
   log(`  ${inviteUrl}`);
   log('  브라우저에서 이 링크를 열어 내 서버에 봇을 초대하세요.');
   try {
@@ -150,23 +138,29 @@ export async function runSetup(deps: SetupDeps = {}): Promise<void> {
     log('  브라우저를 열지 못했습니다. 위 링크를 직접 방문하세요.');
   }
 
-  // Step 7 — write config.json (0600), merging entered values over CONFIG_DEFAULTS.
+  // Step 6 — write config.json (0600), merging entered values over CONFIG_DEFAULTS.
+  // Role allowlists are left EMPTY (from CONFIG_DEFAULTS.auth): deny-by-default until
+  // an admin sets them in Discord via `/config` (roles are per-server, §7.1).
+  const chosenLocale = locale.trim() || CONFIG_DEFAULTS.locale;
   const config: AppConfig = {
     ...CONFIG_DEFAULTS,
     version: CONFIG_VERSION,
     discord: { token: token.trim(), clientId: clientId.trim() },
-    auth: { ...CONFIG_DEFAULTS.auth, adminRoleIds, executeRoleIds, readOnlyRoleIds },
     defaults: {
       ...CONFIG_DEFAULTS.defaults,
       mode: 'claude',
       claudeModel: claudeModel.trim() || CONFIG_DEFAULTS.defaults.claudeModel,
       codexHome: codexHome.trim() || CONFIG_DEFAULTS.defaults.codexHome,
     },
-    locale: locale.trim() || CONFIG_DEFAULTS.locale,
+    locale: chosenLocale,
   };
 
   store.save(config);
   logger.info('setup wrote config', { path: store.configPath, clientId: config.discord.clientId });
   log(`\n설정을 저장했어요: ${store.configPath} (권한 600)`);
+  // Guidance: roles move from the terminal to Discord's `/config` (§7.1). Render it
+  // in the config's locale so the message matches the operator's chosen language.
+  setLocale(chosenLocale as Locale);
+  log(`\n${t('setup.rolesInDiscord')}`);
   log('이제 `node dist/cli.js` 로 봇을 실행하세요.');
 }
