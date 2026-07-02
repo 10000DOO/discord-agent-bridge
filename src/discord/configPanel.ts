@@ -1,6 +1,7 @@
 import type { PermMode } from '../core/contracts.js';
 import type { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type ServerConfig } from '../core/configSchema.js';
+import type { ModelChoice } from '../core/providerCatalog.js';
 import type { Locale } from './i18n.js';
 import type { ButtonSpec, ComponentRow, EmbedSpec, RoleSelectSpec, SelectSpec } from './ports.js';
 import { t } from './i18n.js';
@@ -70,10 +71,12 @@ export interface ConfigPanelOptions {
   defaults: ConfigPanelDefaults;
   // Backends offered (from modeRegistry.list()).
   backends: string[];
-  // Models offered for the default-model select.
-  models: string[];
-  // Permission modes offered for the default-permMode select.
-  permModes: PermMode[];
+  // Models offered for the default-model select, as English {value,label} pairs from
+  // the provider catalog (Claude = dynamic/cached; Codex = documented default).
+  models: ModelChoice[];
+  // Permission modes offered for the default-permMode select, as English {value,label}
+  // pairs from the provider catalog (per-backend: Codex excludes dontAsk/auto).
+  permModes: ModelChoice[];
 }
 
 // A component input routed to the panel. For a role-select, `values` are role IDs;
@@ -283,20 +286,22 @@ export class ConfigPanel {
       type: 'select',
       customId: IDS.model,
       placeholder: t('config.default.model.placeholder'),
+      // English labels from the catalog (model id / SDK displayName), not localized.
       options: this.opts.models.map((m) => ({
-        label: m,
-        value: m,
-        default: m === d.model,
+        label: m.label,
+        value: m.value,
+        default: m.value === d.model,
       })),
     };
     const permSelect: SelectSpec = {
       type: 'select',
       customId: IDS.permMode,
       placeholder: t('config.default.permMode.placeholder'),
+      // English identifiers + a short English hint from the catalog, not localized.
       options: this.opts.permModes.map((m) => ({
-        label: t(`perm.${m}`),
-        value: m,
-        default: m === d.permMode,
+        label: m.label,
+        value: m.value,
+        default: m.value === d.permMode,
       })),
     };
     const localeSelect: SelectSpec = {

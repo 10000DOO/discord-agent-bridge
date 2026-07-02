@@ -308,7 +308,10 @@ function buildRouter(deps: {
     modeRegistry,
     wiring: deps.wiring,
     logger: deps.logger ?? logger,
-    modelsFor: () => ['opus', 'sonnet'],
+    modelsFor: () => [
+      { value: 'opus', label: 'opus' },
+      { value: 'sonnet', label: 'sonnet' },
+    ],
   });
 }
 

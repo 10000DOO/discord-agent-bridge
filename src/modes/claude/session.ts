@@ -5,7 +5,7 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentEvent, ModeContext, ModeSession, TurnInput } from '../../core/contracts.js';
+import type { AgentEvent, ModeContext, ModeSession, PermMode, TurnInput } from '../../core/contracts.js';
 import { makeCanUseTool } from './permissions.js';
 import { createMcpFileTool, ATTACH_FILE_TOOL_NAME, type SendFileCallback } from './mcpFileTool.js';
 import { resolvePlugins } from './plugins.js';
@@ -25,22 +25,23 @@ export interface ClaudeSessionDeps {
   resumeId?: string;
 }
 
-// Map our PermMode straight onto the SDK's native `permissionMode` (§7A). The 4
-// canonical modes are all SDK-native values (verified against the installed SDK's
-// PermissionMode type: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'),
-// so we pass them through verbatim instead of collapsing everything to 'default'
-// and emulating — this is faithful to terminal `claude`. The config-driven
-// canUseTool auto-allow (permissions.ts) still governs the 'default' mode's gate
-// (fixes A8). 'bypassPermissions' additionally requires allowDangerouslySkipPermissions
-// (see options below).
-function toSdkPermissionMode(permMode: string): Options['permissionMode'] {
+// Map our PermMode straight onto the SDK's native `permissionMode` (§7A). PermMode is
+// now DERIVED from the SDK's PermissionMode (contracts.ts), so every value — including
+// 'dontAsk'/'auto' — is a valid SDK value and passes through verbatim, faithful to
+// terminal `claude`, instead of collapsing everything to 'default' and emulating. The
+// config-driven canUseTool auto-allow (permissions.ts) still governs the 'default'
+// mode's gate (fixes A8). 'bypassPermissions' additionally requires
+// allowDangerouslySkipPermissions (see options below). An unknown value (should not
+// happen given the schema) degrades to 'default'.
+function toSdkPermissionMode(permMode: PermMode): Options['permissionMode'] {
   switch (permMode) {
     case 'acceptEdits':
-      return 'acceptEdits';
     case 'bypassPermissions':
-      return 'bypassPermissions';
     case 'plan':
-      return 'plan';
+    case 'dontAsk':
+    case 'auto':
+      return permMode;
+    case 'default':
     default:
       return 'default';
   }

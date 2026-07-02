@@ -10,6 +10,7 @@ import type {
 } from '../../core/contracts.js';
 import { runCodexTurn, type RunCodexTurnOptions, type RunCodexTurnResult } from './runner.js';
 import { CodexDiscovery } from './discovery.js';
+import { CODEX_PERMISSION_MODES } from '../../core/providerCatalog.js';
 
 // The Codex backend: unlike Claude's single long-lived query(), Codex is one-shot
 // PER TURN (a fresh `codex exec --json` first, then `codex exec resume <id>` once a
@@ -43,8 +44,10 @@ export class CodexMode implements AgentMode {
     fileAttach: false,
     fileDiff: false,
     usagePanel: false,
-    // Mapped to Codex approval/sandbox flags in the runner (verified, §5b/§7A).
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+    // Only the subset that maps to Codex approval/sandbox flags in the runner
+    // (verified, §5b/§7A). 'dontAsk'/'auto' have no Codex mapping and are excluded by
+    // the central catalog's CODEX_PERMISSION_MODES.
+    permissionModes: [...CODEX_PERMISSION_MODES],
   };
 
   private readonly deps: CodexModeDeps;

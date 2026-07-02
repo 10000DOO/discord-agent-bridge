@@ -14,6 +14,7 @@ import { createLogger } from './core/logger.js';
 import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
 import { CodexMode } from './modes/codex/index.js';
+import { getClaudeModels, getClaudeModelsCachedOrFallback, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
@@ -62,19 +63,6 @@ export interface App {
   login(): Promise<void>;
   // Tear down the gateway (tests / graceful shutdown).
   destroy(): Promise<void>;
-}
-
-// Common Codex CLI model ids offered in the wizard's model step so it isn't empty.
-// Codex accepts a free-form -m value (verified against CLI 0.142.4), so this is a
-// convenience list, not an enforced enum; the operator can pin any model via
-// config.defaults.codexModel. A configured non-empty codexModel is offered first
-// and de-duplicated against the defaults.
-const CODEX_MODEL_CHOICES = ['gpt-5.1-codex', 'gpt-5-codex', 'o3'];
-
-function codexModelChoices(configured: string): string[] {
-  const trimmed = configured.trim();
-  if (trimmed.length === 0) return CODEX_MODEL_CHOICES;
-  return [trimmed, ...CODEX_MODEL_CHOICES.filter((m) => m !== trimmed)];
 }
 
 export function createApp(deps: CreateAppDeps): App {
@@ -174,8 +162,16 @@ export function createApp(deps: CreateAppDeps): App {
     // from config.defaults.codexModel — empty means `codex` uses its own config.toml
     // default (operator-set). Override defaults.codexModel to force a model.
     browseRoots: config.favorites,
+    // Per-backend model options from the central provider catalog (§ providerCatalog).
+    // Codex: a documented static default list (Codex has no model-list API; -m is
+    // free-form), with config.defaults.codexModel offered first when set. Claude:
+    // the SDK's supportedModels(), fetched once after login and CACHED — this render
+    // returns the cached English list if present, else the alias fallback while the
+    // async fetch warms the cache for the next render (never blocks the ack).
     modelsFor: (backend: string) =>
-      backend === 'codex' ? codexModelChoices(config.defaults.codexModel) : [config.defaults.claudeModel],
+      backend === 'codex'
+        ? getCodexModels(config.defaults.codexModel)
+        : getClaudeModelsCachedOrFallback({ logger }),
   });
 
   const discord = new DiscordClient({
@@ -193,6 +189,10 @@ export function createApp(deps: CreateAppDeps): App {
       for (const binding of channelRegistry.list().filter((b) => !b.archived)) {
         await wiring.attach(binding.guildId, binding.channelId, binding.mode);
       }
+      // Warm the Claude model cache now that auth is available (fire-and-forget): the
+      // SDK's supportedModels() is fetched once and cached so the first /config or
+      // /agent start shows the real, current model list instead of the alias fallback.
+      void getClaudeModels({ logger });
       logger.info('boot complete', { guilds: client.guilds.cache.size });
     },
     ...(deps.client ? { client: deps.client } : {}),

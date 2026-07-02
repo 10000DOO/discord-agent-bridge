@@ -419,7 +419,8 @@ describe('ClaudeMode capabilities', () => {
       fileAttach: true,
       fileDiff: true,
       usagePanel: true,
-      permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+      // Full SDK-synced permission-mode set (incl. dontAsk/auto) from providerCatalog.
+      permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'],
     });
   });
 });

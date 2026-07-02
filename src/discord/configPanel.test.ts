@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelDefaults } from './configPanel.js';
 import { ConfigStore } from '../core/config.js';
 import type { PermMode } from '../core/contracts.js';
+import { permissionModeChoices, type ModelChoice } from '../core/providerCatalog.js';
 
 // The /config panel is transport-agnostic (no discord.js): it takes plain inputs
 // (role-select `values`, string-select `value`, Save) and persists to a temp-dir
@@ -34,8 +35,13 @@ function makePanel(overrides: Partial<ConfigPanelDefaults> = {}): ConfigPanel {
     configStore: store,
     defaults: { ...DEFAULTS, ...overrides },
     backends: ['claude', 'codex'],
-    models: ['opus', 'sonnet'],
-    permModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+    // English {value,label} pairs from the provider catalog, exactly as the router
+    // supplies them.
+    models: [
+      { value: 'opus', label: 'opus' },
+      { value: 'sonnet', label: 'sonnet' },
+    ] satisfies ModelChoice[],
+    permModes: permissionModeChoices('claude'),
   });
 }
 
@@ -62,7 +68,7 @@ function selectById(rows: { components: unknown[] }[], customId: string) {
     .flatMap((r) => r.components as { type: string; customId: string }[])
     .find((c) => c.type === 'select' && c.customId === customId);
   return found && found.type === 'select'
-    ? (found as unknown as { customId: string; options: { value: string; default?: boolean }[] })
+    ? (found as unknown as { customId: string; options: { value: string; label: string; default?: boolean }[] })
     : undefined;
 }
 function defaultSelectedValue(select: { options: { value: string; default?: boolean }[] } | undefined): string | undefined {
@@ -115,9 +121,9 @@ describe('ConfigPanel render', () => {
   });
 
   it('regression: the permission-mode select reflects the SAVED default (default), never bypassPermissions', () => {
-    // The observed bug: the dropdown displayed "전체 자동 승인 (bypassPermissions)" while the
-    // saved default was "기본 (default)". With the current value marked default-selected,
-    // the pre-selected option must be `default` and NOT `bypassPermissions`.
+    // The observed bug: the dropdown pre-selected bypassPermissions while the saved
+    // default was `default`. With the current value marked default-selected, the
+    // pre-selected option must be `default` and NOT `bypassPermissions`.
     const { defaultRows } = makePanel({ permMode: 'default' as PermMode }).render();
     const perm = selectById(defaultRows, 'config.default.permMode');
     const def = perm?.options.find((o) => o.value === 'default');
@@ -128,6 +134,52 @@ describe('ConfigPanel render', () => {
     // bypassPermissions is only default-selected when the user explicitly picked it.
     const bypassPanel = selectById(makePanel({ permMode: 'bypassPermissions' as PermMode }).render().defaultRows, 'config.default.permMode');
     expect(defaultSelectedValue(bypassPanel)).toBe('bypassPermissions');
+  });
+
+  it('permission-mode + model OPTION labels are the original ENGLISH (no Korean)', () => {
+    const { defaultRows } = makePanel().render();
+    const perm = selectById(defaultRows, 'config.default.permMode');
+    const model = selectById(defaultRows, 'config.default.model');
+    // Values are the SDK identifiers; labels are the English identifier + a short
+    // English hint — NOT the old Korean strings.
+    const byValue = (v: string) => perm?.options.find((o) => o.value === v);
+    expect(byValue('default')?.label).toBe('default (ask each time)');
+    expect(byValue('bypassPermissions')?.label).toBe('bypassPermissions (auto-approve all)');
+    // A couple of concrete negative assertions: none of the old Korean labels remain.
+    const permLabels = perm?.options.map((o) => o.label) ?? [];
+    expect(permLabels).not.toContain('기본 (매번 확인)');
+    expect(permLabels).not.toContain('전체 자동 승인 (⚠️ 위험)');
+    // No option label anywhere in these two selects contains a Hangul character.
+    const hangul = /[가-힣]/;
+    for (const label of [...permLabels, ...(model?.options.map((o) => o.label) ?? [])]) {
+      expect(hangul.test(label)).toBe(false);
+    }
+    // Claude's full SDK-synced set (incl. dontAsk/auto) is offered.
+    expect(perm?.options.map((o) => o.value)).toEqual([
+      'default',
+      'acceptEdits',
+      'bypassPermissions',
+      'plan',
+      'dontAsk',
+      'auto',
+    ]);
+  });
+
+  it('Codex permission-mode options exclude dontAsk/auto (no codex mapping)', () => {
+    const codexPanel = new ConfigPanel({
+      guildId: 'g1',
+      ownerId: 'admin-user',
+      configStore: store,
+      defaults: { ...DEFAULTS, backend: 'codex' },
+      backends: ['claude', 'codex'],
+      models: [{ value: 'gpt-5.1-codex', label: 'gpt-5.1-codex' }],
+      permModes: permissionModeChoices('codex'),
+    });
+    const perm = selectById(codexPanel.render().defaultRows, 'config.default.permMode');
+    const values = perm?.options.map((o) => o.value);
+    expect(values).toEqual(['default', 'acceptEdits', 'bypassPermissions', 'plan']);
+    expect(values).not.toContain('dontAsk');
+    expect(values).not.toContain('auto');
   });
 
   it('role selects pre-select the currently-configured roles for every tier', () => {

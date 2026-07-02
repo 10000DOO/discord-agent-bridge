@@ -4,12 +4,16 @@ import { z } from 'zod';
 // servers/<guildId>.json. Grounded in docs/DESIGN.md §8.1 (the 3-level hierarchy).
 // Unknown fields are tolerated on read; DEFAULTS fill missing fields on load.
 
-// Permission modes accepted by backends (mirrors contracts.ts PermMode; §7A).
+// Permission modes accepted by backends (mirrors contracts.ts PermMode = the SDK's
+// full PermissionMode set; §7A). Includes 'dontAsk'/'auto' so saving any Claude mode
+// validates; Codex offers only the subset it can map (see providerCatalog).
 export const permModeSchema = z.enum([
   'default',
   'acceptEdits',
   'bypassPermissions',
   'plan',
+  'dontAsk',
+  'auto',
 ]);
 
 // A named permission profile (§7A). policyTier maps onto the command-policy tier.

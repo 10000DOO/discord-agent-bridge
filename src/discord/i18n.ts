@@ -61,10 +61,14 @@ const ko: Catalog = {
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',
+  // Confirmation/notice labels (NOT the dropdown OPTION labels — those are English,
+  // sourced from providerCatalog). Used in save/switch notices and the wizard confirm.
   'perm.default': '기본 (매번 확인)',
   'perm.acceptEdits': '편집 자동 승인',
   'perm.bypassPermissions': '전체 자동 승인 (⚠️ 위험)',
   'perm.plan': '플랜 (읽기 전용)',
+  'perm.dontAsk': '사전 승인만 허용 (미승인 거부)',
+  'perm.auto': '자동 판단 (모델이 승인/거부)',
   // Directory browser
   'dir.up': '⬆ 상위 폴더',
   'dir.select': '하위 폴더로 이동…',

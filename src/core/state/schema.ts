@@ -5,12 +5,15 @@ import { z } from 'zod';
 // Unknown fields are tolerated on read and normalized (dropped) on write, since
 // z.object() strips keys not in the schema.
 
-// Permission modes (mirrors contracts.ts PermMode; §7A).
+// Permission modes (mirrors contracts.ts PermMode = the SDK's full PermissionMode
+// set; §7A). Includes 'dontAsk'/'auto' so a saved Claude binding validates.
 export const permModeSchema = z.enum([
   'default',
   'acceptEdits',
   'bypassPermissions',
   'plan',
+  'dontAsk',
+  'auto',
 ]);
 
 export const STATE_VERSION = 2;

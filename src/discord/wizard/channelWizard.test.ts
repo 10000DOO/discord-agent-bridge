@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { ChannelWizard, type StartParams } from './channelWizard.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
 import type { ModeSession } from '../../core/contracts.js';
+import { permissionModeChoices } from '../../core/providerCatalog.js';
 
 let root: string;
 
@@ -29,9 +30,13 @@ function makeWizard(start: (p: StartParams) => Promise<ModeSession>) {
     start,
     defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: null },
     backends: ['claude', 'codex'],
-    models: ['opus', 'sonnet'],
+    // English {value,label} pairs from the provider catalog, as the router supplies.
+    models: [
+      { value: 'opus', label: 'opus' },
+      { value: 'sonnet', label: 'sonnet' },
+    ],
     profiles: ['읽기전용', '수정허용'],
-    permModes: ['default', 'plan', 'acceptEdits'],
+    permModes: permissionModeChoices('claude'),
     browser,
   });
 }
@@ -134,6 +139,34 @@ describe('ChannelWizard render (step guidance + labels)', () => {
     expect(wizard.current().cwd).toBe(path.join(root, 'project'));
     // The backend step announces its step number in the guidance.
     expect(wizard.render().embed.description).toContain('백엔드');
+  });
+
+  it('the model + permission OPTION labels are the original ENGLISH (no Korean)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const wizard = makeWizard(start);
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'backend', value: 'claude' });
+    // Model step: labels are the English model ids.
+    const modelSelect = wizard
+      .render()
+      .rows.flatMap((r) => r.components)
+      .find((c) => c.customId === 'model') as { options: { value: string; label: string }[] } | undefined;
+    expect(modelSelect?.options.map((o) => o.label)).toEqual(['opus', 'sonnet']);
+
+    await wizard.handle({ id: 'model', value: 'opus' });
+    // Permission step: labels are the English identifier + a short English hint.
+    const permSelect = wizard
+      .render()
+      .rows.flatMap((r) => r.components)
+      .find((c) => c.customId === 'perm.mode') as { options: { value: string; label: string }[] } | undefined;
+    const byValue = (v: string) => permSelect?.options.find((o) => o.value === v);
+    expect(byValue('default')?.label).toBe('default (ask each time)');
+    expect(byValue('plan')?.label).toBe('plan (read-only planning)');
+    const hangul = /[가-힣]/;
+    for (const o of permSelect?.options ?? []) expect(hangul.test(o.label)).toBe(false);
+    // Old Korean labels are gone.
+    const labels = permSelect?.options.map((o) => o.label) ?? [];
+    expect(labels).not.toContain('플랜 (읽기 전용)');
   });
 
   it('the confirm step uses a ✅ 시작 button, not a folder label', async () => {

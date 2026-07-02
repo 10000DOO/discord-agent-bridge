@@ -1,4 +1,5 @@
 import type { ModeSession, PermMode } from '../../core/contracts.js';
+import type { ModelChoice } from '../../core/providerCatalog.js';
 import type { ComponentRow, EmbedSpec, SelectSpec } from '../ports.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
 import { t } from '../i18n.js';
@@ -42,12 +43,14 @@ export interface ChannelWizardOptions {
   defaults: WizardDefaults;
   // Backends offered in the backend step (from modeRegistry.list()).
   backends: string[];
-  // Models offered in the model step (backend-specific list; 7b supplies it).
-  models: string[];
+  // Models offered in the model step, as English {value,label} pairs from the provider
+  // catalog (backend-specific: Claude = dynamic/cached; Codex = documented default).
+  models: ModelChoice[];
   // Named permission profiles offered as the quick path (§7A). Empty = raw only.
   profiles: string[];
-  // Permission modes offered on the advanced path.
-  permModes: PermMode[];
+  // Permission modes offered on the advanced path, as English {value,label} pairs from
+  // the provider catalog (per-backend: Codex excludes dontAsk/auto).
+  permModes: ModelChoice[];
   // Folder browser (allowed roots / start path already configured by 7b).
   browser: DirectoryBrowser;
 }
@@ -199,10 +202,11 @@ export class ChannelWizard {
           default: b === this.selection.backend,
         })));
       case 'model':
+        // English labels from the catalog (model id / SDK displayName), not localized.
         return this.selectStep('wizard.step.model', 'model', this.opts.models.map((m) => ({
-          label: m,
-          value: m,
-          default: m === this.selection.model,
+          label: m.label,
+          value: m.value,
+          default: m.value === this.selection.model,
         })));
       case 'perm':
         return this.permStep();
@@ -259,10 +263,11 @@ export class ChannelWizard {
       type: 'select',
       customId: 'perm.mode',
       placeholder: t('wizard.profile.advanced'),
+      // English identifiers + a short English hint from the catalog, not localized.
       options: this.opts.permModes.map((m) => ({
-        label: t(`perm.${m}`),
-        value: m,
-        default: m === this.selection.permMode,
+        label: m.label,
+        value: m.value,
+        default: m.value === this.selection.permMode,
       })),
     };
     rows.push({ components: [modeSelect] });

@@ -2,6 +2,8 @@
 // Capabilities declares. See docs/DESIGN.md §5 (Contracts).
 // Type declarations only — no logic lives here.
 
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+
 // ---- Capabilities: sole purpose is "render only what this mode supports" ----
 export interface Capabilities {
   streaming: boolean; // live token-by-token text deltas
@@ -17,14 +19,18 @@ export interface Capabilities {
   permissionModes: PermMode[]; // which permission modes this backend accepts (see below)
 }
 
-// Permission modes — the canonical set is the 4 SDK-native modes (passed straight
-// to the Claude SDK `permissionMode`); Codex maps these onto its own approval-policy
-// + sandbox flags (VERIFY against installed codex CLI in Phase 2, §7A).
-export type PermMode =
-  | 'default' // Claude: interactive canUseTool Allow/Deny buttons
-  | 'acceptEdits' // Claude: auto-approve file edits
-  | 'bypassPermissions' // Claude: auto-approve all  (⚠ dangerous)
-  | 'plan'; // Claude: read-only / planning
+// Permission modes — DERIVED from the installed SDK's PermissionMode so the two never
+// drift: if the SDK adds/removes a mode on upgrade, PermMode changes with it and the
+// providerCatalog `satisfies` guards surface it. Passed straight to the Claude SDK
+// `permissionMode`; Codex maps the subset it supports onto its own approval-policy +
+// sandbox flags (see modes/codex/runner.ts permModeArgs). As of the installed SDK:
+//   'default'           Claude: interactive canUseTool Allow/Deny buttons
+//   'acceptEdits'       Claude: auto-approve file edits
+//   'bypassPermissions' Claude: auto-approve all  (⚠ dangerous)
+//   'plan'              Claude: read-only / planning
+//   'dontAsk'           Claude: don't prompt; deny if not pre-approved (Claude-only)
+//   'auto'              Claude: model-classifier decides approve/deny (Claude-only)
+export type PermMode = PermissionMode;
 
 // ---- Normalized event stream every mode emits (superset union) ----
 export type AgentEvent =

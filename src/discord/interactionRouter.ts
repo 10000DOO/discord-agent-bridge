@@ -1,4 +1,5 @@
 import type { Logger, ModeSession, PermMode } from '../core/contracts.js';
+import { permissionModeLabel, type ModelChoice } from '../core/providerCatalog.js';
 import type { Authorizer, AuthAction } from '../core/auth.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { ConfigStore } from '../core/config.js';
@@ -119,8 +120,9 @@ export interface InteractionRouterDeps {
   logger: Logger;
   // Allowed roots for the wizard's folder browser (config-driven; app boot supplies).
   browseRoots?: string[];
-  // Models offered in the wizard's model step per backend (app boot supplies).
-  modelsFor?: (backend: string) => string[];
+  // Models offered per backend, as English {value,label} pairs from the provider
+  // catalog (app boot supplies: Claude = dynamic/cached; Codex = documented default).
+  modelsFor?: (backend: string) => ModelChoice[];
 }
 
 function channelKey(guildId: string, channelId: string): string {
@@ -269,6 +271,15 @@ export class InteractionRouter {
     }
   }
 
+  // The permission-mode option list for a backend as English {value,label} pairs. The
+  // backend's declared capabilities.permissionModes stays authoritative for WHICH modes
+  // it accepts (Codex excludes dontAsk/auto); the provider catalog supplies the English
+  // label for each — so the dropdowns show original English identifiers, not Korean.
+  private permModeChoicesFor(backend: string): ModelChoice[] {
+    const modes = this.deps.modeRegistry.get(backend).capabilities.permissionModes;
+    return modes.map((m) => ({ value: m, label: permissionModeLabel(m) }));
+  }
+
   private async startWizard(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string; // authorize() rejected DMs (no guild)
     const resolved = this.deps.configResolver.resolve(guildId, i.channelId);
@@ -276,8 +287,8 @@ export class InteractionRouter {
     const backends = this.deps.modeRegistry.list();
     const profiles = Object.keys(config.profiles);
     const backend = resolved.mode;
-    const models = this.deps.modelsFor?.(backend) ?? [resolved.claudeModel];
-    const permModes = this.deps.modeRegistry.get(backend).capabilities.permissionModes;
+    const models = this.deps.modelsFor?.(backend) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
+    const permModes = this.permModeChoicesFor(backend);
 
     const browser = new DirectoryBrowser({
       ...(this.deps.browseRoots && this.deps.browseRoots.length > 0
@@ -325,8 +336,8 @@ export class InteractionRouter {
     const server = this.deps.configStore.loadServerConfig(guildId);
     const resolved = this.deps.configResolver.resolve(guildId, i.channelId);
     const backends = this.deps.modeRegistry.list();
-    const models = this.deps.modelsFor?.(resolved.mode) ?? [resolved.claudeModel];
-    const permModes = this.deps.modeRegistry.get(resolved.mode).capabilities.permissionModes;
+    const models = this.deps.modelsFor?.(resolved.mode) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
+    const permModes = this.permModeChoicesFor(resolved.mode);
 
     // Current effective role tiers = server override when present, else global.
     const panel = new ConfigPanel({

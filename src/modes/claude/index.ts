@@ -7,6 +7,7 @@ import type {
 } from '../../core/contracts.js';
 import { ClaudeSession, type QueryFn } from './session.js';
 import type { SendFileCallback } from './mcpFileTool.js';
+import { CLAUDE_PERMISSION_MODES } from '../../core/providerCatalog.js';
 
 // Injected once when the mode is registered (§4/§10). `queryFn` defaults to the
 // real SDK query inside ClaudeSession; tests inject a fake. `sendFileFor` is wired
@@ -37,7 +38,9 @@ export class ClaudeMode implements AgentMode {
     fileAttach: true,
     fileDiff: true,
     usagePanel: true,
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+    // Full SDK-synced set (incl. dontAsk/auto) from the central catalog; passed
+    // natively to the SDK's permissionMode (see session.ts toSdkPermissionMode).
+    permissionModes: [...CLAUDE_PERMISSION_MODES],
   };
 
   private readonly deps: ClaudeModeDeps;
