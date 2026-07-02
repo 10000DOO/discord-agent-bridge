@@ -1,5 +1,6 @@
 import {
   query as realQuery,
+  type EffortLevel,
   type ModelInfo,
   type Options,
   type PermissionMode,
@@ -15,10 +16,13 @@ import type { Logger, PermMode } from './contracts.js';
 // of the selectable option values (surrounding guidance text stays localized).
 
 // A single dropdown option: `value` is what we persist/pass to the backend, `label`
-// is the English text shown in the menu.
+// is the English text shown in the menu. `supportedEffortLevels`, present only on
+// Claude model choices when the SDK reports them (ModelInfo.supportedEffortLevels),
+// lets the reasoning-effort step narrow its options to what the chosen model accepts.
 export interface ModelChoice {
   value: string;
   label: string;
+  supportedEffortLevels?: string[];
 }
 
 // ---- Claude permission modes — TIED to the installed SDK's PermissionMode type ----
@@ -69,6 +73,80 @@ export function permissionModeChoices(backend: string): ModelChoice[] {
   return modes.map((m) => ({ value: m, label: permissionModeLabel(m) }));
 }
 
+// ---- Codex-NATIVE sandbox permission choices --------------------------------
+// Codex does NOT use Claude's permission-mode vocabulary; its own model is sandbox +
+// approval. The permission step therefore offers Codex's actual `-s`/--sandbox values
+// (verified against `codex exec`) so the operator sees Codex terms, not Claude ones.
+// The runner (modes/codex/runner.ts permModeArgs) maps each to `-s <mode>` plus a
+// sensible `-c approval_policy=…`. `danger-full-access` is the codex bypass equivalent.
+export const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
+export type CodexSandboxMode = (typeof CODEX_SANDBOX_MODES)[number];
+
+// True when `value` is a Codex-native sandbox mode (vs a Claude PermMode). Lets the
+// runner and wizard tell the two vocabularies apart without a separate type channel.
+export function isCodexSandboxMode(value: string): value is CodexSandboxMode {
+  return (CODEX_SANDBOX_MODES as readonly string[]).includes(value);
+}
+
+// Short English hint appended in parens to a Codex sandbox label. English only — these
+// are the selectable option labels, wanted verbatim.
+const CODEX_SANDBOX_HINTS: Record<CodexSandboxMode, string> = {
+  'read-only': 'read-only, ask to run',
+  'workspace-write': 'write in workspace',
+  'danger-full-access': 'no sandbox (⚠ dangerous)',
+};
+
+// The Codex sandbox permission option list as English {value,label}, e.g.
+// `workspace-write (write in workspace)`. Never localized.
+export function codexSandboxChoices(): ModelChoice[] {
+  return CODEX_SANDBOX_MODES.map((m) => ({ value: m, label: `${m} (${CODEX_SANDBOX_HINTS[m]})` }));
+}
+
+// The permission OPTION list for the wizard's permission step, keyed by backend: Codex
+// shows its native sandbox modes; every other backend shows the Claude PermMode list.
+export function permissionChoicesFor(backend: string): ModelChoice[] {
+  return backend === 'codex' ? codexSandboxChoices() : permissionModeChoices(backend);
+}
+
+// ---- Reasoning-effort choices (per-backend) ---------------------------------
+// Claude effort levels — TIED to the SDK's EffortLevel so the list can't drift: if a
+// future SDK adds/removes a level this fails to compile until synced. Passed to the
+// SDK's `options.effort`. A model may narrow this via ModelInfo.supportedEffortLevels.
+export const CLAUDE_EFFORT_LEVELS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const satisfies readonly EffortLevel[];
+
+// Codex reasoning-effort values accepted by `-c model_reasoning_effort="…"` (verified
+// against developers.openai.com/codex/config-reference, 2026-07). The operator's own
+// config uses 'medium', which is the sensible default here too.
+export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+export type CodexEffortLevel = (typeof CODEX_EFFORT_LEVELS)[number];
+
+// The default reasoning effort offered pre-selected in the wizard per backend. Claude's
+// SDK default is 'high'; Codex's practical default (and the operator's config) is 'medium'.
+export function defaultEffortFor(backend: string): string {
+  return backend === 'codex' ? 'medium' : 'high';
+}
+
+// The reasoning-effort OPTION list for the wizard's effort step, keyed by backend and —
+// for Claude — narrowed to a model's supported levels when the SDK reports them. Labels
+// are the plain English level names. `supportedClaudeLevels`, when non-empty, replaces
+// the full Claude list (e.g. a model with only low/medium/high).
+export function effortChoicesFor(backend: string, supportedClaudeLevels?: readonly string[]): ModelChoice[] {
+  if (backend === 'codex') {
+    return CODEX_EFFORT_LEVELS.map((e) => ({ value: e, label: e }));
+  }
+  const levels =
+    supportedClaudeLevels && supportedClaudeLevels.length > 0
+      ? supportedClaudeLevels
+      : CLAUDE_EFFORT_LEVELS;
+  return levels.map((e) => ({ value: e, label: e }));
+}
+
 // ---- Claude models — DYNAMIC (runtime, cached) -------------------------------
 // Friendly aliases used as the graceful fallback when the SDK cannot report models
 // (API-key-only auth, offline, timeout). English, so the dropdown never breaks.
@@ -113,7 +191,13 @@ async function fetchClaudeModels(queryFn: QueryFn, logger?: Logger): Promise<Mod
     const models = await withTimeout(q.supportedModels(), SUPPORTED_MODELS_TIMEOUT_MS);
     const choices = models
       .filter((m): m is ModelInfo => Boolean(m && typeof m.value === 'string' && m.value.length > 0))
-      .map((m) => ({ value: m.value, label: m.displayName || m.value }));
+      .map((m) => ({
+        value: m.value,
+        label: m.displayName || m.value,
+        ...(m.supportedEffortLevels && m.supportedEffortLevels.length > 0
+          ? { supportedEffortLevels: [...m.supportedEffortLevels] }
+          : {}),
+      }));
     if (choices.length === 0) return fallbackChoices();
     return choices;
   } catch (err) {
@@ -186,10 +270,20 @@ export function getClaudeModelsCachedOrFallback(deps: { queryFn?: QueryFn; logge
 }
 
 // ---- Codex models — honest static default (NOT auto-fetched) -----------------
-// Codex has no model-list API and `-m` is free-form (verified against CLI 0.142.4),
-// so this is a documented convenience list, not a dynamic source. A configured
-// non-empty codexModel is offered first (de-duplicated). English ids.
-const CODEX_MODEL_DEFAULTS: readonly string[] = ['gpt-5.1-codex', 'gpt-5-codex', 'o3'];
+// Codex has no model-list API and `codex exec -m` is FREE-FORM (any OpenAI model the
+// account can reach works), so this is a documented convenience list, not a dynamic
+// source. A configured non-empty codexModel is offered first (de-duplicated). English
+// ids. The list below reflects the models currently used with the OpenAI Codex CLI as
+// of 2026-07 (researched against developers.openai.com/codex/models): gpt-5.5 is the
+// current default for ChatGPT-authenticated sessions, gpt-5.4 the fallback, gpt-5.4-mini
+// for lighter tasks/subagents, and gpt-5.2-codex the Codex-specialized id kept for
+// API-key workflows.
+const CODEX_MODEL_DEFAULTS: readonly string[] = [
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.2-codex',
+];
 
 // The Codex model option list as English {value,label} (label = id). `configured`
 // is config.defaults.codexModel: when non-empty it leads the list.

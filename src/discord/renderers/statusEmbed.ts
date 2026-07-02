@@ -1,4 +1,4 @@
-import type { PermMode } from '../../core/contracts.js';
+import type { SessionPermMode } from '../../core/contracts.js';
 import type { EmbedSpec } from '../ports.js';
 import { COLORS } from '../format.js';
 import { t } from '../i18n.js';
@@ -12,7 +12,7 @@ export interface SessionStatus {
   mode: string; // 'claude' | 'codex' | …
   cwd: string;
   sessionId: string | null;
-  permMode: PermMode;
+  permMode: SessionPermMode; // Claude PermMode or a Codex sandbox mode
   // Whether the backend supports the usage/limits panel (Capabilities.usagePanel).
   // When false (Codex), the status shows the "unavailable" line.
   usagePanel: boolean;

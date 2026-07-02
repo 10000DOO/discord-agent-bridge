@@ -25,16 +25,18 @@ export function getLocale(): Locale {
 type Catalog = Record<string, string>;
 
 const ko: Catalog = {
-  // Wizard (steps: 폴더 → 백엔드 → 모델 → 권한 → 시작)
+  // Wizard (steps: 폴더 → 백엔드 → 모델 → 추론수준 → 권한 → 시작)
   'wizard.title': '세션 시작',
-  'wizard.step.folder': '1/4단계 · 폴더',
-  'wizard.step.backend': '2/4단계 · 백엔드를 선택하세요.',
-  'wizard.step.model': '3/4단계 · 모델을 선택하세요.',
-  'wizard.step.perm': '4/4단계 · 권한 모드 또는 프로필을 선택하세요.',
+  'wizard.step.folder': '1/5단계 · 폴더',
+  'wizard.step.backend': '2/5단계 · 백엔드를 선택하고 "다음"을 누르세요.',
+  'wizard.step.model': '3/5단계 · 모델을 선택하고 "다음"을 누르세요.',
+  'wizard.step.effort': '4/5단계 · 추론 수준을 선택하고 "다음"을 누르세요.',
+  'wizard.step.perm': '5/5단계 · 권한을 선택하고 "✅ 시작"을 누르세요.',
   'wizard.confirm': '`{cwd}` 에서 {backend} 세션을 시작할까요? (권한: {perm})',
   'wizard.started': '세션을 시작했어요. 백엔드 {backend} · 폴더 `{cwd}`',
   'wizard.cancelled': '세션 시작을 취소했어요.',
   'wizard.cancel': '취소',
+  'wizard.next': '다음',
   'wizard.start': '✅ 시작',
   'wizard.profile.advanced': '고급: 권한 모드 직접 선택',
   // /config panel (role tiers + defaults, clicked in Discord)
@@ -69,6 +71,10 @@ const ko: Catalog = {
   'perm.plan': '플랜 (읽기 전용)',
   'perm.dontAsk': '사전 승인만 허용 (미승인 거부)',
   'perm.auto': '자동 판단 (모델이 승인/거부)',
+  // Codex-native sandbox modes (shown in the status embed for a Codex session).
+  'perm.read-only': '읽기 전용 (실행 시 확인)',
+  'perm.workspace-write': '작업 폴더 쓰기 허용',
+  'perm.danger-full-access': '전체 접근 (⚠️ 샌드박스 없음)',
   // Directory browser
   'dir.up': '⬆ 상위 폴더',
   'dir.select': '하위 폴더로 이동…',

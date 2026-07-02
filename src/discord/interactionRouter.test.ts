@@ -460,27 +460,25 @@ describe('InteractionRouter slash commands', () => {
     expect(flat.some((c) => c.type === 'select' && c.customId === 'backend')).toBe(true);
   });
 
-  it('/agent start: EVERY step carries components (folder → backend → model → perm → confirm)', async () => {
+  it('/agent start: EVERY step advances via its BUTTON and re-renders the next step with components', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
     const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
     await router.handle(start);
 
-    // Each transition (except the terminal confirm) re-renders the new step with its
-    // select/buttons attached to the edited message.
-    const steps: { customId: string; value?: string; expectId: string; expectType: string }[] = [
+    // The choice steps advance on their confirm BUTTON (backend.next / model.next /
+    // effort.next), not the select's change. Each transition re-renders the next step
+    // with its select/buttons on the edited message. The final perm step carries the
+    // ✅ 시작 (perm.start) button.
+    const steps: { customId: string; expectId: string; expectType: string }[] = [
       { customId: 'dir:here', expectId: 'backend', expectType: 'select' },
-      { customId: 'backend', value: 'claude', expectId: 'model', expectType: 'select' },
-      { customId: 'model', value: 'opus', expectId: 'perm.mode', expectType: 'select' },
-      { customId: 'perm.mode', value: 'default', expectId: 'confirm', expectType: 'button' },
+      { customId: 'backend.next', expectId: 'model', expectType: 'select' },
+      { customId: 'model.next', expectId: 'effort', expectType: 'select' },
+      { customId: 'effort.next', expectId: 'perm.start', expectType: 'button' },
     ];
     for (const step of steps) {
-      const { interaction, replies } = component({
-        customId: step.customId,
-        ...(step.value !== undefined ? { value: step.value } : {}),
-        user: { id: 'u1' },
-      });
+      const { interaction, replies } = component({ customId: step.customId, user: { id: 'u1' } });
       await router.handle(interaction);
       const edited = replies.find((r) => r.components && (r.components as unknown[]).length > 0);
       expect(edited, `step after ${step.customId} must carry components`).toBeTruthy();
@@ -488,6 +486,28 @@ describe('InteractionRouter slash commands', () => {
         .flatMap((r) => r.components);
       expect(flat.some((c) => c.type === step.expectType && c.customId === step.expectId)).toBe(true);
     }
+  });
+
+  it('/agent start: a select-change updates pending state + re-renders WITHOUT advancing', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction);
+
+    // Changing the backend select (to codex) must NOT advance to the model step — it
+    // re-renders the backend step with codex pre-selected; the session is not started.
+    const { interaction: change, replies } = component({ customId: 'backend', value: 'codex', user: { id: 'u1' } });
+    await router.handle(change);
+    const edited = replies.find((r) => r.components && (r.components as unknown[]).length > 0);
+    const flat = ((edited?.components ?? []) as { components: { type: string; customId: string; options?: { value: string; default?: boolean }[] }[] }[]).flatMap((r) => r.components);
+    // Still on the backend step (backend select + backend.next button), NOT the model step.
+    expect(flat.some((c) => c.customId === 'backend.next')).toBe(true);
+    expect(flat.some((c) => c.customId === 'model')).toBe(false);
+    const backendSelect = flat.find((c) => c.customId === 'backend');
+    expect(backendSelect?.options?.find((o) => o.value === 'codex')?.default).toBe(true);
+    expect(calls.start).not.toHaveBeenCalled();
   });
 
   it('/mode backend switches backend with the fresh-context warning', async () => {
@@ -606,10 +626,10 @@ describe('InteractionRouter component interactions', () => {
 
     const flow: { customId: string; value?: string }[] = [
       { customId: 'dir:here' },
-      { customId: 'backend', value: 'claude' },
-      { customId: 'model', value: 'opus' },
-      { customId: 'perm.mode', value: 'default' },
-      { customId: 'confirm' },
+      { customId: 'backend.next' },
+      { customId: 'model.next' },
+      { customId: 'effort.next' },
+      { customId: 'perm.start' },
     ];
 
     // A bystander 'u2' (also execute tier) runs the WHOLE flow → every input is
@@ -913,13 +933,13 @@ describe('InteractionRouter /agent start creates a dedicated session channel', (
     }
     const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
     await router.handle(start);
-    // Owner drives the whole wizard to confirm.
+    // Owner drives the whole wizard to start via the confirm buttons.
     const flow: { customId: string; value?: string }[] = [
       { customId: 'dir:here' },
-      { customId: 'backend', value: 'claude' },
-      { customId: 'model', value: 'opus' },
-      { customId: 'perm.mode', value: 'default' },
-      { customId: 'confirm' },
+      { customId: 'backend.next' },
+      { customId: 'model.next' },
+      { customId: 'effort.next' },
+      { customId: 'perm.start' },
     ];
     const compReplies: Reply[] = [];
     for (const step of flow) {

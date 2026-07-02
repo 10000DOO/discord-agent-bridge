@@ -1,4 +1,4 @@
-import type { ModeConfigView } from './contracts.js';
+import type { ModeConfigView, SessionPermMode } from './contracts.js';
 import type { AppConfig, ServerConfig } from './configSchema.js';
 import type { ConfigStore } from './config.js';
 import type { ChannelRegistry, ChannelBinding } from './channelRegistry.js';
@@ -18,7 +18,9 @@ export interface ResolvedConfig {
   mode: 'claude' | 'codex';
   claudeModel: string;
   codexModel: string;
-  permissionMode: AppConfig['defaults']['permissionMode'];
+  // Global/server defaults are Claude PermMode; a level-3 project BINDING may carry a
+  // Codex sandbox mode, so the resolved value widens to SessionPermMode.
+  permissionMode: SessionPermMode;
   permissionProfile: string | null;
   codexHome: string;
   codexCliCommand: string;

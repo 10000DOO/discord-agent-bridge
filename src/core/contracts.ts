@@ -32,6 +32,19 @@ export interface Capabilities {
 //   'auto'              Claude: model-classifier decides approve/deny (Claude-only)
 export type PermMode = PermissionMode;
 
+// Codex's OWN permission vocabulary is sandbox-based, not Claude's PermMode names. The
+// `/agent start` wizard's Codex permission step offers these `-s`/--sandbox values
+// directly (see core/providerCatalog CODEX_SANDBOX_MODES); the codex runner maps each
+// to sandbox + approval flags (modes/codex/runner permModeArgs). Kept as its own type so
+// the Claude PermMode path is untouched.
+export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+
+// The permission value carried on a SESSION (binding/context/start): either a Claude
+// PermMode or a Codex sandbox mode. Only the runner that receives it (Claude SDK vs
+// codex spawn) interprets it — the carrier fields stay backend-agnostic. Config
+// DEFAULTS remain PermMode-only (the /config panel is Claude's vocabulary).
+export type SessionPermMode = PermMode | CodexSandboxMode;
+
 // ---- Normalized event stream every mode emits (superset union) ----
 export type AgentEvent =
   | { kind: 'text'; text: string; delta: boolean } // delta=true → streaming chunk
@@ -124,7 +137,7 @@ export interface AuditEntry {
   command?: string; // the raw command line, when action is a command
   tool?: string; // the tool name, when action is a tool use
   mode?: string; // backend that handled it (claude | codex | …)
-  permMode?: PermMode;
+  permMode?: SessionPermMode;
   cwd?: string;
   outcome?: string; // free-form result note
   status?: 'allowed' | 'denied' | 'ok' | 'error'; // coarse result/status
@@ -136,7 +149,10 @@ export interface ModeContext {
   cwd: string;
   ownerId: string;
   model?: string;
-  permMode: PermMode; // resolved global→server→project (§7A/§8)
+  // Reasoning-effort level chosen in the wizard (§9). Claude → SDK options.effort;
+  // Codex → `-c model_reasoning_effort="…"`. Absent → each backend's own default.
+  effort?: string;
+  permMode: SessionPermMode; // resolved global→server→project (§7A/§8); Codex may carry a sandbox mode
   emit(ev: AgentEvent): void; // → EventBus → Discord renderers
   requestPermission(req: { toolName: string; input: unknown }): Promise<PermissionDecision>;
   config: ModeConfigView; // resolved (layered) view: model, timeouts, codexHome, etc.

@@ -5,8 +5,10 @@ import { z } from 'zod';
 // Unknown fields are tolerated on read and normalized (dropped) on write, since
 // z.object() strips keys not in the schema.
 
-// Permission modes (mirrors contracts.ts PermMode = the SDK's full PermissionMode
-// set; §7A). Includes 'dontAsk'/'auto' so a saved Claude binding validates.
+// Permission modes a SESSION binding may carry (mirrors contracts.ts SessionPermMode):
+// the full Claude PermMode set (SDK's PermissionMode incl. 'dontAsk'/'auto') PLUS the
+// Codex-native sandbox modes a Codex session can be started with from the wizard, so a
+// saved Codex binding validates and resume-on-boot restores it.
 export const permModeSchema = z.enum([
   'default',
   'acceptEdits',
@@ -14,6 +16,9 @@ export const permModeSchema = z.enum([
   'plan',
   'dontAsk',
   'auto',
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
 ]);
 
 export const STATE_VERSION = 2;

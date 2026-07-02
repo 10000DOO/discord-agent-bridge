@@ -134,6 +134,7 @@ export class CodexSession implements ModeSession {
       cwd: this.cwd,
       permMode: this.ctx.permMode,
       ...(this.model.length > 0 ? { model: this.model } : {}),
+      ...(this.ctx.effort !== undefined && this.ctx.effort.length > 0 ? { effort: this.ctx.effort } : {}),
       ...(this.sessionId !== null ? { resumeId: this.sessionId } : {}),
       timeoutMs: this.ctx.config.codexTimeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS,
       ...(this.ctx.config.codexCliCommand !== undefined ? { codexCommand: this.ctx.config.codexCliCommand } : {}),

@@ -6,8 +6,16 @@ import {
   getCodexModels,
   permissionModeChoices,
   permissionModeLabel,
+  permissionChoicesFor,
+  codexSandboxChoices,
+  isCodexSandboxMode,
+  effortChoicesFor,
+  defaultEffortFor,
   CLAUDE_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
+  CLAUDE_EFFORT_LEVELS,
+  CODEX_EFFORT_LEVELS,
+  CODEX_SANDBOX_MODES,
   CLAUDE_MODEL_FALLBACK,
   __resetClaudeModelCache,
   type QueryFn,
@@ -176,26 +184,89 @@ describe('permission modes (SDK-synced, English, per-backend)', () => {
   });
 });
 
-describe('getCodexModels (documented static default, English)', () => {
-  it('returns the default list as English {value,label} (label=id) when nothing is configured', () => {
+describe('getCodexModels (researched convenience list, English)', () => {
+  it('returns the current researched list as English {value,label} (label=id) when nothing is configured', () => {
     const choices = getCodexModels('');
     expect(choices).toEqual([
-      { value: 'gpt-5.1-codex', label: 'gpt-5.1-codex' },
-      { value: 'gpt-5-codex', label: 'gpt-5-codex' },
-      { value: 'o3', label: 'o3' },
+      { value: 'gpt-5.5', label: 'gpt-5.5' },
+      { value: 'gpt-5.4', label: 'gpt-5.4' },
+      { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
+      { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
     ]);
   });
 
   it('offers a configured codexModel FIRST, de-duplicated', () => {
-    const choices = getCodexModels('gpt-5-codex');
-    expect(choices[0]).toEqual({ value: 'gpt-5-codex', label: 'gpt-5-codex' });
+    const choices = getCodexModels('gpt-5.4');
+    expect(choices[0]).toEqual({ value: 'gpt-5.4', label: 'gpt-5.4' });
     // No duplicate of the configured model further down the list.
-    expect(choices.filter((c) => c.value === 'gpt-5-codex')).toHaveLength(1);
+    expect(choices.filter((c) => c.value === 'gpt-5.4')).toHaveLength(1);
+    expect(choices).toHaveLength(4);
   });
 
-  it('leads with a novel configured model without dropping the defaults', () => {
-    const choices = getCodexModels('gpt-6-codex');
-    expect(choices[0]?.value).toBe('gpt-6-codex');
-    expect(choices).toHaveLength(4);
+  it('leads with a novel configured model (e.g. the operator config.toml model) without dropping the defaults', () => {
+    const choices = getCodexModels('gpt-5.5-codex');
+    expect(choices[0]?.value).toBe('gpt-5.5-codex');
+    expect(choices).toHaveLength(5);
+  });
+});
+
+describe('Codex-native sandbox permission choices (backend-specific)', () => {
+  it('CODEX_SANDBOX_MODES is exactly the three documented -s values', () => {
+    expect([...CODEX_SANDBOX_MODES]).toEqual(['read-only', 'workspace-write', 'danger-full-access']);
+  });
+
+  it('isCodexSandboxMode recognizes sandbox modes and rejects Claude PermMode names', () => {
+    expect(isCodexSandboxMode('workspace-write')).toBe(true);
+    expect(isCodexSandboxMode('danger-full-access')).toBe(true);
+    expect(isCodexSandboxMode('acceptEdits')).toBe(false);
+    expect(isCodexSandboxMode('default')).toBe(false);
+  });
+
+  it('codexSandboxChoices are English {value,label} with a short hint (no Korean)', () => {
+    const choices = codexSandboxChoices();
+    expect(choices.map((c) => c.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access']);
+    const hangul = /[가-힣]/;
+    for (const c of choices) expect(hangul.test(c.label)).toBe(false);
+    expect(choices.find((c) => c.value === 'workspace-write')?.label).toBe('workspace-write (write in workspace)');
+  });
+
+  it('permissionChoicesFor keys off the backend: Codex → sandbox terms, Claude → PermMode', () => {
+    expect(permissionChoicesFor('codex').map((c) => c.value)).toEqual([...CODEX_SANDBOX_MODES]);
+    expect(permissionChoicesFor('claude').map((c) => c.value)).toEqual([...CLAUDE_PERMISSION_MODES]);
+  });
+
+  it('permModeArgs maps each Codex sandbox choice to the right -s / approval flags', () => {
+    expect(permModeArgs('read-only')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'read-only']);
+    expect(permModeArgs('workspace-write')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'workspace-write']);
+    // danger-full-access → the single codex bypass flag (no -s/-c/-a).
+    expect(permModeArgs('danger-full-access')).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+    for (const m of CODEX_SANDBOX_MODES) {
+      expect(permModeArgs(m)).not.toContain('-a');
+      expect(permModeArgs(m)).not.toContain('--ask-for-approval');
+    }
+  });
+});
+
+describe('reasoning-effort choices (per-backend)', () => {
+  it('Claude effort levels are the SDK-synced set; Codex adds minimal and drops max', () => {
+    expect([...CLAUDE_EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect([...CODEX_EFFORT_LEVELS]).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
+  });
+
+  it('effortChoicesFor branches by backend with plain English labels', () => {
+    expect(effortChoicesFor('claude').map((c) => c.value)).toEqual([...CLAUDE_EFFORT_LEVELS]);
+    expect(effortChoicesFor('codex').map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+  });
+
+  it('effortChoicesFor narrows Claude to a model’s supportedEffortLevels when provided', () => {
+    const narrowed = effortChoicesFor('claude', ['low', 'medium', 'high']);
+    expect(narrowed.map((c) => c.value)).toEqual(['low', 'medium', 'high']);
+    // Codex ignores the Claude-only narrowing argument.
+    expect(effortChoicesFor('codex', ['low']).map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+  });
+
+  it('defaultEffortFor is high for Claude and medium for Codex', () => {
+    expect(defaultEffortFor('claude')).toBe('high');
+    expect(defaultEffortFor('codex')).toBe('medium');
   });
 });

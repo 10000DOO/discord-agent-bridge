@@ -5,7 +5,7 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentEvent, ModeContext, ModeSession, PermMode, TurnInput } from '../../core/contracts.js';
+import type { AgentEvent, ModeContext, ModeSession, SessionPermMode, TurnInput } from '../../core/contracts.js';
 import { makeCanUseTool } from './permissions.js';
 import { createMcpFileTool, ATTACH_FILE_TOOL_NAME, type SendFileCallback } from './mcpFileTool.js';
 import { resolvePlugins } from './plugins.js';
@@ -33,7 +33,7 @@ export interface ClaudeSessionDeps {
 // mode's gate (fixes A8). 'bypassPermissions' additionally requires
 // allowDangerouslySkipPermissions (see options below). An unknown value (should not
 // happen given the schema) degrades to 'default'.
-function toSdkPermissionMode(permMode: PermMode): Options['permissionMode'] {
+function toSdkPermissionMode(permMode: SessionPermMode): Options['permissionMode'] {
   switch (permMode) {
     case 'acceptEdits':
     case 'bypassPermissions':
@@ -43,6 +43,7 @@ function toSdkPermissionMode(permMode: PermMode): Options['permissionMode'] {
       return permMode;
     case 'default':
     default:
+      // A Codex sandbox mode never reaches a Claude session, but degrade safely if so.
       return 'default';
   }
 }
@@ -98,6 +99,11 @@ export class ClaudeSession implements ModeSession {
       settingSources: ['user', 'project', 'local'],
       plugins: resolvePlugins(ctx.logger),
       ...(ctx.model !== undefined ? { model: ctx.model } : {}),
+      // Reasoning effort chosen in the wizard (§9). The wizard only sets a valid Claude
+      // EffortLevel for the Claude backend; empty/absent lets the SDK use its default.
+      ...(ctx.effort !== undefined && ctx.effort.length > 0
+        ? { effort: ctx.effort as Options['effort'] }
+        : {}),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
       ...(allowedTools.length > 0 ? { allowedTools } : {}),
       ...(deps.resumeId !== undefined ? { resume: deps.resumeId } : {}),

@@ -1,4 +1,4 @@
-import type { PermMode } from './contracts.js';
+import type { PermMode, SessionPermMode } from './contracts.js';
 import type { PolicyTier } from './commandPolicy.js';
 import type { ConfigStore } from './config.js';
 import type { ConfigResolver } from './configResolver.js';
@@ -17,7 +17,9 @@ import type { ConfigResolver } from './configResolver.js';
 export type ProfilePolicyTier = PolicyTier | 'read-only' | 'normal' | 'relaxed';
 
 export interface ResolvedPermission {
-  permMode: PermMode;
+  // A Claude PermMode from the layered config/profile, OR a Codex sandbox mode when the
+  // wizard/override supplied one (only a codex session ever receives such a value).
+  permMode: SessionPermMode;
   profile: string | null;
   allowedTools: string[];
   // Present only when the resolved profile declares a policy tier.
@@ -27,7 +29,7 @@ export interface ResolvedPermission {
 // Live, per-session overrides applied on top of the layered defaults. Any field
 // left undefined falls through to the layered value.
 export interface SessionOverride {
-  permMode?: PermMode;
+  permMode?: SessionPermMode;
   profile?: string | null;
 }
 
@@ -51,8 +53,9 @@ export class PermissionResolver {
       override && 'profile' in override ? (override.profile ?? null) : layered.permissionProfile;
 
     // Base permission mode from the layered defaults; the global auto-allow set
-    // is the default tool allowlist when no profile narrows it.
-    let permMode: PermMode = layered.permissionMode;
+    // is the default tool allowlist when no profile narrows it. Widened to
+    // SessionPermMode so a per-session override may carry a Codex sandbox mode.
+    let permMode: SessionPermMode = layered.permissionMode;
     let allowedTools: string[] = [...config.autoAllowClaudeTools];
     let policyTier: ProfilePolicyTier | undefined;
 

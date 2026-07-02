@@ -7,7 +7,7 @@ import type {
   ModeContext,
   ModeSession,
   PermissionDecision,
-  PermMode,
+  SessionPermMode,
   TurnInput,
 } from './contracts.js';
 import type { ChannelRegistry } from './channelRegistry.js';
@@ -60,8 +60,11 @@ export interface StartParams {
   mode: string;
   cwd: string;
   ownerId: string;
-  permMode?: PermMode;
+  // A Claude PermMode or a Codex sandbox mode (the wizard's Codex permission step).
+  permMode?: SessionPermMode;
   profile?: string | null;
+  // Reasoning-effort level chosen in the wizard; threaded onto the ModeContext.
+  effort?: string;
 }
 
 // Result of a send(): whether the turn ran immediately or was queued behind a
@@ -79,7 +82,7 @@ interface ActiveChannel {
   mode: string;
   cwd: string;
   ownerId: string;
-  permMode: PermMode;
+  permMode: SessionPermMode;
   session: ModeSession;
   // Turns waiting behind the one in flight, in arrival order.
   queue: TurnInput[];
@@ -136,6 +139,7 @@ export class SessionOrchestrator {
       mode,
       permMode: perm.permMode,
       allowedTools: perm.allowedTools,
+      ...(params.effort !== undefined ? { effort: params.effort } : {}),
     });
     const session = await agentMode.start(ctx);
 
@@ -402,10 +406,11 @@ export class SessionOrchestrator {
     cwd: string;
     ownerId: string;
     mode: string;
-    permMode: PermMode;
+    permMode: SessionPermMode;
     allowedTools: string[];
+    effort?: string;
   }): ModeContext {
-    const { guildId, channelId, cwd, ownerId, permMode, allowedTools } = args;
+    const { guildId, channelId, cwd, ownerId, permMode, allowedTools, effort } = args;
     const modeConfig = this.configResolver.resolveModeConfig(guildId, channelId);
     modeConfig.allowedTools = allowedTools;
     modeConfig.autoAllowClaudeTools = allowedTools;
@@ -415,6 +420,7 @@ export class SessionOrchestrator {
       cwd,
       ownerId,
       ...(modeConfig.model !== undefined ? { model: modeConfig.model } : {}),
+      ...(effort !== undefined && effort.length > 0 ? { effort } : {}),
       permMode,
       emit: (ev: AgentEvent) => this.emit(guildId, channelId, ev),
       requestPermission: (req) => this.requestPermission({ guildId, channelId, ownerId }, req),

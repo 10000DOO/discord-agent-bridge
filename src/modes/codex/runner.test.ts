@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import * as os from 'node:os';
 import type { AgentEvent, Logger } from '../../core/contracts.js';
 import { mapCodexLine } from './eventMapper.js';
-import { runCodexTurn, buildCodexArgs, permModeArgs, type SpawnFn, type SpawnedProcess } from './runner.js';
+import { runCodexTurn, buildCodexArgs, permModeArgs, effortArgs, type SpawnFn, type SpawnedProcess } from './runner.js';
 
 // Is a real `codex` binary on PATH? The parse smoke test is skipped when not, so
 // CI without codex still passes. `codex --version` exits 0 only when the binary
@@ -261,6 +261,29 @@ describe('permModeArgs (PermMode → codex flags, fresh turn)', () => {
       expect(permModeArgs(mode)).not.toContain('--ask-for-approval');
     }
   });
+
+  // Codex-native sandbox modes (the wizard's Codex permission step) map to `-s <mode>`
+  // + a sensible approval policy; danger-full-access → the single bypass flag.
+  it('maps the Codex-native sandbox modes to the right -s / approval flags', () => {
+    expect(permModeArgs('read-only')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'read-only']);
+    expect(permModeArgs('workspace-write')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'workspace-write']);
+    expect(permModeArgs('danger-full-access')).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+    for (const m of ['read-only', 'workspace-write', 'danger-full-access'] as const) {
+      expect(permModeArgs(m)).not.toContain('-a');
+    }
+  });
+});
+
+describe('effortArgs (reasoning effort → -c model_reasoning_effort)', () => {
+  it('emits `-c model_reasoning_effort="<level>"` for a non-empty level', () => {
+    expect(effortArgs('high')).toEqual(['-c', 'model_reasoning_effort="high"']);
+    expect(effortArgs('minimal')).toEqual(['-c', 'model_reasoning_effort="minimal"']);
+  });
+  it('emits nothing for empty/undefined (codex uses its own config default)', () => {
+    expect(effortArgs('')).toEqual([]);
+    expect(effortArgs(undefined)).toEqual([]);
+    expect(effortArgs('   ')).toEqual([]);
+  });
 });
 
 describe('buildCodexArgs', () => {
@@ -295,6 +318,30 @@ describe('buildCodexArgs', () => {
     // `-a`/--ask-for-approval must never appear (invalid on exec).
     expect(args).not.toContain('-a');
     expect(args).not.toContain('--ask-for-approval');
+  });
+
+  it('includes `-c model_reasoning_effort="…"` after the permission flags when effort is set', () => {
+    const args = buildCodexArgs({
+      prompt: 'do it',
+      cwd: '/tmp/ws',
+      permMode: 'workspace-write', // a Codex-native sandbox value
+      effort: 'high',
+      model: 'gpt-5.5',
+      outputPath: '/tmp/out.txt',
+    });
+    // Sandbox flags then the reasoning-effort flag, both before the model + prompt.
+    expect(args).toEqual(
+      expect.arrayContaining(['-s', 'workspace-write', '-c', 'model_reasoning_effort="high"', '-m', 'gpt-5.5']),
+    );
+    const sandboxIdx = args.indexOf('workspace-write');
+    const effortIdx = args.indexOf('model_reasoning_effort="high"');
+    expect(sandboxIdx).toBeGreaterThan(-1);
+    expect(effortIdx).toBeGreaterThan(sandboxIdx);
+  });
+
+  it('omits the effort flag entirely when no effort is given (codex config default wins)', () => {
+    const args = buildCodexArgs({ prompt: 'p', cwd: '/ws', permMode: 'default', outputPath: '/o.txt' });
+    expect(args.some((a) => a.startsWith('model_reasoning_effort='))).toBe(false);
   });
 
   it('each fresh PermMode produces the correct approval/sandbox (or bypass) argv', () => {
@@ -442,6 +489,27 @@ describe('runCodexTurn', () => {
     expect(captured.args).not.toContain('-a');
     // Child stdin is ignored so `codex exec` doesn't hang waiting on stdin EOF.
     expect(captured.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+  });
+
+  it('threads a chosen reasoning effort into the spawned argv', async () => {
+    const { logger } = makeLogger();
+    const { emit } = collect();
+    const { spawn, captured } = fakeSpawn({ stdoutChunks: [scriptedStdout()], exitCode: 0 });
+    await runCodexTurn({
+      prompt: 'hi',
+      cwd: '/tmp/ws',
+      permMode: 'workspace-write',
+      effort: 'xhigh',
+      timeoutMs: 5_000,
+      emit,
+      logger,
+      spawn,
+      readFile: async () => 'ok',
+      tmpDir,
+    });
+    expect(captured.args).toEqual(
+      expect.arrayContaining(['-c', 'model_reasoning_effort="xhigh"', '-s', 'workspace-write']),
+    );
   });
 
   it('reports status:error and emits an error event on a non-zero exit', async () => {

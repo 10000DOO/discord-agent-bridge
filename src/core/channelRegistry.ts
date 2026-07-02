@@ -1,4 +1,4 @@
-import type { PermMode } from './contracts.js';
+import type { SessionPermMode } from './contracts.js';
 import { StateStore } from './state/store.js';
 import type { AppState, ChannelBindingState } from './state/schema.js';
 
@@ -23,7 +23,9 @@ export interface ChannelBinding {
   sessionId: string | null;
   cwd: string;
   ownerId: string;
-  permMode: PermMode;
+  // A Claude PermMode, or a Codex sandbox mode when a Codex session was started with
+  // one from the wizard (persisted so resume-on-boot restores the same choice).
+  permMode: SessionPermMode;
   profile: string | null;
   projectAuth?: ProjectAuth;
   archived: boolean;

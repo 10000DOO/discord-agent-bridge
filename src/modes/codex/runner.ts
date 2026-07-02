@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentEvent, Logger, PermMode } from '../../core/contracts.js';
+import { isCodexSandboxMode } from '../../core/providerCatalog.js';
 import { mapCodexLine } from './eventMapper.js';
 
 // One `codex exec` turn: build argv from the resolved PermMode (fresh vs
@@ -37,8 +38,13 @@ export type ReadFileFn = (filePath: string) => Promise<string>;
 export interface RunCodexTurnOptions {
   prompt: string; // may be '-' to read the prompt from stdin (see spec)
   cwd: string; // used only for a fresh turn (--cd); ignored on resume
-  permMode: PermMode; // fresh-turn approval/sandbox mapping (ignored on resume)
+  // Fresh-turn approval/sandbox mapping (ignored on resume). A Claude PermMode OR a
+  // Codex-native sandbox mode (read-only / workspace-write / danger-full-access).
+  permMode: string;
   model?: string;
+  // Reasoning effort for a fresh turn → `-c model_reasoning_effort="…"`. Empty/absent
+  // lets `codex` use its own config default.
+  effort?: string;
   resumeId?: string; // when set, a `codex exec resume` turn (no -s/--cd; policy is the thread's)
   timeoutMs: number; // from config limits.codexTimeoutMs
   codexCommand?: string; // defaults to 'codex'
@@ -66,14 +72,32 @@ export interface RunCodexTurnResult {
   exitCode: number | null;
 }
 
-// PermMode → codex approval/sandbox flags for a FRESH turn (verified against
-// codex CLI 0.142.4). `-a`/`--ask-for-approval` is a top-level TUI flag and is
-// NOT accepted by `codex exec` (passing it fails the turn with exit 2), so the
-// approval policy is set via `-c approval_policy="…"`; `-s`/`--sandbox` IS valid
-// on exec. bypassPermissions omits both and passes the single bypass flag — that
-// mode is gated behind an admin check elsewhere (§7A), not here.
-export function permModeArgs(permMode: PermMode): string[] {
-  switch (permMode) {
+// Permission choice → codex approval/sandbox flags for a FRESH turn (verified against
+// codex CLI 0.142.4). `-a`/`--ask-for-approval` is a top-level TUI flag and is NOT
+// accepted by `codex exec` (passing it fails the turn with exit 2), so the approval
+// policy is set via `-c approval_policy="…"`; `-s`/`--sandbox` IS valid on exec.
+//
+// The wizard's Codex permission step offers Codex's OWN sandbox vocabulary
+// (`read-only` / `workspace-write` / `danger-full-access`) rather than Claude's
+// PermMode names. Those flow here on the same string channel; each maps to `-s <mode>`
+// plus a sensible approval policy (danger-full-access → the single bypass flag). The
+// legacy Claude PermMode values still map exactly as before, so a Claude-configured
+// default that reaches a Codex session keeps working.
+export function permModeArgs(permMode: string): string[] {
+  // Codex-native sandbox modes (the wizard's Codex permission step).
+  if (isCodexSandboxMode(permMode)) {
+    switch (permMode) {
+      case 'read-only':
+        return ['-c', 'approval_policy="on-request"', '-s', 'read-only'];
+      case 'danger-full-access':
+        return ['--dangerously-bypass-approvals-and-sandbox'];
+      case 'workspace-write':
+      default:
+        return ['-c', 'approval_policy="on-request"', '-s', 'workspace-write'];
+    }
+  }
+  // Claude PermMode values (unchanged mapping).
+  switch (permMode as PermMode) {
     case 'acceptEdits':
       return ['-c', 'approval_policy="never"', '-s', 'workspace-write'];
     case 'bypassPermissions':
@@ -86,6 +110,15 @@ export function permModeArgs(permMode: PermMode): string[] {
   }
 }
 
+// The reasoning-effort argv for a fresh turn: `-c model_reasoning_effort="<level>"`
+// (verified against developers.openai.com/codex/config-reference; accepts minimal /
+// low / medium / high / xhigh). Empty/undefined → no flag, so `codex` uses its own
+// config default (the operator's config.toml model_reasoning_effort).
+export function effortArgs(effort?: string): string[] {
+  const trimmed = (effort ?? '').trim();
+  return trimmed.length > 0 ? ['-c', `model_reasoning_effort="${trimmed}"`] : [];
+}
+
 // Build the full argv (excluding the command itself). Fresh and resume differ:
 // resume takes the session id positionally and does NOT accept -s/--cd — the
 // thread's persisted approval/sandbox policy governs it, so we deliberately omit
@@ -95,8 +128,9 @@ export function permModeArgs(permMode: PermMode): string[] {
 export function buildCodexArgs(opts: {
   prompt: string;
   cwd: string;
-  permMode: PermMode;
+  permMode: string;
   model?: string;
+  effort?: string;
   resumeId?: string;
   outputPath: string;
 }): string[] {
@@ -110,6 +144,7 @@ export function buildCodexArgs(opts: {
     'exec',
     '--json',
     ...permModeArgs(opts.permMode),
+    ...effortArgs(opts.effort),
     ...modelArgs,
     '--skip-git-repo-check',
     '--cd',
@@ -136,6 +171,7 @@ export async function runCodexTurn(opts: RunCodexTurnOptions): Promise<RunCodexT
     cwd: opts.cwd,
     permMode: opts.permMode,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     ...(opts.resumeId !== undefined ? { resumeId: opts.resumeId } : {}),
     outputPath,
   });

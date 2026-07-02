@@ -1,5 +1,11 @@
 import type { Logger, ModeSession, PermMode } from '../core/contracts.js';
-import { permissionModeLabel, type ModelChoice } from '../core/providerCatalog.js';
+import {
+  defaultEffortFor,
+  effortChoicesFor,
+  permissionChoicesFor,
+  permissionModeLabel,
+  type ModelChoice,
+} from '../core/providerCatalog.js';
 import type { Authorizer, AuthAction } from '../core/auth.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { ConfigStore } from '../core/config.js';
@@ -323,9 +329,24 @@ export class InteractionRouter {
     const backends = this.deps.modeRegistry.list();
     const profiles = Object.keys(config.profiles);
     const backend = resolved.mode;
-    const models = this.deps.modelsFor?.(backend) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
-    const permModes = this.permModeChoicesFor(backend);
 
+    // Model list per backend (the router-supplied dynamic seam, falling back to the
+    // resolved model). The wizard reads it once the backend is chosen so a Codex pick
+    // shows Codex models, not Claude ones.
+    const modelsFor = (b: string): ModelChoice[] =>
+      this.deps.modelsFor?.(b) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
+    // Permission options per backend: Claude PermMode list vs Codex sandbox terms.
+    const permsFor = (b: string): ModelChoice[] => permissionChoicesFor(b);
+    // Reasoning-effort options per backend, narrowed for Claude to the chosen model's
+    // SDK-reported supportedEffortLevels when present.
+    const effortsFor = (b: string, model: string): ModelChoice[] => {
+      const supported = modelsFor(b).find((m) => m.value === model)?.supportedEffortLevels;
+      return effortChoicesFor(b, supported);
+    };
+
+    // Unbounded folder browsing by default (browse anywhere up to '/'), unless the
+    // operator configured explicit browse roots — so the admin can pick a cwd on any
+    // volume (Fix 1). Session file confinement is a separate mechanism and unaffected.
     const browser = new DirectoryBrowser({
       ...(this.deps.browseRoots && this.deps.browseRoots.length > 0
         ? { allowedRoots: this.deps.browseRoots }
@@ -344,9 +365,11 @@ export class InteractionRouter {
         profile: resolved.permissionProfile,
       },
       backends,
-      models,
+      modelsFor,
       profiles,
-      permModes,
+      permsFor,
+      effortsFor,
+      defaultEffortFor,
       browser,
     });
     this.wizards.set(channelKey(guildId, i.channelId), wizard);
@@ -391,7 +414,10 @@ export class InteractionRouter {
         readOnlyRoleIds: server?.auth?.readOnlyRoleIds ?? global.auth.readOnlyRoleIds,
         backend: resolved.mode,
         model: resolved.claudeModel,
-        permMode: resolved.permissionMode,
+        // The /config default-permission select is Claude's PermMode vocabulary; take it
+        // from the config layer (server override else global), NOT the resolved value —
+        // a channel binding may carry a Codex sandbox mode, which does not belong here.
+        permMode: server?.defaults?.permissionMode ?? global.defaults.permissionMode,
         // locale is per-guild (server override) or the global default. Codex home is
         // NOT configured here — it auto-resolves to ~/.codex via the resolver default.
         locale: server?.locale ?? global.locale,
