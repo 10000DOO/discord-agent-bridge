@@ -87,18 +87,6 @@ npm install -g discord-agent-bridge@latest
 
 설치된 버전 확인: `discord-agent-bridge --version`.
 
-### 소스에서 실행
-
-```bash
-git clone https://github.com/10000DOO/discord-agent-bridge.git
-cd discord-agent-bridge
-npm install
-npm run build
-
-node dist/cli.js           # 최초 1회: 셋업 마법사 자동 실행 → 이어서 봇 시작 / 이후: 바로 봇 시작
-node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
-```
-
 **셋업 마법사(`--setup`)** 가 물어보는 것 — **토큰(비밀)만 터미널에서 입력**합니다. 그 외 값은 하나도 안 물어봅니다:
 1. Discord 봇 **토큰** (비밀 → 터미널에서만 붙여넣기)
 2. **Client ID**

@@ -87,18 +87,6 @@ npm install -g discord-agent-bridge@latest
 
 Check your installed version with: `discord-agent-bridge --version`.
 
-### Run from source
-
-```bash
-git clone https://github.com/10000DOO/discord-agent-bridge.git
-cd discord-agent-bridge
-npm install
-npm run build
-
-node dist/cli.js           # First run: setup wizard runs automatically, then the bot starts / later: starts directly
-node dist/cli.js --setup   # Reconfigure only (does not start the bot)
-```
-
 **What the setup wizard (`--setup`) asks for** — the **token (secret) is the only thing you type into the terminal**. Nothing else is asked here:
 1. Your Discord bot **token** (secret — paste it only in the terminal)
 2. Your **Client ID**
