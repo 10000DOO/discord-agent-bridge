@@ -55,10 +55,19 @@ export async function run(argv: string[]): Promise<void> {
   await startBot();
 }
 
-// Only auto-run when invoked as the CLI, not when imported by a test.
-const isMain =
-  typeof process.argv[1] === 'string' &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+// Only auto-run when invoked as the CLI, not when imported by a test. Compare
+// REALPATHS: the npm-installed bin is a symlink, so process.argv[1] is the symlink
+// path while import.meta.url resolves to the real dist/cli.js. fs.realpathSync
+// resolves the symlink to the real path, which equals fileURLToPath(import.meta.url).
+const isMain = (() => {
+  const entry = process.argv[1];
+  if (typeof entry !== 'string') return false;
+  try {
+    return fs.realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
 
 if (isMain) {
   run(process.argv.slice(2)).catch((err) => {
