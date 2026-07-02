@@ -96,13 +96,15 @@ export class DirectoryBrowser {
     return this.roots.some((root) => isWithin(root, resolved));
   }
 
-  // Build the interactive spec (embed + component rows) for the current view. Pure
+  // Build the interactive spec (embed + component rows) for the current view, A4D-style:
+  // the embed shows the CURRENT path + how-to guidance, a select menu lists subfolders,
+  // and a ⬆ 상위 폴더 / ✅ 이 폴더로 시작 button row drives navigation vs selection. Pure
   // data; 7b turns it into a discord.js reply/update.
   render(): { embed: EmbedSpec; rows: ComponentRow[] } {
     const children = this.listChildren();
     const embed: EmbedSpec = {
       title: t('wizard.step.folder'),
-      description: '`' + this.current + '`',
+      description: t('dir.guide') + '\n\n' + t('dir.current') + ': `' + this.current + '`',
     };
     const select: SelectSpec = {
       type: 'select',

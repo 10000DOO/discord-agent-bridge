@@ -68,3 +68,56 @@ describe('DirectoryBrowser', () => {
     expect(b.cwd()).toBe(path.join(root, 'sub'));
   });
 });
+
+describe('DirectoryBrowser render (A4D-style folder picker)', () => {
+  function selectOf(rows: { components: { type: string; customId: string; options?: { label: string; value: string }[]; placeholder?: string }[] }[]) {
+    return rows.flatMap((r) => r.components).find((c) => c.type === 'select' && c.customId === 'dir:into');
+  }
+  function buttonOf(rows: { components: { type: string; customId: string; disabled?: boolean }[] }[], id: string) {
+    return rows.flatMap((r) => r.components).find((c) => c.type === 'button' && c.customId === id);
+  }
+
+  it('shows the CURRENT path + guidance, a subfolder select, and ⬆ up / ✅ start buttons', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const { embed, rows } = b.render();
+    // The embed carries the how-to guidance and the current absolute path.
+    expect(embed.description).toContain('프로젝트 폴더');
+    expect(embed.description).toContain(root);
+    // Subfolder select lists the child directory as a navigation option.
+    const select = selectOf(rows);
+    expect(select?.customId).toBe('dir:into');
+    expect(select?.options?.map((o) => o.value)).toContain('sub');
+    // Up button is DISABLED at a root boundary; the start button is present.
+    expect(buttonOf(rows, 'dir:up')?.disabled).toBe(true);
+    const start = buttonOf(rows, 'dir:here');
+    expect(start).toBeDefined();
+    if (start && 'label' in start) expect(start.label).toContain('시작');
+  });
+
+  it('after navigating INTO a subfolder, the render reflects the new path and enables ⬆ up', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    expect(b.into('sub')).toBe(true);
+    const { embed, rows } = b.render();
+    expect(embed.description).toContain(path.join(root, 'sub'));
+    // Now inside a subfolder, going up is allowed.
+    expect(buttonOf(rows, 'dir:up')?.disabled).toBe(false);
+    // 'nested' is offered as the next descent.
+    expect(selectOf(rows)?.options?.map((o) => o.value)).toContain('nested');
+  });
+
+  it('navigating UP returns to the parent path in the render', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    b.into('sub');
+    expect(b.up()).toBe(true);
+    expect(b.render().embed.description).toContain(root);
+  });
+
+  it('an empty folder renders a disabled-style placeholder option, not a crash', () => {
+    const empty = path.join(root, 'sub', 'nested');
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: empty });
+    const select = selectOf(b.render().rows);
+    // The single sentinel option (never a real folder) keeps the select non-empty.
+    expect(select?.options).toHaveLength(1);
+    expect(select?.options?.[0].value).toBe('__none__');
+  });
+});

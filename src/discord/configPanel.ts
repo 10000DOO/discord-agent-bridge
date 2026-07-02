@@ -2,7 +2,7 @@ import type { PermMode } from '../core/contracts.js';
 import type { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type ServerConfig } from '../core/configSchema.js';
 import type { Locale } from './i18n.js';
-import type { ButtonSpec, ComponentRow, EmbedSpec, ModalSpec, RoleSelectSpec, SelectSpec } from './ports.js';
+import type { ButtonSpec, ComponentRow, EmbedSpec, RoleSelectSpec, SelectSpec } from './ports.js';
 import { t } from './i18n.js';
 
 // The `/config` panel (§7.1/§8): configure a guild's role tiers and defaults by
@@ -17,10 +17,13 @@ import { t } from './i18n.js';
 // limit per message (the primary reply and a follow-up):
 //   - Role tiers (3 role-selects) batch into a pending set and persist together on
 //     the Save button — they share the primary message (3 selects + Save = 4 rows).
-//   - Defaults (backend / model / permMode / locale selects + a Codex-path modal)
-//     AUTO-SAVE on each change: one changed field is written immediately. This lets
-//     the defaults follow-up hold 4 selects + 1 button = 5 rows with no Save button
-//     crammed in — respecting the row budget.
+//   - Defaults (backend / model / permMode / locale selects) AUTO-SAVE on each
+//     change: one changed field is written immediately. This lets the defaults
+//     follow-up hold 4 selects = 4 rows with no Save button — respecting the budget.
+//
+// Codex home is NOT configured here: it resolves automatically to `~/.codex` (like
+// Claude's `~/.claude`) via the config default / resolveCodexHome. The actual PROJECT
+// folder is chosen per-session in the `/agent start` wizard, not in /config.
 
 // The panel component ids. `config.` prefix lets the router recognize + route them.
 export const CONFIG_PANEL_PREFIX = 'config.';
@@ -33,31 +36,13 @@ const IDS = {
   model: 'config.default.model',
   permMode: 'config.default.permMode',
   locale: 'config.default.locale',
-  codexHomeButton: 'config.codexHome.open',
-  codexHomeModal: 'config.codexHome.modal',
-  codexHomeField: 'config.codexHome.value',
   save: 'config.save',
 } as const;
 
 // True when a component id belongs to a /config panel (router routing predicate).
-// Covers the panel components AND the Codex-path modal submit (all `config.`-prefixed).
 export function isConfigPanelId(customId: string): boolean {
   return customId.startsWith(CONFIG_PANEL_PREFIX);
 }
-
-// True when a component id is the Codex-path modal-OPEN button. The router must open
-// the modal WITHOUT deferring first (showModal is itself the acknowledgment).
-export function isCodexHomeModalTrigger(customId: string): boolean {
-  return customId === IDS.codexHomeButton;
-}
-
-// True when a submitted modal is the Codex-path modal (router routes it here).
-export function isCodexHomeModalSubmit(customId: string): boolean {
-  return customId === IDS.codexHomeModal;
-}
-
-// The custom id of the single text field inside the Codex-path modal.
-export const CODEX_HOME_FIELD_ID = IDS.codexHomeField;
 
 // The offered locales (a closed set — the i18n catalog only ships ko/en).
 const LOCALES: Locale[] = ['ko', 'en'];
@@ -75,7 +60,6 @@ export interface ConfigPanelDefaults {
   model: string; // resolved default model
   permMode: PermMode; // resolved default permission mode
   locale: string; // resolved UI language (server override, else global)
-  codexHome: string; // resolved Codex home path
 }
 
 // Option sources for the string-select menus.
@@ -171,31 +155,6 @@ export class ConfigPanel {
       default:
         return { kind: 'ignored' };
     }
-  }
-
-  // Persist the Codex home path submitted via the modal (auto-save, one field). A
-  // blank submission falls back to the current effective value (never blanks it).
-  handleCodexHomeSubmit(value: string): ConfigPanelResult {
-    const codexHome = value.trim() || this.opts.defaults.codexHome;
-    this.patchDefaults({ codexHome });
-    return { kind: 'autosaved', notice: t('config.autosaved.codexHome', { codexHome }) };
-  }
-
-  // The modal spec to open when the Codex-path button is clicked. Prefilled with the
-  // current effective codexHome so the operator edits, not retypes.
-  codexHomeModal(): ModalSpec {
-    return {
-      customId: IDS.codexHomeModal,
-      title: t('config.codexHome.modal.title'),
-      fields: [
-        {
-          customId: IDS.codexHomeField,
-          label: t('config.codexHome.modal.label'),
-          value: this.opts.defaults.codexHome,
-          required: true,
-        },
-      ],
-    };
   }
 
   private autosaveBackend(backend: string): ConfigPanelResult {
@@ -299,9 +258,11 @@ export class ConfigPanel {
 
   // Render the panel as plain component specs. `roleRows` (3 role tiers + Save = 4
   // rows) go on the primary reply; `defaultRows` (backend/model/permMode/locale
-  // selects + the Codex-path button = 5 rows) go on a follow-up — both within
-  // Discord's 5-action-row-per-message limit. The adapter maps these onto discord.js;
-  // tests assert on them directly.
+  // selects = 4 rows) go on a follow-up — both within Discord's 5-action-row-per-
+  // message limit. Each defaults select marks its currently-saved option with
+  // `default: true` so the dropdown shows the REAL current value (not the last
+  // option), and role-selects pre-select the tier's current roles. The adapter maps
+  // these onto discord.js; tests assert on them directly.
   render(): { embed: EmbedSpec; roleRows: ComponentRow[]; defaultRows: ComponentRow[] } {
     const d = this.opts.defaults;
     const adminSelect: RoleSelectSpec = this.roleSelect(IDS.roleAdmin, 'config.role.admin.placeholder', this.pending.adminRoleIds ?? d.adminRoleIds);
@@ -348,12 +309,6 @@ export class ConfigPanel {
         default: l === d.locale,
       })),
     };
-    const codexHomeButton: ButtonSpec = {
-      type: 'button',
-      customId: IDS.codexHomeButton,
-      label: t('config.codexHome.button'),
-      style: 'secondary',
-    };
     const save: ButtonSpec = { type: 'button', customId: IDS.save, label: t('config.save'), style: 'success' };
 
     return {
@@ -369,7 +324,6 @@ export class ConfigPanel {
         { components: [modelSelect] },
         { components: [permSelect] },
         { components: [localeSelect] },
-        { components: [codexHomeButton] },
       ],
     };
   }

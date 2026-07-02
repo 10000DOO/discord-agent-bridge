@@ -108,3 +108,46 @@ describe('ChannelWizard state machine', () => {
     expect(wizard.current().backend).toBe('claude'); // unchanged default
   });
 });
+
+describe('ChannelWizard render (step guidance + labels)', () => {
+  function componentsOf(rows: { components: { type: string; customId: string; label?: string }[] }[]) {
+    return rows.flatMap((r) => r.components);
+  }
+
+  it('the folder step renders the browser guidance + current path, and a ✅ start button', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const wizard = makeWizard(start);
+    const { embed, rows } = wizard.render();
+    // The folder step is A4D-style: guidance + current path + a dir:here start button.
+    expect(embed.description).toContain('프로젝트 폴더');
+    expect(embed.description).toContain(root);
+    const dirHere = componentsOf(rows).find((c) => c.customId === 'dir:here');
+    expect(dirHere?.label).toContain('시작');
+  });
+
+  it('"이 폴더로 시작" selects the current folder as cwd and advances to the backend step', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const wizard = makeWizard(start);
+    // Descend into a subfolder, then select it with dir:here.
+    await wizard.handle({ id: 'dir:into', value: 'project' });
+    expect(await wizard.handle({ id: 'dir:here' })).toBe('backend');
+    expect(wizard.current().cwd).toBe(path.join(root, 'project'));
+    // The backend step announces its step number in the guidance.
+    expect(wizard.render().embed.description).toContain('백엔드');
+  });
+
+  it('the confirm step uses a ✅ 시작 button, not a folder label', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeSession());
+    const wizard = makeWizard(start);
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'backend', value: 'claude' });
+    await wizard.handle({ id: 'model', value: 'opus' });
+    await wizard.handle({ id: 'perm.mode', value: 'plan' });
+    expect(wizard.currentStep()).toBe('confirm');
+    const confirm = componentsOf(wizard.render().rows).find((c) => c.customId === 'confirm');
+    expect(confirm?.label).toContain('시작');
+    // The cancel button is a short label, not a full sentence.
+    const cancel = componentsOf(wizard.render().rows).find((c) => c.customId === 'cancel');
+    expect(cancel?.label).toBe('취소');
+  });
+});

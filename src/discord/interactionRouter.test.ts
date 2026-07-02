@@ -664,39 +664,28 @@ describe('InteractionRouter /config command', () => {
     expect(store.loadServerConfig('g1')?.locale).toBe('en');
   });
 
-  it('the Codex-path button opens a modal via showModal and does NOT defer first', async () => {
+  it('the /config panel renders NO Codex-path button (codexHome auto-resolves)', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
 
-    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
-    await router.handle(open);
+    const { interaction, replies } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
+    await router.handle(interaction);
 
-    const { interaction: btn, acks } = component({
-      customId: 'config.codexHome.open',
-      user: { id: 'admin-user' },
-      hasAdminPermission: true,
-    });
-    await router.handle(btn);
-
-    // showModal was the FIRST (and only) ack — no deferUpdate/deferReply before it.
-    expect(acks).toHaveLength(1);
-    expect(acks[0].kind).toBe('showModal');
-    // The modal carries the Codex-path field prefilled with the current codexHome.
-    expect(acks[0].modal?.customId).toBe('config.codexHome.modal');
-    expect(acks[0].modal?.fields[0].customId).toBe('config.codexHome.value');
-    expect(acks[0].modal?.fields[0].value).toBe('~/.codex');
+    // The whole panel (primary role reply + defaults follow-up) carries no codexHome
+    // button, and no showModal ack ever fires from opening /config.
+    const rows = replies.flatMap((r) => (r.components ?? []) as { components: { customId: string }[] }[]);
+    const allComponents = rows.flatMap((row) => row.components);
+    expect(allComponents.some((c) => c.customId === 'config.codexHome.open')).toBe(false);
   });
 
-  it('a Codex-path modal submit routes to the codexHome handler and persists', async () => {
+  it('a stray modal submit is acknowledged generically and persists nothing', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
 
-    // Open the panel so the router holds a live panel for this channel.
-    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
-    await router.handle(open);
-
+    // The bot no longer opens any modal; a replayed/stray submit must still be acked
+    // (never "did not respond") without writing config.
     const { interaction: submit, replies } = modalSubmit({
       customId: 'config.codexHome.modal',
       user: { id: 'admin-user' },
@@ -705,28 +694,9 @@ describe('InteractionRouter /config command', () => {
     });
     await router.handle(submit);
 
-    expect(store.loadServerConfig('g1')?.defaults?.codexHome).toBe('/srv/codex');
-    // An ephemeral confirmation naming the saved path was sent.
+    expect(replies).toHaveLength(1);
     expect(replies[0].ephemeral).toBe(true);
-    expect(replies[0].content).toContain('/srv/codex');
-  });
-
-  it('a Codex-path modal submit from a NON-owner does not persist', async () => {
-    const { orchestrator } = fakeOrchestrator();
-    const { wiring } = fakeWiring();
-    const router = buildRouter({ orchestrator, wiring });
-
-    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
-    await router.handle(open);
-
-    // A different admin submits the modal — the panel is owned by 'admin-user'.
-    const { interaction: submit } = modalSubmit({
-      customId: 'config.codexHome.modal',
-      user: { id: 'u2' },
-      hasAdminPermission: true,
-      fields: { 'config.codexHome.value': '/hijack' },
-    });
-    await router.handle(submit);
+    // Nothing was persisted for this guild.
     expect(store.loadServerConfig('g1')).toBeNull();
   });
 });

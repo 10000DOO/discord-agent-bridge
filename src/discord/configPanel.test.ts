@@ -22,7 +22,6 @@ const DEFAULTS: ConfigPanelDefaults = {
   model: 'opus',
   permMode: 'default' as PermMode,
   locale: 'ko',
-  codexHome: '~/.codex',
 };
 
 let dir: string;
@@ -57,8 +56,21 @@ describe('isConfigPanelId', () => {
   });
 });
 
+// Small helpers to pull a defaults select and the option marked default-selected.
+function selectById(rows: { components: unknown[] }[], customId: string) {
+  const found = rows
+    .flatMap((r) => r.components as { type: string; customId: string }[])
+    .find((c) => c.type === 'select' && c.customId === customId);
+  return found && found.type === 'select'
+    ? (found as unknown as { customId: string; options: { value: string; default?: boolean }[] })
+    : undefined;
+}
+function defaultSelectedValue(select: { options: { value: string; default?: boolean }[] } | undefined): string | undefined {
+  return select?.options.find((o) => o.default === true)?.value;
+}
+
 describe('ConfigPanel render', () => {
-  it('renders 3 role-selects (prefilled), 4 string-selects, a Codex-path button, and a Save button', () => {
+  it('renders 3 role-selects (prefilled), 4 string-selects, and a Save button — no Codex-path button/modal', () => {
     const { roleRows, defaultRows } = makePanel().render();
     // Flatten to the components in order (both groups form the logical panel).
     const all = [...roleRows, ...defaultRows].flatMap((r) => r.components);
@@ -68,7 +80,7 @@ describe('ConfigPanel render', () => {
     const admin = roleSelects.find((c) => c.customId === 'config.role.admin');
     expect(admin && 'defaultRoleIds' in admin ? admin.defaultRoleIds : undefined).toEqual(ADMIN);
 
-    // backend / model / permMode / locale selects (the new locale select is included).
+    // backend / model / permMode / locale selects.
     const stringSelects = all.filter((c) => c.type === 'select');
     expect(stringSelects.map((c) => c.customId)).toEqual([
       'config.default.backend',
@@ -76,35 +88,71 @@ describe('ConfigPanel render', () => {
       'config.default.permMode',
       'config.default.locale',
     ]);
-    // The Codex-path modal-open button and the roles Save button both exist.
-    expect(all.some((c) => c.type === 'button' && c.customId === 'config.codexHome.open')).toBe(true);
+    // The roles Save button exists; the Codex-path button/modal are GONE.
     expect(all.some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(true);
+    expect(all.some((c) => c.type === 'button' && c.customId === 'config.codexHome.open')).toBe(false);
+    // The panel exposes no Codex-home modal any more.
+    expect('codexHomeModal' in makePanel()).toBe(false);
+    expect('handleCodexHomeSubmit' in makePanel()).toBe(false);
   });
 
-  it('the locale select is prefilled with the current locale (default flag)', () => {
-    const { defaultRows } = makePanel({ locale: 'en' }).render();
-    const localeSelect = defaultRows
-      .flatMap((r) => r.components)
-      .find((c) => c.type === 'select' && c.customId === 'config.default.locale');
-    expect(localeSelect && localeSelect.type === 'select').toBe(true);
-    if (!localeSelect || localeSelect.type !== 'select') return;
-    const en = localeSelect.options.find((o) => o.value === 'en');
-    const ko = localeSelect.options.find((o) => o.value === 'ko');
-    expect(en?.default).toBe(true);
-    expect(ko?.default).toBe(false);
+  it('every defaults select marks its CURRENTLY-SAVED value as default-selected', () => {
+    const { defaultRows } = makePanel({
+      backend: 'codex',
+      model: 'sonnet',
+      permMode: 'acceptEdits' as PermMode,
+      locale: 'en',
+    }).render();
+    expect(defaultSelectedValue(selectById(defaultRows, 'config.default.backend'))).toBe('codex');
+    expect(defaultSelectedValue(selectById(defaultRows, 'config.default.model'))).toBe('sonnet');
+    expect(defaultSelectedValue(selectById(defaultRows, 'config.default.permMode'))).toBe('acceptEdits');
+    expect(defaultSelectedValue(selectById(defaultRows, 'config.default.locale'))).toBe('en');
+    // Exactly ONE option per select is default-selected (no stray defaults).
+    for (const id of ['config.default.backend', 'config.default.model', 'config.default.permMode', 'config.default.locale']) {
+      const sel = selectById(defaultRows, id);
+      expect(sel?.options.filter((o) => o.default === true)).toHaveLength(1);
+    }
   });
 
-  it('the defaults message stays within Discord’s 5-action-row limit (4 selects + button)', () => {
+  it('regression: the permission-mode select reflects the SAVED default (default), never bypassPermissions', () => {
+    // The observed bug: the dropdown displayed "전체 자동 승인 (bypassPermissions)" while the
+    // saved default was "기본 (default)". With the current value marked default-selected,
+    // the pre-selected option must be `default` and NOT `bypassPermissions`.
+    const { defaultRows } = makePanel({ permMode: 'default' as PermMode }).render();
+    const perm = selectById(defaultRows, 'config.default.permMode');
+    const def = perm?.options.find((o) => o.value === 'default');
+    const bypass = perm?.options.find((o) => o.value === 'bypassPermissions');
+    expect(def?.default).toBe(true);
+    expect(bypass?.default).toBe(false);
+    expect(defaultSelectedValue(perm)).toBe('default');
+    // bypassPermissions is only default-selected when the user explicitly picked it.
+    const bypassPanel = selectById(makePanel({ permMode: 'bypassPermissions' as PermMode }).render().defaultRows, 'config.default.permMode');
+    expect(defaultSelectedValue(bypassPanel)).toBe('bypassPermissions');
+  });
+
+  it('role selects pre-select the currently-configured roles for every tier', () => {
+    const { roleRows } = makePanel().render();
+    const roleSelects = roleRows.flatMap((r) => r.components).filter((c) => c.type === 'roleSelect');
+    const byId = (id: string) => roleSelects.find((c) => c.customId === id);
+    const admin = byId('config.role.admin');
+    const exec = byId('config.role.execute');
+    const read = byId('config.role.readOnly');
+    expect(admin && 'defaultRoleIds' in admin ? admin.defaultRoleIds : undefined).toEqual(ADMIN);
+    expect(exec && 'defaultRoleIds' in exec ? exec.defaultRoleIds : undefined).toEqual(EXEC);
+    expect(read && 'defaultRoleIds' in read ? read.defaultRoleIds : undefined).toEqual(READ);
+  });
+
+  it('the defaults message stays within Discord’s 5-action-row limit (4 selects, no button)', () => {
     const { roleRows, defaultRows } = makePanel().render();
     // A single Discord message allows at most 5 action rows.
     expect(roleRows.length).toBeLessThanOrEqual(5);
-    // The defaults message now has 4 selects + a Codex-path button = exactly 5 rows.
-    expect(defaultRows.length).toBe(5);
+    // Removing the Codex-path button frees a row: the defaults message is now 4 selects.
+    expect(defaultRows.length).toBe(4);
     expect(defaultRows.length).toBeLessThanOrEqual(5);
     // The Save button rides with the role tiers (the primary reply); the defaults
     // message auto-saves each field on change, so it carries NO Save button.
     expect(roleRows.flatMap((r) => r.components).some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(true);
-    expect(defaultRows.flatMap((r) => r.components).some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(false);
+    expect(defaultRows.flatMap((r) => r.components).some((c) => c.type === 'button')).toBe(false);
     // No empty rows (Discord rejects them).
     for (const row of [...roleRows, ...defaultRows]) {
       expect(row.components.length).toBeGreaterThan(0);
@@ -260,29 +308,5 @@ describe('ConfigPanel locale', () => {
     const result = panel.handle({ id: 'config.default.locale', value: 'en' });
     if (result.kind !== 'autosaved') throw new Error('expected autosaved');
     expect(result.notice).toContain('English');
-  });
-});
-
-describe('ConfigPanel Codex-path modal', () => {
-  it('exposes a modal prefilled with the current codexHome', () => {
-    const modal = makePanel({ codexHome: '/custom/codex' }).codexHomeModal();
-    expect(modal.customId).toBe('config.codexHome.modal');
-    expect(modal.fields).toHaveLength(1);
-    expect(modal.fields[0].customId).toBe('config.codexHome.value');
-    expect(modal.fields[0].value).toBe('/custom/codex');
-  });
-
-  it('a modal submit persists defaults.codexHome immediately', () => {
-    const panel = makePanel();
-    const result = panel.handleCodexHomeSubmit('/opt/codex');
-    expect(result.kind).toBe('autosaved');
-    expect(store.loadServerConfig('g1')?.defaults?.codexHome).toBe('/opt/codex');
-  });
-
-  it('a blank modal submit falls back to the current codexHome (never blanks it)', () => {
-    const panel = makePanel({ codexHome: '/keep/this' });
-    const result = panel.handleCodexHomeSubmit('   ');
-    expect(result.kind).toBe('autosaved');
-    expect(store.loadServerConfig('g1')?.defaults?.codexHome).toBe('/keep/this');
   });
 });

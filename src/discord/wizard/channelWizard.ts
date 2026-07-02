@@ -284,7 +284,7 @@ export class ChannelWizard {
       rows: [
         {
           components: [
-            { type: 'button', customId: 'confirm', label: t('dir.here'), style: 'success' },
+            { type: 'button', customId: 'confirm', label: t('wizard.start'), style: 'success' },
             cancelButton(),
           ],
         },
@@ -294,5 +294,5 @@ export class ChannelWizard {
 }
 
 function cancelButton() {
-  return { type: 'button' as const, customId: 'cancel', label: t('wizard.cancelled'), style: 'secondary' as const };
+  return { type: 'button' as const, customId: 'cancel', label: t('wizard.cancel'), style: 'secondary' as const };
 }

@@ -25,32 +25,31 @@ export function getLocale(): Locale {
 type Catalog = Record<string, string>;
 
 const ko: Catalog = {
-  // Wizard
+  // Wizard (steps: 폴더 → 백엔드 → 모델 → 권한 → 시작)
   'wizard.title': '세션 시작',
-  'wizard.step.folder': '작업 폴더를 선택하세요.',
-  'wizard.step.backend': '백엔드를 선택하세요.',
-  'wizard.step.model': '모델을 선택하세요.',
-  'wizard.step.perm': '권한 모드 또는 프로필을 선택하세요.',
+  'wizard.step.folder': '1/4단계 · 폴더',
+  'wizard.step.backend': '2/4단계 · 백엔드를 선택하세요.',
+  'wizard.step.model': '3/4단계 · 모델을 선택하세요.',
+  'wizard.step.perm': '4/4단계 · 권한 모드 또는 프로필을 선택하세요.',
   'wizard.confirm': '`{cwd}` 에서 {backend} 세션을 시작할까요? (권한: {perm})',
   'wizard.started': '세션을 시작했어요. 백엔드 {backend} · 폴더 `{cwd}`',
   'wizard.cancelled': '세션 시작을 취소했어요.',
+  'wizard.cancel': '취소',
+  'wizard.start': '✅ 시작',
   'wizard.profile.advanced': '고급: 권한 모드 직접 선택',
   // /config panel (role tiers + defaults, clicked in Discord)
   'config.title': '역할·기본값 설정',
   'config.intro':
-    '역할 이름을 클릭해 티어를 지정하세요. admin ⊇ execute ⊇ read-only 순으로 권한이 포함됩니다. 다 고른 뒤 **저장**을 누르세요.',
+    '① 역할: 봇을 쓸 사람의 Discord 역할을 고르고 **저장**하세요. 본인(관리자)이 가진 역할을 **admin**에 넣으면 다 됩니다.\n② 아래 기본값(백엔드·모델·권한·언어)은 **고르면 바로 저장**됩니다.\nClaude·Codex는 각자 홈(`~/.claude`, `~/.codex`)을 자동으로 사용하며, **작업할 프로젝트 폴더는 `/agent start` 할 때 고릅니다.**',
   'config.role.admin.placeholder': 'admin 역할 (설정·stop-all)',
   'config.role.execute.placeholder': 'execute 역할 (세션 시작·명령 실행)',
   'config.role.readOnly.placeholder': 'read-only 역할 (읽기 전용)',
   'config.default.backend.placeholder': '기본 백엔드',
   'config.default.model.placeholder': '기본 모델',
-  'config.default.permMode.placeholder': '기본 권한 모드',
-  'config.default.locale.placeholder': '언어 (locale)',
+  'config.default.permMode.placeholder': '권한 모드 (기본)',
+  'config.default.locale.placeholder': '봇 언어',
   'config.locale.ko': '한국어 (ko)',
   'config.locale.en': 'English (en)',
-  'config.codexHome.button': 'Codex 경로 설정',
-  'config.codexHome.modal.title': 'Codex 기본 경로',
-  'config.codexHome.modal.label': 'Codex 홈 경로 (codexHome)',
   'config.save': '저장',
   'config.saved':
     '이 서버 설정을 저장했어요.\n• admin: {admin}\n• execute: {execute}\n• read-only: {readOnly}\n• 기본 백엔드: {backend} · 모델: {model} · 권한: {perm}',
@@ -58,8 +57,7 @@ const ko: Catalog = {
   'config.autosaved.locale': '언어를 저장했어요: {locale}',
   'config.autosaved.backend': '기본 백엔드를 저장했어요: {backend}',
   'config.autosaved.model': '기본 모델을 저장했어요: {model}',
-  'config.autosaved.permMode': '기본 권한 모드를 저장했어요: {perm}',
-  'config.autosaved.codexHome': 'Codex 기본 경로를 저장했어요: {codexHome}',
+  'config.autosaved.permMode': '권한 모드를 저장했어요: {perm}',
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',
@@ -68,11 +66,16 @@ const ko: Catalog = {
   'perm.bypassPermissions': '전체 자동 승인 (⚠️ 위험)',
   'perm.plan': '플랜 (읽기 전용)',
   // Directory browser
-  'dir.up': '상위 폴더',
-  'dir.select': '폴더 선택',
-  'dir.here': '이 폴더 사용',
+  'dir.up': '⬆ 상위 폴더',
+  'dir.select': '하위 폴더로 이동…',
+  'dir.here': '✅ 이 폴더로 시작',
   'dir.empty': '(하위 폴더 없음)',
   'dir.escape': '허용된 범위를 벗어난 경로입니다.',
+  // Folder-picker guidance (step 1 of /agent start). Shows the current path + how to
+  // navigate; the actual PROJECT folder is chosen HERE (not in /config).
+  'dir.guide':
+    '작업할 **프로젝트 폴더**를 고르세요. 목록에서 하위 폴더로 들어가거나 `⬆ 상위 폴더`로 올라간 뒤, `✅ 이 폴더로 시작`을 누르세요.',
+  'dir.current': '현재 위치',
   // Permission buttons
   'perm.request.title': '권한 요청',
   'perm.request.body': '**도구:** {tool}\n\n{input}',
@@ -120,7 +123,7 @@ const ko: Catalog = {
   'router.noSession': '이 채널에는 활성 세션이 없어요. 먼저 `/agent start` 를 실행하세요.',
   'router.turn.queued': '대기열에 추가했어요 (#{depth}).',
   'cmd.start.launched': '세션 시작 마법사를 열었어요.',
-  'cmd.config.opened': '역할·기본값 설정 패널을 열었어요. 역할 이름을 클릭해 지정한 뒤 저장하세요.',
+  'cmd.config.opened': '역할·기본값 설정 패널을 열었어요. ① 역할을 고르고 저장, ② 아래 기본값은 고르면 바로 저장돼요.',
   'cmd.config.denied': '`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.',
   'cmd.resume.none': '재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.',
   'cmd.resume.rebound': '이 채널을 다시 연결했어요.',
@@ -139,8 +142,8 @@ const ko: Catalog = {
   'boot.noToken': '토큰이 설정되지 않았습니다 — --setup을 다시 실행하세요.',
   // Terminal setup guidance: roles move from the terminal to Discord `/config`.
   'setup.rolesInDiscord': '역할은 봇을 서버에 초대한 뒤 Discord에서 `/config` 명령으로 클릭 설정하세요.',
-  // Terminal setup guidance: model/language/Codex-path defaults move to `/config`.
-  'setup.defaultsInDiscord': '모델·언어·Codex 경로 등 기본값은 봇 초대 후 Discord `/config`에서 설정하세요.',
+  // Terminal setup guidance: model/language/permission defaults move to `/config`.
+  'setup.defaultsInDiscord': '모델·언어·권한 등 기본값은 봇 초대 후 Discord `/config`에서 설정하세요.',
 };
 
 const en: Catalog = {
@@ -153,15 +156,16 @@ const en: Catalog = {
   'transcript.working': 'working…',
   'boot.noConfig': 'No configuration found. Run setup first:  node dist/cli.js --setup',
   'boot.noToken': 'Discord token is not set — run --setup again.',
-  'config.default.locale.placeholder': 'Language (locale)',
-  'config.codexHome.button': 'Set Codex path',
-  'config.codexHome.modal.title': 'Codex home path',
-  'config.codexHome.modal.label': 'Codex home path (codexHome)',
+  'config.default.locale.placeholder': 'Bot language',
+  'config.default.permMode.placeholder': 'Permission mode (default)',
   'config.autosaved.locale': 'Saved language: {locale}',
   'config.autosaved.backend': 'Saved default backend: {backend}',
   'config.autosaved.model': 'Saved default model: {model}',
-  'config.autosaved.permMode': 'Saved default permission mode: {perm}',
-  'config.autosaved.codexHome': 'Saved Codex home path: {codexHome}',
+  'config.autosaved.permMode': 'Saved permission mode: {perm}',
+  'dir.up': '⬆ Parent folder',
+  'dir.select': 'Go into a subfolder…',
+  'dir.here': '✅ Start in this folder',
+  'dir.current': 'Current location',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

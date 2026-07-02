@@ -10,14 +10,7 @@ import type { SessionWiring } from './wiring.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
-import {
-  ConfigPanel,
-  isConfigPanelId,
-  isCodexHomeModalSubmit,
-  isCodexHomeModalTrigger,
-  CODEX_HOME_FIELD_ID,
-  type ConfigPanelInput,
-} from './configPanel.js';
+import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
 import type { ComponentRow, EmbedSpec, ModalSpec } from './ports.js';
 import { setLocale, t, type Locale } from './i18n.js';
 
@@ -347,10 +340,9 @@ export class InteractionRouter {
         backend: resolved.mode,
         model: resolved.claudeModel,
         permMode: resolved.permissionMode,
-        // locale is per-guild (server override) or the global default; codexHome is
-        // resolved global→server by the resolver.
+        // locale is per-guild (server override) or the global default. Codex home is
+        // NOT configured here — it auto-resolves to ~/.codex via the resolver default.
         locale: server?.locale ?? global.locale,
-        codexHome: resolved.codexHome,
       },
       backends,
       models,
@@ -359,7 +351,7 @@ export class InteractionRouter {
     this.configPanels.set(channelKey(guildId, i.channelId), panel);
     // A single Discord message allows at most 5 action rows. Role tiers + Save (4 rows)
     // ride the deferred reply; the defaults follow-up carries backend/model/permMode/
-    // locale selects + the Codex-path button (5 rows). Both are ephemeral.
+    // locale selects (4 rows). Both are ephemeral.
     const { embed, roleRows, defaultRows } = panel.render();
     await i.editReply({ content: t('cmd.config.opened'), embeds: [embed], components: roleRows });
     await i.followUp({ components: defaultRows, ephemeral: true });
@@ -380,13 +372,6 @@ export class InteractionRouter {
     const panel = this.configPanels.get(channelKey(i.guildId, i.channelId));
     if (!panel || panel.ownerId !== i.user.id) {
       await safe(i.deferUpdate());
-      return;
-    }
-    // The Codex-path button opens a modal. showModal IS the acknowledgment, so it must
-    // fire WITHOUT a preceding deferUpdate/deferReply (a deferred interaction cannot
-    // show a modal). The modal submit routes back through handleModalSubmit.
-    if (isCodexHomeModalTrigger(i.customId)) {
-      await safe(i.showModal(panel.codexHomeModal()));
       return;
     }
     const input: ConfigPanelInput = {
@@ -414,32 +399,12 @@ export class InteractionRouter {
     await safe(i.deferUpdate());
   }
 
-  // Route a submitted modal. Only the Codex-path modal is handled: same bootstrap gate
-  // + owner binding as the panel components. Persists defaults.codexHome for the guild
-  // and confirms ephemerally. The submit is its own interaction (a fresh 3s window), so
-  // the reply is the acknowledgment (no defer needed for the tiny JSON write).
+  // Route a submitted modal. The bot no longer opens any modal (Codex home auto-resolves
+  // and the folder is picked in the /agent start wizard), so a modal submit here is a
+  // stray/replayed interaction. It must still be acknowledged within Discord's window —
+  // a generic ephemeral notice, no persistence — so it never shows "did not respond".
   private async handleModalSubmit(i: ModalSubmitInteraction): Promise<void> {
-    if (!isCodexHomeModalSubmit(i.customId)) {
-      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
-      return;
-    }
-    if (!i.guildId) {
-      await safe(i.reply({ content: t('auth.denied', { reason: 'DM' }), ephemeral: true }));
-      return;
-    }
-    if (!this.authorizeConfig(i)) {
-      await safe(i.reply({ content: t('cmd.config.denied'), ephemeral: true }));
-      return;
-    }
-    const panel = this.configPanels.get(channelKey(i.guildId, i.channelId));
-    if (!panel || panel.ownerId !== i.user.id) {
-      // No live panel (or a bystander's submit): acknowledge without persisting.
-      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
-      return;
-    }
-    const result = panel.handleCodexHomeSubmit(i.getField(CODEX_HOME_FIELD_ID));
-    const notice = result.kind === 'autosaved' ? result.notice : t('cmd.error.generic');
-    await safe(i.reply({ content: notice, ephemeral: true }));
+    await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
   }
 
   // When a /config auto-save was the LOCALE select, drive setLocale so this running

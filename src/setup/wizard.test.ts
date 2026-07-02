@@ -163,7 +163,7 @@ describe('runSetup', () => {
     expect(config.auth.readOnlyRoleIds).toEqual([]);
   });
 
-  it('prints the `/config` guidance for roles AND defaults (model/language/Codex path)', async () => {
+  it('prints the `/config` guidance for roles AND defaults (model/language/permissions)', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
       inputs: [FIXTURE_CLIENT_ID],
@@ -175,8 +175,8 @@ describe('runSetup', () => {
 
     // Roles → Discord `/config`.
     expect(logs.some((l) => l.includes('/config') && l.includes('Discord'))).toBe(true);
-    // Defaults (model/language/Codex path) → Discord `/config`.
-    expect(logs.some((l) => l.includes('/config') && /모델|언어|Codex/.test(l))).toBe(true);
+    // Defaults (model/language/permissions) → Discord `/config`.
+    expect(logs.some((l) => l.includes('/config') && /모델|언어|권한/.test(l))).toBe(true);
   });
 
   it('writes a 0600 config file', async () => {

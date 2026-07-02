@@ -133,16 +133,19 @@ function fakeModalSubmit(customId: string, fields: Record<string, string>) {
   return { interaction: interaction as unknown as Interaction };
 }
 
-describe('adaptInteraction — modal wiring', () => {
+// The modal adapter is kept as GENERIC discord.js plumbing (ports.ts ModalSpec →
+// discord.js ModalBuilder, and ModalSubmit → getField). The /config Codex-path modal
+// that used to be its only caller is gone, so these use generic fixture ids.
+describe('adaptInteraction — modal wiring (generic)', () => {
   it('a button exposes showModal that maps a ModalSpec onto discord.js showModal', async () => {
-    const { interaction, calls, getModalArg } = fakeButton('config.codexHome.open');
+    const { interaction, calls, getModalArg } = fakeButton('some.button');
     const adapted = adaptInteraction(interaction);
     expect(adapted?.kind).toBe('component');
     if (!adapted || adapted.kind !== 'component') return;
     await adapted.showModal({
-      customId: 'config.codexHome.modal',
-      title: 'Codex',
-      fields: [{ customId: 'config.codexHome.value', label: 'path', value: '~/.codex', required: true }],
+      customId: 'some.modal',
+      title: 'Example',
+      fields: [{ customId: 'some.field', label: 'value', value: 'x', required: true }],
     });
     // showModal fired (it is the ack); no defer preceded it.
     expect(calls).toEqual(['showModal']);
@@ -151,12 +154,12 @@ describe('adaptInteraction — modal wiring', () => {
   });
 
   it('adapts a ModalSubmit interaction and reads a field value by custom id', () => {
-    const { interaction } = fakeModalSubmit('config.codexHome.modal', { 'config.codexHome.value': '/srv/codex' });
+    const { interaction } = fakeModalSubmit('some.modal', { 'some.field': 'value-1' });
     const adapted = adaptInteraction(interaction);
     expect(adapted?.kind).toBe('modalSubmit');
     if (!adapted || adapted.kind !== 'modalSubmit') return;
-    expect(adapted.customId).toBe('config.codexHome.modal');
-    expect(adapted.getField('config.codexHome.value')).toBe('/srv/codex');
+    expect(adapted.customId).toBe('some.modal');
+    expect(adapted.getField('some.field')).toBe('value-1');
     // An absent field returns '' (never throws).
     expect(adapted.getField('missing')).toBe('');
   });
