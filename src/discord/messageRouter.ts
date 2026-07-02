@@ -37,9 +37,15 @@ export interface IncomingMessage {
   guildId: string | null;
   channelId: string;
   author: { id: string; bot: boolean };
-  // The acting member's role ids (from message.member.roles.cache.map(r => r.id)).
-  // Absent in DMs; the router treats that as no roles (deny by fail-secure auth).
-  member: { roles: { cache: { map: (fn: (r: { id: string }) => string) => string[] } } } | null;
+  // The acting member's role ids (from message.member.roles.cache.map(r => r.id))
+  // plus their Administrator permission bit. Absent in DMs; the router treats that as
+  // no roles (deny by fail-secure auth). `permissions.has` is the discord.js
+  // GuildMember.permissions PermissionsBitField; the client passes the Administrator
+  // bit so a server admin can drive a session by messaging, never locked out (§7.1).
+  member: {
+    roles: { cache: { map: (fn: (r: { id: string }) => string) => string[] } };
+    permissions?: { has: (bit: bigint) => boolean };
+  } | null;
   attachments: { values: () => Iterable<IncomingAttachment> };
   // Add a subtle reaction to signal queued/started. Best-effort; a failure is
   // swallowed so a missing Add-Reactions permission never breaks a turn.
@@ -65,11 +71,21 @@ export interface MessageRouterDeps {
   orchestrator: SessionOrchestrator;
   logger: Logger;
   fetchBytes?: FetchBytes;
+  // The Discord Administrator permission bit (discord.js PermissionFlagsBits.
+  // Administrator). Injected so the router stays discord.js-free: it checks the
+  // acting member's permissions.has(bit) to grant the admin tier to server admins.
+  // App boot wires it from discord.js; defaults to the well-known value (1<<3).
+  administratorBit?: bigint;
 }
 
 // Reaction emoji: 💬 started (running now), ⏳ queued behind a turn in flight.
 const REACT_STARTED = '💬';
 const REACT_QUEUED = '⏳';
+
+// The Discord Administrator permission bit (PermissionFlagsBits.Administrator === 1<<3).
+// Used as the default so a caller need not inject it; app boot passes the discord.js
+// constant explicitly to stay authoritative if the value ever changes.
+const ADMINISTRATOR_BIT = 1n << 3n;
 
 export class MessageRouter {
   private readonly authorizer: Authorizer;
@@ -77,6 +93,7 @@ export class MessageRouter {
   private readonly orchestrator: SessionOrchestrator;
   private readonly logger: Logger;
   private readonly fetchBytes: FetchBytes;
+  private readonly administratorBit: bigint;
 
   constructor(deps: MessageRouterDeps) {
     this.authorizer = deps.authorizer;
@@ -84,6 +101,7 @@ export class MessageRouter {
     this.orchestrator = deps.orchestrator;
     this.logger = deps.logger;
     this.fetchBytes = deps.fetchBytes ?? defaultFetchBytes;
+    this.administratorBit = deps.administratorBit ?? ADMINISTRATOR_BIT;
   }
 
   async handle(message: IncomingMessage): Promise<void> {
@@ -97,11 +115,16 @@ export class MessageRouter {
 
     // AUTH GATE (§7.1) — before anything reaches the mode.
     const roleIds = message.member ? message.member.roles.cache.map((r) => r.id) : [];
+    // A server admin can drive a session by messaging even with an empty role config
+    // (never locked out): read the Administrator bit off the member's permissions. A
+    // read failure or absent permissions → not an admin (fail-secure).
+    const isAdministrator = this.memberIsAdministrator(message.member);
     const decision = this.authorizer.authorize({
       userId: message.author.id,
       roleIds,
       action: 'drive',
       context: { guildId, channelId },
+      ...(isAdministrator ? { isAdministrator: true } : {}),
     });
     if (!decision.allowed) {
       await safe(message.reply(t('auth.denied', { reason: decision.reason ?? '' })));
@@ -130,6 +153,18 @@ export class MessageRouter {
     }
 
     await safe(message.react(result.status === 'queued' ? REACT_QUEUED : REACT_STARTED));
+  }
+
+  // True when the acting member holds the Discord Administrator permission. Reads the
+  // bit off member.permissions (a discord.js PermissionsBitField). Any absent field or
+  // read error → false (fail-secure): a bad permissions shape must never grant admin.
+  private memberIsAdministrator(member: IncomingMessage['member']): boolean {
+    try {
+      const perms = member?.permissions;
+      return perms !== undefined && perms.has(this.administratorBit);
+    } catch {
+      return false;
+    }
   }
 
   // Download each attachment under cwd/.dab-attachments so the orchestrator's

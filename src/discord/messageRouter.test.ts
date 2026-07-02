@@ -3,11 +3,18 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { MessageRouter, type IncomingAttachment, type IncomingMessage } from './messageRouter.js';
-import type { Authorizer, AuthResult } from '../core/auth.js';
-import type { ChannelRegistry, ChannelBinding } from '../core/channelRegistry.js';
+import { Authorizer, type AuthResult } from '../core/auth.js';
+import { ChannelRegistry, type ChannelBinding } from '../core/channelRegistry.js';
 import type { SendResult, SessionOrchestrator } from '../core/sessionOrchestrator.js';
 import type { TurnInput } from '../core/contracts.js';
+import { ConfigStore } from '../core/config.js';
+import { StateStore } from '../core/state/store.js';
+import { CONFIG_VERSION, type AppConfig } from '../core/configSchema.js';
 import { createLogger } from '../core/logger.js';
+
+// The discord.js Administrator bit (PermissionFlagsBits.Administrator === 1<<3). The
+// router defaults to this value, so a test member's permissions.has must recognize it.
+const ADMIN_BIT = 1n << 3n;
 
 // A silent logger (no console noise in the test run).
 const logger = createLogger('test', { level: 'error', sink: { write() {} } });
@@ -208,5 +215,94 @@ describe('MessageRouter', () => {
     await expect(router.handle(message)).resolves.toBeUndefined();
     expect(replies).toHaveLength(1);
     expect(replies[0]).toContain('escapes the workspace');
+  });
+});
+
+// A server Administrator can DRIVE a session by messaging even with an EMPTY role
+// allowlist (the fix for the /agent start lockout footgun), while a non-admin with no
+// role stays denied. Uses a REAL Authorizer over a temp config so the admin-tier grant
+// is exercised end-to-end through the router's isAdministrator plumbing.
+describe('MessageRouter Administrator authorization', () => {
+  let home: string;
+
+  function writeEmptyConfig(dir: string): void {
+    const config: AppConfig = {
+      version: CONFIG_VERSION,
+      discord: { token: 'x', clientId: 'cid' },
+      auth: { adminRoleIds: [], executeRoleIds: [], readOnlyRoleIds: [], dmPolicy: 'deny' },
+      defaults: {
+        mode: 'claude',
+        claudeModel: 'opus',
+        codexModel: '',
+        permissionMode: 'default',
+        permissionProfile: null,
+        codexHome: '~/.codex',
+        codexCliCommand: 'codex',
+        codexCliVersion: null,
+      },
+      limits: { maxSessionsPerUser: 0, permissionTimeoutSec: 60, codexTimeoutMs: 1_800_000 },
+      policy: { unknownCommand: 'confirm', allowExtraCommands: [] },
+      autoAllowClaudeTools: ['Read'],
+      profiles: {},
+      usage: { userAgent: 'claude-code', cacheSec: 180 },
+      audit: { channelId: null },
+      locale: 'ko',
+      logLevel: 'info',
+      favorites: [],
+    };
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
+  }
+
+  // A member whose permissions.has(bit) is true iff the requested bit is Administrator.
+  const adminMember = {
+    roles: { cache: { map: (fn: (r: { id: string }) => string) => [].map(fn) } },
+    permissions: { has: (bit: bigint) => bit === ADMIN_BIT },
+  };
+
+  function realDeps(): { router: MessageRouter; sent: unknown[] } {
+    const store = new ConfigStore(home);
+    const registry = new ChannelRegistry(new StateStore(home), () => '2026-01-01T00:00:00.000Z');
+    // Bind the channel so the message is treated as a turn.
+    registry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 's1', cwd: ws, ownerId: 'owner', permMode: 'default', profile: null });
+    const authorizer = new Authorizer(store, registry);
+    const sent: unknown[] = [];
+    const orchestrator = {
+      send: vi.fn(async (guildId: string, channelId: string, turn: TurnInput): Promise<SendResult> => {
+        sent.push({ guildId, channelId, turn });
+        return { status: 'started', queueDepth: 1 };
+      }),
+    } as unknown as SessionOrchestrator;
+    const router = new MessageRouter({ authorizer, channelRegistry: registry, orchestrator, logger });
+    return { router, sent };
+  }
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-msg-admin-'));
+    writeEmptyConfig(home);
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('an Administrator can drive even with an empty role config', async () => {
+    const { router, sent } = realDeps();
+    const { message, replies } = fakeMessage({ member: adminMember });
+    await router.handle(message);
+    expect(sent).toHaveLength(1);
+    expect(replies).toHaveLength(0); // no denial notice
+  });
+
+  it('a non-admin with no role is denied (deny-by-default preserved)', async () => {
+    const { router, sent } = realDeps();
+    const nonAdminMember = {
+      roles: { cache: { map: (fn: (r: { id: string }) => string) => [].map(fn) } },
+      permissions: { has: () => false },
+    };
+    const { message, replies } = fakeMessage({ member: nonAdminMember });
+    await router.handle(message);
+    expect(sent).toHaveLength(0);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain('권한이 없습니다');
   });
 });

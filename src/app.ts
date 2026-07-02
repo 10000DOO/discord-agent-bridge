@@ -1,4 +1,4 @@
-import type { Client } from 'discord.js';
+import { PermissionFlagsBits, type Client } from 'discord.js';
 import { ConfigStore, type AppConfig } from './core/config.js';
 import { StateStore } from './core/state/store.js';
 import { ChannelRegistry } from './core/channelRegistry.js';
@@ -142,7 +142,15 @@ export function createApp(deps: CreateAppDeps): App {
 
   // ---- Discord client (§2/§4). onReady resumes persisted sessions AND re-attaches a
   // RendererDispatcher per resumed channel so a restart restores the live UX (§9). ----
-  const messageRouter = new MessageRouter({ authorizer, channelRegistry, orchestrator, logger });
+  const messageRouter = new MessageRouter({
+    authorizer,
+    channelRegistry,
+    orchestrator,
+    logger,
+    // A server admin can drive a session by messaging even with an empty role config
+    // (never locked out): the router reads this bit off the member's permissions.
+    administratorBit: PermissionFlagsBits.Administrator,
+  });
   const interactionRouter = new InteractionRouter({
     authorizer,
     orchestrator,

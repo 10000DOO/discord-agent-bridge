@@ -189,4 +189,52 @@ describe('Authorizer', () => {
     // Still tier-gated in a DM: a stranger is denied.
     expect(authz.authorize(input({ roleIds: [], action: 'read', context: {} })).allowed).toBe(false);
   });
+
+  // A Discord Administrator is granted the admin tier UNCONDITIONALLY (never locked
+  // out), even with a completely empty role allowlist — the fix for the /agent start
+  // lockout footgun. Role tiers remain additive for non-admins.
+  it('a Discord Administrator with NO configured role is authorized as admin', () => {
+    store.save(makeConfig()); // empty allowlists
+    const { authz } = build();
+    for (const action of ['admin', 'drive', 'run-command', 'read'] as const) {
+      const r = authz.authorize(input({ roleIds: [], action, isAdministrator: true }));
+      expect(r.allowed).toBe(true);
+      expect(r.tier).toBe('admin');
+    }
+  });
+
+  it('a non-admin with no configured role is denied (deny-by-default preserved)', () => {
+    store.save(makeConfig()); // empty allowlists
+    const { authz } = build();
+    const r = authz.authorize(input({ roleIds: [], action: 'read', isAdministrator: false }));
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/fail-secure/i);
+  });
+
+  it('configured role tiers still work for a non-Administrator (additive, unchanged)', () => {
+    store.save(makeConfig({ auth: { ...makeConfig().auth, executeRoleIds: [EXEC_ROLE] } }));
+    const { authz } = build();
+    // The configured execute role drives without any Administrator flag.
+    expect(authz.authorize(input({ roleIds: [EXEC_ROLE], action: 'drive' })).allowed).toBe(true);
+    // ...but that same execute role is NOT admin.
+    expect(authz.authorize(input({ roleIds: [EXEC_ROLE], action: 'admin' })).allowed).toBe(false);
+  });
+
+  it('a Discord Administrator bypasses a narrowing per-project ACL (never locked out)', () => {
+    store.save(makeConfig({ auth: { ...makeConfig().auth, executeRoleIds: [EXEC_ROLE] } }));
+    const { authz, registry } = build();
+    // A project ACL that lists neither the admin's role nor user would normally deny.
+    registry.set(binding({ projectAuth: { allowedRoleIds: ['role-project'], allowedUserIds: [] } }));
+    const r = authz.authorize(input({ roleIds: [], action: 'drive', isAdministrator: true }));
+    expect(r.allowed).toBe(true);
+    expect(r.tier).toBe('admin');
+  });
+
+  it('a denied DM is NOT rescued by the Administrator flag (dmPolicy stays authoritative)', () => {
+    store.save(makeConfig()); // dmPolicy defaults to 'deny'
+    const { authz } = build();
+    const r = authz.authorize(input({ roleIds: [], action: 'read', context: {}, isAdministrator: true }));
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/dmPolicy=deny/);
+  });
 });

@@ -36,6 +36,14 @@ export interface AuthInput {
   roleIds: string[];
   action: AuthAction;
   context: { guildId?: string; channelId?: string };
+  // True when the actor holds the Discord Administrator permission on this guild
+  // (read from the member's permissions by the router adapters). A Discord admin is
+  // granted the admin tier UNCONDITIONALLY — regardless of the configured role
+  // allowlists — so whoever set the bot up can never lock themselves out by pointing
+  // a tier at the wrong role. This mirrors A4D (which gates on Administrator). Role
+  // tiers stay ADDITIVE for everyone else; this only ever WIDENS access. Absent/false
+  // in DMs and for non-admins.
+  isAdministrator?: boolean;
 }
 
 export interface AuthResult {
@@ -108,6 +116,14 @@ export class Authorizer {
     input: AuthInput,
     projectAuth: { allowedRoleIds: string[]; allowedUserIds: string[] } | undefined,
   ): AuthResult {
+    // A Discord Administrator is ALWAYS the admin tier and bypasses both the role
+    // allowlists and the per-project ACL — the operator who set the bot up can never
+    // lock themselves out (e.g. by pointing the admin tier at the wrong role). This is
+    // the only widening path; every other actor stays deny-by-default below.
+    if (input.isAdministrator === true) {
+      return { allowed: true, tier: 'admin' };
+    }
+
     const tier = this.resolveTier(auth, input.roleIds);
     if (tier === null) {
       return { allowed: false, reason: 'No authorized role for this actor (fail-secure).' };

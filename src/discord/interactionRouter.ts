@@ -627,6 +627,9 @@ export class InteractionRouter {
       roleIds,
       action,
       context: { ...(i.guildId ? { guildId: i.guildId } : {}), channelId: i.channelId },
+      // A Discord Administrator is granted the admin tier unconditionally (never
+      // locked out); the adapter populates hasAdminPermission from member permissions.
+      ...(i.hasAdminPermission === true ? { isAdministrator: true } : {}),
     });
     if (!decision.allowed) {
       // Ephemeral denial. A slash interaction is already deferred (edit its reply); a
