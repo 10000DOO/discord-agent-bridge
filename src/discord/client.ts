@@ -376,6 +376,11 @@ class GuildProvisionerAdapter implements GuildChannelProvisioner {
     return { id: created.id, name: created.name };
   }
 
+  async renameChannel(id: string, name: string): Promise<void> {
+    const channel = this.guild.channels.cache.get(id) ?? (await this.guild.channels.fetch(id).catch(() => null));
+    if (channel) await channel.setName(name).catch(() => {});
+  }
+
   async deleteChannel(id: string): Promise<void> {
     const channel = this.guild.channels.cache.get(id) ?? (await this.guild.channels.fetch(id).catch(() => null));
     if (channel) await channel.delete().catch(() => {});
@@ -410,7 +415,7 @@ export interface DiscordClientDeps {
   // Called once on ClientReady (after commands register) to rebind persisted
   // sessions (§9 step 4). Wired to orchestrator.resumeAll by the app boot.
   onReady: (client: Client) => Promise<void>;
-  // Auto-provision the 🤖 Agent category + #agent-start control channel + sessions
+  // Auto-provision the 🤖 Agent category + #session-generator control channel + sessions
   // category for a guild, so /init is optional (§ auto-provision). Called for every
   // existing guild on ClientReady and for a guild the bot is added to on GuildCreate.
   // Idempotent + Manage-Channels-guarded + non-throwing (see autoProvisionGuild). App

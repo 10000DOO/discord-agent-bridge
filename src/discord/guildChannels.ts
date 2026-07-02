@@ -37,6 +37,10 @@ export interface GuildChannelProvisioner {
   // Create a NEW text channel named `name` under `parentId` (when given). Used for
   // per-project session channels, which are always fresh (never reused).
   createTextChannel(name: string, parentId?: string): Promise<ProvisionedChannel>;
+  // Rename an existing channel by id (used to migrate an already-provisioned control
+  // channel to the current name). Best-effort at the adapter level; a missing channel
+  // or a permission error resolves quietly so a rename never breaks provisioning.
+  renameChannel(id: string, name: string): Promise<void>;
   // Delete a channel by id (used by /agent close to remove the session channel).
   // Best-effort at the adapter level; a missing channel is not an error.
   deleteChannel(id: string): Promise<void>;
@@ -49,7 +53,7 @@ export type GuildChannels = NonNullable<ServerConfig['channels']>;
 // channel/category names, not localized bot messages — Discord lowercases/sanitizes
 // text channel names itself, but we pass already-clean values.
 const CONTROL_CATEGORY_NAME = '🤖 Agent';
-const CONTROL_CHANNEL_NAME = 'agent-start';
+const CONTROL_CHANNEL_NAME = 'session-generator';
 const SESSIONS_CATEGORY_NAME = 'Agent - Sessions';
 
 // Idempotently create (or reuse) the guild's channel structure and persist the ids
@@ -75,6 +79,13 @@ export async function ensureGuildChannels(
     controlCategory.id,
     existing && provisioner.channelExists(existing.controlChannelId) ? existing.controlChannelId : undefined,
   );
+  // Migrate an already-provisioned control channel to the current name: a reused
+  // channel keeps whatever name it had (e.g. an older 'agent-start'), so rename it in
+  // place. Best-effort — a rename failure (missing permission) must not break the rest
+  // of provisioning, so it is swallowed here (the adapter also swallows at its level).
+  if (controlChannel.name !== CONTROL_CHANNEL_NAME) {
+    await provisioner.renameChannel(controlChannel.id, CONTROL_CHANNEL_NAME).catch(() => {});
+  }
   const sessionsCategory = await provisioner.ensureCategory(
     SESSIONS_CATEGORY_NAME,
     existing && provisioner.channelExists(existing.sessionsCategoryId) ? existing.sessionsCategoryId : undefined,
@@ -93,7 +104,7 @@ export async function ensureGuildChannels(
 
 // Auto-provision a guild's channel structure without a manual /init. Called on
 // ClientReady (for every existing guild) and on GuildCreate (a fresh invite), so the
-// 🤖 Agent category + #agent-start control channel + Agent - Sessions category appear
+// 🤖 Agent category + #session-generator control channel + Agent - Sessions category appear
 // automatically. GUARDED and NON-THROWING by design: skips with a clear warning when
 // the bot lacks Manage Channels, and swallows any create failure (a missing permission
 // surfaces as a create error on some paths) so one bad guild never crashes the ready

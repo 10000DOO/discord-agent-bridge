@@ -31,6 +31,8 @@ class FakeProvisioner implements GuildChannelProvisioner {
   readonly channels = new Map<string, { name: string; type: 'category' | 'text'; parent?: string }>();
   readonly createdNames: string[] = [];
   readonly deleted: string[] = [];
+  // id → new name, recorded for the rename-migration assertions.
+  readonly renamed = new Map<string, string>();
   // Toggle the bot's Manage Channels permission to exercise the guarded skip path.
   manageChannels = true;
   private seq = 0;
@@ -77,6 +79,12 @@ class FakeProvisioner implements GuildChannelProvisioner {
     this.channels.set(id, { name, type: 'text', ...(parentId ? { parent: parentId } : {}) });
     this.createdNames.push(name);
     return { id, name };
+  }
+
+  async renameChannel(id: string, name: string): Promise<void> {
+    const existing = this.channels.get(id);
+    if (existing) this.channels.set(id, { ...existing, name });
+    this.renamed.set(id, name);
   }
 
   async deleteChannel(id: string): Promise<void> {
@@ -175,6 +183,38 @@ describe('ensureGuildChannels', () => {
     expect(store.loadServerConfig('g1')?.channels?.controlChannelId).toBe(second.controlChannelId);
   });
 
+  it('renames an already-provisioned control channel to the current name (migration)', async () => {
+    // A server provisioned under the OLD control-channel name still has that channel;
+    // its id is persisted. Re-running must reuse the id and rename it in place.
+    const prov = new FakeProvisioner();
+    prov.seed('cat', 'Control Category', 'category');
+    prov.seed('ctrl', 'agent-start', 'text');
+    prov.seed('sess-cat', 'Sessions Category', 'category');
+    store.saveServerConfig({
+      version: 1,
+      guildId: 'g1',
+      channels: { categoryId: 'cat', controlChannelId: 'ctrl', sessionsCategoryId: 'sess-cat', statusChannelId: null },
+    });
+
+    const channels = await ensureGuildChannels(prov, store);
+
+    // The control channel id was reused (no re-create) and renamed to the new name.
+    expect(channels.controlChannelId).toBe('ctrl');
+    expect(prov.createdNames).toHaveLength(0);
+    expect(prov.renamed.get('ctrl')).toBe('session-generator');
+    expect(prov.channels.get('ctrl')?.name).toBe('session-generator');
+  });
+
+  it('does not rename a control channel that already has the current name', async () => {
+    const prov = new FakeProvisioner();
+    // First run creates the structure with the current name.
+    await ensureGuildChannels(prov, store);
+    prov.renamed.clear();
+    // A second run reuses everything and must NOT issue a rename (name matches).
+    await ensureGuildChannels(prov, store);
+    expect(prov.renamed.size).toBe(0);
+  });
+
   it('preserves existing server auth/defaults when persisting channels (first /init)', async () => {
     // A /config-created server file already has auth; /init must not clobber it.
     store.saveServerConfig({ version: 1, guildId: 'g1', auth: { executeRoleIds: ['role-exec'] } });
@@ -191,7 +231,7 @@ describe('autoProvisionGuild (ready / guild-join, /init optional)', () => {
     const prov = new FakeProvisioner();
     const { logger, info } = fakeLogger();
     const channels = await autoProvisionGuild(prov, store, logger);
-    // The 🤖 Agent category + #agent-start + Agent - Sessions were created.
+    // The 🤖 Agent category + #session-generator + Agent - Sessions were created.
     expect(prov.createdNames).toHaveLength(3);
     expect(channels?.controlChannelId).toBeTruthy();
     // The persisted ids match what auto-provision returned.

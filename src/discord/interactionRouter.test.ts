@@ -390,6 +390,9 @@ class FakeProvisioner implements GuildChannelProvisioner {
     this.createdNames.push(name);
     return { id, name };
   }
+  async renameChannel(id: string, name: string) {
+    if (this.channels.has(id)) this.channels.set(id, name);
+  }
   async deleteChannel(id: string) {
     this.channels.delete(id);
     this.deleted.push(id);
@@ -1042,7 +1045,7 @@ describe('InteractionRouter /agent close deletes the session channel', () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const prov = new FakeProvisioner('g1');
-    prov.channels.set('ctrl', 'agent-start');
+    prov.channels.set('ctrl', 'session-generator');
     const router = buildRouter({ orchestrator, wiring, resolveGuildProvisioner: async () => prov });
     const { interaction } = slash({ commandName: 'agent', subcommand: 'close', channelId: 'ctrl' });
     await router.handle(interaction);
