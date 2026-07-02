@@ -60,7 +60,7 @@ export function formatNotification(
     }
     case 'error': {
       if (!events.error) return null;
-      let line = `❌ <#${sessionChannelId}> 에러: ${ev.message}`;
+      let line = `❌ <#${sessionChannelId}> 에러: ${ev.message.slice(0, 500)}`;
       if (ev.rateLimit) line += ` · rate limit`;
       return line;
     }

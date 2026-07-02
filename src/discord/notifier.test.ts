@@ -96,6 +96,17 @@ describe('formatNotification', () => {
     ).toBe('❌ <#sess-1> 에러: slow down · rate limit');
   });
 
+  it('caps a long error message so the line stays under Discord’s 2000-char limit', () => {
+    const line = formatNotification(
+      { kind: 'error', message: 'x'.repeat(3000), retryable: true, rateLimit: {} },
+      'sess-1',
+      ALL_ON,
+    )!;
+    expect(line.length).toBeLessThan(2000);
+    // The message segment is capped at 500 chars; the rate-limit suffix is kept.
+    expect(line).toMatch(/^❌ <#sess-1> 에러: x{500} · rate limit$/);
+  });
+
   it('formats a tool_use line only when toolUse is enabled', () => {
     const ev: AgentEvent = { kind: 'tool_use', id: 't1', name: 'Bash', input: {} };
     expect(formatNotification(ev, 'sess-1', ALL_ON)).toBe('🔧 <#sess-1> Bash');
