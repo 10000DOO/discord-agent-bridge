@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   ensureGuildChannels,
+  autoProvisionGuild,
   createSessionChannel,
   sessionChannelName,
   type GuildChannelProvisioner,
@@ -11,6 +12,15 @@ import {
 } from './guildChannels.js';
 import { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type AppConfig } from '../core/configSchema.js';
+import type { Logger } from '../core/contracts.js';
+
+// A recording logger for the auto-provision warning/skip assertions.
+function fakeLogger(): { logger: Logger; info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } {
+  const info = vi.fn();
+  const warn = vi.fn();
+  const logger: Logger = { debug: vi.fn(), info, warn, error: vi.fn() };
+  return { logger, info, warn };
+}
 
 // A fake GuildChannelProvisioner backed by an in-memory channel map, mirroring
 // discord.js guild.channels.create/delete WITHOUT a gateway. Every create records the
@@ -21,10 +31,16 @@ class FakeProvisioner implements GuildChannelProvisioner {
   readonly channels = new Map<string, { name: string; type: 'category' | 'text'; parent?: string }>();
   readonly createdNames: string[] = [];
   readonly deleted: string[] = [];
+  // Toggle the bot's Manage Channels permission to exercise the guarded skip path.
+  manageChannels = true;
   private seq = 0;
 
   seed(id: string, name: string, type: 'category' | 'text'): void {
     this.channels.set(id, { name, type });
+  }
+
+  canManageChannels(): boolean {
+    return this.manageChannels;
   }
 
   channelExists(id: string): boolean {
@@ -167,6 +183,56 @@ describe('ensureGuildChannels', () => {
     const saved = store.loadServerConfig('g1');
     expect(saved?.auth?.executeRoleIds).toEqual(['role-exec']);
     expect(saved?.channels).toBeDefined();
+  });
+});
+
+describe('autoProvisionGuild (ready / guild-join, /init optional)', () => {
+  it('provisions the channel structure when a guild lacks it (invokes create)', async () => {
+    const prov = new FakeProvisioner();
+    const { logger, info } = fakeLogger();
+    const channels = await autoProvisionGuild(prov, store, logger);
+    // The 🤖 Agent category + #agent-start + Agent - Sessions were created.
+    expect(prov.createdNames).toHaveLength(3);
+    expect(channels?.controlChannelId).toBeTruthy();
+    // The persisted ids match what auto-provision returned.
+    expect(store.loadServerConfig('g1')?.channels).toEqual(channels);
+    expect(info).toHaveBeenCalled();
+  });
+
+  it('is idempotent when already provisioned (no new channels created)', async () => {
+    const prov = new FakeProvisioner();
+    const { logger } = fakeLogger();
+    const first = await autoProvisionGuild(prov, store, logger);
+    expect(prov.createdNames).toHaveLength(3);
+    // A second pass (e.g. a later ClientReady after a restart) reuses the stored ids.
+    const second = await autoProvisionGuild(prov, store, logger);
+    expect(prov.createdNames).toHaveLength(3);
+    expect(second).toEqual(first);
+  });
+
+  it('missing Manage Channels: logs a warning, creates nothing, does NOT throw', async () => {
+    const prov = new FakeProvisioner();
+    prov.manageChannels = false;
+    const { logger, warn } = fakeLogger();
+    const result = await autoProvisionGuild(prov, store, logger);
+    expect(result).toBeNull();
+    expect(prov.createdNames).toHaveLength(0);
+    expect(store.loadServerConfig('g1')?.channels).toBeUndefined();
+    // A clear warning names the missing permission.
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls[0][0]).toContain('Manage Channels');
+  });
+
+  it('swallows a create failure (logs a warning, returns null, no throw)', async () => {
+    const prov = new FakeProvisioner();
+    // A create rejects mid-provision (mirrors a permission error the guard cannot see).
+    prov.ensureCategory = vi.fn(async () => {
+      throw new Error('Missing Permissions');
+    });
+    const { logger, warn } = fakeLogger();
+    const result = await autoProvisionGuild(prov, store, logger);
+    expect(result).toBeNull();
+    expect(warn).toHaveBeenCalled();
   });
 });
 

@@ -19,6 +19,7 @@ import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
 import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
+import { autoProvisionGuild } from './discord/guildChannels.js';
 import { setLocale, t, type Locale } from './discord/i18n.js';
 
 // The application composition root (§2, §4, §9). createApp() builds the full core
@@ -202,6 +203,13 @@ export function createApp(deps: CreateAppDeps): App {
       // /agent start shows the real, current model list instead of the alias fallback.
       void getClaudeModels({ logger });
       logger.info('boot complete', { guilds: client.guilds.cache.size });
+    },
+    // Auto-provision each guild's channel structure on ready / guild-join so /init is
+    // optional. Resolves the guild's provisioner over the live gateway, then runs the
+    // idempotent, Manage-Channels-guarded, non-throwing provisioner.
+    autoProvisionGuild: async (guildId: string) => {
+      const provisioner = await resolveGuildProvisioner(discord.raw, guildId);
+      if (provisioner) await autoProvisionGuild(provisioner, configStore, logger);
     },
     ...(deps.client ? { client: deps.client } : {}),
   });

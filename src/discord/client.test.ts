@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PermissionFlagsBits, type Interaction } from 'discord.js';
-import { adaptInteraction, buildSlashCommands } from './client.js';
+import { Events, PermissionFlagsBits, type Client, type Interaction } from 'discord.js';
+import { adaptInteraction, buildSlashCommands, DiscordClient } from './client.js';
+import type { Logger } from '../core/contracts.js';
+import type { MessageRouter } from './messageRouter.js';
+import type { InteractionRouter } from './interactionRouter.js';
 
 // The `/mode backend` choices must be built from the REGISTERED backend list, so a
 // backend that is not yet registered (Codex before Phase 2) is never offered.
@@ -162,6 +165,88 @@ describe('adaptInteraction — modal wiring (generic)', () => {
     expect(adapted.getField('some.field')).toBe('value-1');
     // An absent field returns '' (never throws).
     expect(adapted.getField('missing')).toBe('');
+  });
+});
+
+// The auto-provision wiring on ClientReady / GuildCreate (§ auto-provision, /init
+// optional). discord.js is faked: the Client captures its event handlers so a test
+// fires ClientReady / GuildCreate WITHOUT a gateway. The fake's token is empty so
+// registerCommands fails fast (no REST/network) — the ready handler catches it and
+// still runs auto-provision, which is what we assert here.
+describe('DiscordClient auto-provision on ready / guild-join', () => {
+  const noopLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+
+  function fakeGatewayClient(guildIds: string[]) {
+    const once = new Map<string, (arg: unknown) => void>();
+    const on = new Map<string, (arg: unknown) => void>();
+    const cache = new Map<string, unknown>(guildIds.map((id) => [id, { id }]));
+    const ready = { user: { tag: 'bot#0001' }, guilds: { cache } };
+    const client = {
+      once: (event: string, handler: (arg: unknown) => void) => { once.set(event, handler); },
+      on: (event: string, handler: (arg: unknown) => void) => { on.set(event, handler); },
+      guilds: { cache },
+      channels: { fetch: async () => null },
+      token: '', // empty → registerCommands throws before any REST call (network-free)
+    } as unknown as Client;
+    return {
+      client,
+      fireReady: async () => {
+        const handler = once.get(Events.ClientReady);
+        if (!handler) throw new Error('no ClientReady handler registered');
+        handler(ready);
+        await new Promise((r) => setTimeout(r, 0));
+      },
+      fireGuildCreate: async (guildId: string) => {
+        const handler = on.get(Events.GuildCreate);
+        if (!handler) throw new Error('no GuildCreate handler registered');
+        handler({ id: guildId, name: 'g' });
+        await new Promise((r) => setTimeout(r, 0));
+      },
+    };
+  }
+
+  function build(client: Client, autoProvisionGuild?: (guildId: string) => Promise<void>) {
+    const messageRouter = {} as unknown as MessageRouter;
+    const interactionRouter = {} as unknown as InteractionRouter;
+    return new DiscordClient({
+      clientId: 'cid',
+      logger: noopLogger,
+      messageRouter,
+      interactionRouter,
+      backends: () => ['claude'],
+      onReady: async () => {},
+      ...(autoProvisionGuild ? { autoProvisionGuild } : {}),
+      client,
+    });
+  }
+
+  it('invokes autoProvisionGuild for EVERY existing guild on ClientReady', async () => {
+    const fc = fakeGatewayClient(['g1', 'g2']);
+    const provisioned: string[] = [];
+    build(fc.client, async (guildId) => { provisioned.push(guildId); });
+    await fc.fireReady();
+    expect(provisioned.sort()).toEqual(['g1', 'g2']);
+  });
+
+  it('invokes autoProvisionGuild when the bot is added to a new guild (GuildCreate)', async () => {
+    const fc = fakeGatewayClient([]);
+    const provisioned: string[] = [];
+    build(fc.client, async (guildId) => { provisioned.push(guildId); });
+    await fc.fireGuildCreate('new-guild');
+    expect(provisioned).toEqual(['new-guild']);
+  });
+
+  it('a throwing autoProvisionGuild never crashes the ready handler', async () => {
+    const fc = fakeGatewayClient(['g1']);
+    build(fc.client, async () => { throw new Error('boom'); });
+    // The ready handler catches per-guild failures — firing must not reject.
+    await expect(fc.fireReady()).resolves.toBeUndefined();
+  });
+
+  it('is optional: no autoProvisionGuild dep → ClientReady still completes', async () => {
+    const fc = fakeGatewayClient(['g1']);
+    build(fc.client); // no autoProvisionGuild wired
+    await expect(fc.fireReady()).resolves.toBeUndefined();
   });
 });
 

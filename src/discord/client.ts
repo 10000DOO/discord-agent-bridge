@@ -337,6 +337,14 @@ class GuildProvisionerAdapter implements GuildChannelProvisioner {
     return this.guild.id;
   }
 
+  // The bot has Manage Channels in this guild. Reads the bot member's resolved
+  // permissions (guild.members.me). Absent member (not yet cached) → false, so
+  // auto-provision skips with a warning rather than attempting a create that would fail.
+  canManageChannels(): boolean {
+    const me = this.guild.members.me;
+    return me?.permissions.has(PermissionFlagsBits.ManageChannels) ?? false;
+  }
+
   channelExists(id: string): boolean {
     return this.guild.channels.cache.has(id);
   }
@@ -402,6 +410,13 @@ export interface DiscordClientDeps {
   // Called once on ClientReady (after commands register) to rebind persisted
   // sessions (§9 step 4). Wired to orchestrator.resumeAll by the app boot.
   onReady: (client: Client) => Promise<void>;
+  // Auto-provision the 🤖 Agent category + #agent-start control channel + sessions
+  // category for a guild, so /init is optional (§ auto-provision). Called for every
+  // existing guild on ClientReady and for a guild the bot is added to on GuildCreate.
+  // Idempotent + Manage-Channels-guarded + non-throwing (see autoProvisionGuild). App
+  // boot wires it to resolve the guild's provisioner over the live gateway; optional so
+  // a test without it just skips provisioning.
+  autoProvisionGuild?: (guildId: string) => Promise<void>;
   // Injectable so tests never construct a real gateway Client. Defaults to a real
   // discord.js Client with the required intents.
   client?: Client;
@@ -415,6 +430,7 @@ export class DiscordClient {
   private readonly interactionRouter: InteractionRouter;
   private readonly backends: () => string[];
   private readonly onReady: (client: Client) => Promise<void>;
+  private readonly autoProvisionGuild?: (guildId: string) => Promise<void>;
 
   constructor(deps: DiscordClientDeps) {
     this.client = deps.client ?? new Client({ intents: INTENTS });
@@ -424,6 +440,7 @@ export class DiscordClient {
     this.interactionRouter = deps.interactionRouter;
     this.backends = deps.backends;
     this.onReady = deps.onReady;
+    if (deps.autoProvisionGuild) this.autoProvisionGuild = deps.autoProvisionGuild;
     this.registerHandlers();
   }
 
@@ -439,11 +456,19 @@ export class DiscordClient {
       });
     });
 
-    // Register commands for a guild the bot joins after startup, too.
+    // Register commands for a guild the bot joins after startup, too, and
+    // auto-provision its channel structure so /init is optional (§ auto-provision).
+    // The two are INDEPENDENT: a command-registration hiccup must not prevent channel
+    // creation, so each is guarded separately (mirrors handleReady's per-guild loop).
     this.client.on(Events.GuildCreate, (guild) => {
       void this.registerCommands(guild.id).catch((err) => {
         this.logger.error('guild-join command registration failed', { guildId: guild.id, err: String(err) });
       });
+      if (this.autoProvisionGuild) {
+        void this.autoProvisionGuild(guild.id).catch((err) => {
+          this.logger.error('guild-join auto-provision failed', { guildId: guild.id, err: String(err) });
+        });
+      }
     });
 
     this.client.on(Events.MessageCreate, (message) => {
@@ -510,6 +535,13 @@ export class DiscordClient {
       await this.registerCommands(guildId).catch((err) => {
         this.logger.error('command registration failed', { guildId, err: String(err) });
       });
+      // Auto-provision each existing guild so the control/session channels appear
+      // without a manual /init (idempotent + Manage-Channels-guarded + non-throwing).
+      if (this.autoProvisionGuild) {
+        await this.autoProvisionGuild(guildId).catch((err) => {
+          this.logger.error('auto-provision failed', { guildId, err: String(err) });
+        });
+      }
     }
     await this.onReady(this.client);
   }

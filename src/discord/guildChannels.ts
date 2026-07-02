@@ -1,5 +1,6 @@
 import type { ConfigStore } from '../core/config.js';
 import type { ServerConfig } from '../core/configSchema.js';
+import type { Logger } from '../core/contracts.js';
 
 // A4D-style channel provisioning (§ init / session channels). This module owns the
 // idempotent logic for creating the guild's channel STRUCTURE (a control channel +
@@ -21,6 +22,10 @@ export interface ProvisionedChannel {
 export interface GuildChannelProvisioner {
   // The guild these operations act on (surfaced for logging / summaries).
   readonly guildId: string;
+  // True when the bot has the Manage Channels permission in this guild. Auto-provision
+  // (ClientReady / GuildCreate) checks this FIRST and skips with a warning when false,
+  // so a missing permission logs a clear notice instead of throwing a create error.
+  canManageChannels(): boolean;
   // True when a channel with this id still exists in the guild (was not deleted).
   channelExists(id: string): boolean;
   // Reuse the category at `existingId` when it still exists, else create one named
@@ -84,6 +89,41 @@ export async function ensureGuildChannels(
 
   persistChannels(configStore, guildId, server, channels);
   return channels;
+}
+
+// Auto-provision a guild's channel structure without a manual /init. Called on
+// ClientReady (for every existing guild) and on GuildCreate (a fresh invite), so the
+// 🤖 Agent category + #agent-start control channel + Agent - Sessions category appear
+// automatically. GUARDED and NON-THROWING by design: skips with a clear warning when
+// the bot lacks Manage Channels, and swallows any create failure (a missing permission
+// surfaces as a create error on some paths) so one bad guild never crashes the ready
+// handler. Idempotent — reuses existing channels by stored id via ensureGuildChannels.
+// Returns the resolved structure, or null when it could not provision.
+export async function autoProvisionGuild(
+  provisioner: GuildChannelProvisioner,
+  configStore: ConfigStore,
+  logger: Logger,
+): Promise<GuildChannels | null> {
+  if (!provisioner.canManageChannels()) {
+    logger.warn('auto-provision skipped: missing Manage Channels permission', {
+      guildId: provisioner.guildId,
+    });
+    return null;
+  }
+  try {
+    const channels = await ensureGuildChannels(provisioner, configStore);
+    logger.info('auto-provisioned guild channels', {
+      guildId: provisioner.guildId,
+      controlChannelId: channels.controlChannelId,
+    });
+    return channels;
+  } catch (err) {
+    logger.warn('auto-provision failed', {
+      guildId: provisioner.guildId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }
 
 // Create a dedicated session channel for a picked project folder, under the guild's
