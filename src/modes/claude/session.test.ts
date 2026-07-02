@@ -317,6 +317,28 @@ describe('ClaudeSession — query options', () => {
     await session.stop();
   });
 
+  it('pins the model to the session cwd via the claude_code preset system prompt', async () => {
+    // Root cause of the live bug: the SDK forwards cwd to the CLI subprocess, but with
+    // an unqualified prompt the model resolves relative paths against $HOME, so files
+    // landed in HOME regardless of cwd. The fix appends the working directory to the
+    // claude_code preset so relative writes land in ctx.cwd. This asserts the exact
+    // option shape the real SDK requires (verified empirically against the live CLI).
+    const { ctx } = makeCtx({ cwd: '/tmp/selected-folder' });
+    const { queryFn, captured } = fakeQueryFn([]);
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    const options = captured.options as {
+      systemPrompt: { type: string; preset: string; append: string };
+    };
+    expect(options.systemPrompt.type).toBe('preset');
+    // Preserve the claude_code preset so CLAUDE.md / tools / dynamic sections stay intact.
+    expect(options.systemPrompt.preset).toBe('claude_code');
+    // The append must name the exact cwd so the model writes there, not to $HOME.
+    expect(options.systemPrompt.append).toContain('/tmp/selected-folder');
+    expect(options.systemPrompt.append).toMatch(/working directory/i);
+    await session.stop();
+  });
+
   it('passes each PermMode natively to the SDK permissionMode', async () => {
     for (const mode of ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const) {
       const { ctx } = makeCtx({ permMode: mode });

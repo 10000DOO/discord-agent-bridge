@@ -84,6 +84,19 @@ export class ClaudeSession implements ModeSession {
     const permissionMode = toSdkPermissionMode(ctx.permMode);
     const options: Options = {
       cwd: ctx.cwd,
+      // Pin the model's write target to the selected folder. The SDK forwards `cwd`
+      // to the CLI subprocess (verified: process.cwd() and the init `cwd` both equal
+      // ctx.cwd), but with an unqualified prompt like "create test.txt" the model
+      // resolves the path against $HOME, not process.cwd() — so files landed in HOME
+      // regardless of cwd/additionalDirectories/permissionMode. Appending the working
+      // directory to the claude_code preset (empirically: 0/N honored without it,
+      // N/N with it) makes relative writes land in ctx.cwd. Codex does not need this —
+      // it passes the dir to its CLI explicitly via `--cd` (codex/runner.ts).
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        append: `Your working directory is ${ctx.cwd}. Unless the user gives an absolute path, create and edit all files relative to this working directory, NOT the home directory.`,
+      },
       permissionMode,
       // The SDK REQUIRES this flag to be true when permissionMode is
       // 'bypassPermissions' (sdk.d.ts: "Must be set to true when using
@@ -111,6 +124,10 @@ export class ClaudeSession implements ModeSession {
     if (deps.resumeId !== undefined) {
       this.sessionId = deps.resumeId;
     }
+
+    // Log the working directory actually handed to the SDK so a live run shows the
+    // effective cwd (must match the status-embed cwd and the folder files land in).
+    ctx.logger.info('claude session cwd', { cwd: options.cwd, ctxCwd: ctx.cwd, permissionMode });
 
     this.query = queryFn({ prompt: this.promptStream(), options });
     void this.consume();

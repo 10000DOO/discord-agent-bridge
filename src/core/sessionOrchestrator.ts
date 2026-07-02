@@ -177,7 +177,7 @@ export class SessionOrchestrator {
       cwd,
       status: 'ok',
     });
-    this.logger.info('session started', { guildId, channelId, mode });
+    this.logger.info('session started', { guildId, channelId, mode, cwd });
     return session;
   }
 
