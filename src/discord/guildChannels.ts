@@ -191,6 +191,7 @@ function persistChannels(
     ...(existing?.locale ? { locale: existing.locale } : {}),
     ...(existing?.auditChannelId !== undefined ? { auditChannelId: existing.auditChannelId } : {}),
     ...(existing?.favorites ? { favorites: existing.favorites } : {}),
+    ...(existing?.notifications ? { notifications: existing.notifications } : {}),
     channels,
   };
   configStore.saveServerConfig(next);

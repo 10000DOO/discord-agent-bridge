@@ -227,6 +227,16 @@ describe('ensureGuildChannels', () => {
     expect(saved?.auth?.executeRoleIds).toEqual(['role-exec']);
     expect(saved?.channels).toBeDefined();
   });
+
+  it('preserves an existing notifications block across a re-provision', async () => {
+    // An admin's notification toggle/custom channel must survive auto-provision, which
+    // re-runs for every guild on every boot.
+    const notifications = { enabled: false, channelId: 'custom-status', events: { toolUse: true } };
+    store.saveServerConfig({ version: 1, guildId: 'g1', notifications });
+    const prov = new FakeProvisioner();
+    await ensureGuildChannels(prov, store);
+    expect(store.loadServerConfig('g1')?.notifications).toEqual(notifications);
+  });
 });
 
 describe('autoProvisionGuild (ready / guild-join, /init optional)', () => {
