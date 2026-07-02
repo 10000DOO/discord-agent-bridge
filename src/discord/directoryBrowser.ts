@@ -5,11 +5,16 @@ import type { ComponentRow, EmbedSpec, SelectSpec } from './ports.js';
 import { t } from './i18n.js';
 
 // Filesystem folder navigation used by the channel wizard (§9): list dirs, go up,
-// go into, select the current path. Browsing is CONFINED to configured allowed
-// roots (else the user's home): navigation can never escape a root (fixes the A5
-// class of path-escape, applied to the browse UI). Pure FS + string logic — no
-// discord.js — so it is unit-testable against temp dirs; the render() output is a
-// plain component spec that 7b maps onto discord.js.
+// go into, select the current path. By default (no allowedRoots) the admin driver can
+// browse ANYWHERE up to the filesystem root '/', so the session cwd can be a project on
+// any volume (e.g. /Volumes/<other-drive> on macOS): ⬆ up is enabled at every path
+// except '/' itself. When allowedRoots IS supplied, navigation stays CONFINED within
+// them (the original A5 path-escape guard, still used by callers that want a bounded
+// picker). NOTE: this governs only CHOOSING the cwd; the per-session file-access
+// confinement (attach/download realpath-confined to the chosen cwd) is a SEPARATE
+// mechanism and is unaffected. Pure FS + string logic — no discord.js — so it is
+// unit-testable against temp dirs; the render() output is a plain component spec that
+// 7b maps onto discord.js.
 //
 // custom_id scheme (parsed by 7b's interactionRouter):
 //   dir:into  (string-select; value = child folder name)
@@ -22,25 +27,27 @@ const MAX_LABEL_LENGTH = 95;
 
 export interface DirectoryBrowserOptions {
   // Absolute directories the user may browse within. Any navigation target must be
-  // inside at least one root. Defaults to [home] when omitted/empty.
+  // inside at least one root. When OMITTED/empty the browser is UNBOUNDED: the driver
+  // can navigate up to the filesystem root '/' and into any volume (the admin picks the
+  // session cwd anywhere). Supply roots only for a deliberately bounded picker.
   allowedRoots?: string[];
-  // Where to start; must resolve inside an allowed root or it is clamped to the
-  // first root. Defaults to the first allowed root.
+  // Where to start; must resolve inside an allowed root (bounded mode) or it is clamped
+  // to the first root. Defaults to the first allowed root, or to home when unbounded.
   startPath?: string;
 }
 
 export class DirectoryBrowser {
-  private readonly roots: string[];
+  // The confinement roots, or null when the browser is unbounded (browse anywhere up to
+  // '/'). Kept separate from `current` so navigation checks pick the right rule.
+  private readonly roots: string[] | null;
   private current: string;
 
   constructor(options: DirectoryBrowserOptions = {}) {
-    const roots = (options.allowedRoots && options.allowedRoots.length > 0
-      ? options.allowedRoots
-      : [os.homedir()]
-    ).map((r) => path.resolve(r));
-    this.roots = roots;
-    const start = options.startPath ? path.resolve(options.startPath) : roots[0];
-    this.current = this.confine(start) ? start : roots[0];
+    const bounded = Boolean(options.allowedRoots && options.allowedRoots.length > 0);
+    this.roots = bounded ? options.allowedRoots!.map((r) => path.resolve(r)) : null;
+    const fallbackStart = this.roots ? this.roots[0] : os.homedir();
+    const start = options.startPath ? path.resolve(options.startPath) : fallbackStart;
+    this.current = this.confine(start) ? start : fallbackStart;
   }
 
   // The folder currently in view.
@@ -74,8 +81,9 @@ export class DirectoryBrowser {
     return true;
   }
 
-  // Go up one level. No-ops (returns false) at a root boundary, so the user cannot
-  // ascend past an allowed root.
+  // Go up one level. No-ops (returns false) at the filesystem root ('/', where
+  // dirname(p) === p) and — in bounded mode — at an allowed-root boundary. In unbounded
+  // mode the only stop is '/', so the driver can reach any volume above the start dir.
   up(): boolean {
     const parent = path.dirname(this.current);
     if (parent === this.current) return false;
@@ -89,10 +97,13 @@ export class DirectoryBrowser {
     return this.current;
   }
 
-  // True when `target` (already resolved) is the same as, or nested under, at least
-  // one allowed root. Uses path.relative so /ws is not fooled by /ws-evil.
+  // True when navigation to `target` is permitted. Unbounded mode (roots === null)
+  // allows any absolute path (the whole filesystem, up to '/'). Bounded mode requires
+  // `target` to be the same as, or nested under, at least one allowed root; path.relative
+  // is used so /ws is not fooled by /ws-evil.
   private confine(target: string): boolean {
     const resolved = path.resolve(target);
+    if (this.roots === null) return true;
     return this.roots.some((root) => isWithin(root, resolved));
   }
 

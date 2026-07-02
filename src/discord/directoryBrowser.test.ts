@@ -69,6 +69,50 @@ describe('DirectoryBrowser', () => {
   });
 });
 
+describe('DirectoryBrowser unbounded (Fix 1: reach the filesystem root and other volumes)', () => {
+  it('with NO allowedRoots, can navigate all the way UP to the filesystem root "/"', () => {
+    const b = new DirectoryBrowser({ startPath: root });
+    // Walk up repeatedly; each up() succeeds until we hit '/'.
+    let guard = 0;
+    while (b.up() && guard < 100) guard++;
+    expect(b.cwd()).toBe(path.parse(root).root); // '/' on POSIX
+    // At the filesystem root, up() is a no-op (dirname('/') === '/').
+    expect(b.up()).toBe(false);
+  });
+
+  it('⬆ up is ENABLED at every path except "/" in the render', () => {
+    // Deep-ish start: up is enabled here.
+    const deep = new DirectoryBrowser({ startPath: path.join(root, 'sub', 'nested') });
+    const upBtn = (rows: { components: { type: string; customId: string; disabled?: boolean }[] }[]) =>
+      rows.flatMap((r) => r.components).find((c) => c.type === 'button' && c.customId === 'dir:up');
+    expect(upBtn(deep.render().rows)?.disabled).toBe(false);
+
+    // At the filesystem root, up is disabled.
+    const atRoot = new DirectoryBrowser({ startPath: path.parse(root).root });
+    expect(upBtn(atRoot.render().rows)?.disabled).toBe(true);
+  });
+
+  it('from "/" can enter a top-level directory (the path to other volumes, e.g. /Volumes)', () => {
+    const fsRoot = path.parse(root).root; // '/'
+    const b = new DirectoryBrowser({ startPath: fsRoot });
+    expect(b.cwd()).toBe(fsRoot);
+    // "/" lists its top-level entries (on macOS this includes 'Volumes', the mount root
+    // for other drives). Entering any of them descends off the root — the exact behavior
+    // the user needs to reach a project on another volume.
+    const children = b.listChildren();
+    expect(children.length).toBeGreaterThan(0);
+    const first = children[0];
+    expect(b.into(first)).toBe(true);
+    expect(b.cwd()).toBe(path.join(fsRoot, first));
+  });
+
+  it('bounded mode still cannot ascend past an allowed root (confinement unchanged)', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    expect(b.up()).toBe(false);
+    expect(b.cwd()).toBe(root);
+  });
+});
+
 describe('DirectoryBrowser render (A4D-style folder picker)', () => {
   function selectOf(rows: { components: { type: string; customId: string; options?: { label: string; value: string }[]; placeholder?: string }[] }[]) {
     return rows.flatMap((r) => r.components).find((c) => c.type === 'select' && c.customId === 'dir:into');
