@@ -7,7 +7,7 @@
 - 현재 지원: **Claude Code**, **Codex**
 - 확장: 모드 플러그인 추가로 다른 에이전트(예: opencode) 연결 가능
 
-> 🚧 **상태: 개발 중 (Phase 1).** `npx discord-agent-bridge` 로 바로 실행하거나(권장), 아래 **"소스에서 실행"** 으로 받아 쓸 수 있습니다.
+> ✅ **npm에 배포되어 있습니다.** `npx discord-agent-bridge` 로 바로 실행하거나(권장), 전역 설치·소스 빌드로도 쓸 수 있습니다. **Claude Code · Codex** 두 백엔드를 지원합니다.
 
 ---
 
@@ -71,6 +71,20 @@ npx discord-agent-bridge --setup
 
 전역 설치도 가능합니다: `npm install -g discord-agent-bridge` 후 `discord-agent-bridge` / `discord-agent-bridge --setup`.
 
+### 업그레이드
+
+새 버전이 나오면:
+
+```bash
+# npx 사용자 — @latest 를 붙이면 항상 최신을 받습니다(npx는 캐시를 쓸 수 있어요).
+npx discord-agent-bridge@latest
+
+# 전역 설치 사용자
+npm install -g discord-agent-bridge@latest
+```
+
+설치된 버전 확인: `discord-agent-bridge --version`.
+
 ### 소스에서 실행
 
 ```bash
@@ -99,12 +113,12 @@ node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
 
 ## 3단계 — Discord에서 사용하기
 
-봇이 서버에 들어오고 실행 중이면 (권장 순서: **초대 → `/init` → `/config` → `/agent start`**):
+봇이 서버에 들어오면 **컨트롤 채널(`#session-generator`) · 세션 카테고리 · 알림 채널(`#agent-status`)이 자동으로 생성**됩니다(봇에 채널 관리 권한이 있으면). 이후 순서: **`/config` → `/agent start`**.
 
-1. **`/init`** (관리자) → 컨트롤 채널(`#session-generator`)과 세션 카테고리를 만듭니다. 다시 실행해도 기존 채널을 재사용합니다(중복 생성 없음).
+1. **(자동)** 봇 시작·서버 초대 시 위 채널 구조가 생성됩니다. 관리자가 **`/init`** 으로 수동 재생성할 수도 있습니다(기존 채널은 재사용 — 중복 생성 없음).
 2. **`/config`** (관리자) → 역할 티어·기본값을 지정합니다. (서버 관리자(Administrator)는 역할 설정 없이도 항상 사용할 수 있습니다.)
 3. `#session-generator` 에서 **`/agent start`** → **마법사**가 순서대로 안내합니다:
-   **작업 폴더 선택 → 백엔드(Claude / Codex) → 모델 → 권한 모드/프로필**. 확인하면 프로젝트 폴더 이름으로 **전용 세션 채널(`proj-<폴더>`)이 새로 생성**되고 그 채널에 바인딩됩니다.
+   **작업 폴더 선택 → 백엔드(Claude / Codex) → 모델 → 추론 수준 → 권한 모드**. 각 단계는 **"다음" 버튼**으로 넘어갑니다. 폴더 브라우저는 **상위/다른 볼륨까지 이동 · 새 폴더 생성 · 이전 세션 재개**를 지원합니다. 확인하면 프로젝트 폴더 이름으로 **전용 세션 채널(`proj-<폴더>`)이 새로 생성**되고 그 채널에 바인딩됩니다.
 4. 만들어진 세션 채널에서 **그냥 메시지로 대화**하면 됩니다. Claude 모드는 스트리밍 출력·툴 실행 스레드·권한 승인 버튼이 뜹니다.
 5. 필요할 때 명령어 사용.
 
@@ -115,6 +129,7 @@ node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
 | `/agent start` | 새 세션 시작 — 마법사 확인 시 전용 세션 채널을 새로 생성 |
 | `/agent resume` | 이전 세션 이어하기 |
 | `/agent close` | 세션 종료 + 세션 채널 삭제 |
+| `/agent stats` | 활성 세션 · 세션 통계 · Claude 사용량 보기 (본인에게만 표시) |
 | `/mode <claude\|codex>` | 백엔드 전환 (⚠️ 새 대화로 시작 — 이전 맥락 미승계) |
 | `/mode perm <모드\|프로필>` | 권한 모드/프로필 전환 (세션 유지) |
 | `/stop` | 현재 세션 즉시 중단 (킬 스위치) |
@@ -128,6 +143,10 @@ node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
 - `bypassPermissions` — 전부 자동 (신뢰하는 프로젝트에서만)
 
 (Codex는 CLI의 승인·샌드박스 모드로 매핑됩니다.)
+
+### 이벤트 알림 (`#agent-status`)
+
+여러 세션의 **작업 완료·에러**를 `#agent-status` 채널 한 곳에 모아 요약해 알려줍니다. `/config` → **🔔 알림 설정** 에서 켜기/끄기와 대상 채널을 바꿀 수 있습니다.
 
 ---
 
@@ -161,7 +180,7 @@ node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
 ### 터미널에서 쓰던 거랑 똑같나요?
 
 - **Claude 모드** — 터미널의 `claude`와 **같은 엔진**(공식 Claude Agent SDK)을 사용합니다. 프로젝트의 `.claude/` 설정을 그대로 읽어 **서브에이전트·스킬·훅·MCP가 동일하게** 동작하도록 만듭니다. 달라지는 건 입력이 Discord 메시지, 출력이 임베드/스레드라는 **표현 방식**뿐입니다. (터미널에서 타이핑하는 TUI 전용 슬래시 명령은 그대로 치는 방식이 아니라 SDK 방식으로 처리됩니다.)
-- **Codex 모드** — `codex exec`(비대화형)로 구동합니다. 같은 Codex 엔진에 설정/MCP를 로드하지만, **비대화형 모드가 인터랙티브 모드와 일부 다를 수 있어**(승인 방식·특정 기능 등) **서브에이전트·스킬·MCP가 그대로 되는지는 Phase 2에서 실제 `codex` CLI로 검증**한 뒤 확정합니다. 검증 전까지는 완전 동일하다고 보장하지 않습니다.
+- **Codex 모드** — `codex exec`(비대화형)로 구동합니다. 같은 Codex 엔진에 설정/MCP를 로드하지만, 비대화형 모드는 인터랙티브 모드와 **일부(승인 방식 등) 다를 수 있고**, 서브에이전트·스킬·MCP가 완전히 동일하게 동작하는지는 환경에 따라 차이가 있을 수 있습니다.
 
 ---
 
@@ -170,7 +189,7 @@ node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
 ```
 ~/.discord-agent-bridge/
 ├─ config.json            # 봇 토큰·Client ID·기본값·한도 (권한 600)
-├─ servers/<guildId>.json # 서버별 역할 티어·기본값 + /init 채널 구조(control/sessions) ID (권한 600)
+├─ servers/<guildId>.json # 서버별 역할 티어·기본값 · 채널 구조(control/sessions/status) ID · 알림 설정 (권한 600)
 ├─ state.json             # 채널↔세션 바인딩 (재시작 후 자동 복구)
 └─ audit/audit.jsonl      # 감사 로그
 ```
