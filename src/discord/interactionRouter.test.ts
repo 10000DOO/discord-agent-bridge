@@ -328,8 +328,12 @@ class FakeProvisioner implements GuildChannelProvisioner {
   readonly createdNames: string[] = [];
   readonly deleted: string[] = [];
   private seq = 0;
+  manageChannels = true;
   constructor(guildId = 'g1') {
     this.guildId = guildId;
+  }
+  canManageChannels(): boolean {
+    return this.manageChannels;
   }
   channelExists(id: string): boolean {
     return this.channels.has(id);
@@ -417,18 +421,73 @@ describe('InteractionRouter slash commands', () => {
     expect(calls.stopAll).toHaveBeenCalledOnce();
   });
 
-  it('/agent start launches the wizard (records it; replies ephemerally)', async () => {
+  it('/agent start launches the wizard WITH the folder-picker components (not just text)', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
     const { interaction, replies } = slash({ commandName: 'agent', subcommand: 'start' });
     await router.handle(interaction);
+    // The launched reply carries the step embed AND the folder-picker component rows —
+    // this is the LIVE bug: it used to send only the "마법사 열었어요" text with no
+    // components, so the user had nothing to click.
     expect(replies[0].content).toContain('마법사');
-    // A follow-up folder component now routes to the started wizard (deferUpdate).
-    const { interaction: comp } = component({ customId: 'dir:here' });
-    await router.handle(comp);
-    // The wizard advanced (no crash, deferred). The wizard is still tracked until done.
-    expect(true).toBe(true);
+    expect(replies[0].embeds && (replies[0].embeds as unknown[]).length).toBeGreaterThan(0);
+    const rows = (replies[0].components ?? []) as { components: { type: string; customId: string }[] }[];
+    expect(rows.length).toBeGreaterThan(0);
+    const flat = rows.flatMap((r) => r.components);
+    // The folder select (dir:into) + ⬆ up / ✅ start buttons are all present.
+    expect(flat.some((c) => c.type === 'select' && c.customId === 'dir:into')).toBe(true);
+    expect(flat.some((c) => c.type === 'button' && c.customId === 'dir:up')).toBe(true);
+    expect(flat.some((c) => c.type === 'button' && c.customId === 'dir:here')).toBe(true);
+  });
+
+  it('/agent start: a folder-select advances the wizard and re-renders the NEXT step with components', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+
+    // Selecting the current folder (✅ 이 폴더로 시작) advances folder → backend; the
+    // component is deferUpdate'd and the router edits the message with the backend step,
+    // which again carries components (the backend select + cancel button).
+    const { interaction: pick, replies } = component({ customId: 'dir:here', user: { id: 'u1' } });
+    await router.handle(pick);
+    const edited = replies.find((r) => r.components && (r.components as unknown[]).length > 0);
+    expect(edited).toBeTruthy();
+    const rows = (edited!.components ?? []) as { components: { type: string; customId: string }[] }[];
+    const flat = rows.flatMap((r) => r.components);
+    expect(flat.some((c) => c.type === 'select' && c.customId === 'backend')).toBe(true);
+  });
+
+  it('/agent start: EVERY step carries components (folder → backend → model → perm → confirm)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+
+    // Each transition (except the terminal confirm) re-renders the new step with its
+    // select/buttons attached to the edited message.
+    const steps: { customId: string; value?: string; expectId: string; expectType: string }[] = [
+      { customId: 'dir:here', expectId: 'backend', expectType: 'select' },
+      { customId: 'backend', value: 'claude', expectId: 'model', expectType: 'select' },
+      { customId: 'model', value: 'opus', expectId: 'perm.mode', expectType: 'select' },
+      { customId: 'perm.mode', value: 'default', expectId: 'confirm', expectType: 'button' },
+    ];
+    for (const step of steps) {
+      const { interaction, replies } = component({
+        customId: step.customId,
+        ...(step.value !== undefined ? { value: step.value } : {}),
+        user: { id: 'u1' },
+      });
+      await router.handle(interaction);
+      const edited = replies.find((r) => r.components && (r.components as unknown[]).length > 0);
+      expect(edited, `step after ${step.customId} must carry components`).toBeTruthy();
+      const flat = ((edited!.components ?? []) as { components: { type: string; customId: string }[] }[])
+        .flatMap((r) => r.components);
+      expect(flat.some((c) => c.type === step.expectType && c.customId === step.expectId)).toBe(true);
+    }
   });
 
   it('/mode backend switches backend with the fresh-context warning', async () => {

@@ -350,7 +350,12 @@ export class InteractionRouter {
       browser,
     });
     this.wizards.set(channelKey(guildId, i.channelId), wizard);
-    await i.editReply({ content: t('cmd.start.launched') });
+    // Render the FIRST step (the folder picker) and attach it to the deferred reply.
+    // Sending only cmd.start.launched left the user with a text line and nothing to
+    // click — the wizard's embed + component rows (folder select + ⬆/✅ buttons) must
+    // ride the editReply so the picker actually appears (mirrors openConfigPanel).
+    const { embed, rows } = wizard.render();
+    await i.editReply({ content: t('cmd.start.launched'), embeds: [embed], components: rows });
   }
 
   // Open the /config role-tier + defaults panel. Bootstrap gate: allowed if the actor
@@ -752,7 +757,14 @@ export class InteractionRouter {
         if (newChannelId) {
           await safe(i.editReply({ content: t('cmd.start.channelCreated', { channel: `<#${newChannelId}>` }) }));
         }
+        return;
       }
+      // Every non-terminal transition re-renders the CURRENT step (folder → backend →
+      // model → perm → confirm) and edits it into the wizard's message, so each step's
+      // picker actually appears. A cancel renders the terminal notice with no rows. The
+      // component was deferUpdate'd above, so editReply updates that same message.
+      const { embed, rows } = wizard.render();
+      await safe(i.editReply({ embeds: [embed], components: rows }));
     });
   }
 

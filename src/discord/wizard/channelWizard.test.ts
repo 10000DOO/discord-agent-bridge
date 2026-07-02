@@ -148,6 +148,24 @@ describe('ChannelWizard render (step guidance + labels)', () => {
     expect(dirHere?.label).toContain('시작');
   });
 
+  it('the folder step returns NON-EMPTY component rows: subfolder select + ⬆ up / ✅ start', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizard(start);
+    const { rows } = wizard.render();
+    // The rows must never be empty — that emptiness was the LIVE bug (nothing to click).
+    expect(rows.length).toBeGreaterThan(0);
+    const flat = componentsOf(rows);
+    // Subfolder navigation select listing the child dir 'project'.
+    const select = flat.find((c) => c.type === 'select' && c.customId === 'dir:into') as
+      | { options: { value: string }[] }
+      | undefined;
+    expect(select).toBeDefined();
+    expect(select?.options.map((o) => o.value)).toContain('project');
+    // Both navigation buttons are present.
+    expect(flat.some((c) => c.type === 'button' && c.customId === 'dir:up')).toBe(true);
+    expect(flat.some((c) => c.type === 'button' && c.customId === 'dir:here')).toBe(true);
+  });
+
   it('"이 폴더로 시작" selects the current folder as cwd and advances to the backend step', async () => {
     const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeWizard(start);
