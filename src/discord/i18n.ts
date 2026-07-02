@@ -105,6 +105,9 @@ const ko: Catalog = {
   'cmd.mode.unavailable': '`{backend}` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요.',
   'cmd.perm.switched': '권한 설정을 바꿨어요: {perm}',
   'cmd.error': '명령을 처리하지 못했어요: {error}',
+  // Startup guidance (boot path): config missing / token missing → point at --setup.
+  'boot.noConfig': '설정이 없습니다. 먼저 셋업을 실행하세요:  node dist/cli.js --setup',
+  'boot.noToken': '토큰이 설정되지 않았습니다 — --setup을 다시 실행하세요.',
 };
 
 const en: Catalog = {
@@ -115,6 +118,8 @@ const en: Catalog = {
   'perm.button.deny': 'Deny',
   'status.usage.codex': 'usage/limits unavailable (Codex CLI limitation)',
   'transcript.working': 'working…',
+  'boot.noConfig': 'No configuration found. Run setup first:  node dist/cli.js --setup',
+  'boot.noToken': 'Discord token is not set — run --setup again.',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

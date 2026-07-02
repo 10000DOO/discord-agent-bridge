@@ -18,7 +18,7 @@ import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
 import { DiscordClient } from './discord/client.js';
-import { setLocale, type Locale } from './discord/i18n.js';
+import { setLocale, t, type Locale } from './discord/i18n.js';
 
 // The application composition root (§2, §4, §9). createApp() builds the full core
 // graph, registers the Claude mode, wires permission requests + resume-on-boot +
@@ -220,9 +220,35 @@ export interface StartBotOptions {
   baseDir?: string;
 }
 
-export async function startBot(opts: StartBotOptions = {}): Promise<App> {
+// Boot the bot. The two EXPECTED first-run conditions — no config file yet, or a
+// config with no Discord token — are not bugs: they mean the operator hasn't run
+// `--setup`. For those we print a short, actionable message and set a non-zero exit
+// code, then return undefined (no App), instead of letting a raw stack trace out.
+// Any OTHER failure (a corrupt/invalid config, a genuine login error) still throws
+// so real bugs surface. Returns the running App, or undefined when we bailed with a
+// friendly message.
+export async function startBot(opts: StartBotOptions = {}): Promise<App | undefined> {
   const configStore = new ConfigStore(opts.baseDir);
+
+  // Not set up yet: no config.json. Point the user at the wizard, exit cleanly.
+  if (!configStore.exists()) {
+    console.error(t('boot.noConfig'));
+    process.exitCode = 1;
+    return undefined;
+  }
+
+  // A present-but-invalid config is a real error and propagates (not the friendly path).
   const config = configStore.load();
+
+  // Config exists but the token is missing/empty: discord.login('') would dump a
+  // stack. Give the same friendly, actionable guidance instead.
+  if (config.discord.token.trim().length === 0) {
+    setLocale((config.locale as Locale) ?? 'ko');
+    console.error(t('boot.noToken'));
+    process.exitCode = 1;
+    return undefined;
+  }
+
   const app = createApp({ config, configStore });
   await app.login();
   return app;
