@@ -89,6 +89,7 @@ export const serverConfigSchema = z.object({
       codexModel: z.string(),
       permissionMode: permModeSchema,
       permissionProfile: z.string().nullable(),
+      codexHome: z.string(),
     })
     .partial()
     .optional(),
@@ -100,6 +101,9 @@ export const serverConfigSchema = z.object({
     })
     .partial()
     .optional(),
+  // Per-guild UI language (§8.1 locale can now be set per-server in /config; global
+  // config.locale remains the process-wide default the i18n catalog reads at boot).
+  locale: z.string().optional(),
   auditChannelId: z.string().nullable().optional(),
   favorites: z.array(z.string()).optional(),
 });

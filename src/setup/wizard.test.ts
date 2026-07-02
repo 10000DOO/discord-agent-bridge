@@ -12,10 +12,10 @@ import type { Logger } from '../core/contracts.js';
 const FIXTURE_TOKEN = 'test-token-value';
 const FIXTURE_CLIENT_ID = '100000000000000001';
 
-// A scripted prompt double: pops one answer per prompt call, in order. Role tiers are
-// no longer prompted (they move to Discord `/config`), so the wizard now calls:
-//   password(token) → input(clientId) → confirm(intent) → input(model) →
-//   input(codexHome) → input(locale).
+// A scripted prompt double: pops one answer per prompt call, in order. Neither role
+// tiers NOR defaults are prompted anymore (they move to Discord `/config`), so the
+// wizard now calls only:
+//   password(token) → input(clientId) → confirm(intent).
 function scriptedPrompts(answers: {
   passwords: string[];
   inputs: string[];
@@ -90,11 +90,11 @@ describe('buildInviteUrl', () => {
 });
 
 describe('runSetup', () => {
-  it('writes a config with the entered token, clientId, and defaults', async () => {
+  it('writes a config with the entered token + clientId and CONFIG_DEFAULTS defaults', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      // clientId, model, codexHome, locale — NO role prompts.
-      inputs: [FIXTURE_CLIENT_ID, 'sonnet', '/tmp/codex', 'en'],
+      // ONLY the clientId is prompted now — model/codexHome/locale are NOT.
+      inputs: [FIXTURE_CLIENT_ID],
       confirms: [true],
     });
     const opened: string[] = [];
@@ -111,10 +111,12 @@ describe('runSetup', () => {
     const config = store.load();
     expect(config.discord.token).toBe(FIXTURE_TOKEN);
     expect(config.discord.clientId).toBe(FIXTURE_CLIENT_ID);
+    // Every default comes straight from CONFIG_DEFAULTS (set later in `/config`).
     expect(config.defaults.mode).toBe('claude');
-    expect(config.defaults.claudeModel).toBe('sonnet');
-    expect(config.defaults.codexHome).toBe('/tmp/codex');
-    expect(config.locale).toBe('en');
+    expect(config.defaults.claudeModel).toBe('opus');
+    expect(config.defaults.codexHome).toBe('~/.codex');
+    expect(config.defaults.permissionMode).toBe('default');
+    expect(config.locale).toBe('ko');
 
     // The invite URL was opened, carrying the client id + both scopes + non-zero perms.
     expect(opened).toHaveLength(1);
@@ -125,46 +127,62 @@ describe('runSetup', () => {
     expect(BigInt(parsed.searchParams.get('permissions') as string) > 0n).toBe(true);
   });
 
-  it('no longer prompts for role tiers; writes EMPTY role allowlists', async () => {
+  it('no longer prompts for model, codexHome, locale, or permission mode', async () => {
     const { prompts, inputMessages } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID],
       confirms: [true],
     });
 
     await runSetup({ prompts, store, open: async () => {}, log: () => {} });
 
-    // No prompt message mentions admin/execute/read-only role tiers anymore.
+    // Exactly ONE input prompt (the Client ID); no default/role prompts remain.
+    expect(inputMessages).toHaveLength(1);
     for (const msg of inputMessages) {
+      // No prompt mentions role tiers, models, Codex path, language, or permissions.
       expect(msg).not.toMatch(/역할|role/i);
+      expect(msg).not.toMatch(/모델|model/i);
+      expect(msg).not.toMatch(/codex|경로/i);
+      expect(msg).not.toMatch(/locale|언어/i);
+      expect(msg).not.toMatch(/권한|permission/i);
     }
+  });
 
-    // Role allowlists are all empty (deny-by-default until `/config` sets them).
+  it('writes EMPTY role allowlists (deny-by-default) from CONFIG_DEFAULTS', async () => {
+    const { prompts } = scriptedPrompts({
+      passwords: [FIXTURE_TOKEN],
+      inputs: [FIXTURE_CLIENT_ID],
+      confirms: [true],
+    });
+
+    await runSetup({ prompts, store, open: async () => {}, log: () => {} });
+
     const config = store.load();
     expect(config.auth.adminRoleIds).toEqual([]);
     expect(config.auth.executeRoleIds).toEqual([]);
     expect(config.auth.readOnlyRoleIds).toEqual([]);
   });
 
-  it('prints the `/config` guidance line pointing roles at Discord', async () => {
+  it('prints the `/config` guidance for roles AND defaults (model/language/Codex path)', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID],
       confirms: [true],
     });
     const logs: string[] = [];
 
     await runSetup({ prompts, store, open: async () => {}, log: (m) => logs.push(m) });
 
-    // The guidance line tells the operator to set roles in Discord via `/config`.
+    // Roles → Discord `/config`.
     expect(logs.some((l) => l.includes('/config') && l.includes('Discord'))).toBe(true);
+    // Defaults (model/language/Codex path) → Discord `/config`.
+    expect(logs.some((l) => l.includes('/config') && /모델|언어|Codex/.test(l))).toBe(true);
   });
 
-  it('writes 0600 config with defaults when optional fields are left blank', async () => {
+  it('writes a 0600 config file', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      // clientId given; defaults all blank → wizard applies CONFIG_DEFAULTS
-      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID],
       confirms: [true],
     });
 
@@ -185,7 +203,7 @@ describe('runSetup', () => {
   it('never leaks the token to the operational logger or user output', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID],
       confirms: [true],
     });
     const { logger, entries } = recordingLogger();
@@ -210,7 +228,7 @@ describe('runSetup', () => {
   it('proceeds even if opening the browser throws', async () => {
     const { prompts } = scriptedPrompts({
       passwords: [FIXTURE_TOKEN],
-      inputs: [FIXTURE_CLIENT_ID, '', '', ''],
+      inputs: [FIXTURE_CLIENT_ID],
       confirms: [true],
     });
 

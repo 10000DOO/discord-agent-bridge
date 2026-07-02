@@ -21,6 +21,8 @@ const DEFAULTS: ConfigPanelDefaults = {
   backend: 'claude',
   model: 'opus',
   permMode: 'default' as PermMode,
+  locale: 'ko',
+  codexHome: '~/.codex',
 };
 
 let dir: string;
@@ -56,7 +58,7 @@ describe('isConfigPanelId', () => {
 });
 
 describe('ConfigPanel render', () => {
-  it('renders 3 role-selects (prefilled), 3 string-selects, and a Save button', () => {
+  it('renders 3 role-selects (prefilled), 4 string-selects, a Codex-path button, and a Save button', () => {
     const { roleRows, defaultRows } = makePanel().render();
     // Flatten to the components in order (both groups form the logical panel).
     const all = [...roleRows, ...defaultRows].flatMap((r) => r.components);
@@ -66,24 +68,44 @@ describe('ConfigPanel render', () => {
     const admin = roleSelects.find((c) => c.customId === 'config.role.admin');
     expect(admin && 'defaultRoleIds' in admin ? admin.defaultRoleIds : undefined).toEqual(ADMIN);
 
+    // backend / model / permMode / locale selects (the new locale select is included).
     const stringSelects = all.filter((c) => c.type === 'select');
     expect(stringSelects.map((c) => c.customId)).toEqual([
       'config.default.backend',
       'config.default.model',
       'config.default.permMode',
+      'config.default.locale',
     ]);
+    // The Codex-path modal-open button and the roles Save button both exist.
+    expect(all.some((c) => c.type === 'button' && c.customId === 'config.codexHome.open')).toBe(true);
     expect(all.some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(true);
   });
 
-  it('splits into two messages that each respect Discord’s 5-action-row limit', () => {
+  it('the locale select is prefilled with the current locale (default flag)', () => {
+    const { defaultRows } = makePanel({ locale: 'en' }).render();
+    const localeSelect = defaultRows
+      .flatMap((r) => r.components)
+      .find((c) => c.type === 'select' && c.customId === 'config.default.locale');
+    expect(localeSelect && localeSelect.type === 'select').toBe(true);
+    if (!localeSelect || localeSelect.type !== 'select') return;
+    const en = localeSelect.options.find((o) => o.value === 'en');
+    const ko = localeSelect.options.find((o) => o.value === 'ko');
+    expect(en?.default).toBe(true);
+    expect(ko?.default).toBe(false);
+  });
+
+  it('the defaults message stays within Discord’s 5-action-row limit (4 selects + button)', () => {
     const { roleRows, defaultRows } = makePanel().render();
-    // A single Discord message allows at most 5 action rows; the panel has 7, so it is
-    // delivered as two messages (the root cause of the /config no-ack was 7 rows > 5).
+    // A single Discord message allows at most 5 action rows.
     expect(roleRows.length).toBeLessThanOrEqual(5);
+    // The defaults message now has 4 selects + a Codex-path button = exactly 5 rows.
+    expect(defaultRows.length).toBe(5);
     expect(defaultRows.length).toBeLessThanOrEqual(5);
-    // The Save button rides with the role tiers (the primary reply).
+    // The Save button rides with the role tiers (the primary reply); the defaults
+    // message auto-saves each field on change, so it carries NO Save button.
     expect(roleRows.flatMap((r) => r.components).some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(true);
-    // No row contains more than one select/button pairing that Discord would reject.
+    expect(defaultRows.flatMap((r) => r.components).some((c) => c.type === 'button' && c.customId === 'config.save')).toBe(false);
+    // No empty rows (Discord rejects them).
     for (const row of [...roleRows, ...defaultRows]) {
       expect(row.components.length).toBeGreaterThan(0);
     }
@@ -91,18 +113,17 @@ describe('ConfigPanel render', () => {
 });
 
 describe('ConfigPanel save', () => {
-  it('Save persists picked role ids + a default backend into servers/<guildId>.json', () => {
+  it('Save persists picked role ids into servers/<guildId>.json (defaults auto-save separately)', () => {
     const panel = makePanel();
 
-    // Pick new admin + read-only roles via role-selects; touch a default backend.
+    // Pick new admin + read-only roles via role-selects (batched until Save).
     expect(panel.handle({ id: 'config.role.admin', values: ['new-admin'] })).toEqual({ kind: 'pending' });
     expect(panel.handle({ id: 'config.role.readOnly', values: ['new-read-a', 'new-read-b'] })).toEqual({ kind: 'pending' });
-    expect(panel.handle({ id: 'config.default.backend', value: 'codex' })).toEqual({ kind: 'pending' });
 
     const result = panel.handle({ id: 'config.save' });
     expect(result.kind).toBe('saved');
 
-    // The server file exists and carries the picked role ids + default.
+    // The server file exists and carries the picked role ids.
     const saved = store.loadServerConfig('g1');
     expect(saved).not.toBeNull();
     expect(saved?.guildId).toBe('g1');
@@ -110,23 +131,21 @@ describe('ConfigPanel save', () => {
     expect(saved?.auth?.readOnlyRoleIds).toEqual(['new-read-a', 'new-read-b']);
     // The UNTOUCHED execute tier keeps its prior (prefilled) value.
     expect(saved?.auth?.executeRoleIds).toEqual(EXEC);
-    expect(saved?.defaults?.mode).toBe('codex');
   });
 
-  it('confirmation summary reflects the picks (role mentions + default backend)', () => {
+  it('confirmation summary reflects the picked role mentions and current defaults', () => {
     const panel = makePanel();
     panel.handle({ id: 'config.role.admin', values: ['A1', 'A2'] });
-    panel.handle({ id: 'config.default.model', value: 'sonnet' });
     const result = panel.handle({ id: 'config.save' });
     expect(result.kind).toBe('saved');
     if (result.kind !== 'saved') return;
     // Role mentions (<@&id>) for the picked admin roles.
     expect(result.summary).toContain('<@&A1>');
     expect(result.summary).toContain('<@&A2>');
-    // The chosen default model appears.
-    expect(result.summary).toContain('sonnet');
     // Untouched execute tier is still reported (its prior value).
     expect(result.summary).toContain('<@&role-exec-1>');
+    // The current default model (the prefill) is reported.
+    expect(result.summary).toContain('opus');
   });
 
   it('an untouched tier keeps the EXISTING server-file value (not the prefill) on Save', () => {
@@ -171,5 +190,99 @@ describe('ConfigPanel save', () => {
   it('ignores an unknown component id', () => {
     const panel = makePanel();
     expect(panel.handle({ id: 'config.bogus' })).toEqual({ kind: 'ignored' });
+  });
+});
+
+describe('ConfigPanel defaults auto-save (per-field, no Save button)', () => {
+  it('a backend select change persists defaults.mode immediately (no Save)', () => {
+    const panel = makePanel();
+    const result = panel.handle({ id: 'config.default.backend', value: 'codex' });
+    expect(result.kind).toBe('autosaved');
+    // Persisted right away — no Save call needed.
+    expect(store.loadServerConfig('g1')?.defaults?.mode).toBe('codex');
+  });
+
+  it('a model select change persists defaults.claudeModel immediately', () => {
+    const panel = makePanel();
+    const result = panel.handle({ id: 'config.default.model', value: 'sonnet' });
+    expect(result.kind).toBe('autosaved');
+    expect(store.loadServerConfig('g1')?.defaults?.claudeModel).toBe('sonnet');
+  });
+
+  it('a permMode select change persists defaults.permissionMode immediately', () => {
+    const panel = makePanel();
+    const result = panel.handle({ id: 'config.default.permMode', value: 'acceptEdits' });
+    expect(result.kind).toBe('autosaved');
+    expect(store.loadServerConfig('g1')?.defaults?.permissionMode).toBe('acceptEdits');
+  });
+
+  it('auto-save writes ONLY the changed field, preserving the others', () => {
+    const panel = makePanel();
+    // Change three defaults in sequence; each merges over the prior server file.
+    panel.handle({ id: 'config.default.backend', value: 'codex' });
+    panel.handle({ id: 'config.default.model', value: 'sonnet' });
+    panel.handle({ id: 'config.default.permMode', value: 'plan' });
+    const saved = store.loadServerConfig('g1');
+    expect(saved?.defaults?.mode).toBe('codex');
+    expect(saved?.defaults?.claudeModel).toBe('sonnet');
+    expect(saved?.defaults?.permissionMode).toBe('plan');
+    // Auto-saving defaults must NOT write any role tiers (those need Save).
+    expect(saved?.auth).toBeUndefined();
+  });
+
+  it('auto-save preserves role tiers already Saved to the server file', () => {
+    // Pre-seed roles as if a prior Save had run.
+    store.saveServerConfig({
+      version: 2,
+      guildId: 'g1',
+      auth: { adminRoleIds: ['pre-admin'], executeRoleIds: ['pre-exec'], readOnlyRoleIds: [] },
+    });
+    const panel = makePanel();
+    panel.handle({ id: 'config.default.model', value: 'sonnet' });
+    const saved = store.loadServerConfig('g1');
+    // The model landed AND the previously-saved roles are untouched.
+    expect(saved?.defaults?.claudeModel).toBe('sonnet');
+    expect(saved?.auth?.adminRoleIds).toEqual(['pre-admin']);
+    expect(saved?.auth?.executeRoleIds).toEqual(['pre-exec']);
+  });
+});
+
+describe('ConfigPanel locale', () => {
+  it('a locale select change persists the per-guild locale immediately', () => {
+    const panel = makePanel();
+    const result = panel.handle({ id: 'config.default.locale', value: 'en' });
+    expect(result.kind).toBe('autosaved');
+    expect(store.loadServerConfig('g1')?.locale).toBe('en');
+  });
+
+  it('the locale notice names the chosen language', () => {
+    const panel = makePanel();
+    const result = panel.handle({ id: 'config.default.locale', value: 'en' });
+    if (result.kind !== 'autosaved') throw new Error('expected autosaved');
+    expect(result.notice).toContain('English');
+  });
+});
+
+describe('ConfigPanel Codex-path modal', () => {
+  it('exposes a modal prefilled with the current codexHome', () => {
+    const modal = makePanel({ codexHome: '/custom/codex' }).codexHomeModal();
+    expect(modal.customId).toBe('config.codexHome.modal');
+    expect(modal.fields).toHaveLength(1);
+    expect(modal.fields[0].customId).toBe('config.codexHome.value');
+    expect(modal.fields[0].value).toBe('/custom/codex');
+  });
+
+  it('a modal submit persists defaults.codexHome immediately', () => {
+    const panel = makePanel();
+    const result = panel.handleCodexHomeSubmit('/opt/codex');
+    expect(result.kind).toBe('autosaved');
+    expect(store.loadServerConfig('g1')?.defaults?.codexHome).toBe('/opt/codex');
+  });
+
+  it('a blank modal submit falls back to the current codexHome (never blanks it)', () => {
+    const panel = makePanel({ codexHome: '/keep/this' });
+    const result = panel.handleCodexHomeSubmit('   ');
+    expect(result.kind).toBe('autosaved');
+    expect(store.loadServerConfig('g1')?.defaults?.codexHome).toBe('/keep/this');
   });
 });

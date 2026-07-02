@@ -1,11 +1,13 @@
-// Interactive first-run config (token, Client ID, defaults) via @inquirer/prompts
+// Interactive first-run config (token + Client ID only) via @inquirer/prompts
 // (§4, §8). Writes config.json through ConfigStore (0600).
 //
-// Role tiers are NO LONGER set here: the terminal step needs only the secret (the
-// bot token, which must be pasted in the terminal, never through Discord) plus the
-// Client ID and the Message Content Intent confirmation. Role allowlists are left
-// empty (deny-by-default) and the operator configures them AFTER inviting the bot,
-// in Discord via the `/config` command (clicking role names — no IDs). See §7.1.
+// Neither role tiers NOR defaults are set here: the terminal step needs only the
+// secret (the bot token, which must be pasted in the terminal, never through
+// Discord) plus the Client ID and the Message Content Intent confirmation. Role
+// allowlists are left empty (deny-by-default) and every default (Claude model,
+// codexHome, locale, permission mode) comes from CONFIG_DEFAULTS. The operator
+// adjusts roles AND defaults AFTER inviting the bot, in Discord via the `/config`
+// command (clicking role names / picking from menus — no IDs, no retyping). §7.1.
 //
 // Everything the wizard touches — the prompt functions, the browser opener, the
 // output sink, the ConfigStore, and the logger — is injectable through `deps` so
@@ -108,28 +110,16 @@ export async function runSetup(deps: SetupDeps = {}): Promise<void> {
     default: true,
   });
 
-  // Role tiers are NOT prompted here anymore. They are left empty (deny-by-default)
-  // and configured in Discord via `/config` after the bot is invited (§7.1). The
-  // guidance is printed near the invite step below, once the bot can be added.
+  // Role tiers are NOT prompted here. They are left empty (deny-by-default) and
+  // configured in Discord via `/config` after the bot is invited (§7.1). Defaults
+  // (model, codexHome, locale, permission mode) are NOT prompted either — they all
+  // come from CONFIG_DEFAULTS and are set in Discord `/config`. The terminal step
+  // needs only the secret (the token) plus the Client ID + intent confirmation, so
+  // nothing sensitive or fiddly is typed twice. Guidance is printed after the write.
 
-  // Step 4 — defaults (Claude model, codexHome, locale).
-  log('\n4단계 — 기본값');
-  const claudeModel = await prompts.input({
-    message: '기본 Claude 모델:',
-    default: CONFIG_DEFAULTS.defaults.claudeModel,
-  });
-  const codexHome = await prompts.input({
-    message: 'Codex 홈 경로:',
-    default: CONFIG_DEFAULTS.defaults.codexHome,
-  });
-  const locale = await prompts.input({
-    message: '언어(locale):',
-    default: CONFIG_DEFAULTS.locale,
-  });
-
-  // Step 5 — invite URL: print, then open in the browser (skipped/mocked in tests).
+  // Step 4 — invite URL: print, then open in the browser (skipped/mocked in tests).
   const inviteUrl = buildInviteUrl(clientId.trim());
-  log('\n5단계 — 봇 초대 링크');
+  log('\n4단계 — 봇 초대 링크');
   log(`  ${inviteUrl}`);
   log('  브라우저에서 이 링크를 열어 내 서버에 봇을 초대하세요.');
   try {
@@ -138,29 +128,24 @@ export async function runSetup(deps: SetupDeps = {}): Promise<void> {
     log('  브라우저를 열지 못했습니다. 위 링크를 직접 방문하세요.');
   }
 
-  // Step 6 — write config.json (0600), merging entered values over CONFIG_DEFAULTS.
+  // Step 5 — write config.json (0600) straight from CONFIG_DEFAULTS + the secret.
   // Role allowlists are left EMPTY (from CONFIG_DEFAULTS.auth): deny-by-default until
-  // an admin sets them in Discord via `/config` (roles are per-server, §7.1).
-  const chosenLocale = locale.trim() || CONFIG_DEFAULTS.locale;
+  // an admin sets them in Discord via `/config` (roles are per-server, §7.1). Every
+  // default (model, codexHome, locale, permission mode) is CONFIG_DEFAULTS and is
+  // adjusted later in Discord `/config`, not here.
   const config: AppConfig = {
     ...CONFIG_DEFAULTS,
     version: CONFIG_VERSION,
     discord: { token: token.trim(), clientId: clientId.trim() },
-    defaults: {
-      ...CONFIG_DEFAULTS.defaults,
-      mode: 'claude',
-      claudeModel: claudeModel.trim() || CONFIG_DEFAULTS.defaults.claudeModel,
-      codexHome: codexHome.trim() || CONFIG_DEFAULTS.defaults.codexHome,
-    },
-    locale: chosenLocale,
   };
 
   store.save(config);
   logger.info('setup wrote config', { path: store.configPath, clientId: config.discord.clientId });
   log(`\n설정을 저장했어요: ${store.configPath} (권한 600)`);
-  // Guidance: roles move from the terminal to Discord's `/config` (§7.1). Render it
-  // in the config's locale so the message matches the operator's chosen language.
-  setLocale(chosenLocale as Locale);
+  // Guidance: roles AND defaults move from the terminal to Discord's `/config`
+  // (§7.1). Render in the config's (default) locale so the message language matches.
+  setLocale(CONFIG_DEFAULTS.locale as Locale);
   log(`\n${t('setup.rolesInDiscord')}`);
+  log(t('setup.defaultsInDiscord'));
   log('이제 `node dist/cli.js` 로 봇을 실행하세요.');
 }

@@ -80,6 +80,88 @@ function fakeSlash(over: { adminPerm?: boolean } = {}) {
   return { interaction: interaction as unknown as Interaction, calls, raw: interaction };
 }
 
+// A fake button interaction that records showModal (the ack for a modal-open button).
+function fakeButton(customId: string) {
+  const calls: string[] = [];
+  let modalArg: unknown;
+  const interaction = {
+    guildId: 'g1',
+    channelId: 'c1',
+    user: { id: 'u1' },
+    member: { roles: { cache: { map: (fn: (r: { id: string }) => string) => ['r1'].map((id) => fn({ id })) } } },
+    memberPermissions: { has: () => false },
+    customId,
+    get deferred() { return false; },
+    get replied() { return false; },
+    isChatInputCommand: () => false,
+    isButton: () => true,
+    isStringSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
+    isModalSubmit: () => false,
+    deferUpdate: vi.fn(async () => { calls.push('deferUpdate'); }),
+    reply: vi.fn(),
+    deferReply: vi.fn(),
+    editReply: vi.fn(),
+    followUp: vi.fn(),
+    showModal: vi.fn(async (m: unknown) => { calls.push('showModal'); modalArg = m; }),
+  };
+  return { interaction: interaction as unknown as Interaction, calls, getModalArg: () => modalArg };
+}
+
+// A fake modal-submit interaction exposing fields.getTextInputValue by custom id.
+function fakeModalSubmit(customId: string, fields: Record<string, string>) {
+  const interaction = {
+    guildId: 'g1',
+    channelId: 'c1',
+    user: { id: 'u1' },
+    member: { roles: { cache: { map: (fn: (r: { id: string }) => string) => ['r1'].map((id) => fn({ id })) } } },
+    memberPermissions: { has: () => false },
+    customId,
+    fields: { getTextInputValue: (id: string) => { if (!(id in fields)) throw new Error('no field'); return fields[id]; } },
+    get deferred() { return false; },
+    get replied() { return false; },
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isRoleSelectMenu: () => false,
+    isModalSubmit: () => true,
+    reply: vi.fn(),
+    deferReply: vi.fn(),
+    editReply: vi.fn(),
+    followUp: vi.fn(),
+  };
+  return { interaction: interaction as unknown as Interaction };
+}
+
+describe('adaptInteraction — modal wiring', () => {
+  it('a button exposes showModal that maps a ModalSpec onto discord.js showModal', async () => {
+    const { interaction, calls, getModalArg } = fakeButton('config.codexHome.open');
+    const adapted = adaptInteraction(interaction);
+    expect(adapted?.kind).toBe('component');
+    if (!adapted || adapted.kind !== 'component') return;
+    await adapted.showModal({
+      customId: 'config.codexHome.modal',
+      title: 'Codex',
+      fields: [{ customId: 'config.codexHome.value', label: 'path', value: '~/.codex', required: true }],
+    });
+    // showModal fired (it is the ack); no defer preceded it.
+    expect(calls).toEqual(['showModal']);
+    // A discord.js ModalBuilder was passed (has toJSON).
+    expect(typeof (getModalArg() as { toJSON?: unknown }).toJSON).toBe('function');
+  });
+
+  it('adapts a ModalSubmit interaction and reads a field value by custom id', () => {
+    const { interaction } = fakeModalSubmit('config.codexHome.modal', { 'config.codexHome.value': '/srv/codex' });
+    const adapted = adaptInteraction(interaction);
+    expect(adapted?.kind).toBe('modalSubmit');
+    if (!adapted || adapted.kind !== 'modalSubmit') return;
+    expect(adapted.customId).toBe('config.codexHome.modal');
+    expect(adapted.getField('config.codexHome.value')).toBe('/srv/codex');
+    // An absent field returns '' (never throws).
+    expect(adapted.getField('missing')).toBe('');
+  });
+});
+
 describe('adaptInteraction — acknowledgment wiring', () => {
   it('exposes deferReply/editReply/followUp and an acknowledged flag that tracks defer', async () => {
     const { interaction, raw } = fakeSlash();

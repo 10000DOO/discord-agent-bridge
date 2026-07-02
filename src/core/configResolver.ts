@@ -115,6 +115,7 @@ export class ConfigResolver {
         codexModel: server.defaults?.codexModel,
         permissionMode: server.defaults?.permissionMode,
         permissionProfile: server.defaults?.permissionProfile,
+        codexHome: server.defaults?.codexHome,
         limits: server.limits,
       });
     }

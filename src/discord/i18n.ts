@@ -45,9 +45,21 @@ const ko: Catalog = {
   'config.default.backend.placeholder': '기본 백엔드',
   'config.default.model.placeholder': '기본 모델',
   'config.default.permMode.placeholder': '기본 권한 모드',
+  'config.default.locale.placeholder': '언어 (locale)',
+  'config.locale.ko': '한국어 (ko)',
+  'config.locale.en': 'English (en)',
+  'config.codexHome.button': 'Codex 경로 설정',
+  'config.codexHome.modal.title': 'Codex 기본 경로',
+  'config.codexHome.modal.label': 'Codex 홈 경로 (codexHome)',
   'config.save': '저장',
   'config.saved':
     '이 서버 설정을 저장했어요.\n• admin: {admin}\n• execute: {execute}\n• read-only: {readOnly}\n• 기본 백엔드: {backend} · 모델: {model} · 권한: {perm}',
+  // Auto-save notices: each /config select persists ONE field immediately.
+  'config.autosaved.locale': '언어를 저장했어요: {locale}',
+  'config.autosaved.backend': '기본 백엔드를 저장했어요: {backend}',
+  'config.autosaved.model': '기본 모델을 저장했어요: {model}',
+  'config.autosaved.permMode': '기본 권한 모드를 저장했어요: {perm}',
+  'config.autosaved.codexHome': 'Codex 기본 경로를 저장했어요: {codexHome}',
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',
@@ -127,6 +139,8 @@ const ko: Catalog = {
   'boot.noToken': '토큰이 설정되지 않았습니다 — --setup을 다시 실행하세요.',
   // Terminal setup guidance: roles move from the terminal to Discord `/config`.
   'setup.rolesInDiscord': '역할은 봇을 서버에 초대한 뒤 Discord에서 `/config` 명령으로 클릭 설정하세요.',
+  // Terminal setup guidance: model/language/Codex-path defaults move to `/config`.
+  'setup.defaultsInDiscord': '모델·언어·Codex 경로 등 기본값은 봇 초대 후 Discord `/config`에서 설정하세요.',
 };
 
 const en: Catalog = {
@@ -139,6 +153,15 @@ const en: Catalog = {
   'transcript.working': 'working…',
   'boot.noConfig': 'No configuration found. Run setup first:  node dist/cli.js --setup',
   'boot.noToken': 'Discord token is not set — run --setup again.',
+  'config.default.locale.placeholder': 'Language (locale)',
+  'config.codexHome.button': 'Set Codex path',
+  'config.codexHome.modal.title': 'Codex home path',
+  'config.codexHome.modal.label': 'Codex home path (codexHome)',
+  'config.autosaved.locale': 'Saved language: {locale}',
+  'config.autosaved.backend': 'Saved default backend: {backend}',
+  'config.autosaved.model': 'Saved default model: {model}',
+  'config.autosaved.permMode': 'Saved default permission mode: {perm}',
+  'config.autosaved.codexHome': 'Saved Codex home path: {codexHome}',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

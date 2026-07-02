@@ -1,7 +1,8 @@
 import type { PermMode } from '../core/contracts.js';
 import type { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type ServerConfig } from '../core/configSchema.js';
-import type { ButtonSpec, ComponentRow, EmbedSpec, RoleSelectSpec, SelectSpec } from './ports.js';
+import type { Locale } from './i18n.js';
+import type { ButtonSpec, ComponentRow, EmbedSpec, ModalSpec, RoleSelectSpec, SelectSpec } from './ports.js';
 import { t } from './i18n.js';
 
 // The `/config` panel (§7.1/§8): configure a guild's role tiers and defaults by
@@ -11,8 +12,15 @@ import { t } from './i18n.js';
 // discord.js RoleSelectMenuBuilder and multi-select values onto ComponentInteraction.
 //
 // Persistence target: per-server servers/<guildId>.json (roles are per-guild, §7.1).
-// On Save the panel merges its pending picks into that guild's ServerConfig auth +
-// defaults, leaving any UNTOUCHED tier/select at its prior value.
+//
+// Two persistence styles coexist so the panel stays within Discord's 5-action-row
+// limit per message (the primary reply and a follow-up):
+//   - Role tiers (3 role-selects) batch into a pending set and persist together on
+//     the Save button — they share the primary message (3 selects + Save = 4 rows).
+//   - Defaults (backend / model / permMode / locale selects + a Codex-path modal)
+//     AUTO-SAVE on each change: one changed field is written immediately. This lets
+//     the defaults follow-up hold 4 selects + 1 button = 5 rows with no Save button
+//     crammed in — respecting the row budget.
 
 // The panel component ids. `config.` prefix lets the router recognize + route them.
 export const CONFIG_PANEL_PREFIX = 'config.';
@@ -24,13 +32,35 @@ const IDS = {
   backend: 'config.default.backend',
   model: 'config.default.model',
   permMode: 'config.default.permMode',
+  locale: 'config.default.locale',
+  codexHomeButton: 'config.codexHome.open',
+  codexHomeModal: 'config.codexHome.modal',
+  codexHomeField: 'config.codexHome.value',
   save: 'config.save',
 } as const;
 
 // True when a component id belongs to a /config panel (router routing predicate).
+// Covers the panel components AND the Codex-path modal submit (all `config.`-prefixed).
 export function isConfigPanelId(customId: string): boolean {
   return customId.startsWith(CONFIG_PANEL_PREFIX);
 }
+
+// True when a component id is the Codex-path modal-OPEN button. The router must open
+// the modal WITHOUT deferring first (showModal is itself the acknowledgment).
+export function isCodexHomeModalTrigger(customId: string): boolean {
+  return customId === IDS.codexHomeButton;
+}
+
+// True when a submitted modal is the Codex-path modal (router routes it here).
+export function isCodexHomeModalSubmit(customId: string): boolean {
+  return customId === IDS.codexHomeModal;
+}
+
+// The custom id of the single text field inside the Codex-path modal.
+export const CODEX_HOME_FIELD_ID = IDS.codexHomeField;
+
+// The offered locales (a closed set — the i18n catalog only ships ko/en).
+const LOCALES: Locale[] = ['ko', 'en'];
 
 // The three role tiers the panel edits. admin ⊇ execute ⊇ read-only (§7.1).
 type Tier = 'admin' | 'execute' | 'readOnly';
@@ -44,6 +74,8 @@ export interface ConfigPanelDefaults {
   backend: string; // resolved default mode
   model: string; // resolved default model
   permMode: PermMode; // resolved default permission mode
+  locale: string; // resolved UI language (server override, else global)
+  codexHome: string; // resolved Codex home path
 }
 
 // Option sources for the string-select menus.
@@ -68,23 +100,26 @@ export interface ConfigPanelInput {
   values?: string[];
 }
 
-// The pending selections. A field stays `undefined` until its menu is touched, so
-// Save only writes tiers/defaults the operator actually changed (untouched = kept).
+// The pending selections — ONLY the role tiers, which batch until Save. Defaults are
+// auto-saved on change (not pending), so they are not tracked here. A field stays
+// `undefined` until its menu is touched, so Save only writes tiers the operator
+// actually changed (untouched = kept).
 interface Pending {
   adminRoleIds?: string[];
   executeRoleIds?: string[];
   readOnlyRoleIds?: string[];
-  backend?: string;
-  model?: string;
-  permMode?: PermMode;
 }
 
-// The outcome of a panel input. 'pending' → a menu selection was recorded (defer
-// update, keep the panel open). 'saved' → the Save button persisted the config;
-// `summary` is the confirmation to reply with. 'ignored' → an unknown input.
+// The outcome of a panel input:
+//   'pending'   → a role-tier selection was recorded (defer update, keep panel open).
+//   'saved'     → the Save button persisted the role tiers; `summary` confirms them.
+//   'autosaved' → a defaults select/modal wrote ONE field immediately; `notice` is a
+//                 short ephemeral confirmation of just that field.
+//   'ignored'   → an unknown input.
 export type ConfigPanelResult =
   | { kind: 'pending' }
   | { kind: 'saved'; summary: string }
+  | { kind: 'autosaved'; notice: string }
   | { kind: 'ignored' };
 
 const TIER_BY_ID: Record<string, Tier> = {
@@ -105,9 +140,9 @@ export class ConfigPanel {
     this.ownerId = options.ownerId;
   }
 
-  // Advance the panel by one input. Role/string selects record a pending pick; the
-  // Save button merges pending picks into servers/<guildId>.json and returns the
-  // confirmation summary. An unknown id is ignored (the panel is unchanged).
+  // Advance the panel by one input. A role-select records a pending pick (batched
+  // until Save). A defaults select auto-saves that one field immediately. The Save
+  // button persists the batched role tiers. An unknown id is ignored.
   handle(input: ConfigPanelInput): ConfigPanelResult {
     const tier = TIER_BY_ID[input.id];
     if (tier) {
@@ -120,19 +155,71 @@ export class ConfigPanel {
     }
     switch (input.id) {
       case IDS.backend:
-        if (input.value) this.pending.backend = input.value;
-        return { kind: 'pending' };
+        if (!input.value) return { kind: 'pending' };
+        return this.autosaveBackend(input.value);
       case IDS.model:
-        if (input.value) this.pending.model = input.value;
-        return { kind: 'pending' };
+        if (!input.value) return { kind: 'pending' };
+        return this.autosaveModel(input.value);
       case IDS.permMode:
-        if (input.value) this.pending.permMode = input.value as PermMode;
-        return { kind: 'pending' };
+        if (!input.value) return { kind: 'pending' };
+        return this.autosavePermMode(input.value as PermMode);
+      case IDS.locale:
+        if (!input.value) return { kind: 'pending' };
+        return this.autosaveLocale(input.value);
       case IDS.save:
-        return { kind: 'saved', summary: this.save() };
+        return { kind: 'saved', summary: this.saveRoles() };
       default:
         return { kind: 'ignored' };
     }
+  }
+
+  // Persist the Codex home path submitted via the modal (auto-save, one field). A
+  // blank submission falls back to the current effective value (never blanks it).
+  handleCodexHomeSubmit(value: string): ConfigPanelResult {
+    const codexHome = value.trim() || this.opts.defaults.codexHome;
+    this.patchDefaults({ codexHome });
+    return { kind: 'autosaved', notice: t('config.autosaved.codexHome', { codexHome }) };
+  }
+
+  // The modal spec to open when the Codex-path button is clicked. Prefilled with the
+  // current effective codexHome so the operator edits, not retypes.
+  codexHomeModal(): ModalSpec {
+    return {
+      customId: IDS.codexHomeModal,
+      title: t('config.codexHome.modal.title'),
+      fields: [
+        {
+          customId: IDS.codexHomeField,
+          label: t('config.codexHome.modal.label'),
+          value: this.opts.defaults.codexHome,
+          required: true,
+        },
+      ],
+    };
+  }
+
+  private autosaveBackend(backend: string): ConfigPanelResult {
+    // Only known enum backends are stored on defaults.mode; a future backend id is
+    // ignored (same guard as the original Save path).
+    if (backend === 'claude' || backend === 'codex') {
+      this.patchDefaults({ mode: backend });
+    }
+    return { kind: 'autosaved', notice: t('config.autosaved.backend', { backend }) };
+  }
+
+  private autosaveModel(model: string): ConfigPanelResult {
+    this.patchDefaults({ claudeModel: model });
+    return { kind: 'autosaved', notice: t('config.autosaved.model', { model }) };
+  }
+
+  private autosavePermMode(permMode: PermMode): ConfigPanelResult {
+    this.patchDefaults({ permissionMode: permMode });
+    return { kind: 'autosaved', notice: t('config.autosaved.permMode', { perm: t(`perm.${permMode}`) }) };
+  }
+
+  private autosaveLocale(locale: string): ConfigPanelResult {
+    this.patchLocale(locale);
+    return { kind: 'autosaved', notice: t('config.autosaved.locale', { locale: this.localeLabel(locale) }) };
   }
 
   private setTier(tier: Tier, roleIds: string[]): void {
@@ -143,11 +230,11 @@ export class ConfigPanel {
     else this.pending.readOnlyRoleIds = unique;
   }
 
-  // Merge pending picks over the guild's current server config and persist it.
-  // Untouched tiers/defaults fall through to the current effective value (defaults),
-  // then to whatever the existing server file held — so Save never blanks a field
-  // the operator didn't touch.
-  private save(): string {
+  // Merge the batched role picks over the guild's current server config and persist.
+  // Untouched tiers fall through to the current effective value (defaults), then to
+  // whatever the existing server file held — so Save never blanks a tier the operator
+  // didn't touch. Defaults are NOT written here (they auto-save on change).
+  private saveRoles(): string {
     const existing = this.opts.configStore.loadServerConfig(this.opts.guildId);
     const d = this.opts.defaults;
 
@@ -155,11 +242,7 @@ export class ConfigPanel {
     const executeRoleIds = this.pending.executeRoleIds ?? existing?.auth?.executeRoleIds ?? d.executeRoleIds;
     const readOnlyRoleIds = this.pending.readOnlyRoleIds ?? existing?.auth?.readOnlyRoleIds ?? d.readOnlyRoleIds;
 
-    const mode = this.pending.backend ?? existing?.defaults?.mode ?? d.backend;
-    const claudeModel = this.pending.model ?? existing?.defaults?.claudeModel ?? d.model;
-    const permissionMode = this.pending.permMode ?? existing?.defaults?.permissionMode ?? d.permMode;
-
-    // Preserve any server fields the panel doesn't manage (limits, favorites, etc.).
+    // Preserve any server fields the panel doesn't manage (defaults, limits, etc.).
     const next: ServerConfig = {
       ...(existing ?? {}),
       version: existing?.version ?? CONFIG_VERSION,
@@ -170,14 +253,6 @@ export class ConfigPanel {
         executeRoleIds,
         readOnlyRoleIds,
       },
-      defaults: {
-        ...(existing?.defaults ?? {}),
-        // `mode` is constrained to the backend enum; a backend id outside it (a
-        // future backend) is stored on defaults only when it is a known enum member.
-        ...(mode === 'claude' || mode === 'codex' ? { mode } : {}),
-        claudeModel,
-        permissionMode,
-      },
     };
 
     this.opts.configStore.saveServerConfig(next);
@@ -186,18 +261,47 @@ export class ConfigPanel {
       admin: formatRoleList(adminRoleIds),
       execute: formatRoleList(executeRoleIds),
       readOnly: formatRoleList(readOnlyRoleIds),
-      backend: mode,
-      model: claudeModel,
-      perm: t(`perm.${permissionMode}`),
+      backend: d.backend,
+      model: d.model,
+      perm: t(`perm.${d.permMode}`),
     });
   }
 
-  // Render the panel as plain component specs. The panel has 7 action rows (3 role
-  // tiers + 3 default selects + Save), but a single Discord message allows at most 5,
-  // so the rows are returned in two groups: `roleRows` (3 role tiers + Save = 4 rows)
-  // go on the primary reply, `defaultRows` (3 default selects) on a follow-up. Each
-  // role-select is prefilled with the tier's current effective role IDs. The adapter
-  // maps these onto discord.js; tests assert on them directly.
+  // Merge ONE changed defaults field over the guild's current server config and
+  // persist it, preserving every other field (auth, other defaults, limits, locale).
+  private patchDefaults(patch: Partial<NonNullable<ServerConfig['defaults']>>): void {
+    const existing = this.opts.configStore.loadServerConfig(this.opts.guildId);
+    const next: ServerConfig = {
+      ...(existing ?? {}),
+      version: existing?.version ?? CONFIG_VERSION,
+      guildId: this.opts.guildId,
+      defaults: { ...(existing?.defaults ?? {}), ...patch },
+    };
+    this.opts.configStore.saveServerConfig(next);
+  }
+
+  // Persist the per-guild locale (top-level on the server config, mirroring the
+  // schema), preserving every other field.
+  private patchLocale(locale: string): void {
+    const existing = this.opts.configStore.loadServerConfig(this.opts.guildId);
+    const next: ServerConfig = {
+      ...(existing ?? {}),
+      version: existing?.version ?? CONFIG_VERSION,
+      guildId: this.opts.guildId,
+      locale,
+    };
+    this.opts.configStore.saveServerConfig(next);
+  }
+
+  private localeLabel(locale: string): string {
+    return locale === 'ko' || locale === 'en' ? t(`config.locale.${locale}`) : locale;
+  }
+
+  // Render the panel as plain component specs. `roleRows` (3 role tiers + Save = 4
+  // rows) go on the primary reply; `defaultRows` (backend/model/permMode/locale
+  // selects + the Codex-path button = 5 rows) go on a follow-up — both within
+  // Discord's 5-action-row-per-message limit. The adapter maps these onto discord.js;
+  // tests assert on them directly.
   render(): { embed: EmbedSpec; roleRows: ComponentRow[]; defaultRows: ComponentRow[] } {
     const d = this.opts.defaults;
     const adminSelect: RoleSelectSpec = this.roleSelect(IDS.roleAdmin, 'config.role.admin.placeholder', this.pending.adminRoleIds ?? d.adminRoleIds);
@@ -211,7 +315,7 @@ export class ConfigPanel {
       options: this.opts.backends.map((b) => ({
         label: t(`backend.${b}`) === `backend.${b}` ? b : t(`backend.${b}`),
         value: b,
-        default: b === (this.pending.backend ?? d.backend),
+        default: b === d.backend,
       })),
     };
     const modelSelect: SelectSpec = {
@@ -221,7 +325,7 @@ export class ConfigPanel {
       options: this.opts.models.map((m) => ({
         label: m,
         value: m,
-        default: m === (this.pending.model ?? d.model),
+        default: m === d.model,
       })),
     };
     const permSelect: SelectSpec = {
@@ -231,8 +335,24 @@ export class ConfigPanel {
       options: this.opts.permModes.map((m) => ({
         label: t(`perm.${m}`),
         value: m,
-        default: m === (this.pending.permMode ?? d.permMode),
+        default: m === d.permMode,
       })),
+    };
+    const localeSelect: SelectSpec = {
+      type: 'select',
+      customId: IDS.locale,
+      placeholder: t('config.default.locale.placeholder'),
+      options: LOCALES.map((l) => ({
+        label: this.localeLabel(l),
+        value: l,
+        default: l === d.locale,
+      })),
+    };
+    const codexHomeButton: ButtonSpec = {
+      type: 'button',
+      customId: IDS.codexHomeButton,
+      label: t('config.codexHome.button'),
+      style: 'secondary',
     };
     const save: ButtonSpec = { type: 'button', customId: IDS.save, label: t('config.save'), style: 'success' };
 
@@ -248,6 +368,8 @@ export class ConfigPanel {
         { components: [backendSelect] },
         { components: [modelSelect] },
         { components: [permSelect] },
+        { components: [localeSelect] },
+        { components: [codexHomeButton] },
       ],
     };
   }

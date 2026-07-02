@@ -10,9 +10,16 @@ import type { SessionWiring } from './wiring.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
-import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
-import type { ComponentRow, EmbedSpec } from './ports.js';
-import { t } from './i18n.js';
+import {
+  ConfigPanel,
+  isConfigPanelId,
+  isCodexHomeModalSubmit,
+  isCodexHomeModalTrigger,
+  CODEX_HOME_FIELD_ID,
+  type ConfigPanelInput,
+} from './configPanel.js';
+import type { ComponentRow, EmbedSpec, ModalSpec } from './ports.js';
+import { setLocale, t, type Locale } from './i18n.js';
 
 // InteractionCreate router (§4, §7.1, §9). Authorizes FIRST (tier per action), then
 // dispatches slash commands and component interactions. discord.js is not imported
@@ -88,9 +95,24 @@ export interface ComponentInteraction extends BaseInteraction {
   values?: string[];
   // Acknowledge a component interaction without a new reply (defer update).
   deferUpdate: () => Promise<unknown>;
+  // Open a modal dialog IN RESPONSE to this component. showModal IS the ack for the
+  // interaction, so the caller must NOT deferUpdate/deferReply before calling it (a
+  // deferred interaction can no longer show a modal — discord.js throws). Present on
+  // button interactions; the client.ts adapter maps ModalSpec onto discord.js.
+  showModal: (modal: ModalSpec) => Promise<unknown>;
 }
 
-export type RouterInteraction = SlashInteraction | ComponentInteraction;
+// A submitted modal (discord.js ModalSubmitInteraction). Carries the field values
+// keyed by field custom id. It is its OWN interaction (a fresh 3s window): reply /
+// deferReply as usual. The client.ts adapter reads the fields off the submission.
+export interface ModalSubmitInteraction extends BaseInteraction {
+  kind: 'modalSubmit';
+  customId: string;
+  // Read a submitted text-field value by its custom id (empty string when absent).
+  getField: (fieldId: string) => string;
+}
+
+export type RouterInteraction = SlashInteraction | ComponentInteraction | ModalSubmitInteraction;
 
 export interface InteractionRouterDeps {
   authorizer: Authorizer;
@@ -133,6 +155,10 @@ export class InteractionRouter {
       await this.handleComponent(interaction);
       return;
     }
+    if (interaction.kind === 'modalSubmit') {
+      await this.handleModalSubmit(interaction);
+      return;
+    }
     await this.handleSlash(interaction);
   }
 
@@ -149,7 +175,7 @@ export class InteractionRouter {
       });
     } else {
       this.deps.logger.info('interaction received', {
-        type: 'component',
+        type: i.kind === 'modalSubmit' ? 'modalSubmit' : 'component',
         customId: i.customId,
         guildId: i.guildId,
         userId: i.user.id,
@@ -321,15 +347,19 @@ export class InteractionRouter {
         backend: resolved.mode,
         model: resolved.claudeModel,
         permMode: resolved.permissionMode,
+        // locale is per-guild (server override) or the global default; codexHome is
+        // resolved global→server by the resolver.
+        locale: server?.locale ?? global.locale,
+        codexHome: resolved.codexHome,
       },
       backends,
       models,
       permModes,
     });
     this.configPanels.set(channelKey(guildId, i.channelId), panel);
-    // A single Discord message allows at most 5 action rows; the panel has 7 (3 role
-    // tiers + 3 default selects + Save). Deliver the role tiers + Save on the deferred
-    // reply (4 rows) and the defaults on a follow-up (3 rows). Both are ephemeral.
+    // A single Discord message allows at most 5 action rows. Role tiers + Save (4 rows)
+    // ride the deferred reply; the defaults follow-up carries backend/model/permMode/
+    // locale selects + the Codex-path button (5 rows). Both are ephemeral.
     const { embed, roleRows, defaultRows } = panel.render();
     await i.editReply({ content: t('cmd.config.opened'), embeds: [embed], components: roleRows });
     await i.followUp({ components: defaultRows, ephemeral: true });
@@ -352,6 +382,13 @@ export class InteractionRouter {
       await safe(i.deferUpdate());
       return;
     }
+    // The Codex-path button opens a modal. showModal IS the acknowledgment, so it must
+    // fire WITHOUT a preceding deferUpdate/deferReply (a deferred interaction cannot
+    // show a modal). The modal submit routes back through handleModalSubmit.
+    if (isCodexHomeModalTrigger(i.customId)) {
+      await safe(i.showModal(panel.codexHomeModal()));
+      return;
+    }
     const input: ConfigPanelInput = {
       id: i.customId,
       ...(i.value !== undefined ? { value: i.value } : {}),
@@ -365,8 +402,53 @@ export class InteractionRouter {
       await safe(i.reply({ content: result.summary, ephemeral: true }));
       return;
     }
+    if (result.kind === 'autosaved') {
+      // A defaults select persisted one field immediately; confirm it ephemerally
+      // (a fresh reply, keeping the panel open). If it was the locale select, drive
+      // setLocale so THIS session's subsequent responses use the chosen language.
+      this.applyLocaleIfLocaleSelect(i.customId, i.value);
+      await safe(i.reply({ content: result.notice, ephemeral: true }));
+      return;
+    }
     // A pending selection or an ignored input: just acknowledge (keep the panel open).
     await safe(i.deferUpdate());
+  }
+
+  // Route a submitted modal. Only the Codex-path modal is handled: same bootstrap gate
+  // + owner binding as the panel components. Persists defaults.codexHome for the guild
+  // and confirms ephemerally. The submit is its own interaction (a fresh 3s window), so
+  // the reply is the acknowledgment (no defer needed for the tiny JSON write).
+  private async handleModalSubmit(i: ModalSubmitInteraction): Promise<void> {
+    if (!isCodexHomeModalSubmit(i.customId)) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    if (!i.guildId) {
+      await safe(i.reply({ content: t('auth.denied', { reason: 'DM' }), ephemeral: true }));
+      return;
+    }
+    if (!this.authorizeConfig(i)) {
+      await safe(i.reply({ content: t('cmd.config.denied'), ephemeral: true }));
+      return;
+    }
+    const panel = this.configPanels.get(channelKey(i.guildId, i.channelId));
+    if (!panel || panel.ownerId !== i.user.id) {
+      // No live panel (or a bystander's submit): acknowledge without persisting.
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    const result = panel.handleCodexHomeSubmit(i.getField(CODEX_HOME_FIELD_ID));
+    const notice = result.kind === 'autosaved' ? result.notice : t('cmd.error.generic');
+    await safe(i.reply({ content: notice, ephemeral: true }));
+  }
+
+  // When a /config auto-save was the LOCALE select, drive setLocale so this running
+  // process renders subsequent responses in the chosen language (the per-guild locale
+  // is also persisted; the global config.locale still seeds the boot default). A value
+  // outside the known set is left to the module default — never throws.
+  private applyLocaleIfLocaleSelect(customId: string, value?: string): void {
+    if (customId !== 'config.default.locale' || !value) return;
+    if (value === 'ko' || value === 'en') setLocale(value as Locale);
   }
 
   // The /config bootstrap gate: allow if the actor has the Discord Administrator

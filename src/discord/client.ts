@@ -8,18 +8,23 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  ModalBuilder,
   PermissionFlagsBits,
   REST,
   RoleSelectMenuBuilder,
   Routes,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ChatInputCommandInteraction,
   type Interaction,
   type Message,
   type MessageActionRowComponentBuilder,
   type MessageComponentInteraction,
   type MessageCreateOptions,
+  type ModalActionRowComponentBuilder,
+  type ModalSubmitInteraction as DjsModalSubmitInteraction,
   type RESTPostAPIApplicationCommandsJSONBody,
   type SendableChannels,
   type TextBasedChannel,
@@ -33,6 +38,7 @@ import type {
   EmbedSpec,
   MessageChannel,
   MessageThread,
+  ModalSpec,
   OutgoingMessage,
   RoleSelectSpec,
   SelectSpec,
@@ -42,6 +48,7 @@ import type {
   AckPayload,
   ComponentInteraction,
   InteractionRouter,
+  ModalSubmitInteraction,
   RouterInteraction,
   SlashInteraction,
 } from './interactionRouter.js';
@@ -221,6 +228,26 @@ function toRoleSelect(spec: RoleSelectSpec): RoleSelectMenuBuilder {
   return select;
 }
 
+// A Discord modal (the /config Codex-path input). Each field becomes a single-line
+// TextInput on its own ModalActionRow; a prefilled value is set as the input's value.
+// discord.js requires TextInput on a ModalActionRowComponentBuilder row, distinct from
+// the message-component row builder used elsewhere.
+function toModal(spec: ModalSpec): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(spec.customId).setTitle(spec.title);
+  const rows = spec.fields.map((field) => {
+    const input = new TextInputBuilder()
+      .setCustomId(field.customId)
+      .setLabel(field.label)
+      .setStyle(TextInputStyle.Short)
+      .setRequired(field.required ?? false);
+    if (field.value !== undefined) input.setValue(field.value);
+    if (field.placeholder !== undefined) input.setPlaceholder(field.placeholder);
+    return new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(input);
+  });
+  modal.addComponents(...rows);
+  return modal;
+}
+
 // A posted discord.js Message adapted onto EditableMessage.
 class MessageAdapter implements EditableMessage {
   constructor(private readonly message: Message) {}
@@ -371,7 +398,7 @@ export class DiscordClient {
         void ackFailedInteraction(interaction);
         return;
       }
-      if (!adapted) return; // modal / autocomplete / unsupported: ignored
+      if (!adapted) return; // autocomplete / unsupported: ignored (modals are adapted)
       void this.interactionRouter.handle(adapted).catch((err) => {
         this.logger.error('interaction router failed', { err: errWithStack(err) });
         void ackFailedInteraction(interaction);
@@ -393,6 +420,13 @@ export class DiscordClient {
     } else if (interaction.isMessageComponent()) {
       this.logger.info('interaction arrived', {
         type: 'component',
+        customId: interaction.customId,
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+      });
+    } else if (interaction.isModalSubmit()) {
+      this.logger.info('interaction arrived', {
+        type: 'modalSubmit',
         customId: interaction.customId,
         guildId: interaction.guildId,
         userId: interaction.user.id,
@@ -474,7 +508,8 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
     ...(options.ephemeral ? { flags: MessageFlags.Ephemeral as const } : {}),
   });
 
-  const repliable = () => interaction as ChatInputCommandInteraction | MessageComponentInteraction;
+  const repliable = () =>
+    interaction as ChatInputCommandInteraction | MessageComponentInteraction | DjsModalSubmitInteraction;
 
   // Shared actor/context + ack methods. `acknowledged` is a GETTER (reads discord.js's
   // live deferred/replied flags) — it must be attached with defineProperty on the final
@@ -530,8 +565,31 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
       ...(value !== undefined ? { value } : {}),
       ...(values !== undefined ? { values } : {}),
       deferUpdate: () => interaction.deferUpdate(),
+      // showModal is the ack for this interaction — the router calls it INSTEAD of
+      // deferring (a deferred component can no longer show a modal). Only a button
+      // triggers it in practice; the cast is safe (all three are MessageComponent).
+      showModal: (modal: ModalSpec) =>
+        (interaction as MessageComponentInteraction).showModal(toModal(modal)),
     };
     return withAcknowledged(component) as ComponentInteraction;
+  }
+
+  if (interaction.isModalSubmit()) {
+    // A submitted modal (the /config Codex-path input). It replies/defers like any
+    // interaction; the field values are read by custom id off the submission.
+    const modal = {
+      ...base(),
+      kind: 'modalSubmit' as const,
+      customId: interaction.customId,
+      getField: (fieldId: string) => {
+        try {
+          return interaction.fields.getTextInputValue(fieldId);
+        } catch {
+          return '';
+        }
+      },
+    };
+    return withAcknowledged(modal) as ModalSubmitInteraction;
   }
 
   return null;

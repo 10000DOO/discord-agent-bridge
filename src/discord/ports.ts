@@ -78,6 +78,26 @@ export interface RoleSelectSpec {
   defaultRoleIds?: string[];
 }
 
+// A Discord modal dialog (discord.js ModalBuilder). Opened in RESPONSE to a button
+// interaction: showModal IS the acknowledgment for that button, so the button must
+// NOT be deferred first. Each field is one single-line text input on its own action
+// row. The /config panel uses this for free-text settings (Codex home path) that a
+// select menu cannot express. The client.ts adapter maps this onto discord.js.
+export interface ModalSpec {
+  customId: string;
+  title: string;
+  fields: ModalFieldSpec[];
+}
+
+export interface ModalFieldSpec {
+  customId: string;
+  label: string;
+  // Prefilled value shown in the input (the setting's current value).
+  value?: string;
+  placeholder?: string;
+  required?: boolean;
+}
+
 // A message already posted to a channel that the layer can edit in place (used
 // by the debounced stream embed and by disabling buttons after a decision).
 export interface EditableMessage {

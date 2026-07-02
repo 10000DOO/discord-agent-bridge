@@ -5,8 +5,10 @@ import * as path from 'node:path';
 import {
   InteractionRouter,
   type ComponentInteraction,
+  type ModalSubmitInteraction,
   type SlashInteraction,
 } from './interactionRouter.js';
+import type { ModalSpec } from './ports.js';
 import { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type AppConfig } from '../core/configSchema.js';
 import { StateStore } from '../core/state/store.js';
@@ -133,8 +135,14 @@ type Reply = { content?: string; ephemeral?: boolean; embeds?: unknown[]; compon
 
 // A recording of every ack call, in order, so a test can assert the ack came BEFORE
 // the slow handler work (the defer-first contract) and that no path leaves the
-// interaction unacknowledged. `kind` is the discord.js method that fired.
-type AckEvent = { kind: 'deferReply' | 'reply' | 'editReply' | 'followUp' | 'deferUpdate'; payload?: Reply };
+// interaction unacknowledged. `kind` is the discord.js method that fired. `showModal`
+// records that a modal was opened (its ack), so a test can assert it fired WITHOUT a
+// preceding defer.
+type AckEvent = {
+  kind: 'deferReply' | 'reply' | 'editReply' | 'followUp' | 'deferUpdate' | 'showModal';
+  payload?: Reply;
+  modal?: ModalSpec;
+};
 
 function slash(
   over: Partial<SlashInteraction> & { roles?: string[]; getStringValue?: string; hasAdminPermission?: boolean },
@@ -218,6 +226,56 @@ function component(
     deferUpdate: async () => {
       acked = true;
       acks.push({ kind: 'deferUpdate' });
+    },
+    showModal: async (modal: ModalSpec) => {
+      // showModal IS the ack — record it (and mark acknowledged) so a test can assert
+      // it fired without a preceding defer.
+      acked = true;
+      acks.push({ kind: 'showModal', modal });
+    },
+    get acknowledged() {
+      return acked;
+    },
+  };
+  return { interaction, replies, acks };
+}
+
+// A scripted ModalSubmit interaction: `fields` maps field custom id → submitted value.
+function modalSubmit(
+  over: Partial<ModalSubmitInteraction> & { roles?: string[]; hasAdminPermission?: boolean; fields?: Record<string, string> },
+): { interaction: ModalSubmitInteraction; replies: Reply[]; acks: AckEvent[] } {
+  const replies: Reply[] = [];
+  const acks: AckEvent[] = [];
+  let acked = false;
+  const roles = over.roles ?? [EXEC_ROLE];
+  const fields = over.fields ?? {};
+  const interaction: ModalSubmitInteraction = {
+    kind: 'modalSubmit',
+    guildId: over.guildId ?? 'g1',
+    channelId: over.channelId ?? 'c1',
+    user: over.user ?? { id: 'u1' },
+    member: { roles: { cache: { map: (fn) => roles.map((id) => fn({ id })) } } },
+    ...(over.hasAdminPermission !== undefined ? { hasAdminPermission: over.hasAdminPermission } : {}),
+    customId: over.customId ?? 'config.codexHome.modal',
+    getField: (id: string) => fields[id] ?? '',
+    reply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'reply', payload: o });
+      replies.push(o);
+    },
+    deferReply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'deferReply', payload: o });
+    },
+    editReply: async (o) => {
+      acked = true;
+      acks.push({ kind: 'editReply', payload: o });
+      replies.push(o);
+    },
+    followUp: async (o) => {
+      acked = true;
+      acks.push({ kind: 'followUp', payload: o });
+      replies.push(o);
     },
     get acknowledged() {
       return acked;
@@ -561,6 +619,114 @@ describe('InteractionRouter /config command', () => {
       hasAdminPermission: true,
     });
     await router.handle(hijack);
+    expect(store.loadServerConfig('g1')).toBeNull();
+  });
+
+  it('a defaults select auto-saves that one field immediately (no Save button)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
+    await router.handle(open);
+
+    // The owner changes the default backend → it persists at once (no Save).
+    const { interaction: pick, replies } = component({
+      customId: 'config.default.backend',
+      value: 'codex',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(pick);
+
+    expect(store.loadServerConfig('g1')?.defaults?.mode).toBe('codex');
+    // A short ephemeral confirmation for just that field was sent.
+    expect(replies[0].ephemeral).toBe(true);
+    expect(replies[0].content).toContain('codex');
+  });
+
+  it('a locale select auto-saves the per-guild locale immediately', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
+    await router.handle(open);
+
+    const { interaction: pick } = component({
+      customId: 'config.default.locale',
+      value: 'en',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(pick);
+
+    expect(store.loadServerConfig('g1')?.locale).toBe('en');
+  });
+
+  it('the Codex-path button opens a modal via showModal and does NOT defer first', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
+    await router.handle(open);
+
+    const { interaction: btn, acks } = component({
+      customId: 'config.codexHome.open',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+    });
+    await router.handle(btn);
+
+    // showModal was the FIRST (and only) ack — no deferUpdate/deferReply before it.
+    expect(acks).toHaveLength(1);
+    expect(acks[0].kind).toBe('showModal');
+    // The modal carries the Codex-path field prefilled with the current codexHome.
+    expect(acks[0].modal?.customId).toBe('config.codexHome.modal');
+    expect(acks[0].modal?.fields[0].customId).toBe('config.codexHome.value');
+    expect(acks[0].modal?.fields[0].value).toBe('~/.codex');
+  });
+
+  it('a Codex-path modal submit routes to the codexHome handler and persists', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    // Open the panel so the router holds a live panel for this channel.
+    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
+    await router.handle(open);
+
+    const { interaction: submit, replies } = modalSubmit({
+      customId: 'config.codexHome.modal',
+      user: { id: 'admin-user' },
+      hasAdminPermission: true,
+      fields: { 'config.codexHome.value': '/srv/codex' },
+    });
+    await router.handle(submit);
+
+    expect(store.loadServerConfig('g1')?.defaults?.codexHome).toBe('/srv/codex');
+    // An ephemeral confirmation naming the saved path was sent.
+    expect(replies[0].ephemeral).toBe(true);
+    expect(replies[0].content).toContain('/srv/codex');
+  });
+
+  it('a Codex-path modal submit from a NON-owner does not persist', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    const { interaction: open } = slash({ commandName: 'config', user: { id: 'admin-user' }, hasAdminPermission: true });
+    await router.handle(open);
+
+    // A different admin submits the modal — the panel is owned by 'admin-user'.
+    const { interaction: submit } = modalSubmit({
+      customId: 'config.codexHome.modal',
+      user: { id: 'u2' },
+      hasAdminPermission: true,
+      fields: { 'config.codexHome.value': '/hijack' },
+    });
+    await router.handle(submit);
     expect(store.loadServerConfig('g1')).toBeNull();
   });
 });
