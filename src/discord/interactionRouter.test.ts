@@ -877,7 +877,7 @@ describe('InteractionRouter /config command', () => {
 });
 
 describe('InteractionRouter /init command', () => {
-  it('creates the category + control channel + sessions category and persists the ids', async () => {
+  it('creates the category + control channel + status channel + sessions category and persists the ids', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const prov = new FakeProvisioner('g1');
@@ -886,11 +886,12 @@ describe('InteractionRouter /init command', () => {
     const { interaction, replies } = slash({ commandName: 'init', hasAdminPermission: true, roles: ['role-nobody'] });
     await router.handle(interaction);
 
-    // Three channels created; ids persisted to servers/g1.json.
-    expect(prov.createdNames).toHaveLength(3);
+    // Four channels created; ids persisted to servers/g1.json.
+    expect(prov.createdNames).toHaveLength(4);
     const saved = store.loadServerConfig('g1');
     expect(saved?.channels?.controlChannelId).toBeTruthy();
     expect(saved?.channels?.sessionsCategoryId).toBeTruthy();
+    expect(saved?.channels?.statusChannelId).toBeTruthy();
     // The reply links the control channel.
     expect(replies[0].content).toContain(`<#${saved!.channels!.controlChannelId}>`);
   });
@@ -904,12 +905,12 @@ describe('InteractionRouter /init command', () => {
     const { interaction: first } = slash({ commandName: 'init', hasAdminPermission: true });
     await router.handle(first);
     const afterFirst = store.loadServerConfig('g1')?.channels;
-    expect(prov.createdNames).toHaveLength(3);
+    expect(prov.createdNames).toHaveLength(4);
 
     const { interaction: second } = slash({ commandName: 'init', hasAdminPermission: true });
     await router.handle(second);
     // No new creates; the stored ids are unchanged.
-    expect(prov.createdNames).toHaveLength(3);
+    expect(prov.createdNames).toHaveLength(4);
     expect(store.loadServerConfig('g1')?.channels).toEqual(afterFirst);
   });
 

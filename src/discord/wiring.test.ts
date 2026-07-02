@@ -15,6 +15,8 @@ import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { AuditLog } from '../core/auditLog.js';
 import type { AuditEntry } from '../core/contracts.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
+import type { ConfigStore } from '../core/config.js';
+import type { ServerConfig } from '../core/configSchema.js';
 import type { EditableMessage, MessageChannel, OutgoingMessage } from './ports.js';
 
 const logger = createLogger('test', { level: 'error', sink: { write() {} } });
@@ -66,6 +68,12 @@ function makeWiring(opts: {
   ownerId?: string;
   auditLog?: AuditLog;
   onAlwaysAllow?: (tool: string, ctx: { actorId: string; guildId: string; channelId: string }) => void;
+  // A server config the wiring reads at attach() to resolve notifications. When set,
+  // configStore is injected so the notifier is wired.
+  server?: ServerConfig | null;
+  // Per-channelId resolver override (default: everything resolves to opts.channel),
+  // so a test can hand the status channel a distinct sink from the session channel.
+  resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
 }) {
   const eventBus = new EventBus();
   const modeRegistry = new ModeRegistry();
@@ -78,16 +86,21 @@ function makeWiring(opts: {
     isAvailable: () => opts.usage !== undefined,
     getUsage: async () => opts.usage ?? { available: false as const, reason: 'no-credentials' as const },
   } as unknown as UsageService;
+  const configStore =
+    opts.server !== undefined
+      ? ({ loadServerConfig: () => opts.server } as unknown as ConfigStore)
+      : undefined;
   const wiring = new SessionWiring({
     eventBus,
     modeRegistry,
     channelRegistry,
     usageService,
     logger,
-    resolveChannel: async () => opts.channel,
+    resolveChannel: opts.resolveChannel ?? (async () => opts.channel),
     permissionTimeoutSec: opts.permissionTimeoutSec ?? 60,
     ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),
     ...(opts.onAlwaysAllow ? { onAlwaysAllow: opts.onAlwaysAllow } : {}),
+    ...(configStore ? { configStore } : {}),
   });
   return { wiring, eventBus };
 }
@@ -292,5 +305,87 @@ describe('SessionWiring rendering + sendFile', () => {
     expect(msg).toContain('out.txt');
     const fileMsg = sent.find((m) => m.files && m.files.length > 0);
     expect(fileMsg?.files?.[0]).toEqual({ path: '/ws/out.txt', name: 'out.txt' });
+  });
+});
+
+describe('SessionWiring notifications forwarding', () => {
+  const serverWithStatus = (over: Partial<NonNullable<ServerConfig['notifications']>> = {}): ServerConfig =>
+    ({
+      version: 1,
+      guildId: 'g1',
+      channels: { categoryId: 'a', controlChannelId: 'b', sessionsCategoryId: 'c', statusChannelId: 'status-1' },
+      notifications: { ...over },
+    }) as ServerConfig;
+
+  // Resolve the session channel to `session` and the status channel to `status`.
+  function splitResolver(session: MessageChannel, status: MessageChannel) {
+    return async (channelId: string): Promise<MessageChannel | null> =>
+      channelId === 'status-1' ? status : session;
+  }
+
+  it('forwards a session result to the resolved status channel', async () => {
+    const session = fakeChannel();
+    const status = fakeChannel();
+    const { wiring, eventBus } = makeWiring({
+      channel: session.channel,
+      server: serverWithStatus(),
+      resolveChannel: splitResolver(session.channel, status.channel),
+    });
+    await wiring.attach('g1', 'c1', 'claude');
+
+    eventBus.emit('g1', 'c1', { kind: 'result', tokensIn: 1, tokensOut: 2 });
+    await Promise.resolve();
+
+    expect(status.sent.some((m) => (m.content ?? '').includes('완료'))).toBe(true);
+  });
+
+  it('does not forward when notifications are disabled', async () => {
+    const session = fakeChannel();
+    const status = fakeChannel();
+    const { wiring, eventBus } = makeWiring({
+      channel: session.channel,
+      server: serverWithStatus({ enabled: false }),
+      resolveChannel: splitResolver(session.channel, status.channel),
+    });
+    await wiring.attach('g1', 'c1', 'claude');
+
+    eventBus.emit('g1', 'c1', { kind: 'result' });
+    await Promise.resolve();
+    expect(status.sent.length).toBe(0);
+  });
+
+  it('skips self-echo when the session channel IS the status channel', async () => {
+    const session = fakeChannel();
+    // The status channel id equals the session channel id → self-echo, no notifier.
+    const server = {
+      version: 1,
+      guildId: 'g1',
+      notifications: { channelId: 'c1' },
+    } as ServerConfig;
+    const { wiring, eventBus } = makeWiring({ channel: session.channel, server });
+    await wiring.attach('g1', 'c1', 'claude');
+
+    eventBus.emit('g1', 'c1', { kind: 'result' });
+    await Promise.resolve();
+    // The notifier never subscribed (self-echo guard), so no compact "✅ … 완료" summary
+    // line was echoed back into the session channel (the renderer's own result/mention
+    // output is unrelated and does not carry the notifier's ✅-완료 format).
+    expect(session.sent.some((m) => (m.content ?? '').startsWith('✅'))).toBe(false);
+  });
+
+  it('detach stops forwarding to the status channel', async () => {
+    const session = fakeChannel();
+    const status = fakeChannel();
+    const { wiring, eventBus } = makeWiring({
+      channel: session.channel,
+      server: serverWithStatus(),
+      resolveChannel: splitResolver(session.channel, status.channel),
+    });
+    await wiring.attach('g1', 'c1', 'claude');
+    wiring.detach('g1', 'c1');
+
+    eventBus.emit('g1', 'c1', { kind: 'result' });
+    await Promise.resolve();
+    expect(status.sent.length).toBe(0);
   });
 });

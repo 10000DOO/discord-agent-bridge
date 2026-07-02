@@ -2,8 +2,9 @@ import type { PermMode } from '../core/contracts.js';
 import type { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type ServerConfig } from '../core/configSchema.js';
 import type { ModelChoice } from '../core/providerCatalog.js';
+import { resolveNotifications } from './notifier.js';
 import type { Locale } from './i18n.js';
-import type { ButtonSpec, ComponentRow, EmbedSpec, RoleSelectSpec, SelectSpec } from './ports.js';
+import type { ButtonSpec, ChannelSelectSpec, ComponentRow, EmbedSpec, RoleSelectSpec, SelectSpec } from './ports.js';
 import { t } from './i18n.js';
 
 // The `/config` panel (§7.1/§8): configure a guild's role tiers and defaults by
@@ -38,6 +39,11 @@ const IDS = {
   permMode: 'config.default.permMode',
   locale: 'config.default.locale',
   save: 'config.save',
+  // Notifications sub-panel: a button on the primary panel opens an ephemeral
+  // sub-panel carrying the enable/disable toggle + the status-channel picker.
+  notifOpen: 'config.notif.open',
+  notifToggle: 'config.notif.toggle',
+  notifChannel: 'config.notif.channel',
 } as const;
 
 // True when a component id belongs to a /config panel (router routing predicate).
@@ -107,6 +113,11 @@ export type ConfigPanelResult =
   | { kind: 'pending' }
   | { kind: 'saved'; summary: string }
   | { kind: 'autosaved'; notice: string }
+  // The 🔔 button opened the notifications sub-panel (a fresh ephemeral message).
+  | { kind: 'notifPanel'; embed: EmbedSpec; rows: ComponentRow[] }
+  // A notifications toggle/channel change persisted and re-rendered the sub-panel in
+  // place (edited on its own message).
+  | { kind: 'notifUpdated'; embed: EmbedSpec; rows: ComponentRow[] }
   | { kind: 'ignored' };
 
 const TIER_BY_ID: Record<string, Tier> = {
@@ -153,6 +164,14 @@ export class ConfigPanel {
       case IDS.locale:
         if (!input.value) return { kind: 'pending' };
         return this.autosaveLocale(input.value);
+      case IDS.notifOpen:
+        return { kind: 'notifPanel', ...this.renderNotifications() };
+      case IDS.notifToggle:
+        return this.toggleNotifications();
+      case IDS.notifChannel:
+        // A channel-select delivers the picked channel id(s) in `values`. An empty
+        // pick clears the override (falls back to the /init status channel).
+        return this.setNotificationChannel(input.values?.[0] ?? null);
       case IDS.save:
         return { kind: 'saved', summary: this.saveRoles() };
       default:
@@ -259,6 +278,68 @@ export class ConfigPanel {
     return locale === 'ko' || locale === 'en' ? t(`config.locale.${locale}`) : locale;
   }
 
+  // ---- Notifications sub-panel ----
+
+  // Flip the enabled flag, persist it, and re-render the sub-panel so the toggle label
+  // reflects the new state.
+  private toggleNotifications(): ConfigPanelResult {
+    const current = this.currentNotifications();
+    this.patchNotifications({ enabled: !current.enabled });
+    return { kind: 'notifUpdated', ...this.renderNotifications() };
+  }
+
+  // Set (or clear, with null) the status-channel override, persist it, and re-render.
+  private setNotificationChannel(channelId: string | null): ConfigPanelResult {
+    this.patchNotifications({ channelId });
+    return { kind: 'notifUpdated', ...this.renderNotifications() };
+  }
+
+  // Merge ONE notifications field over the guild's current server config and persist,
+  // preserving every other field (auth, defaults, channels, locale).
+  private patchNotifications(patch: Partial<NonNullable<ServerConfig['notifications']>>): void {
+    const existing = this.opts.configStore.loadServerConfig(this.opts.guildId);
+    const next: ServerConfig = {
+      ...(existing ?? {}),
+      version: existing?.version ?? CONFIG_VERSION,
+      guildId: this.opts.guildId,
+      notifications: { ...(existing?.notifications ?? {}), ...patch },
+    };
+    this.opts.configStore.saveServerConfig(next);
+  }
+
+  // The guild's resolved notifications config (defaults applied), read fresh from disk
+  // so the sub-panel always reflects persisted state after each toggle/pick.
+  private currentNotifications() {
+    return resolveNotifications(this.opts.configStore.loadServerConfig(this.opts.guildId));
+  }
+
+  // Render the notifications sub-panel: an enable/disable toggle button + a GuildText
+  // channel picker for the status channel. Two rows, within Discord's 5-row limit.
+  private renderNotifications(): { embed: EmbedSpec; rows: ComponentRow[] } {
+    const n = this.currentNotifications();
+    const toggle: ButtonSpec = {
+      type: 'button',
+      customId: IDS.notifToggle,
+      label: n.enabled ? t('config.notif.disable') : t('config.notif.enable'),
+      style: n.enabled ? 'danger' : 'success',
+    };
+    const channelSelect: ChannelSelectSpec = {
+      type: 'channelSelect',
+      customId: IDS.notifChannel,
+      placeholder: t('config.notif.channel.placeholder'),
+      minValues: 0,
+      maxValues: 1,
+      ...(n.channelId ? { defaultChannelIds: [n.channelId] } : {}),
+    };
+    return {
+      embed: {
+        title: t('config.notif.title'),
+        description: t('config.notif.intro', { state: n.enabled ? t('config.notif.on') : t('config.notif.off') }),
+      },
+      rows: [{ components: [channelSelect] }, { components: [toggle] }],
+    };
+  }
+
   // Render the panel as plain component specs. `roleRows` (3 role tiers + Save = 4
   // rows) go on the primary reply; `defaultRows` (backend/model/permMode/locale
   // selects = 4 rows) go on a follow-up — both within Discord's 5-action-row-per-
@@ -315,6 +396,10 @@ export class ConfigPanel {
       })),
     };
     const save: ButtonSpec = { type: 'button', customId: IDS.save, label: t('config.save'), style: 'success' };
+    // The 🔔 notifications button opens an ephemeral sub-panel (toggle + channel picker),
+    // so the primary message stays within Discord's 5-action-row limit (it shares the
+    // Save row: a single action row can hold up to 5 buttons).
+    const notif: ButtonSpec = { type: 'button', customId: IDS.notifOpen, label: t('config.notif.button'), style: 'secondary' };
 
     return {
       embed: { title: t('config.title'), description: t('config.intro') },
@@ -322,7 +407,7 @@ export class ConfigPanel {
         { components: [adminSelect] },
         { components: [execSelect] },
         { components: [readSelect] },
-        { components: [save] },
+        { components: [save, notif] },
       ],
       defaultRows: [
         { components: [backendSelect] },

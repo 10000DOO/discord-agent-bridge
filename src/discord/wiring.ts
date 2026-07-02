@@ -11,6 +11,8 @@ import { RendererDispatcher, createDefaultRendererSet, type RendererSet } from '
 import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
 import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
+import type { ConfigStore } from '../core/config.js';
+import { SessionNotifier, resolveNotifications } from './notifier.js';
 
 // The deferred 7a hookups, wired live (§7A/§6/§7.5). Per active channel this owns:
 //   - a RendererDispatcher subscribed to the eventBus (AgentEvents → Discord), with
@@ -25,13 +27,16 @@ import type { MessageChannel } from './ports.js';
 // a MessageChannel port via resolveChannelAdapter and everything else is port-level.
 
 // One channel's live wiring: its renderer subscription unsubscribe, its renderer
-// set (for dispose() on detach), its permission handler, and the channel sink.
+// set (for dispose() on detach), its permission handler, the channel sink, and — when
+// per-guild notifications are enabled with a resolvable status channel — the notifier
+// subscription's unsubscribe (torn down alongside the renderer subscription on detach).
 interface ChannelWiring {
   unsubscribe: () => void;
   renderers: RendererSet;
   permission: PermissionButtonsHandler;
   channel: MessageChannel;
   mode: string;
+  unsubscribeNotifier?: () => void;
 }
 
 // Who/where an always-allow was granted from, so the wiring can audit the GLOBAL
@@ -48,6 +53,10 @@ export interface SessionWiringDeps {
   channelRegistry: ChannelRegistry;
   usageService: UsageService;
   logger: Logger;
+  // Per-server config source, read at attach() to resolve a guild's notifications
+  // settings (enabled/channelId/events). Optional so tests that do not exercise
+  // notifications need not supply it; when absent, no notifier is wired.
+  configStore?: ConfigStore;
   // Append-only audit trail (§7.5). The always-allow persistence path records a
   // who/when/what entry around the GLOBAL config write. Optional so tests that do
   // not exercise always-allow need not supply it.
@@ -81,6 +90,7 @@ export class SessionWiring {
   private resolveChannel: (channelId: string) => Promise<MessageChannel | null>;
   private readonly permissionTimeoutMs: number;
   private readonly auditLog?: AuditLog;
+  private readonly configStore?: ConfigStore;
   private readonly onAlwaysAllow?: (toolName: string, ctx: AlwaysAllowContext) => void;
 
   private readonly channels = new Map<string, ChannelWiring>();
@@ -94,6 +104,7 @@ export class SessionWiring {
     this.usageService = deps.usageService;
     this.logger = deps.logger;
     this.auditLog = deps.auditLog;
+    this.configStore = deps.configStore;
     this.resolveChannel = deps.resolveChannel ?? (() => Promise.resolve(null));
     this.permissionTimeoutMs = Math.max(1, deps.permissionTimeoutSec) * 1000;
     this.onAlwaysAllow = deps.onAlwaysAllow;
@@ -226,9 +237,49 @@ export class SessionWiring {
     const dispatcher = new RendererDispatcher(set, capabilities);
     const unsubscribe = dispatcher.subscribe(this.eventBus, guildId, channelId);
 
-    this.channels.set(key, { unsubscribe, renderers: set, permission, channel, mode });
+    // When per-guild notifications are enabled and a status channel resolves, also
+    // subscribe a notifier that forwards this session's key events (result/error;
+    // tool_use if enabled) to that status channel as compact summary lines. Skipped
+    // when disabled, no resolvable status channel, or the session channel IS the
+    // status channel (self-echo). Best-effort: a resolve failure never breaks attach.
+    const unsubscribeNotifier = await this.attachNotifier(guildId, channelId);
+
+    this.channels.set(key, {
+      unsubscribe,
+      renderers: set,
+      permission,
+      channel,
+      mode,
+      ...(unsubscribeNotifier ? { unsubscribeNotifier } : {}),
+    });
     // Kick a usage refresh so the first usage embed has data (Claude only).
     if (capabilities.usagePanel) void this.refreshUsage();
+  }
+
+  // Resolve the guild's notifications config + status channel and, when enabled with a
+  // resolvable status channel that is NOT this session channel, subscribe a SessionNotifier
+  // to this channel's event stream. Returns the notifier's unsubscribe, or null when no
+  // notifier was wired. Never throws — a resolve/config error just skips notifications.
+  private async attachNotifier(guildId: string, channelId: string): Promise<(() => void) | null> {
+    if (!this.configStore) return null;
+    try {
+      const server = this.configStore.loadServerConfig(guildId);
+      const notifications = resolveNotifications(server);
+      if (!notifications.enabled || !notifications.channelId) return null;
+      // Self-echo guard: never forward a channel's events into itself.
+      if (notifications.channelId === channelId) return null;
+      const statusChannel = await this.resolveChannel(notifications.channelId);
+      if (!statusChannel) return null;
+      const notifier = new SessionNotifier({
+        statusChannel,
+        sessionChannelId: channelId,
+        events: notifications.events,
+      });
+      return notifier.subscribe(this.eventBus, guildId, channelId);
+    } catch (err) {
+      this.logger.warn('failed to wire notifier', { guildId, channelId, err: String(err) });
+      return null;
+    }
   }
 
   // Tear down a channel's renderer subscription on stop/close. Unsubscribe first so
@@ -240,6 +291,9 @@ export class SessionWiring {
     const wiring = this.channels.get(key);
     if (!wiring) return;
     wiring.unsubscribe();
+    // Tear down the notifier subscription too (if one was wired), so a stopped session
+    // stops forwarding events to the status channel.
+    wiring.unsubscribeNotifier?.();
     try {
       wiring.renderers.dispose?.();
     } catch (err) {

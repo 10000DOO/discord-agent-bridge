@@ -60,6 +60,16 @@ const ko: Catalog = {
   'config.autosaved.backend': '기본 백엔드를 저장했어요: {backend}',
   'config.autosaved.model': '기본 모델을 저장했어요: {model}',
   'config.autosaved.permMode': '권한 모드를 저장했어요: {perm}',
+  // Notifications sub-panel (🔔): forward session 이벤트(완료·에러)를 상태 채널로 요약 전송.
+  'config.notif.button': '🔔 알림 설정',
+  'config.notif.title': '이벤트 알림 설정',
+  'config.notif.intro':
+    '세션의 주요 이벤트(완료·에러)를 상태 채널로 한 줄 요약해 보냅니다.\n현재 상태: **{state}**\n아래에서 상태 채널을 고르고, 버튼으로 켜고 끌 수 있어요. 채널을 비우면 `/init` 이 만든 기본 상태 채널을 사용합니다.',
+  'config.notif.on': '켜짐',
+  'config.notif.off': '꺼짐',
+  'config.notif.enable': '알림 켜기',
+  'config.notif.disable': '알림 끄기',
+  'config.notif.channel.placeholder': '상태 채널 선택 (비우면 기본 상태 채널)',
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',

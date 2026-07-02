@@ -3,6 +3,7 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelSelectMenuBuilder,
   ChannelType,
   Client,
   EmbedBuilder,
@@ -36,6 +37,7 @@ import type { GuildChannelProvisioner, ProvisionedChannel } from './guildChannel
 import { t } from './i18n.js';
 import type {
   ButtonSpec,
+  ChannelSelectSpec,
   ComponentRow,
   EditableMessage,
   EmbedSpec,
@@ -190,6 +192,7 @@ function toRow(row: ComponentRow): ActionRowBuilder<MessageActionRowComponentBui
   for (const c of row.components) {
     if (c.type === 'button') builder.addComponents(toButton(c));
     else if (c.type === 'roleSelect') builder.addComponents(toRoleSelect(c));
+    else if (c.type === 'channelSelect') builder.addComponents(toChannelSelect(c));
     else builder.addComponents(toSelect(c));
   }
   return builder;
@@ -234,6 +237,22 @@ function toRoleSelect(spec: RoleSelectSpec): RoleSelectMenuBuilder {
   if (spec.maxValues !== undefined) select.setMaxValues(spec.maxValues);
   if (spec.defaultRoleIds && spec.defaultRoleIds.length > 0) {
     select.setDefaultRoles(spec.defaultRoleIds);
+  }
+  return select;
+}
+
+// A Discord Channel Select menu (the /config notifications status-channel picker),
+// constrained to GuildText channels. The user picks a channel by name; the values are
+// channel IDs. defaultChannelIds prefill the currently-configured channel.
+function toChannelSelect(spec: ChannelSelectSpec): ChannelSelectMenuBuilder {
+  const select = new ChannelSelectMenuBuilder()
+    .setCustomId(spec.customId)
+    .setChannelTypes(ChannelType.GuildText);
+  if (spec.placeholder !== undefined) select.setPlaceholder(spec.placeholder);
+  if (spec.minValues !== undefined) select.setMinValues(spec.minValues);
+  if (spec.maxValues !== undefined) select.setMaxValues(spec.maxValues);
+  if (spec.defaultChannelIds && spec.defaultChannelIds.length > 0) {
+    select.setDefaultChannels(spec.defaultChannelIds);
   }
   return select;
 }
@@ -678,12 +697,19 @@ export function adaptInteraction(interaction: Interaction): RouterInteraction | 
     return withAcknowledged(slash) as SlashInteraction;
   }
 
-  if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu()) {
+  if (
+    interaction.isButton() ||
+    interaction.isStringSelectMenu() ||
+    interaction.isRoleSelectMenu() ||
+    interaction.isChannelSelectMenu()
+  ) {
     // String-select: single `value` (first) for legacy callers; also expose all
-    // `values`. Role-select: `values` are the picked role IDs (no single `value`).
-    const values = interaction.isStringSelectMenu() || interaction.isRoleSelectMenu()
-      ? interaction.values
-      : undefined;
+    // `values`. Role-select / channel-select: `values` are the picked IDs (no single
+    // `value`).
+    const values =
+      interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()
+        ? interaction.values
+        : undefined;
     const value = interaction.isStringSelectMenu() ? interaction.values[0] : undefined;
     const component = {
       ...base(),

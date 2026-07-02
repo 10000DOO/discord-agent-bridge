@@ -41,11 +41,12 @@ export interface EmbedSpec {
   footer?: string;
 }
 
-// One action row of interactive components. Buttons, string-selects, and Discord
-// role-selects are used by this layer (permission buttons; wizard/browser selects;
-// /config role-tier pickers).
+// One action row of interactive components. Buttons, string-selects, Discord
+// role-selects, and Discord channel-selects are used by this layer (permission
+// buttons; wizard/browser selects; /config role-tier pickers; /config notifications
+// channel picker).
 export interface ComponentRow {
-  components: (ButtonSpec | SelectSpec | RoleSelectSpec)[];
+  components: (ButtonSpec | SelectSpec | RoleSelectSpec | ChannelSelectSpec)[];
 }
 
 export interface ButtonSpec {
@@ -76,6 +77,21 @@ export interface RoleSelectSpec {
   maxValues?: number;
   // Role IDs to show pre-selected (the tier's current effective roles).
   defaultRoleIds?: string[];
+}
+
+// A Discord Channel Select menu (discord.js ChannelSelectMenuBuilder), constrained to
+// GuildText channels. The user picks a channel by name; the selected values are channel
+// IDs. `defaultChannelIds` prefill the currently-selected channel. Used by the /config
+// notifications sub-panel to set the status channel. The client.ts adapter maps this
+// onto a discord.js ChannelSelectMenuBuilder with a GuildText channel-type filter.
+export interface ChannelSelectSpec {
+  type: 'channelSelect';
+  customId: string;
+  placeholder?: string;
+  minValues?: number;
+  maxValues?: number;
+  // Channel IDs to show pre-selected (the currently-configured status channel).
+  defaultChannelIds?: string[];
 }
 
 // A Discord modal dialog (discord.js ModalBuilder). Opened in RESPONSE to a button

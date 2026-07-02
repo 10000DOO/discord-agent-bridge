@@ -54,6 +54,7 @@ export type GuildChannels = NonNullable<ServerConfig['channels']>;
 // text channel names itself, but we pass already-clean values.
 const CONTROL_CATEGORY_NAME = '🤖 Agent';
 const CONTROL_CHANNEL_NAME = 'session-generator';
+const STATUS_CHANNEL_NAME = 'agent-status';
 const SESSIONS_CATEGORY_NAME = 'Agent - Sessions';
 
 // Idempotently create (or reuse) the guild's channel structure and persist the ids
@@ -86,6 +87,15 @@ export async function ensureGuildChannels(
   if (controlChannel.name !== CONTROL_CHANNEL_NAME) {
     await provisioner.renameChannel(controlChannel.id, CONTROL_CHANNEL_NAME).catch(() => {});
   }
+  // The per-guild status channel (event notifications) lives under the SAME control
+  // category, reusing its stored id when it still exists (mirrors controlChannelId).
+  const statusChannel = await provisioner.ensureTextChannel(
+    STATUS_CHANNEL_NAME,
+    controlCategory.id,
+    existing && existing.statusChannelId && provisioner.channelExists(existing.statusChannelId)
+      ? existing.statusChannelId
+      : undefined,
+  );
   const sessionsCategory = await provisioner.ensureCategory(
     SESSIONS_CATEGORY_NAME,
     existing && provisioner.channelExists(existing.sessionsCategoryId) ? existing.sessionsCategoryId : undefined,
@@ -95,7 +105,7 @@ export async function ensureGuildChannels(
     categoryId: controlCategory.id,
     controlChannelId: controlChannel.id,
     sessionsCategoryId: sessionsCategory.id,
-    statusChannelId: existing?.statusChannelId ?? null,
+    statusChannelId: statusChannel.id,
   };
 
   persistChannels(configStore, guildId, server, channels);

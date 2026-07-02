@@ -104,6 +104,9 @@ export function createApp(deps: CreateAppDeps): App {
     usageService,
     logger,
     auditLog,
+    // Read the guild's notifications config at attach() to forward key session events
+    // (result/error; tool_use if enabled) to the per-guild status channel.
+    configStore,
     permissionTimeoutSec: config.limits.permissionTimeoutSec,
     // Always-allow persistence (§7A): a tool the operator chose "always-allow" for
     // is written into the GLOBAL autoAllowClaudeTools set, so the next turn (on any

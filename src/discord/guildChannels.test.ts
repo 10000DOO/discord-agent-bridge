@@ -135,19 +135,21 @@ afterEach(() => {
 });
 
 describe('ensureGuildChannels', () => {
-  it('creates the category + control channel + sessions category and persists the ids', async () => {
+  it('creates the category + control channel + status channel + sessions category and persists the ids', async () => {
     const prov = new FakeProvisioner();
     const channels = await ensureGuildChannels(prov, store);
 
-    // Three channels were created (control category, control channel, sessions category).
-    expect(prov.createdNames).toHaveLength(3);
+    // Four channels were created (control category, control channel, status channel,
+    // sessions category).
+    expect(prov.createdNames).toHaveLength(4);
     expect(channels.categoryId).toBeTruthy();
     expect(channels.controlChannelId).toBeTruthy();
     expect(channels.sessionsCategoryId).toBeTruthy();
-    expect(channels.statusChannelId).toBeNull();
+    expect(channels.statusChannelId).toBeTruthy();
 
-    // The control channel is parented to the control category.
+    // The control + status channels are parented to the control category.
     expect(prov.channels.get(channels.controlChannelId)?.parent).toBe(channels.categoryId);
+    expect(prov.channels.get(channels.statusChannelId!)?.parent).toBe(channels.categoryId);
 
     // Persisted to servers/g1.json.
     const saved = store.loadServerConfig('g1');
@@ -157,12 +159,12 @@ describe('ensureGuildChannels', () => {
   it('is idempotent: a second run reuses the stored channels and creates nothing new', async () => {
     const prov = new FakeProvisioner();
     const first = await ensureGuildChannels(prov, store);
-    expect(prov.createdNames).toHaveLength(3);
+    expect(prov.createdNames).toHaveLength(4);
 
     // Re-run against the SAME provisioner (channels still exist) → no new creates,
     // same ids returned.
     const second = await ensureGuildChannels(prov, store);
-    expect(prov.createdNames).toHaveLength(3); // unchanged
+    expect(prov.createdNames).toHaveLength(4); // unchanged
     expect(second).toEqual(first);
   });
 
@@ -177,8 +179,8 @@ describe('ensureGuildChannels', () => {
     expect(second.categoryId).toBe(first.categoryId); // reused
     expect(second.sessionsCategoryId).toBe(first.sessionsCategoryId); // reused
     expect(second.controlChannelId).not.toBe(first.controlChannelId); // re-created
-    // Exactly one additional create (the control channel).
-    expect(prov.createdNames).toHaveLength(4);
+    // Exactly one additional create (the control channel) on top of the initial four.
+    expect(prov.createdNames).toHaveLength(5);
     // The re-created id is persisted.
     expect(store.loadServerConfig('g1')?.channels?.controlChannelId).toBe(second.controlChannelId);
   });
@@ -199,8 +201,9 @@ describe('ensureGuildChannels', () => {
     const channels = await ensureGuildChannels(prov, store);
 
     // The control channel id was reused (no re-create) and renamed to the new name.
+    // Only the status channel (absent in the seeded structure) is newly created.
     expect(channels.controlChannelId).toBe('ctrl');
-    expect(prov.createdNames).toHaveLength(0);
+    expect(prov.createdNames).toEqual(['agent-status']);
     expect(prov.renamed.get('ctrl')).toBe('session-generator');
     expect(prov.channels.get('ctrl')?.name).toBe('session-generator');
   });
@@ -231,8 +234,9 @@ describe('autoProvisionGuild (ready / guild-join, /init optional)', () => {
     const prov = new FakeProvisioner();
     const { logger, info } = fakeLogger();
     const channels = await autoProvisionGuild(prov, store, logger);
-    // The 🤖 Agent category + #session-generator + Agent - Sessions were created.
-    expect(prov.createdNames).toHaveLength(3);
+    // The 🤖 Agent category + #session-generator + #agent-status + Agent - Sessions
+    // were created.
+    expect(prov.createdNames).toHaveLength(4);
     expect(channels?.controlChannelId).toBeTruthy();
     // The persisted ids match what auto-provision returned.
     expect(store.loadServerConfig('g1')?.channels).toEqual(channels);
@@ -243,10 +247,10 @@ describe('autoProvisionGuild (ready / guild-join, /init optional)', () => {
     const prov = new FakeProvisioner();
     const { logger } = fakeLogger();
     const first = await autoProvisionGuild(prov, store, logger);
-    expect(prov.createdNames).toHaveLength(3);
+    expect(prov.createdNames).toHaveLength(4);
     // A second pass (e.g. a later ClientReady after a restart) reuses the stored ids.
     const second = await autoProvisionGuild(prov, store, logger);
-    expect(prov.createdNames).toHaveLength(3);
+    expect(prov.createdNames).toHaveLength(4);
     expect(second).toEqual(first);
   });
 

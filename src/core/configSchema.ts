@@ -122,6 +122,24 @@ export const serverConfigSchema = z.object({
       statusChannelId: z.string().nullable(),
     })
     .optional(),
+  // Per-guild event notifications: forward key agent events (result/error, optionally
+  // tool_use) from every session channel to ONE status channel as compact summary
+  // lines. All fields optional; resolution defaults are applied in code where read
+  // (enabled=true; channelId falls back to channels.statusChannelId; events =
+  // {result:true, error:true, toolUse:false}). See discord/notifier.ts.
+  notifications: z
+    .object({
+      enabled: z.boolean().optional(),
+      channelId: z.string().nullable().optional(),
+      events: z
+        .object({
+          result: z.boolean().optional(),
+          error: z.boolean().optional(),
+          toolUse: z.boolean().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type ServerConfig = z.infer<typeof serverConfigSchema>;

@@ -504,6 +504,19 @@ export class InteractionRouter {
       await safe(i.reply({ content: result.notice, ephemeral: true }));
       return;
     }
+    if (result.kind === 'notifPanel') {
+      // The 🔔 button opens the notifications sub-panel as a fresh ephemeral message
+      // (toggle + channel picker), keeping the primary panel open.
+      await safe(i.reply({ embeds: [result.embed], components: result.rows, ephemeral: true }));
+      return;
+    }
+    if (result.kind === 'notifUpdated') {
+      // A toggle/channel change persisted and re-rendered the sub-panel in place: ack
+      // with a deferUpdate, then edit the sub-panel's own message with the new state.
+      await safe(i.deferUpdate());
+      await safe(i.editReply({ embeds: [result.embed], components: result.rows }));
+      return;
+    }
     // A pending selection or an ignored input: just acknowledge (keep the panel open).
     await safe(i.deferUpdate());
   }
