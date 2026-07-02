@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { TurnInput } from '../core/contracts.js';
+import type { AgentEvent, TurnInput } from '../core/contracts.js';
 import type { Logger } from '../core/contracts.js';
 import type { Authorizer } from '../core/auth.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
-import type { SendResult, SessionOrchestrator } from '../core/sessionOrchestrator.js';
+import type { EventBus } from '../core/eventBus.js';
+import type { SessionOrchestrator } from '../core/sessionOrchestrator.js';
 import { t } from './i18n.js';
 
 // MessageCreate → TurnInput (§4, §7.1, §9 step 2). The client already drops bot
@@ -14,7 +15,12 @@ import { t } from './i18n.js';
 //      mode; they get an ephemeral notice and nothing is sent (fixes A1).
 //   3. downloads attachments INTO the session workspace (confined) and builds the
 //      TurnInput; the orchestrator re-validates confinement as defense in depth.
-//   4. orchestrator.send(...) and reacts (queued vs started) with a subtle emoji.
+//   4. orchestrator.send(...) and reacts ⏳ on the user's message to signal "the AI
+//      is preparing a response". The reaction is CLEARED when that channel's turn
+//      finishes: on the session's `result` event the ⏳ is removed and ✅ added; on
+//      an `error` event ⏳ is removed and ❌ added. The clear is wired via a one-shot
+//      EventBus listener for the channel (the same bus the renderers subscribe to),
+//      so the indicator tracks the actual turn lifecycle, not just acceptance.
 //
 // discord.js is NOT imported here as a value: the router accepts a narrow
 // IncomingMessage shape that the real discord.js Message satisfies structurally,
@@ -47,9 +53,13 @@ export interface IncomingMessage {
     permissions?: { has: (bit: bigint) => boolean };
   } | null;
   attachments: { values: () => Iterable<IncomingAttachment> };
-  // Add a subtle reaction to signal queued/started. Best-effort; a failure is
-  // swallowed so a missing Add-Reactions permission never breaks a turn.
+  // Add a subtle reaction to signal the AI is preparing a response. Best-effort; a
+  // failure is swallowed so a missing Add-Reactions permission never breaks a turn.
   react: (emoji: string) => Promise<unknown>;
+  // Remove one of the BOT's own reactions from this message (used to clear ⏳ on
+  // completion). Optional so a test double need not implement it; the client.ts
+  // adapter maps it onto message.reactions. Best-effort — a failure is swallowed.
+  removeReaction?: (emoji: string) => Promise<unknown>;
   // Ephemeral notice back to the actor. In a real channel this posts a normal
   // reply (channels have no true ephemeral); tests assert it was called.
   reply: (content: string) => Promise<unknown>;
@@ -69,6 +79,11 @@ export interface MessageRouterDeps {
   authorizer: Authorizer;
   channelRegistry: ChannelRegistry;
   orchestrator: SessionOrchestrator;
+  // The per-channel AgentEvent stream. The router subscribes a one-shot listener
+  // per accepted turn to CLEAR the ⏳ indicator when the channel's turn finishes
+  // (result → ✅, error → ❌). Optional so a test that only checks the initial
+  // reaction need not supply it; when absent, ⏳ is added but never auto-cleared.
+  eventBus?: EventBus;
   logger: Logger;
   fetchBytes?: FetchBytes;
   // The Discord Administrator permission bit (discord.js PermissionFlagsBits.
@@ -78,9 +93,12 @@ export interface MessageRouterDeps {
   administratorBit?: bigint;
 }
 
-// Reaction emoji: 💬 started (running now), ⏳ queued behind a turn in flight.
-const REACT_STARTED = '💬';
-const REACT_QUEUED = '⏳';
+// Reaction emoji lifecycle: ⏳ while the AI is preparing a response (added when the
+// turn is accepted, whether it runs immediately or is queued), then CLEARED on
+// completion — replaced by ✅ on a successful `result` or ❌ on an `error`.
+const REACT_WORKING = '⏳';
+const REACT_DONE = '✅';
+const REACT_ERROR = '❌';
 
 // The Discord Administrator permission bit (PermissionFlagsBits.Administrator === 1<<3).
 // Used as the default so a caller need not inject it; app boot passes the discord.js
@@ -91,6 +109,7 @@ export class MessageRouter {
   private readonly authorizer: Authorizer;
   private readonly channelRegistry: ChannelRegistry;
   private readonly orchestrator: SessionOrchestrator;
+  private readonly eventBus?: EventBus;
   private readonly logger: Logger;
   private readonly fetchBytes: FetchBytes;
   private readonly administratorBit: bigint;
@@ -99,6 +118,7 @@ export class MessageRouter {
     this.authorizer = deps.authorizer;
     this.channelRegistry = deps.channelRegistry;
     this.orchestrator = deps.orchestrator;
+    this.eventBus = deps.eventBus;
     this.logger = deps.logger;
     this.fetchBytes = deps.fetchBytes ?? defaultFetchBytes;
     this.administratorBit = deps.administratorBit ?? ADMINISTRATOR_BIT;
@@ -143,16 +163,42 @@ export class MessageRouter {
 
     const turn: TurnInput = { text: message.content, ...(files && files.length > 0 ? { files } : {}) };
 
-    let result: SendResult;
     try {
-      result = await this.orchestrator.send(guildId, channelId, turn);
+      await this.orchestrator.send(guildId, channelId, turn);
     } catch (err) {
       // The orchestrator throws on no-session or a confinement violation; surface it.
       await safe(message.reply(t('cmd.error', { error: String(err) })));
       return;
     }
 
-    await safe(message.react(result.status === 'queued' ? REACT_QUEUED : REACT_STARTED));
+    // The turn was accepted (running now or queued behind one in flight): signal
+    // "the AI is preparing a response" with ⏳, then arm a one-shot listener to
+    // clear it when the channel's turn finishes.
+    await safe(message.react(REACT_WORKING));
+    this.armCompletionIndicator(guildId, channelId, message);
+  }
+
+  // Subscribe a one-shot EventBus listener for the channel that clears the ⏳ working
+  // indicator on the turn's terminal event: a `result` swaps ⏳→✅, an `error` swaps
+  // ⏳→❌. It unsubscribes itself after the first terminal event so it tracks exactly
+  // one turn's message. No eventBus wired → the ⏳ simply stays (best-effort UX). All
+  // reaction ops go through safe() so a missing Manage-Messages/Add-Reactions
+  // permission never breaks the turn.
+  private armCompletionIndicator(guildId: string, channelId: string, message: IncomingMessage): void {
+    if (!this.eventBus) return;
+    const unsubscribe = this.eventBus.on(guildId, channelId, (ev: AgentEvent) => {
+      if (ev.kind !== 'result' && ev.kind !== 'error') return;
+      unsubscribe();
+      void this.clearWorkingIndicator(message, ev.kind === 'result' ? REACT_DONE : REACT_ERROR);
+    });
+  }
+
+  // Remove the ⏳ working reaction and add the terminal one (✅/❌). Best-effort:
+  // removeReaction may be absent (a bare test double) or fail (missing permission);
+  // either way the terminal reaction is still attempted and nothing is thrown.
+  private async clearWorkingIndicator(message: IncomingMessage, terminal: string): Promise<void> {
+    if (message.removeReaction) await safe(message.removeReaction(REACT_WORKING));
+    await safe(message.react(terminal));
   }
 
   // True when the acting member holds the Discord Administrator permission. Reads the

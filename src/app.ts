@@ -147,6 +147,9 @@ export function createApp(deps: CreateAppDeps): App {
     authorizer,
     channelRegistry,
     orchestrator,
+    // The router arms a one-shot listener on this bus per accepted turn to clear the
+    // ⏳ working indicator (→ ✅/❌) when the channel's turn finishes.
+    eventBus,
     logger,
     // A server admin can drive a session by messaging even with an empty role config
     // (never locked out): the router reads this bit off the member's permissions.

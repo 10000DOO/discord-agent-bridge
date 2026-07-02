@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { MessageRouter, type IncomingAttachment, type IncomingMessage } from './messageRouter.js';
 import { Authorizer, type AuthResult } from '../core/auth.js';
 import { ChannelRegistry, type ChannelBinding } from '../core/channelRegistry.js';
+import { EventBus } from '../core/eventBus.js';
 import type { SendResult, SessionOrchestrator } from '../core/sessionOrchestrator.js';
 import type { TurnInput } from '../core/contracts.js';
 import { ConfigStore } from '../core/config.js';
@@ -37,14 +38,24 @@ function binding(cwd: string, overrides: Partial<ChannelBinding> = {}): ChannelB
   };
 }
 
-// A fake IncomingMessage with recording reply/react.
-function fakeMessage(over: Partial<IncomingMessage> & { attachments?: IncomingAttachment[] } = {}): {
+// A fake IncomingMessage with recording reply/react/removeReaction. `reactFails`
+// makes react throw (a missing Add-Reactions permission) so a test can assert the
+// failure never propagates out of the router.
+function fakeMessage(
+  over: Partial<IncomingMessage> & {
+    attachments?: IncomingAttachment[];
+    reactFails?: boolean;
+    withRemove?: boolean;
+  } = {},
+): {
   message: IncomingMessage;
   replies: string[];
   reactions: string[];
+  removed: string[];
 } {
   const replies: string[] = [];
   const reactions: string[] = [];
+  const removed: string[] = [];
   const attachments = over.attachments ?? [];
   const message: IncomingMessage = {
     content: over.content ?? 'hello agent',
@@ -54,13 +65,23 @@ function fakeMessage(over: Partial<IncomingMessage> & { attachments?: IncomingAt
     member: over.member ?? { roles: { cache: { map: (fn) => ['role-exec'].map((id) => fn({ id })) } } },
     attachments: { values: () => attachments },
     react: async (emoji) => {
+      if (over.reactFails) throw new Error('Missing Add Reactions permission');
       reactions.push(emoji);
     },
     reply: async (content) => {
       replies.push(content);
     },
+    // Present by default so completion-clearing tests can assert ⏳ was removed;
+    // omit it (withRemove:false) to exercise the router's "no removeReaction" path.
+    ...(over.withRemove === false
+      ? {}
+      : {
+          removeReaction: async (emoji: string) => {
+            removed.push(emoji);
+          },
+        }),
   };
-  return { message, replies, reactions };
+  return { message, replies, reactions, removed };
 }
 
 // Registry/authorizer/orchestrator test doubles.
@@ -70,6 +91,7 @@ function makeDeps(opts: {
   sendResult?: SendResult;
   sendThrows?: Error;
   fetchBytes?: (url: string) => Promise<Uint8Array>;
+  eventBus?: EventBus;
 }) {
   const sent: { guildId: string; channelId: string; turn: TurnInput }[] = [];
   const channelRegistry = {
@@ -91,8 +113,15 @@ function makeDeps(opts: {
     orchestrator,
     logger,
     fetchBytes: opts.fetchBytes ?? (async () => new Uint8Array([1, 2, 3])),
+    ...(opts.eventBus ? { eventBus: opts.eventBus } : {}),
   });
   return { router, orchestrator, sent };
+}
+
+// Flush the microtask queue enough times for the fire-and-forget completion clear
+// (removeReaction → safe → react → safe) to settle before asserting.
+async function flush(): Promise<void> {
+  for (let i = 0; i < 6; i++) await Promise.resolve();
 }
 
 let ws: string;
@@ -130,20 +159,98 @@ describe('MessageRouter', () => {
     expect(replies[0]).toContain('권한이 없습니다');
   });
 
-  it('allowed user → send called with the built TurnInput; started → 💬 reaction', async () => {
+  it('allowed user → send called with the built TurnInput; accepted turn → ⏳ reaction', async () => {
     const { router, sent } = makeDeps({ binding: binding(ws) });
     const { message, reactions } = fakeMessage({ content: 'do the thing' });
     await router.handle(message);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ guildId: 'g1', channelId: 'c1', turn: { text: 'do the thing' } });
-    expect(reactions).toEqual(['💬']);
+    expect(reactions).toEqual(['⏳']);
   });
 
-  it('queued send → ⏳ reaction', async () => {
+  it('queued send → still ⏳ reaction (the AI is preparing a response)', async () => {
     const { router } = makeDeps({ binding: binding(ws), sendResult: { status: 'queued', queueDepth: 2 } });
     const { message, reactions } = fakeMessage();
     await router.handle(message);
     expect(reactions).toEqual(['⏳']);
+  });
+
+  it('clears ⏳ and adds ✅ when the channel emits a result event', async () => {
+    const eventBus = new EventBus();
+    const { router } = makeDeps({ binding: binding(ws), eventBus });
+    const { message, reactions, removed } = fakeMessage();
+    await router.handle(message);
+    expect(reactions).toEqual(['⏳']); // working indicator on, not yet cleared
+
+    // The session's turn finishes for this channel.
+    eventBus.emit('g1', 'c1', { kind: 'result', text: 'done' });
+    await flush();
+
+    expect(removed).toEqual(['⏳']); // working reaction removed
+    expect(reactions).toEqual(['⏳', '✅']); // done reaction added
+  });
+
+  it('clears ⏳ and adds ❌ when the channel emits an error event', async () => {
+    const eventBus = new EventBus();
+    const { router } = makeDeps({ binding: binding(ws), eventBus });
+    const { message, reactions, removed } = fakeMessage();
+    await router.handle(message);
+
+    eventBus.emit('g1', 'c1', { kind: 'error', message: 'boom', retryable: true });
+    await flush();
+
+    expect(removed).toEqual(['⏳']);
+    expect(reactions).toEqual(['⏳', '❌']);
+  });
+
+  it('clears the indicator only ONCE (one-shot): a second result does not re-clear', async () => {
+    const eventBus = new EventBus();
+    const { router } = makeDeps({ binding: binding(ws), eventBus });
+    const { message, reactions, removed } = fakeMessage();
+    await router.handle(message);
+
+    eventBus.emit('g1', 'c1', { kind: 'result', text: 'first' });
+    await flush();
+    eventBus.emit('g1', 'c1', { kind: 'result', text: 'second' });
+    await flush();
+
+    expect(removed).toEqual(['⏳']); // removed exactly once
+    expect(reactions).toEqual(['⏳', '✅']); // ✅ added exactly once
+  });
+
+  it('a non-terminal event (text delta) does NOT clear the indicator', async () => {
+    const eventBus = new EventBus();
+    const { router } = makeDeps({ binding: binding(ws), eventBus });
+    const { message, reactions, removed } = fakeMessage();
+    await router.handle(message);
+
+    eventBus.emit('g1', 'c1', { kind: 'text', text: 'partial…', delta: true });
+    await flush();
+
+    expect(removed).toEqual([]); // still working
+    expect(reactions).toEqual(['⏳']);
+  });
+
+  it('a reaction failure never throws (missing Add-Reactions permission)', async () => {
+    const eventBus = new EventBus();
+    const { router } = makeDeps({ binding: binding(ws), eventBus });
+    const { message } = fakeMessage({ reactFails: true });
+    // Adding ⏳ throws inside the router; it must be swallowed by safe().
+    await expect(router.handle(message)).resolves.toBeUndefined();
+    // The completion path also swallows the react failure.
+    expect(() => eventBus.emit('g1', 'c1', { kind: 'result', text: 'done' })).not.toThrow();
+    await flush();
+  });
+
+  it('clears without removeReaction present (bare message): still adds ✅', async () => {
+    const eventBus = new EventBus();
+    const { router } = makeDeps({ binding: binding(ws), eventBus });
+    const { message, reactions } = fakeMessage({ withRemove: false });
+    await router.handle(message);
+    eventBus.emit('g1', 'c1', { kind: 'result', text: 'done' });
+    await flush();
+    // No removeReaction to call, but the terminal ✅ is still added.
+    expect(reactions).toEqual(['⏳', '✅']);
   });
 
   it('downloads an attachment INTO the workspace and passes its confined path', async () => {

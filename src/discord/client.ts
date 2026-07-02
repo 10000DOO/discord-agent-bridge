@@ -46,7 +46,7 @@ import type {
   RoleSelectSpec,
   SelectSpec,
 } from './ports.js';
-import type { MessageRouter } from './messageRouter.js';
+import type { IncomingMessage, MessageRouter } from './messageRouter.js';
 import type {
   AckPayload,
   ComponentInteraction,
@@ -473,7 +473,7 @@ export class DiscordClient {
 
     this.client.on(Events.MessageCreate, (message) => {
       if (message.author.bot) return; // never react to our own / other bots' messages
-      void this.messageRouter.handle(message).catch((err) => {
+      void this.messageRouter.handle(adaptMessage(message, this.client)).catch((err) => {
         this.logger.error('message router failed', { err: String(err) });
       });
     });
@@ -588,6 +588,26 @@ async function ackFailedInteraction(interaction: Interaction): Promise<void> {
   } catch {
     // best-effort: nothing more we can do for an already-expired interaction.
   }
+}
+
+// Adapt a raw discord.js Message onto the router's narrow IncomingMessage. The real
+// Message already satisfies most of the shape structurally (content/author/react/
+// reply/…); this adds `removeReaction`, which discord.js does not expose directly —
+// it maps onto message.reactions to remove the BOT's own reaction (used to clear the
+// ⏳ working indicator on completion). Best-effort: a missing/uncached reaction or a
+// permission error resolves quietly so a clear never breaks a turn.
+export function adaptMessage(message: Message, client: Client): IncomingMessage {
+  const removeReaction = async (emoji: string): Promise<void> => {
+    const botId = client.user?.id;
+    if (!botId) return;
+    const reaction = message.reactions.cache.get(emoji);
+    if (!reaction) return;
+    await reaction.users.remove(botId).catch(() => {});
+  };
+  // The Message structurally satisfies IncomingMessage; attach removeReaction without
+  // mutating the discord.js object (a fresh spread would drop its methods, so extend
+  // via a prototype-preserving wrapper object that delegates the fields we read).
+  return Object.assign(message as unknown as IncomingMessage, { removeReaction });
 }
 
 // Adapt a raw discord.js Interaction onto the router's narrow RouterInteraction, so
