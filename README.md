@@ -7,7 +7,7 @@
 - 현재 지원: **Claude Code**, **Codex**
 - 확장: 모드 플러그인 추가로 다른 에이전트(예: opencode) 연결 가능
 
-> 🚧 **상태: 개발 중 (Phase 1).** 아직 npm에 배포되지 않았습니다 — 지금은 아래 **"소스에서 실행"** 방법으로만 동작합니다. `npx` 배포는 완성 후 제공됩니다. 이 가이드는 완성 시점의 사용 흐름 기준입니다.
+> 🚧 **상태: 개발 중 (Phase 1).** `npx discord-agent-bridge` 로 바로 실행하거나(권장), 아래 **"소스에서 실행"** 으로 받아 쓸 수 있습니다.
 
 ---
 
@@ -53,20 +53,26 @@ Discord 채널에서 대화하듯 메시지를 보내면, 내 컴퓨터에서 Cl
 
 ## 2단계 — 설치 & 실행
 
-### (완성 후) npx로 실행
+### npx로 실행 (권장)
+
+설치 없이 바로 실행합니다. `npx` 가 최신 버전을 받아 실행하며, 최초 실행이면 셋업 마법사가 먼저 뜬 뒤 이어서 봇이 시작됩니다.
+
 ```bash
-# 최초 실행 — 그냥 실행하면 셋업 마법사가 자동으로 뜬 뒤 이어서 봇이 시작됩니다.
+# 최초 실행 — 셋업 마법사가 자동으로 뜬 뒤 이어서 봇이 시작됩니다.
 # (토큰/Client ID 입력, 인텐트 확인, 초대 링크 생성 — 기본값은 안 물어봄)
-npx discord-agent-bridge@latest
+npx discord-agent-bridge
 
 # 이후 실행 — 이미 설정돼 있으면 바로 봇이 시작됩니다.
-npx discord-agent-bridge@latest
+npx discord-agent-bridge
 
 # 다시 설정만 하고 싶을 때 (봇은 시작하지 않음)
-npx discord-agent-bridge@latest --setup
+npx discord-agent-bridge --setup
 ```
 
-### (지금) 소스에서 실행
+전역 설치도 가능합니다: `npm install -g discord-agent-bridge` 후 `discord-agent-bridge` / `discord-agent-bridge --setup`.
+
+### 소스에서 실행
+
 ```bash
 git clone https://github.com/10000DOO/discord-agent-bridge.git
 cd discord-agent-bridge
