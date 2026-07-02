@@ -1,3 +1,4 @@
+import { listSessions as realListSessions, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentMode,
   Capabilities,
@@ -9,6 +10,14 @@ import { ClaudeSession, type QueryFn } from './session.js';
 import type { SendFileCallback } from './mcpFileTool.js';
 import { CLAUDE_PERMISSION_MODES } from '../../core/providerCatalog.js';
 
+// The signature of the SDK's listSessions() — narrowed to what listResumable uses.
+// Injectable so tests pass a fake without touching the SDK or the filesystem (the
+// default is the real SDK listSessions). A4D uses the same call (resume.ts:92).
+export type ListSessionsFn = (options: { dir?: string; limit?: number }) => Promise<SDKSessionInfo[]>;
+
+// The maximum resumable sessions surfaced in the resume picker (Discord select cap).
+const LIST_RESUMABLE_LIMIT = 25;
+
 // Injected once when the mode is registered (§4/§10). `queryFn` defaults to the
 // real SDK query inside ClaudeSession; tests inject a fake. `sendFileFor` is wired
 // by the Discord layer: it is a FACTORY that, given a session's guild+channel,
@@ -16,9 +25,11 @@ import { CLAUDE_PERMISSION_MODES } from '../../core/providerCatalog.js';
 // to THAT channel. A single registered mode instance serves every channel, so the
 // per-channel sink must be bound per session (start/resume) from ctx — not once at
 // registration. Kept out of the mode's core so modes stay transport-agnostic.
+// `listSessionsFn` defaults to the real SDK listSessions; tests inject a fake.
 export interface ClaudeModeDeps {
   queryFn?: QueryFn;
   sendFileFor?: (guildId: string, channelId: string) => SendFileCallback;
+  listSessionsFn?: ListSessionsFn;
 }
 
 // The Claude backend: wraps the Claude Agent SDK query() as a ModeSession and
@@ -57,12 +68,24 @@ export class ClaudeMode implements AgentMode {
     return new ClaudeSession(ctx, { ...this.sessionDeps(ctx), resumeId: sessionId });
   }
 
-  // Deferred (§9 on-demand resume). The SDK exposes session listing, but wiring a
-  // reliable, project-scoped resumable list is Discord-UX work; the boot-time
-  // resume path (orchestrator.resumeAll → resume(ctx, sessionId)) does not need
-  // it. Returns [] until the resume UX chunk fills it in.
-  async listResumable(_ctx: ModeContext): Promise<ResumableSession[]> {
-    return [];
+  // List resumable Claude sessions for the resume UX (§9). Reads the SDK's
+  // listSessions({ dir }) — the same call A4D's /resume uses (resume.ts:92) — scoped
+  // to the session's cwd, and maps each SDKSessionInfo onto a ResumableSession:
+  //   sessionId ← sessionId
+  //   cwd       ← the session's recorded cwd, falling back to ctx.cwd
+  //   label     ← the display summary (custom title / auto-summary / first prompt)
+  //   updatedAt ← lastModified (ms epoch) rendered as an ISO timestamp
+  // Guarded with try/catch → [] on any failure: listSessions may be unavailable
+  // (older SDK, no local store) and a resume list is never load-bearing.
+  async listResumable(ctx: ModeContext): Promise<ResumableSession[]> {
+    const listSessionsFn = this.deps.listSessionsFn ?? (realListSessions as ListSessionsFn);
+    try {
+      const sessions = await listSessionsFn({ dir: ctx.cwd, limit: LIST_RESUMABLE_LIMIT });
+      return sessions.map((s) => toResumable(s, ctx.cwd));
+    } catch (err) {
+      ctx.logger.warn('claude listResumable failed; returning empty', { err: String(err) });
+      return [];
+    }
   }
 
   private sessionDeps(ctx: ModeContext) {
@@ -72,4 +95,19 @@ export class ClaudeMode implements AgentMode {
       ...(sendFile !== undefined ? { sendFile } : {}),
     };
   }
+}
+
+// Map one SDKSessionInfo onto the backend-agnostic ResumableSession. `cwd` falls
+// back to the browsed directory when the session did not record one; `label` uses
+// the SDK's display summary when non-empty; `updatedAt` is the lastModified epoch
+// rendered as ISO (only when it is a finite timestamp).
+function toResumable(info: SDKSessionInfo, fallbackCwd: string): ResumableSession {
+  const session: ResumableSession = {
+    sessionId: info.sessionId,
+    cwd: info.cwd && info.cwd.length > 0 ? info.cwd : fallbackCwd,
+  };
+  const label = info.summary && info.summary.length > 0 ? info.summary : info.firstPrompt;
+  if (label && label.length > 0) session.label = label;
+  if (Number.isFinite(info.lastModified)) session.updatedAt = new Date(info.lastModified).toISOString();
+  return session;
 }

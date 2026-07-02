@@ -1,4 +1,6 @@
-import type { Logger, ModeSession, PermMode } from '../core/contracts.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { Logger, ModeSession, PermMode, ResumableSession } from '../core/contracts.js';
 import {
   defaultEffortFor,
   effortChoicesFor,
@@ -15,6 +17,7 @@ import type { ModeRegistry } from '../core/modeRegistry.js';
 import type { SessionOrchestrator, StartParams } from '../core/sessionOrchestrator.js';
 import type { SessionWiring } from './wiring.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
+import { ResumeWizard } from './wizard/resumeWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
@@ -157,6 +160,9 @@ export class InteractionRouter {
   // Active wizards keyed by guildId:channelId, so follow-up component interactions
   // (folder/backend/model/perm selects, confirm/cancel) route back to the same flow.
   private readonly wizards = new Map<string, ChannelWizard>();
+  // Active resume flows keyed by guildId:channelId (started from the folder step's
+  // "Resume Session" button), so the backend/session selects route back to the flow.
+  private readonly resumeFlows = new Map<string, ResumeWizard>();
   // Active /config panels keyed by guildId:channelId, so follow-up role/string
   // selects + Save route back to the panel that holds the pending selections.
   private readonly configPanels = new Map<string, ConfigPanel>();
@@ -502,11 +508,15 @@ export class InteractionRouter {
     await safe(i.deferUpdate());
   }
 
-  // Route a submitted modal. The bot no longer opens any modal (Codex home auto-resolves
-  // and the folder is picked in the /agent start wizard), so a modal submit here is a
-  // stray/replayed interaction. It must still be acknowledged within Discord's window —
-  // a generic ephemeral notice, no persistence — so it never shows "did not respond".
+  // Route a submitted modal. The only modal the bot opens is the folder-step 📁 Create
+  // dialog (dir:create); its submit creates the subfolder and re-renders the browser.
+  // Any other modal id is a stray/replayed interaction — acknowledged with a generic
+  // ephemeral notice (no persistence) so it never shows "did not respond".
   private async handleModalSubmit(i: ModalSubmitInteraction): Promise<void> {
+    if (i.customId === 'dir:create') {
+      await this.guarded(i, () => this.handleCreateFolderModal(i));
+      return;
+    }
     await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
   }
 
@@ -758,6 +768,26 @@ export class InteractionRouter {
       return;
     }
 
+    // The 📁 Create button opens a modal, and showModal IS the ack — it must NOT be
+    // preceded by a deferUpdate (a deferred component can no longer show a modal). So
+    // this is handled BEFORE the generic defer below. Drive-gated + owner-bound.
+    if (i.customId === 'dir:create') {
+      if (!this.authorize(i, 'drive')) return;
+      await this.guarded(i, () => this.openCreateFolderModal(i));
+      return;
+    }
+
+    // The "Resume Session" button and the resume flow's own selects (resume.*) drive a
+    // separate resume state machine. Deferred-update first (listResumable/resume can
+    // exceed 3s), then routed to the flow.
+    if (i.customId === 'dir:resume' || i.customId.startsWith('resume.')) {
+      if (!this.authorize(i, 'drive')) return;
+      if (!(await this.ackDeferUpdate(i))) return;
+      if (!i.guildId) return;
+      await this.guarded(i, () => this.handleResumeComponent(i));
+      return;
+    }
+
     // Otherwise it is a wizard component (folder/backend/model/perm/confirm/cancel).
     // The wizard flow is a drive action; only the driver who opened it advances it.
     if (!this.authorize(i, 'drive')) return;
@@ -792,6 +822,207 @@ export class InteractionRouter {
       const { embed, rows } = wizard.render();
       await safe(i.editReply({ embeds: [embed], components: rows }));
     });
+  }
+
+  // ---- 📁 Create folder --------------------------------------------------
+
+  // Open the create-folder modal for the active wizard's folder step. Owner-bound: a
+  // bystander (or a stale button with no wizard) is acknowledged (deferUpdate) and
+  // ignored, so it never shows "did not respond". showModal is the ack for the owner's
+  // click — the modal-submit interaction (handleCreateFolderModal) does the mkdir.
+  private async openCreateFolderModal(i: ComponentInteraction): Promise<void> {
+    const wizard = i.guildId ? this.wizards.get(channelKey(i.guildId, i.channelId)) : undefined;
+    if (!wizard || wizard.ownerId !== i.user.id) {
+      await safe(i.deferUpdate());
+      return;
+    }
+    await i.showModal({
+      customId: 'dir:create',
+      title: t('dir.create.title'),
+      fields: [
+        {
+          customId: 'name',
+          label: t('dir.create.label'),
+          placeholder: t('dir.create.placeholder'),
+          required: true,
+        },
+      ],
+    });
+  }
+
+  // Handle the create-folder modal submit: validate the name, create it as a DIRECT
+  // subfolder of the wizard's CURRENT browsed directory, and re-render the folder step
+  // (so the new folder appears). The name must be a single path segment — reject '/'
+  // or '\\', '.'/'..' traversal, and any absolute path — so a crafted name can only
+  // ever create a direct child of the browsed dir, never escape it. Owner-bound.
+  private async handleCreateFolderModal(i: ModalSubmitInteraction): Promise<void> {
+    if (!i.guildId) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    const wizard = this.wizards.get(channelKey(i.guildId, i.channelId));
+    if (!wizard || wizard.ownerId !== i.user.id) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    const name = i.getField('name').trim();
+    if (!isSafeFolderName(name)) {
+      await safe(i.reply({ content: t('dir.create.invalid'), ephemeral: true }));
+      return;
+    }
+    // Confine to a DIRECT child of the browsed dir: resolve and verify the parent is
+    // exactly the browsed dir (defense in depth beyond the name check above).
+    const parent = wizard.browserCwd();
+    const target = path.join(parent, name);
+    if (path.dirname(target) !== parent) {
+      await safe(i.reply({ content: t('dir.create.invalid'), ephemeral: true }));
+      return;
+    }
+    try {
+      fs.mkdirSync(target, { recursive: true });
+    } catch (err) {
+      await safe(i.reply({ content: t('dir.create.failed', { error: String(err) }), ephemeral: true }));
+      return;
+    }
+    // Re-render the folder step (the browser re-lists children on render, so the new
+    // folder shows) and confirm the creation ephemerally. The modal submit is its own
+    // interaction, so we reply to it directly.
+    const { embed, rows } = wizard.render();
+    await safe(i.reply({ content: t('dir.create.done', { name }), embeds: [embed], components: rows, ephemeral: true }));
+  }
+
+  // ---- Resume Session flow -----------------------------------------------
+
+  // Route a resume-flow component: the "Resume Session" button starts a new flow (from
+  // the active wizard's browsed folder); the resume.* selects/buttons advance it. The
+  // interaction is already deferUpdate'd by the caller. Owner-bound to the wizard's
+  // driver so a bystander cannot hijack the resume of another driver's folder pick.
+  private async handleResumeComponent(i: ComponentInteraction): Promise<void> {
+    const guildId = i.guildId as string;
+    const key = channelKey(guildId, i.channelId);
+
+    if (i.customId === 'dir:resume') {
+      const wizard = this.wizards.get(key);
+      if (!wizard || wizard.ownerId !== i.user.id) return; // owner-bound; ignore strays
+      const flow = this.buildResumeWizard(guildId, i.channelId, i.user.id, wizard.browserCwd());
+      this.resumeFlows.set(key, flow);
+      const { embed, rows } = flow.render();
+      await safe(i.editReply({ embeds: [embed], components: rows }));
+      return;
+    }
+
+    // A resume.* select/button for an existing flow.
+    const flow = this.resumeFlows.get(key);
+    if (!flow || flow.ownerId !== i.user.id) return;
+    const step = await flow.handle({ id: i.customId, ...(i.value !== undefined ? { value: i.value } : {}) });
+    if (step === 'done' || step === 'cancelled' || step === 'empty') {
+      this.resumeFlows.delete(key);
+    }
+    if (step === 'done') {
+      const newChannelId = flow.sessionChannelId();
+      if (newChannelId) {
+        await safe(i.editReply({ content: t('resume.done', { channel: `<#${newChannelId}>` }), embeds: [], components: [] }));
+      }
+      return;
+    }
+    if (step === 'empty') {
+      // No resumable sessions for the picked backend: ephemeral notice, flow ends.
+      await safe(i.editReply({ content: t('resume.none'), embeds: [], components: [] }));
+      return;
+    }
+    const { embed, rows } = flow.render();
+    await safe(i.editReply({ embeds: [embed], components: rows }));
+  }
+
+  // Build a ResumeWizard bound to the driver + the folder in view. listResumableFor
+  // dispatches to the chosen backend's mode.listResumable (Claude via listSessions,
+  // Codex via CodexDiscovery); resume creates/binds a session channel and calls
+  // orchestrator.resume there (mirroring the start flow's channel creation).
+  private buildResumeWizard(guildId: string, channelId: string, ownerId: string, cwd: string): ResumeWizard {
+    const resolved = this.deps.configResolver.resolve(guildId, channelId);
+    return new ResumeWizard({
+      guildId,
+      channelId,
+      ownerId,
+      cwd,
+      backends: this.deps.modeRegistry.list(),
+      defaultBackend: resolved.mode,
+      listResumableFor: (backend, dir) => this.listResumableFor(backend, dir),
+      resume: (params) => this.resumeSession(params),
+      relativeTime,
+    });
+  }
+
+  // List resumable sessions for a backend, scoped to `cwd`, via the mode's optional
+  // listResumable. A mode without it (or a throw) yields [] so the picker shows the
+  // empty notice rather than failing. The ModeContext is a MINIMAL read-only context:
+  // listResumable only reads ctx.cwd/ctx.config/ctx.logger (never emits/starts).
+  private async listResumableFor(backend: string, cwd: string): Promise<ResumableSession[]> {
+    if (!this.deps.modeRegistry.has(backend)) return [];
+    const mode = this.deps.modeRegistry.get(backend);
+    if (!mode.listResumable) return [];
+    try {
+      const ctx = this.deps.orchestrator.buildListContext(backend, cwd);
+      return await mode.listResumable(ctx);
+    } catch (err) {
+      this.logError('listResumable failed', err);
+      return [];
+    }
+  }
+
+  // Resume a chosen session: create a dedicated session channel from the picked folder
+  // (like the start flow), resume the backend session bound to THAT channel via
+  // orchestrator.resume, wire renderers/permission/sendFile, and post a resumed-status
+  // embed. Returns the new channel id so the flow links it back to the driver.
+  private async resumeSession(params: {
+    guildId: string;
+    channelId: string;
+    ownerId: string;
+    backend: string;
+    cwd: string;
+    sessionId: string;
+  }): Promise<{ session: ModeSession; channelId: string }> {
+    const startParams: StartParams = {
+      guildId: params.guildId,
+      channelId: await this.resolveSessionChannelId({
+        guildId: params.guildId,
+        channelId: params.channelId,
+        mode: params.backend,
+        cwd: params.cwd,
+        ownerId: params.ownerId,
+      }),
+      mode: params.backend,
+      cwd: params.cwd,
+      ownerId: params.ownerId,
+    };
+    const session = await this.deps.orchestrator.resume(startParams, params.sessionId);
+    await this.deps.wiring.attach(startParams.guildId, startParams.channelId, startParams.mode);
+    await this.postResumeIntro(startParams.channelId, startParams, session);
+    return { session, channelId: startParams.channelId };
+  }
+
+  // Post the resumed-session status embed into the new channel (mirrors
+  // postSessionIntro but titled as a resume). Best-effort; never fails the resume.
+  private async postResumeIntro(channelId: string, params: StartParams, session: ModeSession): Promise<void> {
+    const resolve = this.deps.resolveChannel;
+    if (!resolve) return;
+    try {
+      const channel = await resolve(channelId);
+      if (!channel) return;
+      const usagePanel = this.deps.modeRegistry.has(params.mode)
+        ? this.deps.modeRegistry.get(params.mode).capabilities.usagePanel
+        : true;
+      const embed = buildStatusEmbed({
+        mode: params.mode,
+        cwd: params.cwd,
+        sessionId: session.sessionId,
+        permMode: params.permMode ?? 'default',
+        usagePanel,
+      });
+      await channel.send({ content: t('cmd.start.intro'), embeds: [{ ...embed, title: t('resume.status.title') }] });
+    } catch (err) {
+      this.logError('failed to post resume intro', err);
+    }
   }
 
   // deferUpdate the component interaction (the first ack, keeping its message). Returns
@@ -838,4 +1069,34 @@ async function safe(p: Promise<unknown>): Promise<void> {
   } catch {
     // best-effort
   }
+}
+
+// True when `name` is a safe SINGLE folder segment for the 📁 Create flow: non-empty,
+// no path separators ('/' or '\\'), not '.'/'..' traversal, and not absolute. This
+// guarantees the created folder is a DIRECT child of the current browsed directory and
+// can never escape it (the router additionally verifies dirname(target) === parent).
+function isSafeFolderName(name: string): boolean {
+  if (name.length === 0) return false;
+  if (name === '.' || name === '..') return false;
+  if (name.includes('/') || name.includes('\\')) return false;
+  if (path.isAbsolute(name)) return false;
+  // A segment that path treats as anything other than itself (e.g. contains a NUL) is
+  // rejected; path.basename normalizes trailing separators, so require an exact match.
+  if (path.basename(name) !== name) return false;
+  return true;
+}
+
+// Render an updatedAt ISO string as a short relative time for the resume picker
+// (A4D-style "3분 전"). Absent/unparseable → empty (the option just shows its label).
+function relativeTime(updatedAt: string | undefined): string {
+  if (!updatedAt) return '';
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then)) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return t('resume.time.now');
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return t('resume.time.min', { n: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return t('resume.time.hour', { n: hours });
+  return t('resume.time.day', { n: Math.floor(hours / 24) });
 }

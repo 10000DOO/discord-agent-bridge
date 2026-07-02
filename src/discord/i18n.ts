@@ -79,8 +79,18 @@ const ko: Catalog = {
   'dir.up': '⬆ 상위 폴더',
   'dir.select': '하위 폴더로 이동…',
   'dir.here': '✅ 이 폴더로 시작',
+  'dir.resume': '세션 재개',
+  'dir.create': '📁 폴더 만들기',
   'dir.empty': '(하위 폴더 없음)',
   'dir.escape': '허용된 범위를 벗어난 경로입니다.',
+  // Folder-create modal (📁 Create): a single text input for the new folder name,
+  // created as a direct subfolder of the current browsed directory.
+  'dir.create.title': '새 폴더 만들기',
+  'dir.create.label': '폴더 이름',
+  'dir.create.placeholder': '예: my-project',
+  'dir.create.invalid': '폴더 이름이 올바르지 않아요. `/`, `..`, 절대 경로는 쓸 수 없어요.',
+  'dir.create.failed': '폴더를 만들지 못했어요: {error}',
+  'dir.create.done': '폴더를 만들었어요: {name}',
   // Folder-picker guidance (step 1 of /agent start). Shows the current path + how to
   // navigate; the actual PROJECT folder is chosen HERE (not in /config).
   'dir.guide':
@@ -141,6 +151,17 @@ const ko: Catalog = {
   'cmd.config.denied': '`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.',
   'cmd.resume.none': '재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.',
   'cmd.resume.rebound': '이 채널을 다시 연결했어요.',
+  // Resume-from-folder flow (Resume Session button on the folder step).
+  'resume.step.backend': '재개할 백엔드를 선택하고 "다음"을 누르세요.',
+  'resume.step.pick': '재개할 세션을 선택하세요.',
+  'resume.select.placeholder': '세션 선택…',
+  'resume.none': '재개할 세션이 없습니다.',
+  'resume.done': '세션 재개됨: {channel}',
+  'resume.status.title': '세션 재개됨',
+  'resume.time.now': '방금',
+  'resume.time.min': '{n}분 전',
+  'resume.time.hour': '{n}시간 전',
+  'resume.time.day': '{n}일 전',
   'cmd.close.done': '세션을 종료하고 보관했어요.',
   'cmd.stop.done': '세션을 중지했어요.',
   'cmd.stopAll.done': '모든 세션을 중지했어요 ({count}개).',

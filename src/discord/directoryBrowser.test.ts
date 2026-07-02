@@ -164,4 +164,18 @@ describe('DirectoryBrowser render (A4D-style folder picker)', () => {
     expect(select?.options).toHaveLength(1);
     expect(select?.options?.[0].value).toBe('__none__');
   });
+
+  it('mirrors A4D folder-step buttons: Parent · Start · Resume · 📁 Create · Cancel in ONE row (≤5 rows)', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const { rows } = b.render();
+    // Two rows total (subfolder select + the five-button row) — well under Discord's 5.
+    expect(rows.length).toBeLessThanOrEqual(5);
+    expect(rows).toHaveLength(2);
+    // The subfolder select stays in its own row.
+    expect(rows[0].components.every((c) => c.type === 'select')).toBe(true);
+    // The button row carries exactly the five A4D-style buttons, in order.
+    const buttonRow = rows[1].components;
+    expect(buttonRow.every((c) => c.type === 'button')).toBe(true);
+    expect(buttonRow.map((c) => c.customId)).toEqual(['dir:up', 'dir:here', 'dir:resume', 'dir:create', 'cancel']);
+  });
 });

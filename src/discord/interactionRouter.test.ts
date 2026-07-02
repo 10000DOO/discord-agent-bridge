@@ -25,6 +25,7 @@ import type {
   Logger,
   ModeContext,
   ModeSession,
+  ResumableSession,
 } from '../core/contracts.js';
 import type { SessionOrchestrator } from '../core/sessionOrchestrator.js';
 import type { SessionWiring } from './wiring.js';
@@ -45,9 +46,20 @@ const CLAUDE_CAPS: Capabilities = {
   permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
-// A no-op AgentMode used only for its name + capabilities in the router.
+// A no-op AgentMode used only for its name + capabilities in the router. `resumable`
+// scripts what listResumable returns (per-backend, for the resume-flow tests); when
+// undefined, listResumable is absent so the mode simply has no resumable list.
 class StubMode implements AgentMode {
-  constructor(readonly name: string, readonly capabilities: Capabilities) {}
+  constructor(
+    readonly name: string,
+    readonly capabilities: Capabilities,
+    private readonly resumable?: ResumableSession[],
+  ) {
+    if (this.resumable !== undefined) {
+      this.listResumable = async (_ctx: ModeContext): Promise<ResumableSession[]> => this.resumable!;
+    }
+  }
+  listResumable?: (ctx: ModeContext) => Promise<ResumableSession[]>;
   async start(_ctx: ModeContext): Promise<ModeSession> {
     return { sessionId: `${this.name}-sess`, async send() {}, async stop() {} };
   }
@@ -124,8 +136,22 @@ function fakeWiring() {
 function fakeOrchestrator() {
   const calls = {
     start: vi.fn(async () => ({ sessionId: 'new-sess', async send() {}, async stop() {} }) as ModeSession),
+    resume: vi.fn(async (_p: unknown, sessionId: string) => ({ sessionId, async send() {}, async stop() {} }) as ModeSession),
     stop: vi.fn(async (_g: string, _c: string) => {}),
     stopAll: vi.fn(async () => {}),
+    // A minimal read-only ModeContext for listResumable (cwd/config/logger only).
+    buildListContext: vi.fn((_mode: string, cwd: string) => ({
+      guildId: '',
+      channelId: '',
+      cwd,
+      ownerId: '',
+      permMode: 'default' as const,
+      emit: () => {},
+      requestPermission: async () => ({ behavior: 'deny' as const }),
+      config: {},
+      logger,
+      audit: () => {},
+    }) as unknown as ModeContext),
   };
   return { orchestrator: calls as unknown as SessionOrchestrator, calls };
 }
@@ -298,6 +324,7 @@ function buildRouter(deps: {
   orchestrator: SessionOrchestrator;
   wiring: SessionWiring;
   logger?: Logger;
+  browseRoots?: string[];
   resolveGuildProvisioner?: (guildId: string) => Promise<GuildChannelProvisioner | null>;
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
 }): InteractionRouter {
@@ -315,6 +342,7 @@ function buildRouter(deps: {
       { value: 'opus', label: 'opus' },
       { value: 'sonnet', label: 'sonnet' },
     ],
+    ...(deps.browseRoots ? { browseRoots: deps.browseRoots } : {}),
     ...(deps.resolveGuildProvisioner ? { resolveGuildProvisioner: deps.resolveGuildProvisioner } : {}),
     ...(deps.resolveChannel ? { resolveChannel: deps.resolveChannel } : {}),
   });
@@ -1132,5 +1160,224 @@ describe('InteractionRouter acknowledgment contract (3s window fix)', () => {
     await router.handle(interaction);
     // deferUpdate fired BEFORE resolvePermission (never miss the 3s window).
     expect(order).toEqual(['defer', 'resolve']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 📁 Create folder (folder-step modal)
+// ---------------------------------------------------------------------------
+
+describe('InteractionRouter 📁 Create folder', () => {
+  // Open a wizard rooted at `root` and return the router (so the folder step is live
+  // with a browser whose cwd === root, the current browsed directory).
+  async function openWizard(root: string) {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring, browseRoots: [root] });
+    const { interaction } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(interaction);
+    return router;
+  }
+
+  it('the Create button opens a modal WITHOUT a preceding defer (showModal is the ack)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-create-'));
+    try {
+      const router = await openWizard(root);
+      const { interaction, acks } = component({ customId: 'dir:create', user: { id: 'u1' } });
+      await router.handle(interaction);
+      // showModal fired; no deferUpdate before it (a deferred component cannot show a modal).
+      expect(acks.map((a) => a.kind)).toEqual(['showModal']);
+      expect(acks[0].modal?.customId).toBe('dir:create');
+      expect(acks[0].modal?.fields[0]?.customId).toBe('name');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the modal submit mkdir\'s the folder in the CURRENT browsed dir and re-renders', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-create-'));
+    try {
+      const router = await openWizard(root);
+      // Open the modal (records the current path implicitly via the live wizard).
+      await router.handle(component({ customId: 'dir:create', user: { id: 'u1' } }).interaction);
+      // Submit the modal with a valid name.
+      const { interaction, replies } = modalSubmit({ customId: 'dir:create', user: { id: 'u1' }, fields: { name: 'new-folder' } });
+      await router.handle(interaction);
+      // The directory was created as a direct child of the browsed dir.
+      expect(fs.existsSync(path.join(root, 'new-folder'))).toBe(true);
+      // The reply re-rendered the folder step (component rows present) + a confirmation.
+      const reply = replies.find((r) => r.content?.includes('new-folder'));
+      expect(reply).toBeDefined();
+      expect(reply?.components && (reply.components as unknown[]).length).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a traversal / separator / absolute name — no mkdir, ephemeral notice', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-create-'));
+    try {
+      for (const bad of ['..', 'a/b', '/etc/evil', '.', 'x\\y']) {
+        const router = await openWizard(root);
+        await router.handle(component({ customId: 'dir:create', user: { id: 'u1' } }).interaction);
+        const { interaction, replies } = modalSubmit({ customId: 'dir:create', user: { id: 'u1' }, fields: { name: bad } });
+        await router.handle(interaction);
+        // Nothing escaped: the only entry under root is never a traversal target.
+        expect(fs.existsSync(path.join(root, '..', 'evil'))).toBe(false);
+        // An invalid-name notice was returned (ephemeral).
+        expect(replies.some((r) => r.ephemeral && (r.content ?? '').length > 0)).toBe(true);
+      }
+      // No folder named after any bad input was created directly either.
+      expect(fs.readdirSync(root)).toHaveLength(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a Create from a NON-owner is ignored (deferUpdate, no modal)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-create-'));
+    try {
+      const router = await openWizard(root); // owner u1
+      const { interaction, acks } = component({ customId: 'dir:create', user: { id: 'intruder' } });
+      await router.handle(interaction);
+      // The stray click is acknowledged (deferUpdate) but shows NO modal.
+      expect(acks.map((a) => a.kind)).toEqual(['deferUpdate']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resume Session flow (both backends)
+// ---------------------------------------------------------------------------
+
+describe('InteractionRouter Resume Session flow', () => {
+  // Re-register the modes with scripted resumable lists for this suite.
+  function registerResumable(claude: ResumableSession[], codex: ResumableSession[]) {
+    modeRegistry = new ModeRegistry();
+    modeRegistry.register(new StubMode('claude', CLAUDE_CAPS, claude));
+    modeRegistry.register(new StubMode('codex', { ...CLAUDE_CAPS, usagePanel: false }, codex));
+  }
+
+  async function openResumeFlow(root: string, opts: { claude?: ResumableSession[]; codex?: ResumableSession[] } = {}) {
+    registerResumable(opts.claude ?? [], opts.codex ?? []);
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const { channel, posts } = fakeMessageChannel();
+    const prov = new FakeProvisioner('g1');
+    const router = buildRouter({
+      orchestrator,
+      wiring,
+      browseRoots: [root],
+      resolveGuildProvisioner: async () => prov,
+      resolveChannel: async () => channel,
+    });
+    // Open the wizard (folder step) then press Resume Session.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    const { interaction: resumeBtn, replies: r0 } = component({ customId: 'dir:resume', user: { id: 'u1' } });
+    await router.handle(resumeBtn);
+    return { router, calls, wcalls, posts, prov, firstRender: r0 };
+  }
+
+  it('picking a backend lists THAT backend\'s sessions (Claude)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-resume-'));
+    try {
+      const { router } = await openResumeFlow(root, {
+        claude: [{ sessionId: 'cl-1', cwd: root, label: 'Claude work' }],
+        codex: [{ sessionId: 'cx-1', cwd: root, label: 'Codex work' }],
+      });
+      // Default backend is claude (config). Confirm the backend → list claude sessions.
+      const { interaction, replies } = component({ customId: 'resume.backend.next', user: { id: 'u1' } });
+      await router.handle(interaction);
+      // The session-pick select is rendered with the claude session's label.
+      const rows = (replies[replies.length - 1].components ?? []) as { components: { type: string; customId: string; options?: { label: string; value: string }[] }[] }[];
+      const pick = rows.flatMap((r) => r.components).find((c) => c.customId === 'resume.pick');
+      expect(pick).toBeDefined();
+      expect(pick?.options?.map((o) => o.value)).toEqual(['cl-1']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('selecting a session RESUMES it: orchestrator.resume + wiring.attach on a fresh channel (Claude)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-resume-'));
+    try {
+      const { router, calls, wcalls, posts, prov } = await openResumeFlow(root, {
+        claude: [{ sessionId: 'cl-42', cwd: root, label: 'Resume me' }],
+      });
+      await router.handle(component({ customId: 'resume.backend.next', user: { id: 'u1' } }).interaction);
+      const { interaction, replies } = component({ customId: 'resume.pick', value: 'cl-42', user: { id: 'u1' } });
+      await router.handle(interaction);
+
+      // A dedicated session channel was created (proj-*).
+      expect(prov.createdNames.some((n) => n.startsWith('proj-'))).toBe(true);
+      const newChannelId = [...prov.channels.keys()].find((id) => prov.channels.get(id)?.startsWith('proj-'))!;
+      // orchestrator.resume was called with the chosen session id, bound to the NEW channel.
+      expect(calls.resume).toHaveBeenCalledOnce();
+      expect(calls.resume.mock.calls[0][0]).toMatchObject({ channelId: newChannelId, mode: 'claude', cwd: root });
+      expect(calls.resume.mock.calls[0][1]).toBe('cl-42');
+      // Renderers were wired to the new channel; a resumed-status embed was posted.
+      expect(wcalls.attach).toHaveBeenCalledWith('g1', newChannelId, 'claude');
+      expect(posts.some((p) => (p.embeds ?? []).length > 0)).toBe(true);
+      // The driver was told where the resumed session lives.
+      expect(replies.some((r) => r.content?.includes(`<#${newChannelId}>`))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('works for Codex too: picking codex lists + resumes a codex session', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-resume-'));
+    try {
+      const { router, calls } = await openResumeFlow(root, {
+        claude: [],
+        codex: [{ sessionId: 'cx-7', cwd: root, label: 'Codex thread' }],
+      });
+      // Switch the backend select to codex, then confirm.
+      await router.handle(component({ customId: 'resume.backend', value: 'codex', user: { id: 'u1' } }).interaction);
+      const { interaction, replies } = component({ customId: 'resume.backend.next', user: { id: 'u1' } });
+      await router.handle(interaction);
+      const rows = (replies[replies.length - 1].components ?? []) as { components: { type: string; customId: string; options?: { value: string }[] }[] }[];
+      const pick = rows.flatMap((r) => r.components).find((c) => c.customId === 'resume.pick');
+      expect(pick?.options?.map((o) => o.value)).toEqual(['cx-7']);
+      // Pick it → resume with the codex backend.
+      await router.handle(component({ customId: 'resume.pick', value: 'cx-7', user: { id: 'u1' } }).interaction);
+      expect(calls.resume).toHaveBeenCalledOnce();
+      expect(calls.resume.mock.calls[0][0]).toMatchObject({ mode: 'codex' });
+      expect(calls.resume.mock.calls[0][1]).toBe('cx-7');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('an empty list → ephemeral "재개할 세션이 없습니다" notice, resume NOT called', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-resume-'));
+    try {
+      const { router, calls } = await openResumeFlow(root, { claude: [], codex: [] });
+      const { interaction, replies } = component({ customId: 'resume.backend.next', user: { id: 'u1' } });
+      await router.handle(interaction);
+      expect(replies.some((r) => (r.content ?? '').includes('재개할 세션이 없습니다'))).toBe(true);
+      expect(calls.resume).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a Resume Session from a NON-owner is ignored (no resume flow started)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-resume-'));
+    try {
+      registerResumable([{ sessionId: 'cl-1', cwd: root }], []);
+      const { orchestrator, calls } = fakeOrchestrator();
+      const { wiring } = fakeWiring();
+      const router = buildRouter({ orchestrator, wiring, browseRoots: [root], resolveGuildProvisioner: async () => new FakeProvisioner('g1') });
+      await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+      // Intruder presses Resume → ignored; a later backend.next has no flow to advance.
+      await router.handle(component({ customId: 'dir:resume', user: { id: 'intruder' } }).interaction);
+      await router.handle(component({ customId: 'resume.backend.next', user: { id: 'intruder' } }).interaction);
+      expect(calls.resume).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

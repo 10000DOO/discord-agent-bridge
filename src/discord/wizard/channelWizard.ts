@@ -134,6 +134,13 @@ export class ChannelWizard {
     return this.step;
   }
 
+  // The folder currently in view in the wizard's browser. Used by the router's
+  // 📁 Create flow to mkdir a subfolder in the CURRENT browsed directory, and by the
+  // Resume Session flow to scope listResumable to it. Read-only.
+  browserCwd(): string {
+    return this.browser.cwd();
+  }
+
   // The collected selection so far (read-only view for tests / status).
   current(): Readonly<Selection> {
     return { ...this.selection };

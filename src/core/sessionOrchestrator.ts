@@ -181,6 +181,69 @@ export class SessionOrchestrator {
     return session;
   }
 
+  // §9 on-demand resume. Rebind a channel to an EXISTING backend session id (chosen
+  // in the resume UX), mirroring start() but calling agentMode.resume(ctx, sessionId)
+  // instead of start(ctx). Resolves the layered config + permission, persists the
+  // binding (source of truth for resume-on-boot), tracks it live, and audits. Used by
+  // the Discord layer's "Resume Session" flow (distinct from resumeAll(), which
+  // rebinds every persisted channel on boot). Returns the ModeSession.
+  async resume(params: StartParams, sessionId: string): Promise<ModeSession> {
+    const { guildId, channelId, mode, cwd, ownerId } = params;
+    const perm = this.permissionResolver.resolve(guildId, channelId, {
+      ...(params.permMode !== undefined ? { permMode: params.permMode } : {}),
+      ...(params.profile !== undefined ? { profile: params.profile } : {}),
+    });
+
+    const agentMode = this.modeRegistry.get(mode);
+    const ctx = this.buildContext({
+      guildId,
+      channelId,
+      cwd,
+      ownerId,
+      mode,
+      permMode: perm.permMode,
+      allowedTools: perm.allowedTools,
+      ...(params.effort !== undefined ? { effort: params.effort } : {}),
+    });
+    const session = await agentMode.resume(ctx, sessionId);
+
+    this.channelRegistry.set({
+      guildId,
+      channelId,
+      mode: mode as 'claude' | 'codex',
+      sessionId: session.sessionId ?? sessionId,
+      cwd,
+      ownerId,
+      permMode: perm.permMode,
+      profile: perm.profile,
+    });
+    this.active.set(channelKey(guildId, channelId), {
+      guildId,
+      channelId,
+      mode,
+      cwd,
+      ownerId,
+      permMode: perm.permMode,
+      session,
+      queue: [],
+      running: false,
+    });
+
+    this.auditLog.record({
+      actorId: ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'resume',
+      mode,
+      permMode: perm.permMode,
+      cwd,
+      status: 'ok',
+    });
+    this.logger.info('session resumed', { guildId, channelId, mode, sessionId });
+    return session;
+  }
+
   // §9 step 2. Enqueue a user turn. If a turn is already in flight for this
   // channel it is queued (never dropped, fixing A4) and processed strictly in
   // arrival order once the current turn completes. Files are realpath-confined
@@ -429,6 +492,30 @@ export class SessionOrchestrator {
       audit: (entry: AuditEntry) => {
         this.auditLog.record(entry);
       },
+    };
+  }
+
+  // Build a MINIMAL read-only ModeContext for a mode's listResumable (resume UX): it
+  // carries the browsed cwd + the mode's resolved config view (codexHome etc.) + the
+  // logger, but its emit/requestPermission/audit are inert no-ops — listResumable only
+  // reads cwd/config/logger and must never start a session or emit events. Not bound to
+  // a live channel (no guildId/channelId semantics beyond placeholders): nothing is
+  // persisted or tracked. Used by the Discord layer's resume flow before any channel is
+  // created for the resumed session.
+  buildListContext(mode: string, cwd: string): ModeContext {
+    const modeConfig = this.configResolver.resolveModeConfig('', '');
+    return {
+      guildId: '',
+      channelId: '',
+      cwd,
+      ownerId: '',
+      ...(modeConfig.model !== undefined ? { model: modeConfig.model } : {}),
+      permMode: 'default',
+      emit: () => {},
+      requestPermission: async () => ({ behavior: 'deny' as const }),
+      config: modeConfig,
+      logger: this.logger,
+      audit: () => {},
     };
   }
 

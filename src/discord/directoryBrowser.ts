@@ -17,9 +17,12 @@ import { t } from './i18n.js';
 // 7b maps onto discord.js.
 //
 // custom_id scheme (parsed by 7b's interactionRouter):
-//   dir:into  (string-select; value = child folder name)
-//   dir:up    (button)
-//   dir:here  (button — select the current folder)
+//   dir:into    (string-select; value = child folder name)
+//   dir:up      (button — go to the parent folder)
+//   dir:here    (button — select the current folder / Session Start)
+//   dir:resume  (button — start the resume-session flow for the current folder)
+//   dir:create  (button — open the create-folder modal in the current folder)
+//   cancel      (button — cancel the wizard)
 
 // Discord select limits (A4D MAX_SELECT_OPTIONS / label length).
 const MAX_SELECT_OPTIONS = 25;
@@ -109,8 +112,11 @@ export class DirectoryBrowser {
 
   // Build the interactive spec (embed + component rows) for the current view, A4D-style:
   // the embed shows the CURRENT path + how-to guidance, a select menu lists subfolders,
-  // and a ⬆ 상위 폴더 / ✅ 이 폴더로 시작 button row drives navigation vs selection. Pure
-  // data; 7b turns it into a discord.js reply/update.
+  // and a single action row mirrors A4D's folder-step buttons —
+  // ⬆ 상위(Parent) · ✅ 시작(Session Start) · 세션 재개(Resume) · 📁 폴더 만들기(Create) ·
+  // 취소(Cancel) — driving navigation, selection, resume, create, and cancel. Two rows
+  // total (select + buttons), well within Discord's 5-row-per-message limit. Pure data;
+  // 7b turns it into a discord.js reply/update.
   render(): { embed: EmbedSpec; rows: ComponentRow[] } {
     const children = this.listChildren();
     const embed: EmbedSpec = {
@@ -132,6 +138,9 @@ export class DirectoryBrowser {
         components: [
           { type: 'button', customId: 'dir:up', label: t('dir.up'), style: 'secondary', disabled: !this.canGoUp() },
           { type: 'button', customId: 'dir:here', label: t('dir.here'), style: 'success' },
+          { type: 'button', customId: 'dir:resume', label: t('dir.resume'), style: 'primary' },
+          { type: 'button', customId: 'dir:create', label: t('dir.create'), style: 'secondary' },
+          { type: 'button', customId: 'cancel', label: t('wizard.cancel'), style: 'secondary' },
         ],
       },
     ];
