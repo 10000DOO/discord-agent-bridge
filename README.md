@@ -55,11 +55,15 @@ Discord 채널에서 대화하듯 메시지를 보내면, 내 컴퓨터에서 Cl
 
 ### (완성 후) npx로 실행
 ```bash
-# 최초 1회: 셋업 마법사 (토큰/Client ID 입력, 인텐트 확인, 초대 링크 생성 — 기본값은 안 물어봄)
-npx discord-agent-bridge@latest --setup
-
-# 봇 실행
+# 최초 실행 — 그냥 실행하면 셋업 마법사가 자동으로 뜬 뒤 이어서 봇이 시작됩니다.
+# (토큰/Client ID 입력, 인텐트 확인, 초대 링크 생성 — 기본값은 안 물어봄)
 npx discord-agent-bridge@latest
+
+# 이후 실행 — 이미 설정돼 있으면 바로 봇이 시작됩니다.
+npx discord-agent-bridge@latest
+
+# 다시 설정만 하고 싶을 때 (봇은 시작하지 않음)
+npx discord-agent-bridge@latest --setup
 ```
 
 ### (지금) 소스에서 실행
@@ -69,8 +73,8 @@ cd discord-agent-bridge
 npm install
 npm run build
 
-node dist/cli.js --setup   # 셋업 마법사
-node dist/cli.js           # 봇 실행
+node dist/cli.js           # 최초 1회: 셋업 마법사 자동 실행 → 이어서 봇 시작 / 이후: 바로 봇 시작
+node dist/cli.js --setup   # 설정만 다시 (봇은 시작 안 함)
 ```
 
 **셋업 마법사(`--setup`)** 가 물어보는 것 — **토큰(비밀)만 터미널에서 입력**합니다. 그 외 값은 하나도 안 물어봅니다:
