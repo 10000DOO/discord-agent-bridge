@@ -55,41 +55,9 @@ Discord 채널에서 대화하듯 메시지를 보내면, 내 컴퓨터에서 Cl
 
 ## 2단계 — 설치 & 실행
 
-### npx로 실행 (권장)
+### PC 재시작 후에도 자동으로 실행 (PM2 · 권장)
 
-설치 없이 바로 실행합니다. `npx` 가 최신 버전을 받아 실행하며, 최초 실행이면 셋업 마법사가 먼저 뜬 뒤 이어서 봇이 시작됩니다.
-
-```bash
-# 최초 실행 — 셋업 마법사가 자동으로 뜬 뒤 이어서 봇이 시작됩니다.
-# (토큰/Client ID 입력, 인텐트 확인, 초대 링크 생성 — 기본값은 안 물어봄)
-npx discord-agent-bridge
-
-# 이후 실행 — 이미 설정돼 있으면 바로 봇이 시작됩니다.
-npx discord-agent-bridge
-
-# 다시 설정만 하고 싶을 때 (봇은 시작하지 않음)
-npx discord-agent-bridge --setup
-```
-
-전역 설치도 가능합니다: `npm install -g discord-agent-bridge` 후 `discord-agent-bridge` / `discord-agent-bridge --setup`.
-
-### 업그레이드
-
-새 버전이 나오면:
-
-```bash
-# npx 사용자 — @latest 를 붙이면 항상 최신을 받습니다(npx는 캐시를 쓸 수 있어요).
-npx discord-agent-bridge@latest
-
-# 전역 설치 사용자
-npm install -g discord-agent-bridge@latest
-```
-
-설치된 버전 확인: `discord-agent-bridge --version`.
-
-### PC 재시작 후에도 자동으로 실행 (PM2)
-
-로그아웃/재부팅 후에도 봇을 계속 살려두는 가장 간단한 방법은 [PM2](https://pm2.keymetrics.io/) 입니다. macOS·Linux·Windows에서 동일하게 동작하고, 로그·재시작·상태 확인을 한 번에 해결해 줍니다.
+봇을 실제로 계속 켜두려면 이 방법을 권장합니다. 로그아웃/재부팅 후에도 봇을 계속 살려두는 가장 간단한 방법은 [PM2](https://pm2.keymetrics.io/) 입니다. macOS·Linux·Windows에서 동일하게 동작하고, 로그·재시작·상태 확인을 한 번에 해결해 줍니다.
 
 ```bash
 # 1) 전역 설치 (PM2가 안정적으로 실행할 커맨드가 있어야 함)
@@ -130,6 +98,38 @@ pm2 restart discord-agent-bridge
 ```
 
 > ⚠️ nvm/asdf를 쓴다면, PM2가 부팅 시점에도 셸에서 쓰는 것과 **같은 `node`** 를 찾을 수 있어야 합니다. `which node`로 확인한 경로가 부팅 환경에서도 유효해야 합니다 — 아니면 재부팅 후 PM2가 봇을 못 띄웁니다.
+
+### npx로 실행 (빠르게 시험해보기)
+
+설치 없이 바로 한 번 띄워보고 싶을 때 쓰세요. `npx` 가 최신 버전을 받아 실행하며, 최초 실행이면 셋업 마법사가 먼저 뜬 뒤 이어서 봇이 시작됩니다. (터미널을 닫으면 봇도 종료됩니다 — 계속 켜두려면 위 PM2 방식을 쓰세요.)
+
+```bash
+# 최초 실행 — 셋업 마법사가 자동으로 뜬 뒤 이어서 봇이 시작됩니다.
+# (토큰/Client ID 입력, 인텐트 확인, 초대 링크 생성 — 기본값은 안 물어봄)
+npx discord-agent-bridge
+
+# 이후 실행 — 이미 설정돼 있으면 바로 봇이 시작됩니다.
+npx discord-agent-bridge
+
+# 다시 설정만 하고 싶을 때 (봇은 시작하지 않음)
+npx discord-agent-bridge --setup
+```
+
+전역 설치도 가능합니다: `npm install -g discord-agent-bridge` 후 `discord-agent-bridge` / `discord-agent-bridge --setup`.
+
+### 업그레이드
+
+새 버전이 나오면:
+
+```bash
+# npx 사용자 — @latest 를 붙이면 항상 최신을 받습니다(npx는 캐시를 쓸 수 있어요).
+npx discord-agent-bridge@latest
+
+# 전역 설치 사용자
+npm install -g discord-agent-bridge@latest
+```
+
+설치된 버전 확인: `discord-agent-bridge --version`.
 
 **셋업 마법사(`--setup`)** 가 물어보는 것 — **토큰(비밀)만 터미널에서 입력**합니다. 그 외 값은 하나도 안 물어봅니다:
 1. Discord 봇 **토큰** (비밀 → 터미널에서만 붙여넣기)

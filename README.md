@@ -55,41 +55,9 @@ You need to create your own bot. Takes about 5 minutes.
 
 ## Step 2 — Install & run
 
-### Run with npx (recommended)
+### Keep it running across reboots (PM2 — recommended)
 
-Runs instantly, no install needed. `npx` fetches the latest version and runs it; on first run, the setup wizard appears first and the bot starts right after.
-
-```bash
-# First run — the setup wizard runs automatically, then the bot starts.
-# (asks for your token/Client ID, checks intents, generates an invite link — no other defaults are asked)
-npx discord-agent-bridge
-
-# Later runs — if already configured, the bot starts directly.
-npx discord-agent-bridge
-
-# To reconfigure only (without starting the bot)
-npx discord-agent-bridge --setup
-```
-
-Global install also works: `npm install -g discord-agent-bridge`, then `discord-agent-bridge` / `discord-agent-bridge --setup`.
-
-### Upgrading
-
-When a new version is released:
-
-```bash
-# npx users — appending @latest always fetches the newest version (npx can otherwise cache).
-npx discord-agent-bridge@latest
-
-# Global-install users
-npm install -g discord-agent-bridge@latest
-```
-
-Check your installed version with: `discord-agent-bridge --version`.
-
-### Keep it running across reboots (PM2)
-
-The simplest way to keep the bot running after logout/reboot is [PM2](https://pm2.keymetrics.io/). It works the same on macOS, Linux, and Windows, and gives you logs, restart, and status in one place.
+This is the recommended way to actually keep the bot up. The simplest way to keep the bot running after logout/reboot is [PM2](https://pm2.keymetrics.io/). It works the same on macOS, Linux, and Windows, and gives you logs, restart, and status in one place.
 
 ```bash
 # 1) Install the bot globally (so PM2 has a stable command to run)
@@ -130,6 +98,38 @@ pm2 restart discord-agent-bridge
 ```
 
 > ⚠️ If you use nvm/asdf, PM2 needs to find the same `node` at boot time as it does in your shell. Verify with `which node` and make sure that path is available to the boot environment — otherwise PM2 may fail to start the bot on reboot.
+
+### Run with npx (quick try)
+
+Use this to spin it up once without installing. `npx` fetches the latest version and runs it; on first run, the setup wizard appears first and the bot starts right after. (Closing the terminal stops the bot — use PM2 above to keep it running.)
+
+```bash
+# First run — the setup wizard runs automatically, then the bot starts.
+# (asks for your token/Client ID, checks intents, generates an invite link — no other defaults are asked)
+npx discord-agent-bridge
+
+# Later runs — if already configured, the bot starts directly.
+npx discord-agent-bridge
+
+# To reconfigure only (without starting the bot)
+npx discord-agent-bridge --setup
+```
+
+Global install also works: `npm install -g discord-agent-bridge`, then `discord-agent-bridge` / `discord-agent-bridge --setup`.
+
+### Upgrading
+
+When a new version is released:
+
+```bash
+# npx users — appending @latest always fetches the newest version (npx can otherwise cache).
+npx discord-agent-bridge@latest
+
+# Global-install users
+npm install -g discord-agent-bridge@latest
+```
+
+Check your installed version with: `discord-agent-bridge --version`.
 
 **What the setup wizard (`--setup`) asks for** — the **token (secret) is the only thing you type into the terminal**. Nothing else is asked here:
 1. Your Discord bot **token** (secret — paste it only in the terminal)
