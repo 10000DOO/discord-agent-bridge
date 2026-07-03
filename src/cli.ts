@@ -4,13 +4,15 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startBot } from './app.js';
 import { runSetup } from './setup/wizard.js';
+import { runServiceCommand } from './service/index.js';
 import { ConfigStore } from './core/config.js';
 
 // Thin entrypoint (§4): `--version` prints the package version, `--setup` runs the
-// first-run wizard only (explicit re-configure), and the default/no-flag path is a
-// one-command first-run — it runs the wizard automatically when nothing is
-// configured yet, then boots the bot. All real work lives in app.ts /
-// setup/wizard.ts; this file only parses argv, decides, and dispatches.
+// first-run wizard only (explicit re-configure), `service <sub>` manages OS auto-start
+// registration (never boots the bot), and the default/no-flag path is a one-command
+// first-run — it runs the wizard automatically when nothing is configured yet, then
+// boots the bot. All real work lives in app.ts / setup/wizard.ts / service/; this file
+// only parses argv, decides, and dispatches.
 
 // Read the package version from package.json (two levels up from dist/cli.js, and
 // from src/cli.ts in dev). Kept as a function so a test can call it directly.
@@ -42,6 +44,11 @@ export async function run(argv: string[]): Promise<void> {
   // Explicit re-configure: run the wizard ONLY, never auto-start afterwards.
   if (argv.includes('--setup')) {
     await runSetup();
+    return;
+  }
+  // OS auto-start management. Handles its own subcommands and MUST NOT boot the bot.
+  if (argv[0] === 'service') {
+    await runServiceCommand(argv.slice(1));
     return;
   }
   // No flags: one-command first-run. When nothing is configured yet, run the wizard

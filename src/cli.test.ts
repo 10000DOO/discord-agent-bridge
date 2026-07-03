@@ -8,15 +8,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // returns `exists`, and load() returns a config whose token is empty (needs setup)
 // or non-empty (already configured) based on `tokenPresent`. A load() that should
 // throw (invalid config) is exercised where noted.
-const { startBot, runSetup, exists, load } = vi.hoisted(() => ({
+const { startBot, runSetup, runServiceCommand, exists, load } = vi.hoisted(() => ({
   startBot: vi.fn(async () => ({}) as never),
   runSetup: vi.fn(async () => {}),
+  runServiceCommand: vi.fn(async () => {}),
   exists: vi.fn(() => true),
   load: vi.fn(() => ({ discord: { token: 'present', clientId: 'client-id-000' } })),
 }));
 
 vi.mock('./app.js', () => ({ startBot }));
 vi.mock('./setup/wizard.js', () => ({ runSetup }));
+vi.mock('./service/index.js', () => ({ runServiceCommand }));
 vi.mock('./core/config.js', () => ({
   ConfigStore: class {
     exists = exists;
@@ -32,6 +34,7 @@ describe('cli.run — argv dispatch', () => {
   beforeEach(() => {
     startBot.mockClear();
     runSetup.mockClear();
+    runServiceCommand.mockClear();
     exists.mockReset();
     load.mockReset();
     // Default: configured (config present, token present) so the no-flag path starts
@@ -95,6 +98,18 @@ describe('cli.run — argv dispatch', () => {
 
     expect(startBot).toHaveBeenCalledTimes(1);
     expect(runSetup).not.toHaveBeenCalled();
+  });
+
+  it('service <sub> dispatches to runServiceCommand and boots nothing', async () => {
+    await run(['service', 'install']);
+    expect(runServiceCommand).toHaveBeenCalledTimes(1);
+    // The subcommand argv (without the leading "service") is forwarded.
+    expect(runServiceCommand).toHaveBeenCalledWith(['install']);
+    // The service path must never boot the bot or run the wizard, and must not even
+    // probe config presence.
+    expect(startBot).not.toHaveBeenCalled();
+    expect(runSetup).not.toHaveBeenCalled();
+    expect(exists).not.toHaveBeenCalled();
   });
 
   it('no flag + present-but-invalid config → error propagates (no auto-setup swallow)', async () => {
