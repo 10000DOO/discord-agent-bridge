@@ -146,6 +146,9 @@ export class CodexSession implements ModeSession {
     // Capture the thread id from the first (fresh) turn so subsequent turns resume it.
     if (this.sessionId === null && result.sessionId !== null) {
       this.sessionId = result.sessionId;
+      // Persist the real backend sessionId (start() saved sessionId=null because
+      // Codex only surfaces the thread id after the first turn completes).
+      this.ctx.onSessionIdReady?.(result.sessionId);
     }
   }
 

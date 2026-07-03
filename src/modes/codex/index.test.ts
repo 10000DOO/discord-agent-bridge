@@ -14,6 +14,7 @@ function makeCtx(opts: {
   cwd?: string;
   permMode?: PermMode;
   config?: Partial<ModeConfigView>;
+  onSessionIdReady?: (id: string) => void;
 } = {}): { ctx: ModeContext; events: AgentEvent[] } {
   const events: AgentEvent[] = [];
   const ctx: ModeContext = {
@@ -27,6 +28,7 @@ function makeCtx(opts: {
     config: { codexTimeoutMs: 5_000, ...opts.config },
     logger: nullLogger,
     audit: () => {},
+    ...(opts.onSessionIdReady !== undefined ? { onSessionIdReady: opts.onSessionIdReady } : {}),
   };
   return { ctx, events };
 }
@@ -128,6 +130,37 @@ describe('CodexMode.start / CodexSession.send', () => {
     const session = await new CodexMode({ runTurn }).start(makeCtx().ctx);
     await session.send({ text: 'hi' });
     expect(session.sessionId).toBe('thread-9');
+  });
+
+  it('invokes onSessionIdReady exactly once on the first fresh turn', async () => {
+    const captured: string[] = [];
+    const { runTurn, calls } = makeRunTurn([okResult('thread-first'), okResult('thread-first')]);
+    const { ctx } = makeCtx({ onSessionIdReady: (id) => captured.push(id) });
+    const session = await new CodexMode({ runTurn }).start(ctx);
+
+    // First turn: sessionId flips null → thread-first and the hook fires ONCE.
+    await session.send({ text: 'one' });
+    expect(captured).toEqual(['thread-first']);
+    expect(calls[0]?.resumeId).toBeUndefined();
+
+    // Second turn: session already carries the id, so the hook must NOT fire again.
+    await session.send({ text: 'two' });
+    expect(captured).toEqual(['thread-first']);
+    expect(calls[1]?.resumeId).toBe('thread-first');
+  });
+
+  it('does not fire onSessionIdReady on a resumed session (id already set at construction)', async () => {
+    // Codex resume(ctx, id) sets sessionId in the constructor; runCodexTurn on
+    // the next turn returns the SAME id, so the "first capture" guard suppresses
+    // the callback. This matches the option A intent (only fires when the id
+    // transitions from null on THIS session).
+    const captured: string[] = [];
+    const { runTurn } = makeRunTurn([okResult('thread-r')]);
+    const { ctx } = makeCtx({ onSessionIdReady: (id) => captured.push(id) });
+    const session = await new CodexMode({ runTurn }).resume(ctx, 'thread-r');
+    await session.send({ text: 'continue' });
+    expect(captured).toEqual([]);
+    expect(session.sessionId).toBe('thread-r');
   });
 });
 

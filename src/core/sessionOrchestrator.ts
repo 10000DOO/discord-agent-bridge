@@ -264,9 +264,50 @@ export class SessionOrchestrator {
   // emitted and the turn is not sent).
   async send(guildId: string, channelId: string, turn: TurnInput): Promise<SendResult> {
     const key = channelKey(guildId, channelId);
-    const channel = this.active.get(key);
+    let channel = this.active.get(key);
     if (!channel) {
-      throw new Error(`No active session for channel ${key}. Run /agent start first.`);
+      // On-demand reactivation: a persisted, non-archived binding whose live
+      // session was dropped (bot restart between resumeAll() and the first
+      // turn, or resumeAll() itself skipped this channel because sessionId=null
+      // and no catalog match existed) should transparently come back on the
+      // next turn instead of forcing the operator to re-run /agent start.
+      const binding = this.channelRegistry.get(guildId, channelId);
+      if (!binding || binding.archived) {
+        throw new Error(`No active session for channel ${key}. Run /agent start first.`);
+      }
+      this.logger.info('reactivating channel on demand', {
+        guildId,
+        channelId,
+        mode: binding.mode,
+        hasSessionId: binding.sessionId !== null,
+      });
+      const params: StartParams = {
+        guildId,
+        channelId,
+        mode: binding.mode,
+        cwd: binding.cwd,
+        ownerId: binding.ownerId,
+        permMode: binding.permMode,
+        ...(binding.profile !== null ? { profile: binding.profile } : {}),
+      };
+      try {
+        if (binding.sessionId !== null) {
+          await this.resume(params, binding.sessionId);
+        } else {
+          await this.start(params);
+        }
+      } catch (err) {
+        this.logger.error('reactivation failed', {
+          guildId,
+          channelId,
+          err: String(err),
+        });
+        throw new Error(`No active session for channel ${key}. Run /agent start first.`);
+      }
+      channel = this.active.get(key);
+      if (!channel) {
+        throw new Error(`No active session for channel ${key}. Run /agent start first.`);
+      }
     }
 
     const violation = this.findConfinementViolation(channel.cwd, turn);
@@ -392,9 +433,82 @@ export class SessionOrchestrator {
           allowedTools: perm.allowedTools,
         });
         // A binding with no backend sessionId cannot be resumed against a
-        // specific id; skip it (the channel starts fresh on its next turn).
+        // specific id directly. Try to recover: ask the mode for its resumable
+        // catalog (Claude SDK listSessions, Codex ~/.codex index) and match on
+        // cwd. Falls back to the original skip when nothing lines up. This
+        // repairs bindings persisted before the first `onSessionIdReady`
+        // callback ever fired (pre-fix boots wrote sessionId=null for every
+        // channel).
         if (sessionId === null) {
-          this.logger.warn('skipping resume: no sessionId', { guildId, channelId, mode });
+          let recovered: string | null = null;
+          try {
+            const candidates = (await agentMode.listResumable?.(ctx)) ?? [];
+            // A Codex resumed session records cwd='' (informational, Q4); such
+            // rows must NOT match an arbitrary channel — exclude them.
+            const match = candidates.find((s) => s.cwd !== '' && s.cwd === cwd) ?? null;
+            recovered = match?.sessionId ?? null;
+          } catch (err) {
+            this.logger.warn('listResumable failed during boot recovery', {
+              guildId,
+              channelId,
+              mode,
+              err: String(err),
+            });
+          }
+          if (recovered === null) {
+            this.logger.warn('skipping resume: no sessionId and no recoverable candidate', {
+              guildId,
+              channelId,
+              mode,
+            });
+            continue;
+          }
+          this.logger.info('boot recovered sessionId from mode catalog', {
+            guildId,
+            channelId,
+            mode,
+            sessionId: recovered,
+          });
+          const recoveredSession = await agentMode.resume(ctx, recovered);
+          this.active.set(channelKey(guildId, channelId), {
+            guildId,
+            channelId,
+            mode,
+            cwd,
+            ownerId,
+            permMode,
+            session: recoveredSession,
+            queue: [],
+            running: false,
+          });
+          // Codex's resume(ctx, sessionId) sets this.sessionId in the constructor,
+          // so its onSessionIdReady callback will NOT fire on the next turn (the
+          // "first capture" guard). Persist the recovered id here so state.json
+          // is repaired on this same boot instead of relying on the callback.
+          this.channelRegistry.set({
+            guildId,
+            channelId,
+            mode: mode as 'claude' | 'codex',
+            sessionId: recovered,
+            cwd,
+            ownerId,
+            permMode,
+            profile: binding.profile,
+            ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
+          });
+          this.auditLog.record({
+            actorId: ownerId,
+            roleTier: 'execute',
+            guildId,
+            channelId,
+            action: 'resume',
+            mode,
+            permMode,
+            cwd,
+            status: 'ok',
+            outcome: 'boot-recovered',
+          });
+          resumed++;
           continue;
         }
         const session = await agentMode.resume(ctx, sessionId);
@@ -523,6 +637,31 @@ export class SessionOrchestrator {
       logger: this.logger,
       audit: (entry: AuditEntry) => {
         this.auditLog.record(entry);
+      },
+      // A mode calls this the first time it captures a real backend sessionId
+      // (Claude system/init, Codex first turn result). Persist immediately so a
+      // channel that was saved with sessionId=null (start() persisted BEFORE the
+      // id was known) gets its id written and can resume across restarts.
+      onSessionIdReady: (sessionId: string) => {
+        const binding = this.channelRegistry.get(guildId, channelId);
+        if (!binding || binding.archived) return;
+        if (binding.sessionId === sessionId) return;
+        this.channelRegistry.set({
+          guildId,
+          channelId,
+          mode: binding.mode,
+          sessionId,
+          cwd: binding.cwd,
+          ownerId: binding.ownerId,
+          permMode: binding.permMode,
+          profile: binding.profile,
+          ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
+        });
+        this.logger.info('registry updated with backend sessionId', {
+          guildId,
+          channelId,
+          sessionId,
+        });
       },
     };
   }

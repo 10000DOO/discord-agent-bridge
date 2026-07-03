@@ -181,7 +181,12 @@ export class ClaudeSession implements ModeSession {
     switch (msg.type) {
       case 'system': {
         if (msg.subtype === 'init' && msg.session_id) {
+          const first = this.sessionId === null;
           this.sessionId = msg.session_id;
+          // Only the FIRST capture notifies the orchestrator so it can persist the
+          // real backend sessionId to the ChannelRegistry (start() saved the binding
+          // with sessionId=null since init arrives asynchronously after start).
+          if (first) this.ctx.onSessionIdReady?.(msg.session_id);
         }
         return;
       }

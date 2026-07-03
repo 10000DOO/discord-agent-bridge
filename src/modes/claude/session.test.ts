@@ -33,6 +33,7 @@ function makeCtx(opts: {
   allowedTools?: string[];
   autoAllowClaudeTools?: string[];
   permissionDecision?: PermissionDecision;
+  onSessionIdReady?: (id: string) => void;
 } = {}): CtxHarness {
   const events: AgentEvent[] = [];
   const permissionCalls: { toolName: string; input: unknown }[] = [];
@@ -56,6 +57,7 @@ function makeCtx(opts: {
     },
     logger: nullLogger,
     audit: () => {},
+    ...(opts.onSessionIdReady !== undefined ? { onSessionIdReady: opts.onSessionIdReady } : {}),
   };
   return { ctx, events, permissionCalls };
 }
@@ -203,6 +205,42 @@ describe('ClaudeSession — SDK message mapping', () => {
 
     await waitFor(() => events.some((e) => e.kind === 'result'));
     expect(session.sessionId).toBe('sess-abc');
+    await session.stop();
+  });
+
+  it('invokes onSessionIdReady exactly once on the first init capture', async () => {
+    const captured: string[] = [];
+    const { ctx, events } = makeCtx({
+      onSessionIdReady: (id) => captured.push(id),
+    });
+    // Two init messages back-to-back — the second must NOT re-fire the hook
+    // (option A: first-capture-only). Different ids in each so a re-fire would
+    // be trivially observable.
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-first' },
+      { type: 'system', subtype: 'init', session_id: 'sess-second' },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'result'));
+    expect(captured).toEqual(['sess-first']);
+    // sessionId itself tracks the most recent (existing behavior preserved).
+    expect(session.sessionId).toBe('sess-second');
+    await session.stop();
+  });
+
+  it('does not throw when onSessionIdReady is absent (optional contract)', async () => {
+    // The mode must tolerate a ctx that does not wire the callback (older
+    // consumers, tests). This exercises the `?.()` optional-call path.
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-no-cb' },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+    await waitFor(() => events.some((e) => e.kind === 'result'));
+    expect(session.sessionId).toBe('sess-no-cb');
     await session.stop();
   });
 

@@ -158,4 +158,9 @@ export interface ModeContext {
   config: ModeConfigView; // resolved (layered) view: model, timeouts, codexHome, etc.
   logger: Logger;
   audit(entry: AuditEntry): void; // who/when/what → AuditLog (§7.5)
+  // Called by a mode the FIRST time it captures a real backend sessionId (Claude
+  // system/init, Codex first turn result). Optional: existing tests/consumers
+  // that omit it stay valid. Synchronous void — the orchestrator persists the
+  // registry entry immediately; must be idempotent (same id may repeat).
+  onSessionIdReady?(sessionId: string): void;
 }
