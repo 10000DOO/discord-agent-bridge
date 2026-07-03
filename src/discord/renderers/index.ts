@@ -10,6 +10,7 @@ import { TranscriptFeedHandler } from './transcriptFeed.js';
 import { MentionOnCompleteHandler } from './mentionOnComplete.js';
 import { buildResultLine } from './resultLine.js';
 import { buildUsageEmbed } from './usageEmbed.js';
+import { chunkMessage } from '../format.js';
 
 // The capability dispatcher (§6): subscribes a channel's AgentEvent stream and, for
 // each event, invokes the matching renderer ONLY IF the mode's Capabilities flag is
@@ -118,14 +119,23 @@ export interface DefaultRendererSetOptions {
 // the orchestrator's error events remain the user-visible failure signal.
 export function createDefaultRendererSet(options: DefaultRendererSetOptions): RendererSet {
   const { channel, ownerId } = options;
-  const textStream = new StreamEmbedHandler({ channel, kind: 'text' });
-  const thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking' });
+  // `let`: finalize() permanently closes a StreamEmbedHandler, so one instance
+  // serves exactly one turn — the result renderer swaps in fresh instances.
+  let textStream = new StreamEmbedHandler({ channel, kind: 'text' });
+  let thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking' });
+  // Ended-but-still-finalizing handlers from a previous turn: dispose() must cancel
+  // these too, or an armed debounce timer could fire a late send/edit after detach (§6).
+  const endedStreams = new Set<StreamEmbedHandler>();
   const toolThread = new ToolThreadHandler({ channel });
   const permission = new PermissionButtonsHandler({ channel });
   const diff = new DiffViewHandler({ channel });
   const transcript = new TranscriptFeedHandler({ channel });
   const mention = new MentionOnCompleteHandler({ channel, ownerId });
   let lastCtxUsage: Extract<AgentEvent, { kind: 'context_usage' }> | null = null;
+  // Serializes the turn's terminal sends (done-line, mention, usage panel) BEHIND the
+  // stream's finalized answer chunks, so none of them ever lands mid-answer. Each link
+  // settles and is GC'd once done; only the latest reference is held, so no leak.
+  let tail: Promise<unknown> = Promise.resolve();
 
   const swallow = (p: Promise<unknown>) => {
     void p.catch(() => {});
@@ -137,7 +147,12 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       else textStream.push(ev);
     },
     plainText(ev) {
-      swallow(channel.send({ content: ev.text }));
+      // Non-streaming backends (Codex) deliver the whole answer in one text event.
+      // Split to Discord's 2000-char limit or the send is rejected and swallowed —
+      // same chunking the transcript feed uses. Empty text → chunkMessage returns [].
+      for (const chunk of chunkMessage(ev.text)) {
+        swallow(channel.send({ content: chunk }));
+      }
     },
     toolThread(ev) {
       swallow(toolThread.handle(ev));
@@ -155,26 +170,63 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       swallow(transcript.handle(ev));
     },
     result(ev) {
-      // Finalize any open text stream before the done-line, so the answer lands first.
-      swallow(textStream.finalize().then(() => thinkingStream.finalize()));
+      // Finalize any open text stream, then post the done-line AFTER it via the shared
+      // `tail` so the done-line (and the mention/usage that chain behind it) never lands
+      // in the middle of a multi-chunk answer. The `.catch()` before the done-line link
+      // keeps a finalize-chain error from dropping the done-line.
+      // Fallback: if the stream never emitted (no text deltas arrived — e.g. Claude
+      // Code result-only path), post ev.text as plain chunked messages so the user
+      // sees the answer instead of a lone done-line.
+      // Swap in fresh handlers for the next turn SYNCHRONOUSLY before the async
+      // finalize below: a next-turn delta arriving mid-finalize would otherwise
+      // hit the already-finalized instance and be dropped. The fallback decision
+      // reads the ended instance, so it reflects this turn only.
+      const endedText = textStream;
+      const endedThinking = thinkingStream;
+      endedStreams.add(endedText);
+      endedStreams.add(endedThinking);
+      textStream = new StreamEmbedHandler({ channel, kind: 'text' });
+      thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking' });
+      const finalized = endedText
+        .finalize()
+        .then(() => endedThinking.finalize())
+        .then(async () => {
+          if (!endedText.hasEmitted() && typeof ev.text === 'string' && ev.text.length > 0) {
+            for (const chunk of chunkMessage(ev.text)) {
+              await channel.send({ content: chunk });
+            }
+          }
+        })
+        .finally(() => {
+          endedStreams.delete(endedText);
+          endedStreams.delete(endedThinking);
+        });
       const line = buildResultLine(ev);
-      if (line) swallow(channel.send({ content: line }));
+      tail = finalized.catch(() => {}).then(() => (line ? channel.send({ content: line }) : undefined));
+      swallow(tail);
     },
     usage(ev) {
       lastCtxUsage = ev;
       const usage = options.getUsage?.() ?? null;
       const embed = buildUsageEmbed(usage, lastCtxUsage);
-      if (embed) swallow(channel.send({ embeds: [embed] }));
+      if (!embed) return;
+      tail = tail.catch(() => {}).then(() => channel.send({ embeds: [embed] }));
+      swallow(tail);
     },
     mention(ev) {
-      swallow(mention.handle(ev));
+      tail = tail.catch(() => {}).then(() => mention.handle(ev));
+      swallow(tail);
     },
     error(ev) {
       swallow(channel.send({ content: `⚠️ ${ev.message}` }));
     },
     dispose() {
       // Cancel the streaming/thinking debounce timers so a detach mid-stream cannot
-      // fire a late edit/send against a channel that is being torn down.
+      // fire a late edit/send against a channel that is being torn down. Ended
+      // handlers whose finalize chain is still in flight are cancelled too: cancel()
+      // is idempotent and turns the pending finalize into a no-op.
+      for (const s of endedStreams) s.cancel();
+      endedStreams.clear();
       textStream.cancel();
       thinkingStream.cancel();
     },

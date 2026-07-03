@@ -43,6 +43,9 @@ export class StreamEmbedHandler {
   // Serializes edits so a flush never overtakes a still-in-flight previous edit.
   private inflight: Promise<void> = Promise.resolve();
   private finalized = false;
+  // Set once a send/edit has actually placed content in the channel, so the
+  // dispatcher can safely fall back to a plain send only when nothing was emitted.
+  private emitted = false;
 
   constructor(deps: StreamEmbedDeps) {
     this.channel = deps.channel;
@@ -85,6 +88,7 @@ export class StreamEmbedHandler {
       } else {
         this.message = await this.channel.send({ embeds: [embed] });
       }
+      this.emitted = true;
     });
     return this.inflight;
   }
@@ -107,6 +111,7 @@ export class StreamEmbedHandler {
       const embed = { title: t('stream.thought', { sec }), color: COLORS.thinking };
       if (this.message) await this.message.edit({ embeds: [embed] });
       else await this.channel.send({ embeds: [embed] });
+      this.emitted = true;
       return;
     }
 
@@ -120,9 +125,16 @@ export class StreamEmbedHandler {
     } else {
       await this.channel.send({ content: first });
     }
+    this.emitted = true;
     for (const chunk of rest) {
       await this.channel.send({ content: chunk });
     }
+  }
+
+  // Whether a send/edit has actually delivered any content for this stream. The
+  // dispatcher uses this on `result` to decide if the ev.text fallback is needed.
+  hasEmitted(): boolean {
+    return this.emitted;
   }
 
   // Cancel the debounce timer WITHOUT flushing/finalizing and mark the handler

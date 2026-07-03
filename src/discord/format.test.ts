@@ -50,3 +50,57 @@ describe('format helpers', () => {
     expect(formatDuration(90_000)).toBe('1.5m');
   });
 });
+
+describe('chunkMessage — code fence balancing', () => {
+  const fenceCount = (s: string) => (s.match(/```/g) ?? []).length;
+  const balanced = (s: string) => fenceCount(s) % 2 === 0;
+  // All content except triple-backticks and newlines must survive in order. The only
+  // characters the splitter adds or drops are ``` and \n (inserted markers, dropped
+  // boundary newlines), so stripping both from either side must yield the same string.
+  const content = (s: string) => s.replace(/```/g, '').replace(/\n/g, '');
+
+  it('leaves fence-free long text unchanged (regression)', () => {
+    const long = 'a'.repeat(MSG_LIMIT * 2 + 10);
+    const chunks = chunkMessage(long);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.length <= MSG_LIMIT)).toBe(true);
+    expect(chunks.join('')).toBe(long); // no markers inserted, byte-for-byte
+  });
+
+  it('closes and reopens a code block that spans multiple chunks', () => {
+    const code = Array.from({ length: 200 }, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\n');
+    const text = '```js\n' + code + '\n```';
+    expect(text.length).toBeGreaterThan(MSG_LIMIT);
+    const chunks = chunkMessage(text);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks.every((c) => c.length <= MSG_LIMIT)).toBe(true);
+    expect(chunks.every(balanced)).toBe(true); // each chunk self-balanced
+    expect(content(chunks.join(''))).toBe(content(text)); // code text preserved
+  });
+
+  it('opens and closes every middle chunk when a code block spans 3+ chunks', () => {
+    const lines = Array.from({ length: 400 }, () => 'y'.repeat(50)).join('\n'); // ~20k chars
+    const text = '```\n' + lines + '\n```';
+    const chunks = chunkMessage(text);
+    expect(chunks.length).toBeGreaterThanOrEqual(3);
+    expect(chunks.every((c) => c.length <= MSG_LIMIT)).toBe(true);
+    chunks.forEach((c, i) => {
+      expect(balanced(c)).toBe(true);
+      if (i > 0 && i < chunks.length - 1) {
+        expect(c.startsWith('```')).toBe(true); // reopened
+        expect(c.endsWith('```')).toBe(true); // closed at boundary
+      }
+    });
+    expect(content(chunks.join(''))).toBe(content(text));
+  });
+
+  it('keeps every chunk balanced with multiple fences (code / prose / code)', () => {
+    const block = (tag: string) => '```' + tag + '\n' + (tag + '\n').repeat(300) + '```';
+    const text = block('alpha') + '\n\nsome prose paragraph between the blocks\n\n' + block('beta');
+    expect(text.length).toBeGreaterThan(MSG_LIMIT);
+    const chunks = chunkMessage(text);
+    expect(chunks.every((c) => c.length <= MSG_LIMIT)).toBe(true);
+    expect(chunks.every(balanced)).toBe(true);
+    expect(content(chunks.join(''))).toBe(content(text));
+  });
+});

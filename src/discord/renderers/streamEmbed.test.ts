@@ -83,6 +83,58 @@ describe('StreamEmbedHandler (text)', () => {
     await s.finalize();
     expect(h.sent).toHaveLength(0);
   });
+
+  it('hasEmitted() is false until a flush or finalize actually places content', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    // No push → finalize is a no-op; nothing was emitted.
+    await s.finalize();
+    expect(s.hasEmitted()).toBe(false);
+  });
+
+  it('hasEmitted() flips to true after the debounced flush sends the live embed', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    s.push({ kind: 'text', text: 'hi', delta: true });
+    expect(s.hasEmitted()).toBe(false); // still buffered
+    await h.fire();
+    expect(s.hasEmitted()).toBe(true);
+  });
+
+  it('hasEmitted() flips to true when finalize sends without a prior flush', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    s.push({ kind: 'text', text: 'answer', delta: true });
+    await s.finalize();
+    expect(s.hasEmitted()).toBe(true);
+  });
+});
+
+describe('StreamEmbedHandler — per-turn lifecycle', () => {
+  // One instance serves exactly one turn: finalize() is terminal, so multi-turn
+  // streaming means a fresh instance per turn (the dispatcher swaps on result).
+  it('a fresh instance streams turn 2 while the finalized turn-1 instance drops late pushes', async () => {
+    const h = harness();
+    const t1 = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    t1.push({ kind: 'text', text: 'turn one', delta: true });
+    await t1.finalize();
+    t1.push({ kind: 'text', text: 'stale', delta: true }); // late delta against the ended turn
+    const t2 = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    t2.push({ kind: 'text', text: 'turn two', delta: true });
+    await t2.finalize();
+    expect(h.sent.map((m) => m.content)).toEqual(['turn one', 'turn two']);
+  });
+
+  it('hasEmitted() is per instance: a silent turn-2 instance stays false after an emitting turn 1', async () => {
+    const h = harness();
+    const t1 = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    t1.push({ kind: 'text', text: 'turn one', delta: true });
+    await t1.finalize();
+    expect(t1.hasEmitted()).toBe(true);
+    const t2 = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    await t2.finalize(); // no deltas this turn
+    expect(t2.hasEmitted()).toBe(false);
+  });
 });
 
 describe('StreamEmbedHandler (thinking)', () => {
@@ -100,5 +152,20 @@ describe('StreamEmbedHandler (thinking)', () => {
     await s.finalize();
     const finalEdit = h.edits.at(-1);
     expect(finalEdit?.msg.embeds?.[0].title).toContain('생각함');
+  });
+
+  it('hasEmitted() flips to true after the thinking finalize sends the collapsed embed', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({
+      channel: h.channel,
+      kind: 'thinking',
+      setTimer: h.setTimer,
+      clearTimer: h.clearTimer,
+      now: () => 1000,
+    });
+    s.push({ kind: 'thinking', text: 'hmm', delta: true });
+    expect(s.hasEmitted()).toBe(false);
+    await s.finalize();
+    expect(s.hasEmitted()).toBe(true);
   });
 });

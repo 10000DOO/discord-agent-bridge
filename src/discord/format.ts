@@ -18,22 +18,41 @@ export const COLORS = {
 } as const;
 
 // Split text into Discord-message-sized chunks, preferring to break on newlines so
-// code fences and paragraphs are not cut mid-line where avoidable. Never returns an
-// empty array for a non-empty input; an empty input yields [].
+// code fences and paragraphs are not cut mid-line where avoidable. When a code fence
+// (```) is left open at a chunk boundary, the chunk is closed with a ``` and the next
+// chunk reopens it, so every chunk renders as balanced Markdown on its own. Text with
+// no code fence keeps the plain split byte-for-byte. Never returns an empty array for a
+// non-empty input; an empty input yields [].
 export function chunkMessage(text: string, limit: number = MSG_LIMIT): string[] {
   if (text.length === 0) return [];
   if (text.length <= limit) return [text];
+  const fenced = text.includes('```');
   const chunks: string[] = [];
   let rest = text;
-  while (rest.length > limit) {
-    // Prefer the last newline within the limit; fall back to a hard cut.
-    const window = rest.slice(0, limit);
-    const nl = window.lastIndexOf('\n');
-    const cut = nl > 0 ? nl : limit;
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n/, '');
+  let carryFence: boolean = false; // a code fence left open by the previous chunk
+  while (rest.length > 0) {
+    const prefix = carryFence ? '```\n' : '';
+    // Reserve room for the reopening prefix and a possible closing ``` so a finished
+    // chunk (markers included) never exceeds the limit. Fence-free text reserves
+    // nothing, so its output is identical to the plain newline split.
+    const budget = limit - prefix.length - (fenced ? 4 : 0);
+    let raw: string;
+    if (rest.length <= budget) {
+      raw = rest;
+      rest = '';
+    } else {
+      // Prefer the last newline within the budget; fall back to a hard cut.
+      const window = rest.slice(0, budget);
+      const nl = window.lastIndexOf('\n');
+      const cut = nl > 0 ? nl : budget;
+      raw = rest.slice(0, cut);
+      rest = rest.slice(cut).replace(/^\n/, '');
+    }
+    const fenceCount = (raw.match(/```/g) ?? []).length;
+    const endsOpen: boolean = ((carryFence ? 1 : 0) + fenceCount) % 2 === 1;
+    chunks.push(prefix + raw + (endsOpen ? '\n```' : ''));
+    carryFence = endsOpen;
   }
-  if (rest.length > 0) chunks.push(rest);
   return chunks;
 }
 
