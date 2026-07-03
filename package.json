@@ -1,10 +1,10 @@
 {
   "name": "discord-agent-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, and more — per channel. Role-based access, multi-server, extensible.",
   "type": "module",
   "bin": {
-    "discord-agent-bridge": "./dist/cli.js"
+    "discord-agent-bridge": "dist/cli.js"
   },
   "files": [
     "dist",
