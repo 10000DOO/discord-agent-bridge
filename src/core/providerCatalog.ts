@@ -160,18 +160,11 @@ const SUPPORTED_MODELS_TIMEOUT_MS = 5_000;
 // SDK, no network.
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
-// Module-level cache: the resolved English model list is fetched ONCE and reused.
-// We cache the ModelChoice[] itself (not the promise) so a failed fetch is not
-// memoized — a later render can retry (and will still fall back safely meanwhile).
-let cachedClaudeModels: ModelChoice[] | null = null;
-// In-flight fetch shared by concurrent callers so we never launch two probe queries.
+// In-flight fetch shared by concurrent callers within the same tick so a burst of
+// interactions (e.g. `/config` re-open) does not launch two probe queries at once.
+// NO cross-invocation cache: every logical open re-probes the SDK, so a model added
+// or removed on the account reflects on the next open.
 let inFlight: Promise<ModelChoice[]> | null = null;
-
-// Reset the cache (tests only) so each case starts from a cold catalog.
-export function __resetClaudeModelCache(): void {
-  cachedClaudeModels = null;
-  inFlight = null;
-}
 
 // A prompt stream that yields nothing and ends immediately: we only need the query
 // object alive long enough to answer the supportedModels() control request. No user
@@ -236,37 +229,18 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// The Claude model list as English {value,label}. Cached: the first call fetches
-// (via the SDK), later calls reuse the cached list. Concurrent callers share one
-// in-flight fetch. On failure the fallback is returned but NOT cached, so a later
-// call can retry once auth/network is available.
+// The Claude model list as English {value,label}. Always fetches live from the SDK
+// so a model added or removed on the account is reflected on the very next call.
+// Concurrent callers within the same tick share one in-flight probe so a burst of
+// interactions does not spawn multiple probes. On failure/timeout the alias fallback
+// is returned; no result is retained across calls.
 export async function getClaudeModels(deps: { queryFn?: QueryFn; logger?: Logger } = {}): Promise<ModelChoice[]> {
-  if (cachedClaudeModels) return cachedClaudeModels;
   if (inFlight) return inFlight;
-
   const queryFn = deps.queryFn ?? (realQuery as QueryFn);
-  inFlight = fetchClaudeModels(queryFn, deps.logger)
-    .then((choices) => {
-      // Cache only a real (non-fallback) result so a transient failure can retry.
-      const isFallback =
-        choices.length === CLAUDE_MODEL_FALLBACK.length &&
-        choices.every((c, i) => c.value === CLAUDE_MODEL_FALLBACK[i]);
-      if (!isFallback) cachedClaudeModels = choices;
-      return choices;
-    })
-    .finally(() => {
-      inFlight = null;
-    });
+  inFlight = fetchClaudeModels(queryFn, deps.logger).finally(() => {
+    inFlight = null;
+  });
   return inFlight;
-}
-
-// The Claude model list WITHOUT blocking: returns the cached English list if present,
-// otherwise kicks off the async fetch (fire-and-forget) and returns the alias fallback
-// for THIS render. Lets an interaction ack immediately; the next render sees the cache.
-export function getClaudeModelsCachedOrFallback(deps: { queryFn?: QueryFn; logger?: Logger } = {}): ModelChoice[] {
-  if (cachedClaudeModels) return cachedClaudeModels;
-  void getClaudeModels(deps); // warm the cache for the next render
-  return fallbackChoices();
 }
 
 // ---- Codex models — honest static default (NOT auto-fetched) -----------------

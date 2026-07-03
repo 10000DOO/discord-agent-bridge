@@ -142,8 +142,9 @@ export interface InteractionRouterDeps {
   // Allowed roots for the wizard's folder browser (config-driven; app boot supplies).
   browseRoots?: string[];
   // Models offered per backend, as English {value,label} pairs from the provider
-  // catalog (app boot supplies: Claude = dynamic/cached; Codex = documented default).
-  modelsFor?: (backend: string) => ModelChoice[];
+  // catalog. Async so every /config or /agent start open re-probes the SDK's live
+  // model list (Codex still resolves synchronously from its documented default).
+  modelsFor?: (backend: string) => Promise<ModelChoice[]>;
   // Resolve a guildId to a channel provisioner over the live gateway (A4D-style /init
   // + auto-created session channels). Returns null when the guild is unknown or the
   // client is not connected yet (tests inject a fake). Optional so the pre-gateway
@@ -344,11 +345,17 @@ export class InteractionRouter {
     const profiles = Object.keys(config.profiles);
     const backend = resolved.mode;
 
-    // Model list per backend (the router-supplied dynamic seam, falling back to the
-    // resolved model). The wizard reads it once the backend is chosen so a Codex pick
-    // shows Codex models, not Claude ones.
+    // Model list per backend — materialized ONCE at wizard start so the sync render
+    // reads by backend key. The Claude probe is awaited here (fresh SDK list every
+    // open); Codex resolves from its static list. Fallback covers a boot without the
+    // dep wired.
+    const modelsByBackend: Record<string, ModelChoice[]> = {};
+    for (const b of backends) {
+      modelsByBackend[b] =
+        (await this.deps.modelsFor?.(b)) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
+    }
     const modelsFor = (b: string): ModelChoice[] =>
-      this.deps.modelsFor?.(b) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
+      modelsByBackend[b] ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
     // Permission options per backend: Claude PermMode list vs Codex sandbox terms.
     const permsFor = (b: string): ModelChoice[] => permissionChoicesFor(b);
     // Reasoning-effort options per backend, narrowed for Claude to the chosen model's
@@ -356,6 +363,13 @@ export class InteractionRouter {
     const effortsFor = (b: string, model: string): ModelChoice[] => {
       const supported = modelsFor(b).find((m) => m.value === model)?.supportedEffortLevels;
       return effortChoicesFor(b, supported);
+    };
+    // The wizard's pre-selected reasoning effort per backend. Prefers the guild's
+    // server-saved default (from /config) when present; falls back to the provider
+    // catalog's per-backend default (Claude 'high', Codex 'medium').
+    const defaultEffortForBackend = (b: string): string => {
+      const saved = b === 'codex' ? resolved.codexEffort : resolved.claudeEffort;
+      return saved ?? defaultEffortFor(b);
     };
 
     // Unbounded folder browsing by default (browse anywhere up to '/'), unless the
@@ -383,7 +397,7 @@ export class InteractionRouter {
       profiles,
       permsFor,
       effortsFor,
-      defaultEffortFor,
+      defaultEffortFor: defaultEffortForBackend,
       browser,
     });
     this.wizards.set(channelKey(guildId, i.channelId), wizard);
@@ -414,8 +428,19 @@ export class InteractionRouter {
     const server = this.deps.configStore.loadServerConfig(guildId);
     const resolved = this.deps.configResolver.resolve(guildId, i.channelId);
     const backends = this.deps.modeRegistry.list();
-    const models = this.deps.modelsFor?.(resolved.mode) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
+    const models = (await this.deps.modelsFor?.(resolved.mode)) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
     const permModes = this.permModeChoicesFor(resolved.mode);
+    // Reasoning-effort options + prefilled default for the CURRENT backend. Claude's
+    // list is narrowed by the selected model's supportedEffortLevels when the SDK
+    // reports them; Codex ignores the narrowing hint.
+    const supportedClaudeLevels =
+      resolved.mode === 'codex'
+        ? undefined
+        : models.find((m) => m.value === resolved.claudeModel)?.supportedEffortLevels;
+    const efforts = effortChoicesFor(resolved.mode, supportedClaudeLevels);
+    const resolvedEffort =
+      resolved.mode === 'codex' ? resolved.codexEffort : resolved.claudeEffort;
+    const currentEffort = resolvedEffort ?? defaultEffortFor(resolved.mode);
 
     // Current effective role tiers = server override when present, else global.
     const panel = new ConfigPanel({
@@ -428,6 +453,7 @@ export class InteractionRouter {
         readOnlyRoleIds: server?.auth?.readOnlyRoleIds ?? global.auth.readOnlyRoleIds,
         backend: resolved.mode,
         model: resolved.claudeModel,
+        effort: currentEffort,
         // The /config default-permission select is Claude's PermMode vocabulary; take it
         // from the config layer (server override else global), NOT the resolved value —
         // a channel binding may carry a Codex sandbox mode, which does not belong here.
@@ -438,12 +464,13 @@ export class InteractionRouter {
       },
       backends,
       models,
+      efforts,
       permModes,
     });
     this.configPanels.set(channelKey(guildId, i.channelId), panel);
     // A single Discord message allows at most 5 action rows. Role tiers + Save (4 rows)
-    // ride the deferred reply; the defaults follow-up carries backend/model/permMode/
-    // locale selects (4 rows). Both are ephemeral.
+    // ride the deferred reply; the defaults follow-up carries backend/model/effort/
+    // permMode/locale selects (5 rows — exactly at the limit). Both are ephemeral.
     const { embed, roleRows, defaultRows } = panel.render();
     await i.editReply({ content: t('cmd.config.opened'), embeds: [embed], components: roleRows });
     await i.followUp({ components: defaultRows, ephemeral: true });

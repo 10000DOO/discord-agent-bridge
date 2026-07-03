@@ -48,6 +48,12 @@ export const configSchema = z.object({
     codexHome: z.string(),
     codexCliCommand: z.string(),
     codexCliVersion: z.string().nullable(),
+    // Reasoning effort per backend. Optional: an unset value defers to each mode's
+    // own default (Claude SDK's EffortLevel default; Codex CLI's config.toml
+    // model_reasoning_effort). The wizard / `/config` panel offer per-backend option
+    // lists narrowed by the SDK's supportedEffortLevels when reported.
+    claudeEffort: z.string().optional(),
+    codexEffort: z.string().optional(),
   }),
   limits: z.object({
     maxSessionsPerUser: z.number(),
@@ -94,6 +100,8 @@ export const serverConfigSchema = z.object({
       permissionMode: permModeSchema,
       permissionProfile: z.string().nullable(),
       codexHome: z.string(),
+      claudeEffort: z.string(),
+      codexEffort: z.string(),
     })
     .partial()
     .optional(),

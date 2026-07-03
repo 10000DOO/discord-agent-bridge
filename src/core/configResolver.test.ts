@@ -147,4 +147,27 @@ describe('ConfigResolver', () => {
     expect(view.permissionTimeoutSec).toBe(60);
     expect(view.codexTimeoutMs).toBe(1_800_000);
   });
+
+  it('per-backend reasoning effort layers server over global; unset falls through to undefined', () => {
+    // Global sets claudeEffort only. Server overrides claudeEffort AND adds codexEffort.
+    store.save(
+      makeConfig({
+        defaults: { ...makeConfig().defaults, claudeEffort: 'high' },
+      }),
+    );
+    store.saveServerConfig({
+      version: 1,
+      guildId: 'g1',
+      defaults: { claudeEffort: 'medium', codexEffort: 'low' },
+    });
+    const { resolver } = build();
+    const r = resolver.resolve('g1', 'c1');
+    expect(r.claudeEffort).toBe('medium');
+    expect(r.codexEffort).toBe('low');
+
+    // Another guild with no server file → falls through to global; codexEffort unset.
+    const g2 = resolver.resolve('g2', 'c1');
+    expect(g2.claudeEffort).toBe('high');
+    expect(g2.codexEffort).toBeUndefined();
+  });
 });

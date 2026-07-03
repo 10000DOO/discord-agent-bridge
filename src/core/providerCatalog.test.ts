@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ModelInfo } from '@anthropic-ai/claude-agent-sdk';
 import {
   getClaudeModels,
-  getClaudeModelsCachedOrFallback,
   getCodexModels,
   permissionModeChoices,
   permissionModeLabel,
@@ -17,15 +16,13 @@ import {
   CODEX_EFFORT_LEVELS,
   CODEX_SANDBOX_MODES,
   CLAUDE_MODEL_FALLBACK,
-  __resetClaudeModelCache,
   type QueryFn,
 } from './providerCatalog.js';
 import { permModeSchema } from './configSchema.js';
 import { permModeArgs } from '../modes/codex/runner.js';
 
 // The provider catalog is the ONE source of the model + permission-mode option lists.
-// These tests MOCK the SDK's supportedModels() — no real SDK, no network. Each case
-// starts from a cold cache.
+// These tests MOCK the SDK's supportedModels() — no real SDK, no network.
 
 // Build a fake Query object exposing just what the catalog calls: an async iterable
 // that ends at once, supportedModels(), and close(). `supported` is a factory so a
@@ -52,10 +49,6 @@ function fakeQueryFn(supported: () => Promise<ModelInfo[]>, onClose?: () => void
 function model(value: string, displayName: string): ModelInfo {
   return { value, displayName, description: `${displayName} model` };
 }
-
-beforeEach(() => {
-  __resetClaudeModelCache();
-});
 
 describe('getClaudeModels (dynamic, mocked SDK)', () => {
   it('maps supportedModels() to English {value,label} (value=id, label=displayName)', async () => {
@@ -100,27 +93,30 @@ describe('getClaudeModels (dynamic, mocked SDK)', () => {
     }
   });
 
-  it('CACHES a real result: supportedModels() is called once across calls', async () => {
-    const { queryFn, calls } = fakeQueryFn(async () => [model('claude-opus-4-6', 'Claude Opus 4.6')]);
-    const first = await getClaudeModels({ queryFn });
-    const second = await getClaudeModels({ queryFn });
-    expect(first).toEqual(second);
-    expect(calls.supportedModels).toBe(1);
-  });
-
-  it('does NOT cache a fallback result, so a later call can retry', async () => {
-    // First call fails → fallback (not cached). Second call succeeds → real list.
+  it('re-probes on every call so an updated account model list is reflected immediately', async () => {
+    // First probe returns two models; a later probe returns three (a new model on the
+    // account). No cross-invocation cache: the second call MUST see the fresh list.
     let attempt = 0;
     const { queryFn, calls } = fakeQueryFn(async () => {
       attempt += 1;
-      if (attempt === 1) throw new Error('offline');
-      return [model('claude-opus-4-6', 'Claude Opus 4.6')];
+      return attempt === 1
+        ? [model('claude-opus-4-6', 'Claude Opus 4.6')]
+        : [model('claude-opus-4-6', 'Claude Opus 4.6'), model('claude-fable-1', 'Claude Fable 1')];
     });
     const first = await getClaudeModels({ queryFn });
-    expect(first.map((c) => c.value)).toEqual([...CLAUDE_MODEL_FALLBACK]);
+    expect(first.map((c) => c.value)).toEqual(['claude-opus-4-6']);
     const second = await getClaudeModels({ queryFn });
-    expect(second).toEqual([{ value: 'claude-opus-4-6', label: 'Claude Opus 4.6' }]);
+    expect(second.map((c) => c.value)).toEqual(['claude-opus-4-6', 'claude-fable-1']);
     expect(calls.supportedModels).toBe(2);
+  });
+
+  it('shares one in-flight probe across concurrent callers in the same tick', async () => {
+    const { queryFn, calls } = fakeQueryFn(async () => [model('claude-opus-4-6', 'Claude Opus 4.6')]);
+    const [a, b] = await Promise.all([getClaudeModels({ queryFn }), getClaudeModels({ queryFn })]);
+    expect(a).toEqual(b);
+    // Concurrent callers share one probe; the next call after the shared probe
+    // resolves probes fresh again.
+    expect(calls.supportedModels).toBe(1);
   });
 
   it('closes the probe query after fetching', async () => {
@@ -128,19 +124,6 @@ describe('getClaudeModels (dynamic, mocked SDK)', () => {
     const { queryFn } = fakeQueryFn(async () => [model('claude-opus-4-6', 'Claude Opus 4.6')], onClose);
     await getClaudeModels({ queryFn });
     expect(onClose).toHaveBeenCalledOnce();
-  });
-});
-
-describe('getClaudeModelsCachedOrFallback (non-blocking)', () => {
-  it('returns the alias fallback synchronously when the cache is cold, then warms it', async () => {
-    const { queryFn, calls } = fakeQueryFn(async () => [model('claude-opus-4-6', 'Claude Opus 4.6')]);
-    const immediate = getClaudeModelsCachedOrFallback({ queryFn });
-    expect(immediate.map((c) => c.value)).toEqual([...CLAUDE_MODEL_FALLBACK]);
-    // The warm-up fetch was kicked off; let it resolve, then the cached list appears.
-    await vi.waitFor(() => expect(calls.supportedModels).toBe(1));
-    await getClaudeModels({ queryFn }); // resolves from the now-warm cache
-    const cached = getClaudeModelsCachedOrFallback({ queryFn });
-    expect(cached).toEqual([{ value: 'claude-opus-4-6', label: 'Claude Opus 4.6' }]);
   });
 });
 

@@ -25,6 +25,12 @@ export interface ResolvedConfig {
   codexHome: string;
   codexCliCommand: string;
   codexCliVersion: string | null;
+  // Per-backend reasoning-effort default (server override > global). Undefined means
+  // no default is persisted, so the wizard falls back to defaultEffortFor(backend) and
+  // each mode ultimately falls back to its own default when the wizard's selection is
+  // absent (Claude SDK EffortLevel default; Codex config.toml model_reasoning_effort).
+  claudeEffort: string | undefined;
+  codexEffort: string | undefined;
   limits: AppConfig['limits'];
 }
 
@@ -106,6 +112,8 @@ export class ConfigResolver {
       codexHome: global.defaults.codexHome,
       codexCliCommand: global.defaults.codexCliCommand,
       codexCliVersion: global.defaults.codexCliVersion,
+      claudeEffort: global.defaults.claudeEffort,
+      codexEffort: global.defaults.codexEffort,
       limits: { ...global.limits },
     };
 
@@ -118,6 +126,8 @@ export class ConfigResolver {
         permissionMode: server.defaults?.permissionMode,
         permissionProfile: server.defaults?.permissionProfile,
         codexHome: server.defaults?.codexHome,
+        claudeEffort: server.defaults?.claudeEffort,
+        codexEffort: server.defaults?.codexEffort,
         limits: server.limits,
       });
     }

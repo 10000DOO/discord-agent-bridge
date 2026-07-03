@@ -350,7 +350,7 @@ function buildRouter(deps: {
     wiring: deps.wiring,
     usageService,
     logger: deps.logger ?? logger,
-    modelsFor: () => [
+    modelsFor: async () => [
       { value: 'opus', label: 'opus' },
       { value: 'sonnet', label: 'sonnet' },
     ],

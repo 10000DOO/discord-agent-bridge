@@ -14,7 +14,7 @@ import { createLogger } from './core/logger.js';
 import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
 import { CodexMode } from './modes/codex/index.js';
-import { getClaudeModels, getClaudeModelsCachedOrFallback, getCodexModels } from './core/providerCatalog.js';
+import { getClaudeModels, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
@@ -181,13 +181,14 @@ export function createApp(deps: CreateAppDeps): App {
     // Per-backend model options from the central provider catalog (§ providerCatalog).
     // Codex: a documented static default list (Codex has no model-list API; -m is
     // free-form), with config.defaults.codexModel offered first when set. Claude:
-    // the SDK's supportedModels(), fetched once after login and CACHED — this render
-    // returns the cached English list if present, else the alias fallback while the
-    // async fetch warms the cache for the next render (never blocks the ack).
-    modelsFor: (backend: string) =>
+    // the SDK's supportedModels(), probed live on EVERY /config or /agent start open
+    // (no cross-invocation cache) so a model added or removed on the account is
+    // reflected immediately. A short in-tick de-dupe still shares one probe across
+    // concurrent callers. On failure/timeout falls back to the alias list.
+    modelsFor: async (backend: string) =>
       backend === 'codex'
         ? getCodexModels(config.defaults.codexModel)
-        : getClaudeModelsCachedOrFallback({ logger }),
+        : await getClaudeModels({ logger }),
   });
 
   const discord = new DiscordClient({
@@ -205,10 +206,6 @@ export function createApp(deps: CreateAppDeps): App {
       for (const binding of channelRegistry.list().filter((b) => !b.archived)) {
         await wiring.attach(binding.guildId, binding.channelId, binding.mode);
       }
-      // Warm the Claude model cache now that auth is available (fire-and-forget): the
-      // SDK's supportedModels() is fetched once and cached so the first /config or
-      // /agent start shows the real, current model list instead of the alias fallback.
-      void getClaudeModels({ logger });
       logger.info('boot complete', { guilds: client.guilds.cache.size });
     },
     // Auto-provision each guild's channel structure on ready / guild-join so /init is

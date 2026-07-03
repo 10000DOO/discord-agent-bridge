@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelDefaults } from './configPanel.js';
 import { ConfigStore } from '../core/config.js';
 import type { PermMode } from '../core/contracts.js';
-import { permissionModeChoices, type ModelChoice } from '../core/providerCatalog.js';
+import { effortChoicesFor, permissionModeChoices, type ModelChoice } from '../core/providerCatalog.js';
 
 // The /config panel is transport-agnostic (no discord.js): it takes plain inputs
 // (role-select `values`, string-select `value`, Save) and persists to a temp-dir
@@ -21,6 +21,7 @@ const DEFAULTS: ConfigPanelDefaults = {
   readOnlyRoleIds: READ,
   backend: 'claude',
   model: 'opus',
+  effort: 'high',
   permMode: 'default' as PermMode,
   locale: 'ko',
 };
@@ -41,6 +42,7 @@ function makePanel(overrides: Partial<ConfigPanelDefaults> = {}): ConfigPanel {
       { value: 'opus', label: 'opus' },
       { value: 'sonnet', label: 'sonnet' },
     ] satisfies ModelChoice[],
+    efforts: effortChoicesFor('claude'),
     permModes: permissionModeChoices('claude'),
   });
 }
@@ -76,7 +78,7 @@ function defaultSelectedValue(select: { options: { value: string; default?: bool
 }
 
 describe('ConfigPanel render', () => {
-  it('renders 3 role-selects (prefilled), 4 string-selects, and a Save button — no Codex-path button/modal', () => {
+  it('renders 3 role-selects (prefilled), 5 string-selects, and a Save button — no Codex-path button/modal', () => {
     const { roleRows, defaultRows } = makePanel().render();
     // Flatten to the components in order (both groups form the logical panel).
     const all = [...roleRows, ...defaultRows].flatMap((r) => r.components);
@@ -86,11 +88,12 @@ describe('ConfigPanel render', () => {
     const admin = roleSelects.find((c) => c.customId === 'config.role.admin');
     expect(admin && 'defaultRoleIds' in admin ? admin.defaultRoleIds : undefined).toEqual(ADMIN);
 
-    // backend / model / permMode / locale selects.
+    // backend / model / effort / permMode / locale selects.
     const stringSelects = all.filter((c) => c.type === 'select');
     expect(stringSelects.map((c) => c.customId)).toEqual([
       'config.default.backend',
       'config.default.model',
+      'config.default.effort',
       'config.default.permMode',
       'config.default.locale',
     ]);
@@ -106,15 +109,23 @@ describe('ConfigPanel render', () => {
     const { defaultRows } = makePanel({
       backend: 'codex',
       model: 'sonnet',
+      effort: 'medium',
       permMode: 'acceptEdits' as PermMode,
       locale: 'en',
     }).render();
     expect(defaultSelectedValue(selectById(defaultRows, 'config.default.backend'))).toBe('codex');
     expect(defaultSelectedValue(selectById(defaultRows, 'config.default.model'))).toBe('sonnet');
+    expect(defaultSelectedValue(selectById(defaultRows, 'config.default.effort'))).toBe('medium');
     expect(defaultSelectedValue(selectById(defaultRows, 'config.default.permMode'))).toBe('acceptEdits');
     expect(defaultSelectedValue(selectById(defaultRows, 'config.default.locale'))).toBe('en');
     // Exactly ONE option per select is default-selected (no stray defaults).
-    for (const id of ['config.default.backend', 'config.default.model', 'config.default.permMode', 'config.default.locale']) {
+    for (const id of [
+      'config.default.backend',
+      'config.default.model',
+      'config.default.effort',
+      'config.default.permMode',
+      'config.default.locale',
+    ]) {
       const sel = selectById(defaultRows, id);
       expect(sel?.options.filter((o) => o.default === true)).toHaveLength(1);
     }
@@ -173,6 +184,7 @@ describe('ConfigPanel render', () => {
       defaults: { ...DEFAULTS, backend: 'codex' },
       backends: ['claude', 'codex'],
       models: [{ value: 'gpt-5.1-codex', label: 'gpt-5.1-codex' }],
+      efforts: effortChoicesFor('codex'),
       permModes: permissionModeChoices('codex'),
     });
     const perm = selectById(codexPanel.render().defaultRows, 'config.default.permMode');
@@ -194,12 +206,13 @@ describe('ConfigPanel render', () => {
     expect(read && 'defaultRoleIds' in read ? read.defaultRoleIds : undefined).toEqual(READ);
   });
 
-  it('the defaults message stays within Discord’s 5-action-row limit (4 selects, no button)', () => {
+  it('the defaults message stays within Discord’s 5-action-row limit (5 selects, no button)', () => {
     const { roleRows, defaultRows } = makePanel().render();
     // A single Discord message allows at most 5 action rows.
     expect(roleRows.length).toBeLessThanOrEqual(5);
-    // Removing the Codex-path button frees a row: the defaults message is now 4 selects.
-    expect(defaultRows.length).toBe(4);
+    // With the effort select added, the defaults message is 5 selects — exactly at
+    // Discord's row limit.
+    expect(defaultRows.length).toBe(5);
     expect(defaultRows.length).toBeLessThanOrEqual(5);
     // The Save button rides with the role tiers (the primary reply); the defaults
     // message auto-saves each field on change, so it carries NO Save button.
@@ -314,6 +327,27 @@ describe('ConfigPanel defaults auto-save (per-field, no Save button)', () => {
     const result = panel.handle({ id: 'config.default.permMode', value: 'acceptEdits' });
     expect(result.kind).toBe('autosaved');
     expect(store.loadServerConfig('g1')?.defaults?.permissionMode).toBe('acceptEdits');
+  });
+
+  it('an effort select change persists defaults.claudeEffort when the saved backend is Claude', () => {
+    const panel = makePanel();
+    const result = panel.handle({ id: 'config.default.effort', value: 'medium' });
+    expect(result.kind).toBe('autosaved');
+    expect(store.loadServerConfig('g1')?.defaults?.claudeEffort).toBe('medium');
+    // The Codex-side key is left untouched.
+    expect(store.loadServerConfig('g1')?.defaults?.codexEffort).toBeUndefined();
+  });
+
+  it('an effort select change lands under defaults.codexEffort once the panel switched the backend to Codex', () => {
+    const panel = makePanel();
+    // Switch backend first (auto-saves defaults.mode=codex). The subsequent effort
+    // change reads the fresh saved backend and stores under codexEffort.
+    panel.handle({ id: 'config.default.backend', value: 'codex' });
+    panel.handle({ id: 'config.default.effort', value: 'high' });
+    const saved = store.loadServerConfig('g1');
+    expect(saved?.defaults?.mode).toBe('codex');
+    expect(saved?.defaults?.codexEffort).toBe('high');
+    expect(saved?.defaults?.claudeEffort).toBeUndefined();
   });
 
   it('auto-save writes ONLY the changed field, preserving the others', () => {

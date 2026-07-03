@@ -19,9 +19,9 @@ import { t } from './i18n.js';
 // limit per message (the primary reply and a follow-up):
 //   - Role tiers (3 role-selects) batch into a pending set and persist together on
 //     the Save button — they share the primary message (3 selects + Save = 4 rows).
-//   - Defaults (backend / model / permMode / locale selects) AUTO-SAVE on each
-//     change: one changed field is written immediately. This lets the defaults
-//     follow-up hold 4 selects = 4 rows with no Save button — respecting the budget.
+//   - Defaults (backend / model / effort / permMode / locale selects) AUTO-SAVE on
+//     each change: one changed field is written immediately. The defaults follow-up
+//     holds 5 selects with no Save button — exactly at Discord's 5-row budget.
 //
 // Codex home is NOT configured here: it resolves automatically to `~/.codex` (like
 // Claude's `~/.claude`) via the config default / resolveCodexHome. The actual PROJECT
@@ -36,6 +36,7 @@ const IDS = {
   roleReadOnly: 'config.role.readOnly',
   backend: 'config.default.backend',
   model: 'config.default.model',
+  effort: 'config.default.effort',
   permMode: 'config.default.permMode',
   locale: 'config.default.locale',
   save: 'config.save',
@@ -65,6 +66,10 @@ export interface ConfigPanelDefaults {
   readOnlyRoleIds: string[];
   backend: string; // resolved default mode
   model: string; // resolved default model
+  // Resolved default reasoning effort for the current backend (server override else
+  // global). The panel pre-selects this in the effort dropdown; auto-save writes to
+  // either claudeEffort or codexEffort depending on the panel's saved backend.
+  effort: string;
   permMode: PermMode; // resolved default permission mode
   locale: string; // resolved UI language (server override, else global)
 }
@@ -78,8 +83,12 @@ export interface ConfigPanelOptions {
   // Backends offered (from modeRegistry.list()).
   backends: string[];
   // Models offered for the default-model select, as English {value,label} pairs from
-  // the provider catalog (Claude = dynamic/cached; Codex = documented default).
+  // the provider catalog (Claude = dynamic; Codex = documented default).
   models: ModelChoice[];
+  // Reasoning-effort levels offered for the default-effort select, per current
+  // backend, from the provider catalog. Claude values may be narrowed by the SDK's
+  // supportedEffortLevels when reported for the selected model.
+  efforts: ModelChoice[];
   // Permission modes offered for the default-permMode select, as English {value,label}
   // pairs from the provider catalog (per-backend: Codex excludes dontAsk/auto).
   permModes: ModelChoice[];
@@ -158,6 +167,9 @@ export class ConfigPanel {
       case IDS.model:
         if (!input.value) return { kind: 'pending' };
         return this.autosaveModel(input.value);
+      case IDS.effort:
+        if (!input.value) return { kind: 'pending' };
+        return this.autosaveEffort(input.value);
       case IDS.permMode:
         if (!input.value) return { kind: 'pending' };
         return this.autosavePermMode(input.value as PermMode);
@@ -191,6 +203,19 @@ export class ConfigPanel {
   private autosaveModel(model: string): ConfigPanelResult {
     this.patchDefaults({ claudeModel: model });
     return { kind: 'autosaved', notice: t('config.autosaved.model', { model }) };
+  }
+
+  // Reasoning-effort auto-save. The persisted backend at write time picks the key:
+  // Codex → codexEffort, anything else → claudeEffort. Reads the SERVER override
+  // (may have been auto-saved earlier in this same panel session by the backend
+  // select); falls back to the panel-open default, which was already resolved
+  // global→server by the caller.
+  private autosaveEffort(effort: string): ConfigPanelResult {
+    const server = this.opts.configStore.loadServerConfig(this.opts.guildId);
+    const backend = server?.defaults?.mode ?? this.opts.defaults.backend;
+    const patch = backend === 'codex' ? { codexEffort: effort } : { claudeEffort: effort };
+    this.patchDefaults(patch);
+    return { kind: 'autosaved', notice: t('config.autosaved.effort', { effort }) };
   }
 
   private autosavePermMode(permMode: PermMode): ConfigPanelResult {
@@ -341,9 +366,9 @@ export class ConfigPanel {
   }
 
   // Render the panel as plain component specs. `roleRows` (3 role tiers + Save = 4
-  // rows) go on the primary reply; `defaultRows` (backend/model/permMode/locale
-  // selects = 4 rows) go on a follow-up — both within Discord's 5-action-row-per-
-  // message limit. Each defaults select marks its currently-saved option with
+  // rows) go on the primary reply; `defaultRows` (backend/model/effort/permMode/
+  // locale selects = 5 rows) go on a follow-up — both within Discord's 5-action-row-
+  // per-message limit. Each defaults select marks its currently-saved option with
   // `default: true` so the dropdown shows the REAL current value (not the last
   // option), and role-selects pre-select the tier's current roles. The adapter maps
   // these onto discord.js; tests assert on them directly.
@@ -372,6 +397,20 @@ export class ConfigPanel {
         label: m.label,
         value: m.value,
         default: m.value === d.model,
+      })),
+    };
+    const effortSelect: SelectSpec = {
+      type: 'select',
+      customId: IDS.effort,
+      placeholder: t('config.default.effort.placeholder'),
+      // English identifiers from the catalog, not localized. Options reflect the CURRENT
+      // backend at panel-open time; a backend change in this same panel session persists
+      // but does not re-render the effort options (matches the model dropdown's snapshot
+      // behavior — reopen /config to refresh).
+      options: this.opts.efforts.map((e) => ({
+        label: e.label,
+        value: e.value,
+        default: e.value === d.effort,
       })),
     };
     const permSelect: SelectSpec = {
@@ -412,6 +451,7 @@ export class ConfigPanel {
       defaultRows: [
         { components: [backendSelect] },
         { components: [modelSelect] },
+        { components: [effortSelect] },
         { components: [permSelect] },
         { components: [localeSelect] },
       ],
