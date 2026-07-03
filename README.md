@@ -87,6 +87,50 @@ npm install -g discord-agent-bridge@latest
 
 Check your installed version with: `discord-agent-bridge --version`.
 
+### Keep it running across reboots (PM2)
+
+The simplest way to keep the bot running after logout/reboot is [PM2](https://pm2.keymetrics.io/). It works the same on macOS, Linux, and Windows, and gives you logs, restart, and status in one place.
+
+```bash
+# 1) Install the bot globally (so PM2 has a stable command to run)
+npm install -g discord-agent-bridge
+
+# 2) Run --setup once if you haven't yet
+discord-agent-bridge --setup
+
+# 3) Install PM2
+npm install -g pm2
+
+# 4) Register the bot with PM2 and start it
+pm2 start discord-agent-bridge --name discord-agent-bridge
+
+# 5) Snapshot the current process list (so PM2 knows what to restore on boot)
+pm2 save
+
+# 6) Register PM2 to start at boot (on macOS this wires up launchd)
+pm2 startup
+# ↑ Copy-paste the `sudo ...` command it prints and run it once.
+```
+
+Day-to-day management:
+
+```bash
+pm2 status                          # is it running?
+pm2 logs discord-agent-bridge       # tail logs
+pm2 restart discord-agent-bridge    # restart (also do this after upgrading)
+pm2 stop discord-agent-bridge       # stop
+pm2 delete discord-agent-bridge     # unregister
+```
+
+Upgrading under PM2:
+
+```bash
+npm install -g discord-agent-bridge@latest
+pm2 restart discord-agent-bridge
+```
+
+> ⚠️ If you use nvm/asdf, PM2 needs to find the same `node` at boot time as it does in your shell. Verify with `which node` and make sure that path is available to the boot environment — otherwise PM2 may fail to start the bot on reboot.
+
 **What the setup wizard (`--setup`) asks for** — the **token (secret) is the only thing you type into the terminal**. Nothing else is asked here:
 1. Your Discord bot **token** (secret — paste it only in the terminal)
 2. Your **Client ID**
@@ -197,6 +241,10 @@ Configuration is overridden in the order **global → server → project**.
 - **Slash commands don't show up** → Check that you included the `applications.commands` scope when inviting the bot (registration can take a few minutes).
 - **Channel creation fails with a permission error** → Check that the bot has the `Manage Channels` permission.
 - **The usage panel doesn't appear** → You need to be **logged in with a Claude Pro/Max subscription** (`~/.claude`). This panel is hidden (as expected) if you're only using an API key.
+- **"No authorized role for this actor (fail-secure)."** → The account you signed in with has no role on the allow-list. This is deny-by-default. Fix it with one of these:
+  1. **Simplest** — give that account Discord's **server Administrator** permission. Administrators are unconditionally treated as the admin tier and bypass the allow-list.
+  2. **Assign a listed role** — in the Discord server's member list, give the account one of the roles that's already tied to a tier under `/config`.
+  3. **Add the role to a tier** — from an admin account, open `/config` → **Role tiers** and click the account's role into the tier you want (admin/execute/read-only).
 
 ---
 

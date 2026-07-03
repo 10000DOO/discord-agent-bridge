@@ -87,6 +87,50 @@ npm install -g discord-agent-bridge@latest
 
 설치된 버전 확인: `discord-agent-bridge --version`.
 
+### PC 재시작 후에도 자동으로 실행 (PM2)
+
+로그아웃/재부팅 후에도 봇을 계속 살려두는 가장 간단한 방법은 [PM2](https://pm2.keymetrics.io/) 입니다. macOS·Linux·Windows에서 동일하게 동작하고, 로그·재시작·상태 확인을 한 번에 해결해 줍니다.
+
+```bash
+# 1) 전역 설치 (PM2가 안정적으로 실행할 커맨드가 있어야 함)
+npm install -g discord-agent-bridge
+
+# 2) 아직 셋업 안 했다면 한 번 실행
+discord-agent-bridge --setup
+
+# 3) PM2 설치
+npm install -g pm2
+
+# 4) PM2에 봇을 등록·실행
+pm2 start discord-agent-bridge --name discord-agent-bridge
+
+# 5) 현재 프로세스 목록을 스냅샷 저장 (재부팅 시 복구 대상)
+pm2 save
+
+# 6) 부팅 시 PM2 자동 시작 등록 (macOS는 launchd로 등록됨)
+pm2 startup
+# ↑ 출력되는 `sudo ...` 명령을 그대로 복사해 한 번 실행하세요.
+```
+
+일상적인 관리 명령:
+
+```bash
+pm2 status                          # 실행 상태
+pm2 logs discord-agent-bridge       # 실시간 로그
+pm2 restart discord-agent-bridge    # 재시작 (업그레이드 후에도 사용)
+pm2 stop discord-agent-bridge       # 중지
+pm2 delete discord-agent-bridge     # 등록 해제
+```
+
+PM2 상태에서 업그레이드:
+
+```bash
+npm install -g discord-agent-bridge@latest
+pm2 restart discord-agent-bridge
+```
+
+> ⚠️ nvm/asdf를 쓴다면, PM2가 부팅 시점에도 셸에서 쓰는 것과 **같은 `node`** 를 찾을 수 있어야 합니다. `which node`로 확인한 경로가 부팅 환경에서도 유효해야 합니다 — 아니면 재부팅 후 PM2가 봇을 못 띄웁니다.
+
 **셋업 마법사(`--setup`)** 가 물어보는 것 — **토큰(비밀)만 터미널에서 입력**합니다. 그 외 값은 하나도 안 물어봅니다:
 1. Discord 봇 **토큰** (비밀 → 터미널에서만 붙여넣기)
 2. **Client ID**
@@ -197,6 +241,10 @@ npm install -g discord-agent-bridge@latest
 - **슬래시 명령이 안 보여요** → 초대 시 `applications.commands` 스코프를 포함했는지 확인(등록에 몇 분 걸릴 수 있음).
 - **권한 오류로 채널 생성 실패** → 봇에게 `Manage Channels` 권한이 있는지 확인.
 - **사용량 패널이 안 떠요** → Claude Pro/Max **구독 로그인**(`~/.claude`) 상태여야 합니다. API 키만 쓰면 이 패널은 숨겨집니다(정상).
+- **"권한이 없습니다: No authorized role for this actor (fail-secure)."** → 접속한 계정에 허용 목록(admin/execute/read-only)에 등록된 역할이 하나도 없다는 뜻입니다. 기본이 거부(deny-by-default)라 이렇게 나옵니다. 아래 중 하나로 해결하세요:
+  1. **가장 간단** — 그 계정에 Discord **서버 관리자(Administrator)** 권한을 부여. 서버 관리자는 허용 목록과 무관하게 admin 티어로 무조건 통과됩니다.
+  2. **이미 지정된 역할 부여** — Discord 서버의 구성원 화면에서, `/config`에 티어로 이미 등록되어 있는 역할을 그 계정에 붙여줍니다.
+  3. **역할을 티어에 추가** — 관리자 계정에서 `/config` → **역할 티어** 로 들어가, 그 계정이 가진 역할을 원하는 티어(admin/execute/read-only)에 클릭해 추가합니다.
 
 ---
 
