@@ -55,9 +55,80 @@ You need to create your own bot. Takes about 5 minutes.
 
 ## Step 2 — Install & run
 
-### Keep it running across reboots (PM2 — recommended)
+### Keep it running across reboots — macOS (launchd, recommended)
 
-This is the recommended way to actually keep the bot up. The simplest way to keep the bot running after logout/reboot is [PM2](https://pm2.keymetrics.io/). It works the same on macOS, Linux, and Windows, and gives you logs, restart, and status in one place.
+On macOS this is the recommended way. Run the bot directly under **launchd**, the built-in macOS service manager — it starts at login and restarts automatically if it stops. (PM2's fork wrapper can prevent the bot from opening its gateway connection on macOS, so launchd is more reliable there.)
+
+```bash
+# 1) Install globally (and run setup once if you haven't)
+npm install -g discord-agent-bridge
+discord-agent-bridge --setup      # skip if already configured
+
+# 2) Create a launcher wrapper — it finds nvm's default node dynamically,
+#    so it keeps working even after you switch node versions.
+mkdir -p ~/.discord-agent-bridge
+cat > ~/.discord-agent-bridge/run.sh <<'EOF'
+#!/bin/bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1
+exec discord-agent-bridge
+EOF
+chmod +x ~/.discord-agent-bridge/run.sh
+# Not using nvm? run.sh can just be `#!/bin/bash` + `exec discord-agent-bridge` (node must be on PATH).
+
+# 3) Create the LaunchAgent ($HOME is expanded to an absolute path as the file is written)
+cat > ~/Library/LaunchAgents/com.discord-agent-bridge.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.discord-agent-bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$HOME/.discord-agent-bridge/run.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>HOME</key><string>$HOME</string></dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>$HOME/.discord-agent-bridge/agent.out.log</string>
+    <key>StandardErrorPath</key><string>$HOME/.discord-agent-bridge/agent.err.log</string>
+</dict>
+</plist>
+EOF
+
+# 4) Start it
+launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+
+# 5) Verify — seeing 'gateway ready' means success (Ctrl+C only exits the log view; the bot keeps running)
+tail -f ~/.discord-agent-bridge/agent.out.log
+```
+
+Management:
+
+```bash
+launchctl list | grep discord-agent-bridge                                # status (col 1 = PID, col 2 = last exit code)
+launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist    # stop
+launchctl load  -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist  # start
+```
+
+Upgrading:
+
+```bash
+npm install -g discord-agent-bridge@latest
+launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+launchctl load  -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+```
+
+> ⚠️ If you switch node versions with nvm, run `npm install -g discord-agent-bridge` once under the new version (nvm keeps global packages per version). The wrapper follows nvm's default node, so the plist itself never needs editing.
+
+### Keep it running across reboots — PM2 (Linux/Windows)
+
+> On macOS, prefer the **launchd** method above. On Linux/Windows, [PM2](https://pm2.keymetrics.io/) is convenient.
+
+Another way to keep the bot running after logout/reboot is [PM2](https://pm2.keymetrics.io/). It gives you logs, restart, and status in one place.
 
 ```bash
 # 1) Install the bot globally (so PM2 has a stable command to run)

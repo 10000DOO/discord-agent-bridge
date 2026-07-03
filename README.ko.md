@@ -55,9 +55,79 @@ Discord 채널에서 대화하듯 메시지를 보내면, 내 컴퓨터에서 Cl
 
 ## 2단계 — 설치 & 실행
 
-### PC 재시작 후에도 자동으로 실행 (PM2 · 권장)
+### 재부팅 후에도 자동 실행 — macOS (launchd · 권장)
 
-봇을 실제로 계속 켜두려면 이 방법을 권장합니다. 로그아웃/재부팅 후에도 봇을 계속 살려두는 가장 간단한 방법은 [PM2](https://pm2.keymetrics.io/) 입니다. macOS·Linux·Windows에서 동일하게 동작하고, 로그·재시작·상태 확인을 한 번에 해결해 줍니다.
+macOS라면 이 방법을 권장합니다. macOS 기본 서비스 관리자인 **launchd** 로 봇을 직접 실행합니다 — 로그인하면 자동 시작되고, 꺼지면 자동으로 되살아납니다. (PM2의 fork 래퍼는 macOS에서 봇의 게이트웨이 연결을 막는 경우가 있어, macOS에선 launchd가 더 안정적입니다.)
+
+```bash
+# 1) 전역 설치 (아직이면 셋업도 한 번)
+npm install -g discord-agent-bridge
+discord-agent-bridge --setup      # 이미 설정했으면 생략
+
+# 2) 실행 래퍼 생성 — nvm의 default node를 자동으로 찾으므로 node 버전이 바뀌어도 그대로 동작
+mkdir -p ~/.discord-agent-bridge
+cat > ~/.discord-agent-bridge/run.sh <<'EOF'
+#!/bin/bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1
+exec discord-agent-bridge
+EOF
+chmod +x ~/.discord-agent-bridge/run.sh
+# nvm을 안 쓴다면 run.sh 는 `#!/bin/bash` 와 `exec discord-agent-bridge` 두 줄이면 됩니다(PATH에 node가 있어야 함).
+
+# 3) LaunchAgent 등록 파일 생성 ($HOME 는 파일을 만드는 시점에 절대경로로 치환됩니다)
+cat > ~/Library/LaunchAgents/com.discord-agent-bridge.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.discord-agent-bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$HOME/.discord-agent-bridge/run.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>HOME</key><string>$HOME</string></dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>$HOME/.discord-agent-bridge/agent.out.log</string>
+    <key>StandardErrorPath</key><string>$HOME/.discord-agent-bridge/agent.err.log</string>
+</dict>
+</plist>
+EOF
+
+# 4) 시작
+launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+
+# 5) 확인 — 'gateway ready' 가 뜨면 성공 (Ctrl+C 로 로그 보기만 빠져나옴, 봇은 계속 돎)
+tail -f ~/.discord-agent-bridge/agent.out.log
+```
+
+관리 명령:
+
+```bash
+launchctl list | grep discord-agent-bridge                                # 상태 (1열 PID, 2열 마지막 종료코드)
+launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist    # 중지
+launchctl load  -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist  # 시작
+```
+
+업그레이드:
+
+```bash
+npm install -g discord-agent-bridge@latest
+launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+launchctl load  -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+```
+
+> ⚠️ nvm으로 **node 버전을 바꾸면** 그 버전에서 `npm install -g discord-agent-bridge` 를 한 번 실행하세요(nvm 전역 패키지는 버전별로 분리됩니다). 래퍼가 default node를 따라가므로 plist 자체는 고칠 필요가 없습니다.
+
+### 재부팅 후에도 자동 실행 — PM2 (Linux · Windows)
+
+> macOS에서는 위 **launchd** 방식을 권장합니다. Linux·Windows에서는 [PM2](https://pm2.keymetrics.io/) 가 편리합니다.
+
+로그아웃/재부팅 후에도 봇을 계속 살려두는 방법으로 [PM2](https://pm2.keymetrics.io/) 도 있습니다. 로그·재시작·상태 확인을 한 번에 해결해 줍니다.
 
 ```bash
 # 1) 전역 설치 (PM2가 안정적으로 실행할 커맨드가 있어야 함)
