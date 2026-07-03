@@ -55,9 +55,40 @@ You need to create your own bot. Takes about 5 minutes.
 
 ## Step 2 — Install & run
 
-### Keep it running across reboots — macOS (launchd, recommended)
+### Install & auto-start (recommended)
 
-On macOS this is the recommended way. Run the bot directly under **launchd**, the built-in macOS service manager — it starts at login and restarts automatically if it stops. (PM2's fork wrapper can prevent the bot from opening its gateway connection on macOS, so launchd is more reliable there.)
+The simplest path. These three lines take you from install to auto-start on reboot. `service install` registers the right auto-start for your OS — **launchd on macOS, systemd on Linux, Task Scheduler on Windows**.
+
+```bash
+npm install -g discord-agent-bridge      # install
+discord-agent-bridge --setup             # first time only (enter token, etc.)
+discord-agent-bridge service install     # register auto-start + start now
+```
+
+Management:
+
+```bash
+discord-agent-bridge service status      # registered / running?
+discord-agent-bridge service restart     # restart
+discord-agent-bridge service uninstall   # remove
+```
+
+To upgrade, install the latest and restart:
+
+```bash
+npm install -g discord-agent-bridge@latest
+discord-agent-bridge service restart
+```
+
+> ⚠️ **Windows note**: it registers a Task Scheduler logon trigger, so the bot **starts at login** (no admin needed). It does not guarantee auto-restart on crash (macOS/Linux do). If `service install` doesn't work, see **Manual setup — Windows (Task Scheduler)** below.
+
+---
+
+The rest of this section is the **manual methods**, for when `service install` doesn't work or you want to set it up yourself.
+
+### Manual setup — macOS (launchd)
+
+Run the bot directly under **launchd**, the built-in macOS service manager — it starts at login and restarts automatically if it stops.
 
 ```bash
 # 1) Install globally (and run setup once if you haven't)
@@ -124,11 +155,34 @@ launchctl load  -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
 
 > ⚠️ If you switch node versions with nvm, run `npm install -g discord-agent-bridge` once under the new version (nvm keeps global packages per version). The wrapper follows nvm's default node, so the plist itself never needs editing.
 
-### Keep it running across reboots — PM2 (Linux/Windows)
+### Manual setup — Windows (Task Scheduler)
 
-> On macOS, prefer the **launchd** method above. On Linux/Windows, [PM2](https://pm2.keymetrics.io/) is convenient.
+Register it yourself when `discord-agent-bridge service install` doesn't work.
 
-Another way to keep the bot running after logout/reboot is [PM2](https://pm2.keymetrics.io/). It gives you logs, restart, and status in one place.
+**Commands (no admin needed)** — first find the bot's real path in PowerShell:
+
+```powershell
+where.exe discord-agent-bridge      # e.g. C:\Users\<you>\AppData\Roaming\npm\discord-agent-bridge.cmd
+
+# Register a logon-triggered task using the path from above
+schtasks /create /tn discord-agent-bridge /sc onlogon /tr "C:\Users\<you>\AppData\Roaming\npm\discord-agent-bridge.cmd" /f
+schtasks /query  /tn discord-agent-bridge      # status
+schtasks /run    /tn discord-agent-bridge      # start now
+schtasks /delete /tn discord-agent-bridge /f   # remove
+```
+
+**GUI**: Start menu → **Task Scheduler** → **Create Basic Task** → name `discord-agent-bridge`, trigger **When I log on**, action **Start a program** → the `.cmd` path from `where.exe` → Finish.
+
+> A logon task runs **at login** and does **not** guarantee restart on crash. For crash recovery / running before login you need a real Windows service — register one with [nssm](https://nssm.cc/) (admin required):
+>
+> ```powershell
+> nssm install discord-agent-bridge "C:\Program Files\nodejs\node.exe" "C:\Users\<you>\AppData\Roaming\npm\node_modules\discord-agent-bridge\dist\cli.js"
+> nssm start discord-agent-bridge
+> ```
+
+### Manual setup — PM2 (Linux / Windows alternative)
+
+On Linux/Windows you can also use [PM2](https://pm2.keymetrics.io/) (handy logs, restart, status). **On macOS, use `service install`/launchd instead** — PM2's fork wrapper can prevent the bot from opening its gateway connection on macOS.
 
 ```bash
 # 1) Install the bot globally (so PM2 has a stable command to run)

@@ -55,9 +55,40 @@ Discord 채널에서 대화하듯 메시지를 보내면, 내 컴퓨터에서 Cl
 
 ## 2단계 — 설치 & 실행
 
-### 재부팅 후에도 자동 실행 — macOS (launchd · 권장)
+### 설치 & 자동 실행 (권장)
 
-macOS라면 이 방법을 권장합니다. macOS 기본 서비스 관리자인 **launchd** 로 봇을 직접 실행합니다 — 로그인하면 자동 시작되고, 꺼지면 자동으로 되살아납니다. (PM2의 fork 래퍼는 macOS에서 봇의 게이트웨이 연결을 막는 경우가 있어, macOS에선 launchd가 더 안정적입니다.)
+가장 간단한 방법입니다. 아래 세 줄이면 설치부터 재부팅 자동 실행까지 끝납니다. `service install` 이 현재 OS에 맞는 자동 실행을 알아서 등록합니다 — **macOS는 launchd, Linux는 systemd, Windows는 작업 스케줄러**.
+
+```bash
+npm install -g discord-agent-bridge      # 설치
+discord-agent-bridge --setup             # 최초 1회 (토큰 등 입력)
+discord-agent-bridge service install     # 자동 실행 등록 + 즉시 시작
+```
+
+관리 명령:
+
+```bash
+discord-agent-bridge service status      # 등록/실행 상태
+discord-agent-bridge service restart     # 재시작
+discord-agent-bridge service uninstall   # 등록 해제
+```
+
+업그레이드는 최신 설치 후 재시작:
+
+```bash
+npm install -g discord-agent-bridge@latest
+discord-agent-bridge service restart
+```
+
+> ⚠️ **Windows 참고**: 작업 스케줄러 로그온 트리거로 등록되어 **로그인 시 자동 시작**됩니다(관리자 권한 불필요). 단, 크래시 시 자동 재시작은 보장되지 않습니다(macOS·Linux는 보장). `service install` 이 안 되면 아래 **수동 설정 — Windows (작업 스케줄러)** 를 참고하세요.
+
+---
+
+아래부터는 `service install` 이 동작하지 않거나 직접 설정하고 싶을 때의 **수동 방법**입니다.
+
+### 수동 설정 — macOS (launchd)
+
+macOS 기본 서비스 관리자인 **launchd** 로 봇을 직접 실행합니다 — 로그인하면 자동 시작되고, 꺼지면 자동으로 되살아납니다.
 
 ```bash
 # 1) 전역 설치 (아직이면 셋업도 한 번)
@@ -123,11 +154,34 @@ launchctl load  -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
 
 > ⚠️ nvm으로 **node 버전을 바꾸면** 그 버전에서 `npm install -g discord-agent-bridge` 를 한 번 실행하세요(nvm 전역 패키지는 버전별로 분리됩니다). 래퍼가 default node를 따라가므로 plist 자체는 고칠 필요가 없습니다.
 
-### 재부팅 후에도 자동 실행 — PM2 (Linux · Windows)
+### 수동 설정 — Windows (작업 스케줄러)
 
-> macOS에서는 위 **launchd** 방식을 권장합니다. Linux·Windows에서는 [PM2](https://pm2.keymetrics.io/) 가 편리합니다.
+`discord-agent-bridge service install` 이 안 될 때 직접 등록하는 방법입니다.
 
-로그아웃/재부팅 후에도 봇을 계속 살려두는 방법으로 [PM2](https://pm2.keymetrics.io/) 도 있습니다. 로그·재시작·상태 확인을 한 번에 해결해 줍니다.
+**명령어 (관리자 권한 불필요)** — 먼저 PowerShell에서 봇 실제 경로를 확인하세요:
+
+```powershell
+where.exe discord-agent-bridge      # 예: C:\Users\<나>\AppData\Roaming\npm\discord-agent-bridge.cmd
+
+# 위에서 확인한 경로로 로그온 시 자동 실행 등록
+schtasks /create /tn discord-agent-bridge /sc onlogon /tr "C:\Users\<나>\AppData\Roaming\npm\discord-agent-bridge.cmd" /f
+schtasks /query  /tn discord-agent-bridge      # 상태 확인
+schtasks /run    /tn discord-agent-bridge      # 지금 바로 시작
+schtasks /delete /tn discord-agent-bridge /f   # 해제
+```
+
+**GUI 로 하려면**: 시작 메뉴 → **작업 스케줄러** → **기본 작업 만들기** → 이름 `discord-agent-bridge`, 트리거 **로그온할 때**, 동작 **프로그램 시작** → 위 `where.exe` 로 확인한 `.cmd` 경로 입력 → 마침.
+
+> onlogon 작업은 **로그인 시** 실행이며 **크래시 시 자동 재시작은 보장하지 않습니다.** 크래시 자동 복구·로그인 전 실행까지 원하면 진짜 Windows 서비스가 필요합니다 — [nssm](https://nssm.cc/) 으로 등록하세요(관리자 권한 필요):
+>
+> ```powershell
+> nssm install discord-agent-bridge "C:\Program Files\nodejs\node.exe" "C:\Users\<나>\AppData\Roaming\npm\node_modules\discord-agent-bridge\dist\cli.js"
+> nssm start discord-agent-bridge
+> ```
+
+### 수동 설정 — PM2 (Linux · Windows 대안)
+
+Linux·Windows에서는 [PM2](https://pm2.keymetrics.io/) 를 써도 됩니다(로그·재시작·상태 확인이 편리). **macOS에서는 PM2 대신 위 `service install`/launchd 를 쓰세요** — PM2의 fork 래퍼가 macOS에서 봇의 게이트웨이 연결을 막는 경우가 있습니다.
 
 ```bash
 # 1) 전역 설치 (PM2가 안정적으로 실행할 커맨드가 있어야 함)
