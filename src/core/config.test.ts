@@ -65,7 +65,7 @@ describe('ConfigStore', () => {
     expect(loaded.version).toBe(CONFIG_VERSION);
     expect(loaded.defaults.mode).toBe('claude');
     expect(loaded.defaults.claudeModel).toBe('opus');
-    expect(loaded.limits.permissionTimeoutSec).toBe(60);
+    expect(loaded.limits.permissionTimeoutSec).toBe(0);
     expect(loaded.policy.unknownCommand).toBe('confirm');
     expect(loaded.autoAllowClaudeTools).toEqual(['Read', 'Glob', 'Grep']);
     expect(loaded.auth.dmPolicy).toBe('deny');

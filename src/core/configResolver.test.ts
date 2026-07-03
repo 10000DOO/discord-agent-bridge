@@ -23,7 +23,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       codexCliCommand: 'codex',
       codexCliVersion: null,
     },
-    limits: { maxSessionsPerUser: 0, permissionTimeoutSec: 60, codexTimeoutMs: 1_800_000 },
+    limits: { maxSessionsPerUser: 0, permissionTimeoutSec: 0, codexTimeoutMs: 1_800_000 },
     policy: { unknownCommand: 'confirm', allowExtraCommands: [] },
     autoAllowClaudeTools: ['Read', 'Glob', 'Grep'],
     profiles: {},
@@ -76,7 +76,7 @@ describe('ConfigResolver', () => {
     expect(r.claudeModel).toBe('sonnet');
     expect(r.permissionMode).toBe('plan');
     expect(r.mode).toBe('claude');
-    expect(r.limits.permissionTimeoutSec).toBe(60);
+    expect(r.limits.permissionTimeoutSec).toBe(0);
   });
 
   it('server overrides global; unset server fields fall through', () => {
@@ -124,7 +124,7 @@ describe('ConfigResolver', () => {
     const { resolver } = build();
     const r = resolver.resolve('g1', 'c1');
     expect(r.limits.maxSessionsPerUser).toBe(3); // server override
-    expect(r.limits.permissionTimeoutSec).toBe(60); // global sibling fell through
+    expect(r.limits.permissionTimeoutSec).toBe(0); // global sibling fell through
     expect(r.limits.codexTimeoutMs).toBe(1_800_000); // global sibling fell through
   });
 
@@ -144,7 +144,7 @@ describe('ConfigResolver', () => {
     const view = resolver.resolveModeConfig('g1', 'c1');
     expect(view.model).toBe('haiku');
     expect(view.codexHome).toBe('~/.codex');
-    expect(view.permissionTimeoutSec).toBe(60);
+    expect(view.permissionTimeoutSec).toBe(0);
     expect(view.codexTimeoutMs).toBe(1_800_000);
   });
 

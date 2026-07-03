@@ -245,6 +245,38 @@ describe('SessionWiring.requestPermission', () => {
     }
   });
 
+  it('permissionTimeoutSec=0 waits indefinitely; no timer-driven auto-deny', async () => {
+    vi.useFakeTimers();
+    try {
+      const { channel, sent } = fakeChannel();
+      // 0 = "no timer, infinite wait" — a slow responder must not be auto-denied.
+      const { wiring } = makeWiring({ channel, permissionTimeoutSec: 0 });
+      await wiring.attach('g1', 'c1', 'claude');
+
+      const decisionP = wiring.requestPermission(binding, { toolName: 'Bash', input: {} });
+      // Let the buttons post so a reqId is available.
+      await Promise.resolve();
+      await Promise.resolve();
+      const reqId = reqIdFromSent(sent)!;
+
+      // Advance far beyond any reasonable timeout: no timer, decision still pending.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      let settled: PermissionDecision | null = null;
+      void decisionP.then((d) => {
+        settled = d;
+      });
+      await Promise.resolve();
+      expect(settled).toBeNull();
+
+      // The owner eventually clicks Allow — that value is what flows back.
+      await wiring.resolvePermission('g1', 'c1', `perm:${reqId}:allow`, 'owner');
+      const decision = await decisionP;
+      expect(decision).toEqual({ behavior: 'allow' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('denies when the channel is not wired (no live prompt possible)', async () => {
     const { channel } = fakeChannel();
     const { wiring } = makeWiring({ channel });

@@ -179,7 +179,9 @@ export const CONFIG_DEFAULTS = {
   },
   limits: {
     maxSessionsPerUser: 0,
-    permissionTimeoutSec: 60,
+    // 0 → no timer, the Allow/Always/Deny prompt waits indefinitely for a click
+    // (see wiring.ts withTimeout). Prevents auto-deny on slow responders.
+    permissionTimeoutSec: 0,
     codexTimeoutMs: 1_800_000,
   },
   policy: {

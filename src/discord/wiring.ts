@@ -19,7 +19,9 @@ import { SessionNotifier, resolveNotifications } from './notifier.js';
 //     the capability set of that channel's mode; unsubscribed on stop.
 //   - a PermissionButtonsHandler: orchestrator.requestPermission posts Allow/Always/
 //     Deny and the returned promise resolves when the button interaction settles.
-//     The permission timeout (limits.permissionTimeoutSec) denies on expiry.
+//     The permission timeout (limits.permissionTimeoutSec) denies on expiry; a value
+//     of 0 or less means "no timer, wait indefinitely" so slow responders are not
+//     auto-denied.
 //   - the sendFile callback (mcpFileTool → post the confined file to the channel).
 //   - usage snapshot feeding the usageEmbed (Claude only; Codex → unavailable line).
 //
@@ -65,6 +67,7 @@ export interface SessionWiringDeps {
   // client; injectable so tests supply a fake channel without a gateway.
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
   // Permission-request timeout in seconds (config limits.permissionTimeoutSec).
+  // 0 or negative → no timer, the prompt waits indefinitely for a button click.
   permissionTimeoutSec: number;
   // Persist an "always-allow" tool so future turns auto-allow it (§7A). Called
   // when a permission button resolves as `always`, with the actor/channel context
@@ -106,7 +109,9 @@ export class SessionWiring {
     this.auditLog = deps.auditLog;
     this.configStore = deps.configStore;
     this.resolveChannel = deps.resolveChannel ?? (() => Promise.resolve(null));
-    this.permissionTimeoutMs = Math.max(1, deps.permissionTimeoutSec) * 1000;
+    // 0 sentinel means "no timer" (infinite wait); withTimeout skips the setTimeout
+    // path so a slow-to-respond operator is not auto-denied.
+    this.permissionTimeoutMs = deps.permissionTimeoutSec > 0 ? deps.permissionTimeoutSec * 1000 : 0;
     this.onAlwaysAllow = deps.onAlwaysAllow;
   }
 
@@ -333,11 +338,14 @@ export class SessionWiring {
 
   // Race the decision against the permission timeout. On timeout, resolve the
   // pending prompt as deny (via a synthetic deny custom_id) and return deny.
+  // permissionTimeoutMs === 0 means "no timer": pass the decision through untouched
+  // so the prompt waits indefinitely for a button click.
   private withTimeout(
     decision: Promise<PermissionDecision>,
     reqId: string,
     wiring: ChannelWiring,
   ): Promise<PermissionDecision> {
+    if (this.permissionTimeoutMs === 0) return decision;
     return new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
         void wiring.permission.resolve(`perm:${reqId}:deny`).catch(() => {});
