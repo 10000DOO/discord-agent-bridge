@@ -60,8 +60,27 @@ export function formatNotification(
     }
     case 'error': {
       if (!events.error) return null;
-      let line = `❌ <#${sessionChannelId}> 에러: ${ev.message.slice(0, 500)}`;
-      if (ev.rateLimit) line += ` · rate limit`;
+      return `❌ <#${sessionChannelId}> 에러: ${ev.message.slice(0, 500)}`;
+    }
+    case 'rate_limit': {
+      // Gated by events.error (per minimal-change guidance): a rate-limit update is
+      // not an error semantically, but it's operational status of the same "something
+      // to be aware of" kind, and adding a new filter here would ripple into config
+      // schema / defaults. If differentiation is needed later, split the flag.
+      if (!events.error) return null;
+      let line = `📊 <#${sessionChannelId}> 사용량 한도`;
+      if (typeof ev.utilization === 'number') line += ` · ${Math.round(ev.utilization)}%`;
+      if (ev.resetAt) {
+        const ms = Date.parse(ev.resetAt);
+        if (!Number.isNaN(ms)) {
+          const hhmm = new Date(ms).toLocaleTimeString('ko-KR', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          });
+          line += ` · 리셋 ${hhmm}`;
+        }
+      }
       return line;
     }
     case 'tool_use': {

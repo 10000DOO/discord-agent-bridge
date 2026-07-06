@@ -209,16 +209,12 @@ export class ClaudeSession implements ModeSession {
       case 'rate_limit_event': {
         const info = msg.rate_limit_info;
         this.ctx.emit({
-          kind: 'error',
-          message: 'Rate limit updated.',
-          retryable: true,
-          rateLimit: {
-            ...(info.resetsAt !== undefined
-              ? { resetAt: new Date(info.resetsAt * 1000).toISOString() }
-              : {}),
-            ...(info.rateLimitType !== undefined ? { rateLimitType: info.rateLimitType } : {}),
-            ...(info.utilization !== undefined ? { utilization: info.utilization } : {}),
-          },
+          kind: 'rate_limit',
+          ...(info.resetsAt !== undefined
+            ? { resetAt: new Date(info.resetsAt * 1000).toISOString() }
+            : {}),
+          ...(info.rateLimitType !== undefined ? { rateLimitType: info.rateLimitType } : {}),
+          ...(info.utilization !== undefined ? { utilization: info.utilization } : {}),
         });
         return;
       }

@@ -44,6 +44,8 @@ export interface RendererSet {
   mention(ev: Extract<AgentEvent, { kind: 'result' }>): void;
   // Always: surface an error.
   error(ev: Extract<AgentEvent, { kind: 'error' }>): void;
+  // Always: surface a rate-limit update (usage %, reset time) — NOT an error.
+  rateLimit(ev: Extract<AgentEvent, { kind: 'rate_limit' }>): void;
   // Tear down any armed timers (stream/thinking debounce) so a detach mid-stream
   // cannot fire a late send/edit or leave an orphan "Responding…" embed. Called by
   // the wiring layer on detach, after unsubscribe. Optional so a partial spy set
@@ -98,6 +100,9 @@ export class RendererDispatcher {
         break;
       case 'error':
         this.renderers.error(ev);
+        break;
+      case 'rate_limit':
+        this.renderers.rateLimit(ev);
         break;
     }
   }
@@ -220,6 +225,9 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
     error(ev) {
       swallow(channel.send({ content: `⚠️ ${ev.message}` }));
     },
+    rateLimit(ev) {
+      swallow(channel.send({ content: formatRateLimitLine(ev) }));
+    },
     dispose() {
       // Cancel the streaming/thinking debounce timers so a detach mid-stream cannot
       // fire a late edit/send against a channel that is being torn down. Ended
@@ -236,3 +244,37 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
 // Re-export the permission handler for 7b to wire orchestrator.requestPermission
 // and button-interaction resolution (the request/resolve round-trip lives there).
 export { PermissionButtonsHandler } from './permissionButtons.js';
+
+// Human-readable label for the SDK's rateLimitType codes. Unknown types pass through
+// verbatim so a future SDK addition still renders something (not silently dropped).
+function rateLimitTypeLabel(type: string): string {
+  switch (type) {
+    case 'five_hour':
+      return '5시간 한도';
+    case 'weekly':
+      return '주간 한도';
+    default:
+      return type;
+  }
+}
+
+// One-line summary of a rate_limit event: emoji + label + optional utilization %
+// and reset time. Kept as a plain function (not on RendererSet) so the notifier
+// path can reuse the same phrasing if desired later.
+export function formatRateLimitLine(ev: Extract<AgentEvent, { kind: 'rate_limit' }>): string {
+  let line = '📊 사용량 한도 알림';
+  if (ev.rateLimitType) line += ` · ${rateLimitTypeLabel(ev.rateLimitType)}`;
+  if (typeof ev.utilization === 'number') line += ` · 사용량 ${Math.round(ev.utilization)}%`;
+  if (ev.resetAt) {
+    const ms = Date.parse(ev.resetAt);
+    if (!Number.isNaN(ms)) {
+      const hhmm = new Date(ms).toLocaleTimeString('ko-KR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      line += ` · 리셋 ${hhmm}`;
+    }
+  }
+  return line;
+}

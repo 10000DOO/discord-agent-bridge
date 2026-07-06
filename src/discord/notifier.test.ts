@@ -87,24 +87,51 @@ describe('formatNotification', () => {
     expect(formatNotification(ev, 'sess-1', ALL_ON)).toBe('✅ <#sess-1> 완료 · 500ms');
   });
 
-  it('formats an error line and marks a rate limit', () => {
+  it('formats an error line', () => {
     expect(formatNotification({ kind: 'error', message: 'boom', retryable: true }, 'sess-1', ALL_ON)).toBe(
       '❌ <#sess-1> 에러: boom',
     );
-    expect(
-      formatNotification({ kind: 'error', message: 'slow down', retryable: true, rateLimit: {} }, 'sess-1', ALL_ON),
-    ).toBe('❌ <#sess-1> 에러: slow down · rate limit');
   });
 
   it('caps a long error message so the line stays under Discord’s 2000-char limit', () => {
     const line = formatNotification(
-      { kind: 'error', message: 'x'.repeat(3000), retryable: true, rateLimit: {} },
+      { kind: 'error', message: 'x'.repeat(3000), retryable: true },
       'sess-1',
       ALL_ON,
     )!;
     expect(line.length).toBeLessThan(2000);
-    // The message segment is capped at 500 chars; the rate-limit suffix is kept.
-    expect(line).toMatch(/^❌ <#sess-1> 에러: x{500} · rate limit$/);
+    // The message segment is capped at 500 chars.
+    expect(line).toMatch(/^❌ <#sess-1> 에러: x{500}$/);
+  });
+
+  it('formats a rate_limit line with utilization and reset time', () => {
+    // Fixed epoch → deterministic HH:mm in ko-KR locale (24h).
+    const resetAt = new Date(1000 * 1000).toISOString();
+    const expectedHHmm = new Date(1000 * 1000).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const line = formatNotification(
+      { kind: 'rate_limit', utilization: 87, resetAt, rateLimitType: 'five_hour' },
+      'sess-1',
+      ALL_ON,
+    );
+    expect(line).toBe(`📊 <#sess-1> 사용량 한도 · 87% · 리셋 ${expectedHHmm}`);
+  });
+
+  it('rate_limit falls back to the bare line when utilization/resetAt are absent', () => {
+    expect(formatNotification({ kind: 'rate_limit' }, 'sess-1', ALL_ON)).toBe('📊 <#sess-1> 사용량 한도');
+  });
+
+  it('rate_limit is gated by the events.error filter (per minimal-change decision)', () => {
+    expect(
+      formatNotification({ kind: 'rate_limit', utilization: 50 }, 'sess-1', {
+        result: true,
+        error: false,
+        toolUse: true,
+      }),
+    ).toBeNull();
   });
 
   it('formats a tool_use line only when toolUse is enabled', () => {

@@ -214,6 +214,33 @@ describe('default renderer set — result text fallback', () => {
   });
 });
 
+describe('default renderer set — rate_limit rendering', () => {
+  it('renders a rate_limit event with 📊 (not ⚠️) and a human-readable summary', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    // Fixed epoch → deterministic HH:mm; the label test is locale-stable because we
+    // reuse the same toLocaleTimeString call the renderer uses.
+    const resetAt = new Date(1000 * 1000).toISOString();
+    const expectedHHmm = new Date(1000 * 1000).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    dispatcher.dispatch({
+      kind: 'rate_limit',
+      utilization: 87,
+      rateLimitType: 'five_hour',
+      resetAt,
+    } as AgentEvent);
+    await flush();
+    const line = sent.find((m) => (m.content ?? '').startsWith('📊'));
+    expect(line?.content).toBe(`📊 사용량 한도 알림 · 5시간 한도 · 사용량 87% · 리셋 ${expectedHHmm}`);
+    // No error emoji ever, for either the same or any other message.
+    expect(sent.some((m) => (m.content ?? '').startsWith('⚠️'))).toBe(false);
+  });
+});
+
 describe('default renderer set — dispose after result (§6)', () => {
   it('cancels ended handlers still finalizing: no late thinking embed after dispose', async () => {
     vi.useFakeTimers();

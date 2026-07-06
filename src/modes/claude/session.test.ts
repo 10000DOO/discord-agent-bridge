@@ -185,14 +185,10 @@ describe('ClaudeSession — SDK message mapping', () => {
       { kind: 'result', text: 'done', costUsd: 0.0123, tokensIn: 100, tokensOut: 42, durationMs: 4200 },
       { kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617 },
       {
-        kind: 'error',
-        message: 'Rate limit updated.',
-        retryable: true,
-        rateLimit: {
-          resetAt: new Date(1000 * 1000).toISOString(),
-          rateLimitType: 'five_hour',
-          utilization: 87,
-        },
+        kind: 'rate_limit',
+        resetAt: new Date(1000 * 1000).toISOString(),
+        rateLimitType: 'five_hour',
+        utilization: 87,
       },
     ]);
     expect(state.contextUsageCalls).toBe(1);

@@ -66,7 +66,15 @@ export type AgentEvent =
       kind: 'error';
       message: string;
       retryable: boolean;
-      rateLimit?: { resetAt?: string; rateLimitType?: string; utilization?: number };
+    }
+  // Rate-limit refresh from the backend. Not an error — the SDK emits this to
+  // announce a new utilization snapshot / reset time. Rendered on its own path
+  // (📊) so users don't see a ⚠️ error for a routine usage update.
+  | {
+      kind: 'rate_limit';
+      resetAt?: string;
+      rateLimitType?: string;
+      utilization?: number;
     };
 
 export interface PermissionDecision {

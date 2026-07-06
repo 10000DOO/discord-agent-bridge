@@ -16,6 +16,7 @@ function spySet(): RendererSet {
     usage: vi.fn(),
     mention: vi.fn(),
     error: vi.fn(),
+    rateLimit: vi.fn(),
   };
 }
 
@@ -139,5 +140,18 @@ describe('RendererDispatcher capability dispatch', () => {
     const set = spySet();
     new RendererDispatcher(set, codexCaps).dispatch(errEv);
     expect(set.error).toHaveBeenCalledWith(errEv);
+  });
+
+  it('always surfaces rate_limit updates regardless of capabilities and never as an error', () => {
+    const rlEv: AgentEvent = { kind: 'rate_limit', utilization: 87, rateLimitType: 'five_hour' };
+    const set = spySet();
+    new RendererDispatcher(set, codexCaps).dispatch(rlEv);
+    expect(set.rateLimit).toHaveBeenCalledWith(rlEv);
+    expect(set.error).not.toHaveBeenCalled();
+
+    const set2 = spySet();
+    new RendererDispatcher(set2, claudeCaps).dispatch(rlEv);
+    expect(set2.rateLimit).toHaveBeenCalledWith(rlEv);
+    expect(set2.error).not.toHaveBeenCalled();
   });
 });
