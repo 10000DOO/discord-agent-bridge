@@ -215,6 +215,19 @@ export function createApp(deps: CreateAppDeps): App {
       const provisioner = await resolveGuildProvisioner(discord.raw, guildId);
       if (provisioner) await autoProvisionGuild(provisioner, configStore, logger);
     },
+    // A user deleted a channel directly in Discord. If it was a BOUND, non-archived
+    // session channel, detach its renderers (dispose cancels any armed stream/thinking
+    // debounce so no late edit fires at the deleted channel) and stop the turn. This is
+    // the ROOT fix for the Unknown Channel (10003) crash. Control channels and
+    // unbound/archived channels have no live session → ignored.
+    onChannelDelete: (channelId, guildId) => {
+      const binding = channelRegistry.get(guildId, channelId);
+      if (!binding || binding.archived) return;
+      wiring.detach(guildId, channelId);
+      void orchestrator.stop(guildId, channelId).catch((err) => {
+        logger.error('stop on channelDelete failed', { guildId, channelId, err: String(err) });
+      });
+    },
     ...(deps.client ? { client: deps.client } : {}),
   });
 
@@ -242,6 +255,31 @@ export function createApp(deps: CreateAppDeps): App {
 // so an operator/test can point at a non-default DAB home.
 export interface StartBotOptions {
   baseDir?: string;
+}
+
+// LAST-LINE-OF-DEFENSE process safety net. This is NOT the primary crash fix — the
+// real fixes are at the source (channelDelete → stop/detach; streamEmbed flush
+// swallows a best-effort preview failure). This only ensures that a truly unforeseen
+// stray rejection/exception (e.g. a transient REST/network error deep in a library)
+// is LOGGED and does NOT hard-crash a long-running bot. Registration is idempotent per
+// target (a WeakSet) so calling startBot() repeatedly (tests) never stacks duplicate
+// listeners. Target is injectable so a unit test asserts registration without touching
+// the real process.
+const wiredSafetyNets = new WeakSet<object>();
+
+export function installGlobalSafetyNet(logger: Logger, target: Pick<NodeJS.EventEmitter, 'on'> = process): void {
+  if (wiredSafetyNets.has(target)) return;
+  wiredSafetyNets.add(target);
+  target.on('unhandledRejection', (reason: unknown) => {
+    logger.error('unhandled promise rejection (process kept alive)', {
+      reason: reason instanceof Error ? reason.message : String(reason),
+    });
+  });
+  target.on('uncaughtException', (err: unknown) => {
+    logger.error('uncaught exception (process kept alive)', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  });
 }
 
 // Boot the bot. The two EXPECTED first-run conditions — no config file yet, or a
@@ -273,7 +311,9 @@ export async function startBot(opts: StartBotOptions = {}): Promise<App | undefi
     return undefined;
   }
 
-  const app = createApp({ config, configStore });
+  const logger = createLogger('app', { level: config.logLevel });
+  installGlobalSafetyNet(logger);
+  const app = createApp({ config, configStore, logger });
   await app.login();
   return app;
 }

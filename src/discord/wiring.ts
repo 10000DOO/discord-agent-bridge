@@ -234,6 +234,7 @@ export class SessionWiring {
       channel,
       ownerId,
       getUsage: () => this.usageSnapshotFor(mode),
+      logger: this.logger,
     });
     // The dispatcher's permission renderer posts buttons via its own handler; we
     // want the SAME handler instance the router resolves against, so route the

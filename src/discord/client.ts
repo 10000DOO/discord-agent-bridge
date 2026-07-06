@@ -442,6 +442,12 @@ export interface DiscordClientDeps {
   // boot wires it to resolve the guild's provisioner over the live gateway; optional so
   // a test without it just skips provisioning.
   autoProvisionGuild?: (guildId: string) => Promise<void>;
+  // Called when Discord signals a channel was deleted (Events.ChannelDelete, received
+  // via the Guilds intent). The app boot wires it to stop + detach the bound session
+  // so no renderer keeps editing a channel a user deleted directly in Discord — the
+  // ROOT fix for the Unknown Channel (10003) crash loop. Guild channels only; optional
+  // so a test may omit it.
+  onChannelDelete?: (channelId: string, guildId: string) => void | Promise<void>;
   // Injectable so tests never construct a real gateway Client. Defaults to a real
   // discord.js Client with the required intents.
   client?: Client;
@@ -456,6 +462,7 @@ export class DiscordClient {
   private readonly backends: () => string[];
   private readonly onReady: (client: Client) => Promise<void>;
   private readonly autoProvisionGuild?: (guildId: string) => Promise<void>;
+  private readonly onChannelDelete?: (channelId: string, guildId: string) => void | Promise<void>;
 
   constructor(deps: DiscordClientDeps) {
     this.client = deps.client ?? new Client({ intents: INTENTS });
@@ -466,6 +473,7 @@ export class DiscordClient {
     this.backends = deps.backends;
     this.onReady = deps.onReady;
     if (deps.autoProvisionGuild) this.autoProvisionGuild = deps.autoProvisionGuild;
+    if (deps.onChannelDelete) this.onChannelDelete = deps.onChannelDelete;
     this.registerHandlers();
   }
 
@@ -522,6 +530,20 @@ export class DiscordClient {
       void this.interactionRouter.handle(adapted).catch((err) => {
         this.logger.error('interaction router failed', { err: errWithStack(err) });
         void ackFailedInteraction(interaction);
+      });
+    });
+
+    // A channel was deleted at the gateway (e.g. a user deleted a session channel in
+    // Discord). Hand its id to the app so it can stop + detach the bound session — the
+    // ROOT fix for the Unknown Channel (10003) crash: once detached, no renderer edits
+    // the now-missing channel. Guild channels only (DM channels host no session).
+    this.client.on(Events.ChannelDelete, (channel) => {
+      if (!this.onChannelDelete) return;
+      if (channel.isDMBased()) return;
+      const channelId = channel.id;
+      const guildId = channel.guildId;
+      void Promise.resolve(this.onChannelDelete(channelId, guildId)).catch((err) => {
+        this.logger.error('channelDelete handler failed', { channelId, guildId, err: String(err) });
       });
     });
   }

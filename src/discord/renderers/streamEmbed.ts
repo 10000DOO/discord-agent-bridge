@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../../core/contracts.js';
+import type { AgentEvent, Logger } from '../../core/contracts.js';
 import type { EditableMessage, MessageChannel } from '../ports.js';
 import { COLORS, EMBED_DESC_LIMIT, chunkMessage, truncate } from '../format.js';
 import { t } from '../i18n.js';
@@ -25,6 +25,9 @@ export interface StreamEmbedDeps {
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   now?: () => number;
+  // Optional: debug-log a swallowed best-effort preview failure (channel deleted
+  // mid-stream / REST timeout). Absent in unit tests that construct the handler bare.
+  logger?: Logger;
 }
 
 export class StreamEmbedHandler {
@@ -34,6 +37,7 @@ export class StreamEmbedHandler {
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
   private readonly now: () => number;
+  private readonly logger: Logger | undefined;
 
   private buffer = '';
   private deltaCount = 0;
@@ -55,6 +59,7 @@ export class StreamEmbedHandler {
     this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.now = deps.now ?? Date.now;
+    this.logger = deps.logger;
   }
 
   // Accumulate one delta and (re)arm the debounce timer. delta:false is treated as
@@ -71,7 +76,10 @@ export class StreamEmbedHandler {
     if (this.timer !== null) this.clearTimer(this.timer);
     this.timer = this.setTimer(() => {
       this.timer = null;
-      void this.flush();
+      // flush() already swallows send/edit errors so `inflight` always resolves; the
+      // extra .catch is belt-and-braces so a debounce flush can NEVER surface as an
+      // unhandledRejection (which would hard-crash the long-running process).
+      void this.flush().catch(() => {});
     }, this.debounceMs);
   }
 
@@ -83,12 +91,29 @@ export class StreamEmbedHandler {
       const title = this.kind === 'thinking' ? t('stream.thinking') : t('stream.responding');
       const color = this.kind === 'thinking' ? COLORS.thinking : COLORS.streaming;
       const embed = { title, description: desc, color, footer: this.footer() };
-      if (this.message) {
-        await this.message.edit({ embeds: [embed] });
-      } else {
-        this.message = await this.channel.send({ embeds: [embed] });
+      // The live preview is best-effort: a channel deleted mid-stream (Unknown Channel
+      // 10003) or a REST/network timeout makes edit/send reject. Swallow it so this
+      // callback ALWAYS resolves and `inflight` never enters a rejected state —
+      // otherwise the rejection leaks through the debounce timer's unawaited flush as
+      // an unhandledRejection, and a later push()/finalize() would await a poisoned
+      // `inflight`. Dropping a preview frame is harmless; the turn continues.
+      try {
+        if (this.message) {
+          await this.message.edit({ embeds: [embed] });
+        } else {
+          this.message = await this.channel.send({ embeds: [embed] });
+        }
+        this.emitted = true;
+      } catch (err) {
+        // non-fatal — skip this preview frame and keep streaming. The common case
+        // (a user deleted the channel) is handled at the root by channelDelete →
+        // stop/detach; what remains here is only the unavoidable race (a delete that
+        // lands while this edit is already in flight) or a REST/network timeout.
+        this.logger?.debug('stream preview edit/send failed (ignored)', {
+          kind: this.kind,
+          err: err instanceof Error ? err.message : String(err),
+        });
       }
-      this.emitted = true;
     });
     return this.inflight;
   }

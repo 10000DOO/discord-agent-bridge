@@ -50,6 +50,47 @@ describe('buildSlashCommands — /config', () => {
   });
 });
 
+// The ChannelDelete gateway subscription (root fix for the Unknown Channel 10003
+// crash): the client must forward a deleted GUILD channel's ids to onChannelDelete and
+// ignore deleted DM channels (which host no session).
+describe('DiscordClient — channelDelete subscription', () => {
+  function harness(onChannelDelete?: (channelId: string, guildId: string) => void) {
+    const handlers = new Map<string, (arg: unknown) => void>();
+    const client = {
+      once: (event: string, h: (arg: unknown) => void) => handlers.set(event, h),
+      on: (event: string, h: (arg: unknown) => void) => handlers.set(event, h),
+    } as unknown as Client;
+    const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+    new DiscordClient({
+      clientId: 'app-1',
+      logger,
+      messageRouter: {} as unknown as MessageRouter,
+      interactionRouter: {} as unknown as InteractionRouter,
+      backends: () => ['claude'],
+      onReady: async () => {},
+      ...(onChannelDelete ? { onChannelDelete } : {}),
+      client,
+    });
+    return handlers;
+  }
+
+  it('forwards a deleted guild channel id + guild id to onChannelDelete', () => {
+    const seen: Array<[string, string]> = [];
+    const handlers = harness((channelId, guildId) => seen.push([channelId, guildId]));
+    const fire = handlers.get(Events.ChannelDelete);
+    expect(fire).toBeTypeOf('function');
+    fire!({ id: 'c1', guildId: 'g1', isDMBased: () => false });
+    expect(seen).toEqual([['c1', 'g1']]);
+  });
+
+  it('ignores a deleted DM channel (no guild session to clean up)', () => {
+    const seen: Array<[string, string]> = [];
+    const handlers = harness((channelId, guildId) => seen.push([channelId, guildId]));
+    handlers.get(Events.ChannelDelete)!({ id: 'd1', isDMBased: () => true });
+    expect(seen).toEqual([]);
+  });
+});
+
 // adaptInteraction maps a real discord.js Interaction onto the router's narrow shape.
 // discord.js is mocked here (fakes satisfy the type guards structurally), so these
 // assert the adapter contract — the real reply/defer wiring is validated by live use.

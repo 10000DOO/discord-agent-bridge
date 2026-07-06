@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { Client } from 'discord.js';
-import { createApp } from './app.js';
+import { Events, type Client } from 'discord.js';
+import { createApp, installGlobalSafetyNet } from './app.js';
 import { ConfigStore } from './core/config.js';
+import { ChannelRegistry, type ChannelBinding } from './core/channelRegistry.js';
+import { StateStore } from './core/state/store.js';
 import { CONFIG_DEFAULTS, CONFIG_VERSION, type AppConfig } from './core/configSchema.js';
+import type { Logger } from './core/contracts.js';
 
 // Build a minimal valid AppConfig from the shipped defaults + a (fake) discord
 // section. No realistic secret-shaped literals — placeholder ids only.
@@ -24,12 +27,14 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 interface FakeClient {
   client: Client;
   fireReady: () => Promise<void>;
+  fireChannelDelete: (channel: unknown) => void;
   loginCalls: string[];
   destroyed: boolean;
 }
 
 function fakeClient(): FakeClient {
   const onceHandlers = new Map<string, (arg: unknown) => void>();
+  const onHandlers = new Map<string, (arg: unknown) => void>();
   const state = { loginCalls: [] as string[], destroyed: false };
   const ready = {
     user: { tag: 'bot#0001' },
@@ -39,7 +44,9 @@ function fakeClient(): FakeClient {
     once: (event: string, handler: (arg: unknown) => void) => {
       onceHandlers.set(event, handler);
     },
-    on: () => {},
+    on: (event: string, handler: (arg: unknown) => void) => {
+      onHandlers.set(event, handler);
+    },
     login: async (token: string) => {
       state.loginCalls.push(token);
     },
@@ -63,6 +70,11 @@ function fakeClient(): FakeClient {
       handler(ready);
       // handleReady runs onReady asynchronously; let its microtasks flush.
       await new Promise((r) => setTimeout(r, 0));
+    },
+    fireChannelDelete: (channel: unknown) => {
+      const handler = onHandlers.get(Events.ChannelDelete);
+      if (!handler) throw new Error('no ChannelDelete handler was registered');
+      handler(channel);
     },
   };
 }
@@ -135,5 +147,128 @@ describe('createApp — composition root', () => {
     const spy = vi.spyOn(app.orchestrator, 'resumeAll');
     await fc.fireReady();
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createApp — channelDelete cleans up a bound session (crash-loop root fix)', () => {
+  let dir: string;
+  let store: ConfigStore;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-app-cd-'));
+    store = new ConfigStore(dir);
+    store.save(makeConfig());
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Persist a channel binding into the same DAB home so the app's ChannelRegistry
+  // loads it at construction (createApp builds its own registry over configStore.dir).
+  function seedBinding(over: Partial<ChannelBinding> = {}): void {
+    const registry = new ChannelRegistry(new StateStore(store.dir));
+    registry.set({
+      guildId: 'g1',
+      channelId: 'c-bound',
+      mode: 'claude',
+      sessionId: null,
+      cwd: '/ws',
+      ownerId: 'u1',
+      permMode: 'default',
+      profile: null,
+      ...over,
+    });
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it('stops + detaches when a BOUND, non-archived session channel is deleted', async () => {
+    seedBinding();
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    fc.fireChannelDelete({ id: 'c-bound', guildId: 'g1', isDMBased: () => false });
+    await settle();
+
+    expect(detachSpy).toHaveBeenCalledWith('g1', 'c-bound');
+    expect(stopSpy).toHaveBeenCalledWith('g1', 'c-bound');
+  });
+
+  it('ignores an unbound (control) channel deletion', async () => {
+    // No binding seeded for c-control → it is not a session channel.
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    fc.fireChannelDelete({ id: 'c-control', guildId: 'g1', isDMBased: () => false });
+    await settle();
+
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(detachSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores an ARCHIVED binding deletion (no live session)', async () => {
+    seedBinding({ channelId: 'c-arch', archived: true });
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    fc.fireChannelDelete({ id: 'c-arch', guildId: 'g1', isDMBased: () => false });
+    await settle();
+
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(detachSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('installGlobalSafetyNet (last-line-of-defense, not the primary fix)', () => {
+  function fakeTarget() {
+    const handlers = new Map<string, ((arg: unknown) => void)[]>();
+    const target = {
+      on(event: string, listener: (arg: unknown) => void) {
+        const list = handlers.get(event) ?? [];
+        list.push(listener);
+        handlers.set(event, list);
+        return target;
+      },
+    };
+    return { target, handlers };
+  }
+
+  function recordingLogger(): { logger: Logger; errors: string[] } {
+    const errors: string[] = [];
+    const logger: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: (m: string) => errors.push(m),
+    };
+    return { logger, errors };
+  }
+
+  it('registers unhandledRejection + uncaughtException handlers that LOG and do not throw', () => {
+    const { target, handlers } = fakeTarget();
+    const { logger, errors } = recordingLogger();
+    installGlobalSafetyNet(logger, target as unknown as Pick<NodeJS.EventEmitter, 'on'>);
+
+    expect(handlers.get('unhandledRejection')).toHaveLength(1);
+    expect(handlers.get('uncaughtException')).toHaveLength(1);
+
+    expect(() => handlers.get('unhandledRejection')![0](new Error('Unknown Channel'))).not.toThrow();
+    expect(() => handlers.get('uncaughtException')![0](new Error('boom'))).not.toThrow();
+    expect(errors.length).toBe(2);
+  });
+
+  it('is idempotent per target (no duplicate handlers on repeat calls)', () => {
+    const { target, handlers } = fakeTarget();
+    const { logger } = recordingLogger();
+    installGlobalSafetyNet(logger, target as unknown as Pick<NodeJS.EventEmitter, 'on'>);
+    installGlobalSafetyNet(logger, target as unknown as Pick<NodeJS.EventEmitter, 'on'>);
+    expect(handlers.get('unhandledRejection')).toHaveLength(1);
+    expect(handlers.get('uncaughtException')).toHaveLength(1);
   });
 });

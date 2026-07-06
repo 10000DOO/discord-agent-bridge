@@ -1,4 +1,4 @@
-import type { AgentEvent, Capabilities } from '../../core/contracts.js';
+import type { AgentEvent, Capabilities, Logger } from '../../core/contracts.js';
 import type { MessageChannel } from '../ports.js';
 import type { EventBus } from '../../core/eventBus.js';
 import type { UsageResult } from '../../core/usageService.js';
@@ -117,17 +117,20 @@ export interface DefaultRendererSetOptions {
   // Returns the latest usage snapshot (or unavailable) at render time; may be null
   // until the poller has a value. Sync — the caller caches the last poll result.
   getUsage?: () => UsageResult | null;
+  // Optional: threaded into each StreamEmbedHandler so a swallowed best-effort preview
+  // failure (deleted channel race / REST timeout) is debug-logged rather than silent.
+  logger?: Logger;
 }
 
 // Wire the concrete handlers over one channel. Async handler work is fire-and-forget
 // with a swallowed rejection so a rendering hiccup never breaks the event stream —
 // the orchestrator's error events remain the user-visible failure signal.
 export function createDefaultRendererSet(options: DefaultRendererSetOptions): RendererSet {
-  const { channel, ownerId } = options;
+  const { channel, ownerId, logger } = options;
   // `let`: finalize() permanently closes a StreamEmbedHandler, so one instance
   // serves exactly one turn — the result renderer swaps in fresh instances.
-  let textStream = new StreamEmbedHandler({ channel, kind: 'text' });
-  let thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking' });
+  let textStream = new StreamEmbedHandler({ channel, kind: 'text', logger });
+  let thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking', logger });
   // Ended-but-still-finalizing handlers from a previous turn: dispose() must cancel
   // these too, or an armed debounce timer could fire a late send/edit after detach (§6).
   const endedStreams = new Set<StreamEmbedHandler>();
@@ -190,8 +193,8 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       const endedThinking = thinkingStream;
       endedStreams.add(endedText);
       endedStreams.add(endedThinking);
-      textStream = new StreamEmbedHandler({ channel, kind: 'text' });
-      thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking' });
+      textStream = new StreamEmbedHandler({ channel, kind: 'text', logger });
+      thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking', logger });
       const finalized = endedText
         .finalize()
         .then(() => endedThinking.finalize())

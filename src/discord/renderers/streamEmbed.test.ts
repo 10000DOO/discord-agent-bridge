@@ -169,3 +169,97 @@ describe('StreamEmbedHandler (thinking)', () => {
     expect(s.hasEmitted()).toBe(true);
   });
 });
+
+// Resilience: a channel deleted mid-stream (Unknown Channel 10003) or a REST/network
+// timeout makes send/edit REJECT. The debounce flush is unawaited, so a leaked
+// rejection would hard-crash the process. flush() must swallow it (keeping `inflight`
+// resolved) so streaming continues and no unhandled rejection escapes.
+describe('StreamEmbedHandler — send/edit failure resilience', () => {
+  // A channel whose send (and the resulting message's edit) reject on demand, driven
+  // by the same manual timer as harness().
+  function failingHarness(opts: { failSend?: boolean; failEdit?: boolean }) {
+    const sent: OutgoingMessage[] = [];
+    let seq = 0;
+    const channel: MessageChannel = {
+      async send(message) {
+        if (opts.failSend) throw new Error('DiscordAPIError: Unknown Channel (10003)');
+        sent.push(message);
+        const id = `m${++seq}`;
+        const em: EditableMessage = {
+          id,
+          async edit() {
+            if (opts.failEdit) throw new Error('DiscordAPIError: Unknown Channel (10003)');
+          },
+        };
+        return em;
+      },
+      async startThread() {
+        throw new Error('not used');
+      },
+    };
+    let pending: (() => void) | null = null;
+    const setTimer = (fn: () => void) => {
+      pending = fn;
+      return 1;
+    };
+    const clearTimer = () => {
+      pending = null;
+    };
+    const fire = async () => {
+      const fn = pending;
+      pending = null;
+      fn?.();
+      await new Promise((r) => setImmediate(r));
+    };
+    return { channel, sent, setTimer, clearTimer, fire };
+  }
+
+  it('a failed debounce flush does not poison inflight: a later finalize resolves + delivers', async () => {
+    const opts = { failSend: true };
+    const h = failingHarness(opts);
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    s.push({ kind: 'text', text: 'hi', delta: true });
+    await h.fire(); // flush send rejects → swallowed → `inflight` must stay RESOLVED
+    expect(s.hasEmitted()).toBe(false); // nothing delivered yet
+    opts.failSend = false; // channel recovers
+    // finalize awaits `inflight`; if the failed flush had left it rejected, this throws.
+    await expect(s.finalize()).resolves.toBeUndefined();
+    expect(s.hasEmitted()).toBe(true);
+    expect(h.sent.map((m) => m.content)).toEqual(['hi']);
+  });
+
+  it('a failing flush never surfaces as an unhandled rejection', async () => {
+    const seen: unknown[] = [];
+    const onRej = (r: unknown) => seen.push(r);
+    process.on('unhandledRejection', onRej);
+    try {
+      const h = failingHarness({ failEdit: true });
+      const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+      s.push({ kind: 'text', text: 'a', delta: true });
+      await h.fire(); // first flush: send ok → message created
+      s.push({ kind: 'text', text: 'b', delta: true });
+      await h.fire(); // second flush: edit rejects → swallowed
+      // Give the rejection queue a couple of ticks to surface any leak.
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(seen).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRej);
+    }
+  });
+
+  it('keeps streaming after a failed flush: a later successful flush still delivers', async () => {
+    // Fail the first send, then flip to success and confirm the stream recovers.
+    const opts = { failSend: true };
+    const h = failingHarness(opts);
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    s.push({ kind: 'text', text: 'first', delta: true });
+    await h.fire(); // send rejects, swallowed, nothing sent
+    expect(h.sent).toHaveLength(0);
+    opts.failSend = false; // channel "recovers"
+    s.push({ kind: 'text', text: ' second', delta: true });
+    await h.fire(); // now succeeds
+    expect(h.sent).toHaveLength(1);
+    expect(s.hasEmitted()).toBe(true);
+  });
+});
