@@ -215,6 +215,8 @@ describe('SessionOrchestrator', () => {
       ownerId: 'u1',
       archived: false,
     });
+    // A fresh start (no prior binding) persists WITHOUT a projectAuth key.
+    expect(onDisk.channels['g1:c1']).not.toHaveProperty('projectAuth');
     expect(readAudit(h.dir).some((r) => r.action === 'start')).toBe(true);
   });
 
@@ -518,7 +520,7 @@ describe('SessionOrchestrator', () => {
   it('send: active absent + binding present with sessionId → auto-resume', async () => {
     const h = harness();
     cleanup.push(h.dir, h.workspace);
-    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'saved-sess', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, model: 'claude-fable-5' });
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'saved-sess', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, model: 'claude-fable-5', projectAuth: { allowedRoleIds: ['r1'], allowedUserIds: ['u9'] } });
 
     // The channel is persisted but NOT active (resumeAll() was never called).
     const result = await h.orchestrator.send('g1', 'c1', { text: 'hi' });
@@ -526,6 +528,8 @@ describe('SessionOrchestrator', () => {
     expect(h.mode.resumedIds).toEqual(['saved-sess']);
     // The reactivation's RESUME branch threads the persisted model too.
     expect(h.mode.resumedCtx[0].model).toBe('claude-fable-5');
+    // Binding-resident projectAuth survives resume()'s re-persist (REPLACE semantics).
+    expect(h.channelRegistry.get('g1', 'c1')?.projectAuth).toEqual({ allowedRoleIds: ['r1'], allowedUserIds: ['u9'] });
     // Give the queued drain a chance to run so the mock records the turn.
     await new Promise((r) => setTimeout(r, 0));
     expect(h.mode.lastSession?.turns.map((t) => t.text)).toEqual(['hi']);
@@ -534,13 +538,15 @@ describe('SessionOrchestrator', () => {
   it('send: active absent + binding present with sessionId=null → auto-start', async () => {
     const h = harness();
     cleanup.push(h.dir, h.workspace);
-    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: null, cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: null, cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, projectAuth: { allowedRoleIds: ['r1'], allowedUserIds: [] } });
 
     const result = await h.orchestrator.send('g1', 'c1', { text: 'hi' });
     expect(result.status).toBe('started');
     // start() was chosen, not resume().
     expect(h.mode.startedCtx).toHaveLength(1);
     expect(h.mode.resumedIds).toEqual([]);
+    // Binding-resident projectAuth survives start()'s re-persist (REPLACE semantics).
+    expect(h.channelRegistry.get('g1', 'c1')?.projectAuth).toEqual({ allowedRoleIds: ['r1'], allowedUserIds: [] });
     await new Promise((r) => setTimeout(r, 0));
     expect(h.mode.lastSession?.turns.map((t) => t.text)).toEqual(['hi']);
   });

@@ -160,6 +160,10 @@ export class SessionOrchestrator {
     const session = await agentMode.start(ctx);
 
     // Persist the binding (source of truth for resume-on-boot) then track live.
+    // projectAuth is binding-resident access control (not a start-time parameter), so
+    // set()'s REPLACE semantics must not drop it when a binding already exists — e.g.
+    // send()'s on-demand reactivation restarting a persisted channel.
+    const existing = this.channelRegistry.get(guildId, channelId);
     this.channelRegistry.set({
       guildId,
       channelId,
@@ -170,6 +174,7 @@ export class SessionOrchestrator {
       permMode: perm.permMode,
       profile: perm.profile,
       ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(existing?.projectAuth !== undefined ? { projectAuth: existing.projectAuth } : {}),
     });
     this.active.set(channelKey(guildId, channelId), {
       guildId,
@@ -225,6 +230,8 @@ export class SessionOrchestrator {
     });
     const session = await agentMode.resume(ctx, sessionId);
 
+    // Carry existing binding-resident projectAuth across the REPLACE (see start()).
+    const existing = this.channelRegistry.get(guildId, channelId);
     this.channelRegistry.set({
       guildId,
       channelId,
@@ -235,6 +242,7 @@ export class SessionOrchestrator {
       permMode: perm.permMode,
       profile: perm.profile,
       ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(existing?.projectAuth !== undefined ? { projectAuth: existing.projectAuth } : {}),
     });
     this.active.set(channelKey(guildId, channelId), {
       guildId,
