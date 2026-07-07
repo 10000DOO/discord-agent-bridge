@@ -191,6 +191,7 @@ describe('UsageService', () => {
       logger: createLogger('usage', { sink: captureSink().sink }),
       fetchFn: fetchFn as unknown as typeof fetch,
       credentialsPath: credsPath, // never created
+      readKeychain: () => null, // hermetic: never touch the real macOS Keychain
       now,
     });
 
@@ -261,12 +262,157 @@ describe('UsageService', () => {
       logger: createLogger('usage', { sink: captureSink().sink }),
       fetchFn: fetchFn as unknown as typeof fetch,
       credentialsPath: credsPath,
+      readKeychain: () => null, // hermetic: no Keychain fallback for this case
       now,
     });
 
     expect(svc.isAvailable()).toBe(false);
     await expect(svc.getUsage()).resolves.toEqual({ available: false, reason: 'no-credentials' });
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  // macOS stores the OAuth credentials in the Keychain, not the file. When the file is
+  // absent, the service falls back to an injectable Keychain reader (source of truth on
+  // darwin) and writes a refreshed token back to the SAME source.
+  describe('macOS Keychain fallback', () => {
+    function credsBlob(expiresAt: number): string {
+      return JSON.stringify({
+        claudeAiOauth: { accessToken: ACCESS_TOKEN, refreshToken: REFRESH_TOKEN, expiresAt },
+      });
+    }
+
+    it('reads credentials from the Keychain when the file is absent → snapshot', async () => {
+      // credsPath is never created; the blob comes only from the injected reader.
+      const fetchFn = vi.fn(async () => jsonResponse(200, usageBody()));
+      const svc = new UsageService({
+        logger: createLogger('usage', { sink: captureSink().sink }),
+        fetchFn: fetchFn as unknown as typeof fetch,
+        credentialsPath: credsPath,
+        readKeychain: () => credsBlob(clock + 3_600_000),
+        now,
+      });
+
+      expect(svc.isAvailable()).toBe(true);
+      const snap = (await svc.getUsage()) as UsageSnapshot;
+      expect(snap.fiveHour).toEqual({ utilization: 42, resetsAt: '2026-07-01T12:00:00Z' });
+      expect(calls(fetchFn)[0][1]).toBeTruthy();
+      const usageInit = calls(fetchFn)[0][1] as RequestInit;
+      expect((usageInit.headers as Record<string, string>).Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+    });
+
+    it('reports unavailable when the file is absent AND the Keychain has nothing', async () => {
+      const fetchFn = vi.fn();
+      const svc = new UsageService({
+        logger: createLogger('usage', { sink: captureSink().sink }),
+        fetchFn: fetchFn as unknown as typeof fetch,
+        credentialsPath: credsPath,
+        readKeychain: () => null,
+        now,
+      });
+
+      expect(svc.isAvailable()).toBe(false);
+      await expect(svc.getUsage()).resolves.toEqual({ available: false, reason: 'no-credentials' });
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
+    it('prefers the file over the Keychain (Keychain reader never consulted)', async () => {
+      writeCreds(clock + 3_600_000); // valid file present
+      const readKeychain = vi.fn(() => null);
+      const fetchFn = vi.fn(async () => jsonResponse(200, usageBody()));
+      const svc = new UsageService({
+        logger: createLogger('usage', { sink: captureSink().sink }),
+        fetchFn: fetchFn as unknown as typeof fetch,
+        credentialsPath: credsPath,
+        readKeychain,
+        now,
+      });
+
+      await svc.getUsage();
+      expect(readKeychain).not.toHaveBeenCalled(); // file-first short-circuits
+    });
+
+    it('write-back: a keychain-sourced refresh persists to the Keychain, NOT the file', async () => {
+      // No file; the (expired) creds come from the Keychain, forcing a refresh.
+      const readKeychain = () => credsBlob(clock - 1_000);
+      const writeKeychain = vi.fn();
+      const fetchFn = vi.fn(async (url: string) => {
+        if (url === TOKEN_URL) {
+          return jsonResponse(200, { access_token: NEW_ACCESS_TOKEN, refresh_token: REFRESH_TOKEN, expires_in: 3600 });
+        }
+        return jsonResponse(200, usageBody());
+      });
+      const svc = new UsageService({
+        logger: createLogger('usage', { sink: captureSink().sink }),
+        fetchFn: fetchFn as unknown as typeof fetch,
+        credentialsPath: credsPath,
+        readKeychain,
+        writeKeychain,
+        now,
+      });
+
+      await svc.getUsage();
+
+      // Refreshed token written back to the Keychain with the new access token…
+      expect(writeKeychain).toHaveBeenCalledTimes(1);
+      const written = JSON.parse(writeKeychain.mock.calls[0][0] as string);
+      expect(written.claudeAiOauth.accessToken).toBe(NEW_ACCESS_TOKEN);
+      // …and NOT to the credentials file (which stays absent).
+      expect(fs.existsSync(credsPath)).toBe(false);
+    });
+
+    it('write-back: a file-sourced refresh persists to the file, NOT the Keychain', async () => {
+      writeCreds(clock - 1_000); // expired file creds → refresh
+      const writeKeychain = vi.fn();
+      const fetchFn = vi.fn(async (url: string) => {
+        if (url === TOKEN_URL) {
+          return jsonResponse(200, { access_token: NEW_ACCESS_TOKEN, refresh_token: REFRESH_TOKEN, expires_in: 3600 });
+        }
+        return jsonResponse(200, usageBody());
+      });
+      const svc = new UsageService({
+        logger: createLogger('usage', { sink: captureSink().sink }),
+        fetchFn: fetchFn as unknown as typeof fetch,
+        credentialsPath: credsPath,
+        writeKeychain,
+        now,
+      });
+
+      await svc.getUsage();
+
+      expect(writeKeychain).not.toHaveBeenCalled();
+      const persisted = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+      expect(persisted.claudeAiOauth.accessToken).toBe(NEW_ACCESS_TOKEN);
+    });
+
+    it('never leaks tokens when a Keychain write-back fails (error name only)', async () => {
+      const readKeychain = () => credsBlob(clock - 1_000); // expired → refresh
+      const writeKeychain = vi.fn(() => {
+        // Simulate `security` failing with a message that echoes the argv (the blob).
+        throw new Error(`command failed: security add-generic-password -w ${NEW_ACCESS_TOKEN}`);
+      });
+      const fetchFn = vi.fn(async (url: string) => {
+        if (url === TOKEN_URL) {
+          return jsonResponse(200, { access_token: NEW_ACCESS_TOKEN, refresh_token: REFRESH_TOKEN, expires_in: 3600 });
+        }
+        return jsonResponse(200, usageBody());
+      });
+      const { lines, sink } = captureSink();
+      const svc = new UsageService({
+        logger: createLogger('usage', { level: 'debug', sink }),
+        fetchFn: fetchFn as unknown as typeof fetch,
+        credentialsPath: credsPath,
+        readKeychain,
+        writeKeychain,
+        now,
+      });
+
+      // Must not throw despite the write failure.
+      await expect(svc.getUsage()).resolves.toBeTruthy();
+      const joined = lines.join('\n');
+      expect(joined).not.toContain(NEW_ACCESS_TOKEN);
+      expect(joined).not.toContain(ACCESS_TOKEN);
+      expect(joined).not.toContain(REFRESH_TOKEN);
+    });
   });
 
   it('codexUsageUnavailable() returns the typed codex-unsupported result', () => {

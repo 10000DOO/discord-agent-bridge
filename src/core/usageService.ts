@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
 import type { Logger } from './contracts.js';
 
@@ -10,7 +11,11 @@ import type { Logger } from './contracts.js';
 // redacting logger. Framework-agnostic (no discord.js). Context usage is emitted
 // separately by Claude mode as a `context_usage` AgentEvent — NOT handled here.
 //
-// Requires OAuth subscription login (~/.claude/.credentials.json), not an API key.
+// Requires OAuth subscription login, not an API key. Credentials live in
+// ~/.claude/.credentials.json on Linux, but on macOS Claude Code stores them in the
+// login Keychain (service "Claude Code-credentials"), NOT the file — so we read the
+// file first and fall back to the Keychain on darwin. A refreshed token is written
+// back to the SAME source it was read from, so the CLI and this service never diverge.
 // API-key-only users degrade gracefully: the service reports unavailable and the
 // Discord usage embed is simply hidden. This service NEVER throws into callers.
 //
@@ -95,10 +100,15 @@ const tokenResponseSchema = z.object({
   expires_in: z.number().optional(),
 });
 
+// Where a credential set came from — so a refreshed token is persisted back to the
+// same store (writing a keychain-sourced token to the file would diverge from the CLI).
+type CredentialSource = 'file' | 'keychain';
+
 interface OAuthCredentials {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+  source: CredentialSource;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,12 +126,77 @@ export interface UsageServiceOptions {
   fetchFn?: typeof fetch;
   // Path to the Claude Code OAuth credentials file. Default ~/.claude/.credentials.json.
   credentialsPath?: string;
+  // Read the OAuth credentials JSON blob from the macOS Keychain (where Claude Code
+  // stores them on darwin). Returns the blob string, or null when absent/unreadable/
+  // non-darwin. Default shells out to `security find-generic-password`. Injectable so
+  // tests never touch the real Keychain; MUST NEVER throw.
+  readKeychain?: () => string | null;
+  // Persist a refreshed OAuth blob back into the macOS Keychain (updates the existing
+  // item). Default shells out to `security add-generic-password -U`. Injectable; the
+  // caller warns + ignores any failure.
+  writeKeychain?: (json: string) => void;
   // Injected clock (default: Date.now). Lets tests advance time deterministically.
   now?: () => number;
 }
 
 function defaultCredentialsPath(): string {
   return path.join(os.homedir(), '.claude', '.credentials.json');
+}
+
+// macOS Keychain item the Claude Code CLI stores its OAuth credentials under.
+const KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+// Read the credentials blob from the login Keychain (darwin only). Any failure —
+// non-darwin, missing item, `security` unavailable — yields null (never throws).
+function defaultReadKeychain(): string | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    return execFileSync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'], {
+      encoding: 'utf-8',
+    });
+  } catch {
+    return null;
+  }
+}
+
+// Update (or create) the Keychain item with the given blob (darwin only). May throw;
+// the caller (writeCredentials) catches and warns WITHOUT logging the error message
+// (which echoes the argv, i.e. the token blob).
+function defaultWriteKeychain(json: string): void {
+  if (process.platform !== 'darwin') return;
+  execFileSync(
+    'security',
+    ['add-generic-password', '-U', '-s', KEYCHAIN_SERVICE, '-a', os.userInfo().username, '-w', json],
+    { stdio: 'ignore' },
+  );
+}
+
+// Merge a refreshed OAuth token triple into an existing credentials blob (from file or
+// Keychain), preserving any sibling fields. A malformed/absent base starts from empty.
+// Shared by both write paths so file and Keychain persist identically.
+function mergeOauthInto(existingRaw: string | null, creds: OAuthCredentials): Record<string, unknown> {
+  let data: Record<string, unknown> = {};
+  if (existingRaw) {
+    try {
+      const existing = JSON.parse(existingRaw);
+      if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        data = existing as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed base — start from an empty object.
+    }
+  }
+  const prevOauth =
+    data.claudeAiOauth && typeof data.claudeAiOauth === 'object'
+      ? (data.claudeAiOauth as Record<string, unknown>)
+      : {};
+  data.claudeAiOauth = {
+    ...prevOauth,
+    accessToken: creds.accessToken,
+    refreshToken: creds.refreshToken,
+    expiresAt: creds.expiresAt,
+  };
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +209,8 @@ export class UsageService {
   private readonly cacheMs: number;
   private readonly fetchFn: typeof fetch;
   private readonly credentialsPath: string;
+  private readonly readKeychain: () => string | null;
+  private readonly writeKeychain: (json: string) => void;
   private readonly now: () => number;
 
   private cached: UsageSnapshot | null = null;
@@ -147,6 +224,8 @@ export class UsageService {
     this.cacheMs = Math.max(0, (options.cacheSec ?? 180)) * 1000;
     this.fetchFn = options.fetchFn ?? fetch;
     this.credentialsPath = options.credentialsPath ?? defaultCredentialsPath();
+    this.readKeychain = options.readKeychain ?? defaultReadKeychain;
+    this.writeKeychain = options.writeKeychain ?? defaultWriteKeychain;
     this.now = options.now ?? Date.now;
     this.currentIntervalMs = this.cacheMs;
   }
@@ -182,24 +261,43 @@ export class UsageService {
 
   // ---- OAuth credentials -------------------------------------------------
 
+  // Read the OAuth credentials, file first (Linux + explicit-path installs) then the
+  // macOS Keychain (default source on darwin). Absent everywhere → null (API-key-only
+  // user); not an error condition.
   private readCredentials(): OAuthCredentials | null {
+    return this.readCredentialsFromFile() ?? this.readCredentialsFromKeychain();
+  }
+
+  private readCredentialsFromFile(): OAuthCredentials | null {
     let raw: string;
     try {
       raw = fs.readFileSync(this.credentialsPath, 'utf-8');
     } catch {
-      // Absent/unreadable — API-key-only user. Not an error condition.
+      // Absent/unreadable — fall through to the Keychain (macOS) or unavailable.
       return null;
     }
+    return this.parseCredentials(raw, 'file');
+  }
+
+  private readCredentialsFromKeychain(): OAuthCredentials | null {
+    const blob = this.readKeychain(); // never throws by contract; null off-darwin
+    if (!blob) return null;
+    return this.parseCredentials(blob, 'keychain');
+  }
+
+  // Parse a credentials blob (identical shape from file or Keychain) into creds, or
+  // null when malformed/incomplete. `source` is a non-secret tag (safe to log).
+  private parseCredentials(raw: string, source: CredentialSource): OAuthCredentials | null {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      this.logger.warn('usage credentials file is not valid JSON; treating as unavailable');
+      this.logger.warn('usage credentials are not valid JSON; treating as unavailable', { source });
       return null;
     }
     const result = credentialsSchema.safeParse(parsed);
     if (!result.success) {
-      this.logger.warn('usage credentials file has an unexpected shape; treating as unavailable');
+      this.logger.warn('usage credentials have an unexpected shape; treating as unavailable', { source });
       return null;
     }
     const oauth = result.data.claudeAiOauth;
@@ -208,39 +306,43 @@ export class UsageService {
       accessToken: oauth.accessToken,
       refreshToken: oauth.refreshToken,
       expiresAt: oauth.expiresAt ?? 0,
+      source,
     };
   }
 
+  // Persist a refreshed token back to the SAME source it was read from, so the CLI
+  // (Keychain on macOS) and this service never diverge — writing a keychain-sourced
+  // token to the file would risk a refresh-token rotation conflict. Best-effort: a
+  // failure just means we refresh again next cycle. The token is NEVER logged.
   private writeCredentials(creds: OAuthCredentials): void {
-    try {
-      let data: Record<string, unknown> = {};
+    if (creds.source === 'keychain') {
       try {
-        const existing = JSON.parse(fs.readFileSync(this.credentialsPath, 'utf-8'));
-        if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-          data = existing as Record<string, unknown>;
-        }
-      } catch {
-        // Fresh/unreadable file — start from an empty object.
+        const merged = mergeOauthInto(this.readKeychain(), creds);
+        this.writeKeychain(JSON.stringify(merged));
+      } catch (err) {
+        // Do NOT log the error message here: for the Keychain write it can echo the
+        // argv (which contains the token blob). Log only the error name.
+        this.logger.warn('failed to persist refreshed usage credentials to keychain', {
+          error: err instanceof Error ? err.name : 'unknown',
+        });
       }
-      const prevOauth =
-        data.claudeAiOauth && typeof data.claudeAiOauth === 'object'
-          ? (data.claudeAiOauth as Record<string, unknown>)
-          : {};
-      data.claudeAiOauth = {
-        ...prevOauth,
-        accessToken: creds.accessToken,
-        refreshToken: creds.refreshToken,
-        expiresAt: creds.expiresAt,
-      };
-      fs.writeFileSync(this.credentialsPath, JSON.stringify(data), { encoding: 'utf-8', mode: 0o600 });
+      return;
+    }
+    try {
+      let existingRaw: string | null = null;
+      try {
+        existingRaw = fs.readFileSync(this.credentialsPath, 'utf-8');
+      } catch {
+        existingRaw = null; // Fresh/unreadable file — start from an empty object.
+      }
+      const merged = mergeOauthInto(existingRaw, creds);
+      fs.writeFileSync(this.credentialsPath, JSON.stringify(merged), { encoding: 'utf-8', mode: 0o600 });
     } catch (err) {
-      // Persisting the refreshed token is best-effort; a failure just means we
-      // refresh again next cycle. Do not surface the token in the log.
       this.logger.warn('failed to persist refreshed usage credentials', { error: String(err) });
     }
   }
 
-  private async refreshAccessToken(refreshToken: string): Promise<OAuthCredentials | null> {
+  private async refreshAccessToken(creds: OAuthCredentials): Promise<OAuthCredentials | null> {
     let res: Response;
     try {
       res = await this.fetchFn(OAUTH_TOKEN_URL, {
@@ -251,7 +353,7 @@ export class UsageService {
         },
         body: JSON.stringify({
           grant_type: 'refresh_token',
-          refresh_token: refreshToken,
+          refresh_token: creds.refreshToken,
           client_id: CLIENT_ID,
         }),
       });
@@ -275,18 +377,19 @@ export class UsageService {
       this.logger.warn('usage token refresh response has an unexpected shape');
       return null;
     }
-    const creds: OAuthCredentials = {
+    const refreshed: OAuthCredentials = {
       accessToken: result.data.access_token,
-      refreshToken: result.data.refresh_token ?? refreshToken,
+      refreshToken: result.data.refresh_token ?? creds.refreshToken,
       expiresAt: this.now() + (result.data.expires_in ?? 3600) * 1000,
+      source: creds.source, // persist back to the SAME store it was read from
     };
-    this.writeCredentials(creds);
-    return creds;
+    this.writeCredentials(refreshed);
+    return refreshed;
   }
 
   private async getValidToken(creds: OAuthCredentials): Promise<string | null> {
     if (creds.expiresAt < this.now() + REFRESH_SKEW_MS) {
-      const refreshed = await this.refreshAccessToken(creds.refreshToken);
+      const refreshed = await this.refreshAccessToken(creds);
       if (!refreshed) return null;
       return refreshed.accessToken;
     }
