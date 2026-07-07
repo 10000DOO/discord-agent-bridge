@@ -35,6 +35,9 @@ pids/
 *.seed
 *.pid.lock
 
+# Runtime attachment-download directory (Discord file attachments land here)
+.dab-attachments/
+
 # Environment variables (keep an example committed)
 .env
 .env.*
