@@ -117,11 +117,43 @@ describe('formatNotification', () => {
       'sess-1',
       ALL_ON,
     );
-    expect(line).toBe(`📊 <#sess-1> 사용량 한도 · 87% · 리셋 ${expectedHHmm}`);
+    expect(line).toBe(`📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 87% · 리셋 ${expectedHHmm}`);
   });
 
   it('rate_limit falls back to the bare line when utilization/resetAt are absent', () => {
     expect(formatNotification({ kind: 'rate_limit' }, 'sess-1', ALL_ON)).toBe('📊 <#sess-1> 사용량 한도');
+  });
+
+  it('rate_limit backfills the utilization % (+ label) from the usage snapshot', () => {
+    const line = formatNotification(
+      { kind: 'rate_limit', rateLimitType: 'five_hour' },
+      'sess-1',
+      ALL_ON,
+      { fetchedAt: 0, fiveHour: { utilization: 73 } },
+    );
+    expect(line).toBe('📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 73%');
+  });
+
+  it('rate_limit omits % when no usage snapshot is available (label still shown, no crash)', () => {
+    expect(formatNotification({ kind: 'rate_limit', rateLimitType: 'five_hour' }, 'sess-1', ALL_ON, null)).toBe(
+      '📊 <#sess-1> 사용량 한도 · 5시간 한도',
+    );
+    expect(
+      formatNotification({ kind: 'rate_limit', rateLimitType: 'seven_day' }, 'sess-1', ALL_ON, {
+        available: false,
+        reason: 'no-credentials',
+      }),
+    ).toBe('📊 <#sess-1> 사용량 한도 · 주간 한도');
+  });
+
+  it('rate_limit uses ev.utilization over the snapshot when present (regression)', () => {
+    const line = formatNotification(
+      { kind: 'rate_limit', rateLimitType: 'five_hour', utilization: 50 },
+      'sess-1',
+      ALL_ON,
+      { fetchedAt: 0, fiveHour: { utilization: 99 } },
+    );
+    expect(line).toBe('📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 50%');
   });
 
   it('rate_limit is gated by the events.error filter (per minimal-change decision)', () => {
@@ -210,5 +242,22 @@ describe('SessionNotifier', () => {
     bus.emit('g1', 'sess-1', { kind: 'result' });
     await Promise.resolve();
     expect(sent.length).toBe(before);
+  });
+
+  it('backfills the rate_limit % from getUsage when posting', async () => {
+    const { channel, sent } = fakeChannel();
+    const bus = new EventBus();
+    const notifier = new SessionNotifier({
+      statusChannel: channel,
+      sessionChannelId: 'sess-1',
+      events: { result: true, error: true, toolUse: false },
+      getUsage: () => ({ fetchedAt: 0, fiveHour: { utilization: 73 } }),
+    });
+    notifier.subscribe(bus, 'g1', 'sess-1');
+
+    bus.emit('g1', 'sess-1', { kind: 'rate_limit', rateLimitType: 'five_hour' });
+    await Promise.resolve();
+
+    expect(sent.map((m) => m.content)).toEqual(['📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 73%']);
   });
 });

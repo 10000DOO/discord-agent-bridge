@@ -122,6 +122,22 @@ describe('default renderer set — result line + mention', () => {
   });
 });
 
+describe('default renderer set — rate limit line', () => {
+  it('backfills the utilization % from getUsage when the event omits it', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({
+      channel,
+      ownerId: 'u1',
+      getUsage: () => ({ fetchedAt: 0, fiveHour: { utilization: 73 } }),
+    });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'rate_limit', rateLimitType: 'five_hour' } as AgentEvent);
+    await flush();
+    const line = sent.find((m) => (m.content ?? '').includes('사용량 한도 알림'));
+    expect(line?.content).toContain('사용량 73%');
+  });
+});
+
 describe('default renderer set — result text fallback', () => {
   // A finalize()/hasEmitted() sequence is async: promise chain, then chunked send.
   // Two microtask flushes reliably drain both stages under the fake channel.

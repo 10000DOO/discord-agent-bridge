@@ -1,7 +1,7 @@
 import type { AgentEvent, Capabilities, Logger } from '../../core/contracts.js';
 import type { MessageChannel } from '../ports.js';
 import type { EventBus } from '../../core/eventBus.js';
-import type { UsageResult } from '../../core/usageService.js';
+import type { UsageResult, UsageSnapshot, UsageLimit } from '../../core/usageService.js';
 import { StreamEmbedHandler } from './streamEmbed.js';
 import { ToolThreadHandler } from './toolThread.js';
 import { PermissionButtonsHandler } from './permissionButtons.js';
@@ -229,7 +229,9 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       swallow(channel.send({ content: `⚠️ ${ev.message}` }));
     },
     rateLimit(ev) {
-      swallow(channel.send({ content: formatRateLimitLine(ev) }));
+      // Pass the latest usage snapshot so a %-less rate_limit event still shows the
+      // utilization for its window (backfilled from the snapshot).
+      swallow(channel.send({ content: formatRateLimitLine(ev, options.getUsage?.() ?? null) }));
     },
     dispose() {
       // Cancel the streaming/thinking debounce timers so a detach mid-stream cannot
@@ -250,24 +252,68 @@ export { PermissionButtonsHandler } from './permissionButtons.js';
 
 // Human-readable label for the SDK's rateLimitType codes. Unknown types pass through
 // verbatim so a future SDK addition still renders something (not silently dropped).
-function rateLimitTypeLabel(type: string): string {
+export function rateLimitTypeLabel(type: string): string {
   switch (type) {
     case 'five_hour':
       return '5시간 한도';
-    case 'weekly':
+    case 'seven_day':
       return '주간 한도';
+    case 'seven_day_opus':
+      return '주간 한도 (Opus)';
+    case 'seven_day_sonnet':
+      return '주간 한도 (Sonnet)';
+    case 'overage':
+      return '추가 사용량';
     default:
-      return type;
+      return type; // unknown/future type → render verbatim rather than drop it
+  }
+}
+
+// A UsageResult is a snapshot only when it is not the {available:false} unavailable
+// marker (which is the sole member carrying an `available` field).
+export function isUsageSnapshot(usage: UsageResult | null | undefined): usage is UsageSnapshot {
+  return !!usage && !('available' in usage);
+}
+
+// Map an SDK rateLimitType to the matching UsageSnapshot window, or undefined when
+// there is no tracked window for it (e.g. 'overage' / an unknown type). Used to
+// backfill the utilization % the SDK's rate_limit_event usually omits.
+export function usageLimitForRateType(
+  type: string | undefined,
+  usage: UsageResult | null | undefined,
+): UsageLimit | undefined {
+  if (!type || !isUsageSnapshot(usage)) return undefined;
+  switch (type) {
+    case 'five_hour':
+      return usage.fiveHour;
+    case 'seven_day':
+      return usage.sevenDay;
+    case 'seven_day_opus':
+      return usage.sevenDayOpus;
+    case 'seven_day_sonnet':
+      return usage.sevenDaySonnet;
+    default:
+      return undefined; // 'overage' and any unknown type have no snapshot window
   }
 }
 
 // One-line summary of a rate_limit event: emoji + label + optional utilization %
-// and reset time. Kept as a plain function (not on RendererSet) so the notifier
-// path can reuse the same phrasing if desired later.
-export function formatRateLimitLine(ev: Extract<AgentEvent, { kind: 'rate_limit' }>): string {
+// and reset time. `usage` is an optional fallback source for the utilization %: the
+// SDK's rate_limit_event usually omits `ev.utilization`, so when it is absent we read
+// the matching window from the latest usage snapshot. Kept as a plain function (not on
+// RendererSet) so the notifier path can reuse the same phrasing if desired later.
+export function formatRateLimitLine(
+  ev: Extract<AgentEvent, { kind: 'rate_limit' }>,
+  usage?: UsageResult | null,
+): string {
   let line = '📊 사용량 한도 알림';
   if (ev.rateLimitType) line += ` · ${rateLimitTypeLabel(ev.rateLimitType)}`;
-  if (typeof ev.utilization === 'number') line += ` · 사용량 ${Math.round(ev.utilization)}%`;
+  // Prefer the event's own utilization; fall back to the snapshot window it maps to.
+  const utilization =
+    typeof ev.utilization === 'number'
+      ? ev.utilization
+      : usageLimitForRateType(ev.rateLimitType, usage)?.utilization;
+  if (typeof utilization === 'number') line += ` · 사용량 ${Math.round(utilization)}%`;
   if (ev.resetAt) {
     const ms = Date.parse(ev.resetAt);
     if (!Number.isNaN(ms)) {

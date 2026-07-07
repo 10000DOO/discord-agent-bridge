@@ -248,7 +248,7 @@ export class SessionWiring {
     // tool_use if enabled) to that status channel as compact summary lines. Skipped
     // when disabled, no resolvable status channel, or the session channel IS the
     // status channel (self-echo). Best-effort: a resolve failure never breaks attach.
-    const unsubscribeNotifier = await this.attachNotifier(guildId, channelId);
+    const unsubscribeNotifier = await this.attachNotifier(guildId, channelId, mode);
 
     this.channels.set(key, {
       unsubscribe,
@@ -266,7 +266,7 @@ export class SessionWiring {
   // resolvable status channel that is NOT this session channel, subscribe a SessionNotifier
   // to this channel's event stream. Returns the notifier's unsubscribe, or null when no
   // notifier was wired. Never throws — a resolve/config error just skips notifications.
-  private async attachNotifier(guildId: string, channelId: string): Promise<(() => void) | null> {
+  private async attachNotifier(guildId: string, channelId: string, mode: string): Promise<(() => void) | null> {
     if (!this.configStore) return null;
     try {
       const server = this.configStore.loadServerConfig(guildId);
@@ -280,6 +280,7 @@ export class SessionWiring {
         statusChannel,
         sessionChannelId: channelId,
         events: notifications.events,
+        getUsage: () => this.usageSnapshotFor(mode),
       });
       return notifier.subscribe(this.eventBus, guildId, channelId);
     } catch (err) {

@@ -1,7 +1,9 @@
 import type { AgentEvent } from '../core/contracts.js';
 import type { EventBus } from '../core/eventBus.js';
 import type { ServerConfig } from '../core/configSchema.js';
+import type { UsageResult } from '../core/usageService.js';
 import type { MessageChannel } from './ports.js';
+import { rateLimitTypeLabel, usageLimitForRateType } from './renderers/index.js';
 
 // Per-guild event notifier: forwards key AgentEvents (result, error; tool_use only when
 // enabled) from a session channel to ONE per-guild status channel as compact, one-line
@@ -46,6 +48,7 @@ export function formatNotification(
   ev: AgentEvent,
   sessionChannelId: string,
   events: ResolvedNotifications['events'],
+  usage?: UsageResult | null,
 ): string | null {
   switch (ev.kind) {
     case 'result': {
@@ -69,7 +72,14 @@ export function formatNotification(
       // schema / defaults. If differentiation is needed later, split the flag.
       if (!events.error) return null;
       let line = `📊 <#${sessionChannelId}> 사용량 한도`;
-      if (typeof ev.utilization === 'number') line += ` · ${Math.round(ev.utilization)}%`;
+      if (ev.rateLimitType) line += ` · ${rateLimitTypeLabel(ev.rateLimitType)}`;
+      // Prefer the event's own utilization; the SDK usually omits it, so fall back to
+      // the matching window in the usage snapshot (same mapping as formatRateLimitLine).
+      const utilization =
+        typeof ev.utilization === 'number'
+          ? ev.utilization
+          : usageLimitForRateType(ev.rateLimitType, usage)?.utilization;
+      if (typeof utilization === 'number') line += ` · 사용량 ${Math.round(utilization)}%`;
       if (ev.resetAt) {
         const ms = Date.parse(ev.resetAt);
         if (!Number.isNaN(ms)) {
@@ -99,6 +109,9 @@ export interface SessionNotifierOptions {
   sessionChannelId: string;
   // The resolved event filter (which kinds to forward).
   events: ResolvedNotifications['events'];
+  // Latest usage snapshot source, used to backfill the rate_limit utilization % the
+  // SDK event omits. Optional (back-compat): absent → no fallback, just no %.
+  getUsage?: () => UsageResult | null;
 }
 
 // One session's notification forwarder. On each AgentEvent, formats a summary line
@@ -115,7 +128,7 @@ export class SessionNotifier {
   }
 
   private notify(ev: AgentEvent): void {
-    const line = formatNotification(ev, this.opts.sessionChannelId, this.opts.events);
+    const line = formatNotification(ev, this.opts.sessionChannelId, this.opts.events, this.opts.getUsage?.() ?? null);
     if (line === null) return;
     void this.opts.statusChannel.send({ content: line }).catch(() => {});
   }
