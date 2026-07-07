@@ -54,6 +54,11 @@ function toSdkPermissionMode(permMode: SessionPermMode): Options['permissionMode
 export class ClaudeSession implements ModeSession {
   sessionId: string | null = null;
 
+  // The RESOLVED model id reported by the SDK's init message (e.g.
+  // 'claude-fable-5[1m]') — better for display than ctx.model, which may be an
+  // alias like 'opus'. Carried on context_usage events for the usage panel.
+  private activeModel: string | null = null;
+
   private readonly ctx: ModeContext;
   private readonly query: Query;
   private readonly abortController: AbortController;
@@ -181,6 +186,7 @@ export class ClaudeSession implements ModeSession {
     switch (msg.type) {
       case 'system': {
         if (msg.subtype === 'init' && msg.session_id) {
+          if (typeof msg.model === 'string' && msg.model.length > 0) this.activeModel = msg.model;
           const first = this.sessionId === null;
           this.sessionId = msg.session_id;
           // Only the FIRST capture notifies the orchestrator so it can persist the
@@ -297,6 +303,7 @@ export class ClaudeSession implements ModeSession {
           totalTokens: ctx.totalTokens,
           maxTokens: ctx.maxTokens,
           percentage: ctx.percentage,
+          ...(this.activeModel !== null ? { model: this.activeModel } : {}),
         });
       })
       .catch(() => {

@@ -45,4 +45,17 @@ describe('buildUsageEmbed', () => {
     expect(embed).not.toBeNull();
     expect((embed?.fields ?? []).map((f) => f.name)).toEqual(['컨텍스트']);
   });
+
+  it('appends the running model (backtick-monospace) when the context event carries one', () => {
+    const withModel = { ...ctx, model: 'claude-fable-5[1m]' };
+    const embed = buildUsageEmbed(null, withModel);
+    const field = (embed?.fields ?? []).find((f) => f.name === '모델');
+    expect(field?.value).toBe('`claude-fable-5[1m]`');
+  });
+
+  it('omits the model field when the context event has none', () => {
+    const embed = buildUsageEmbed(null, ctx);
+    expect(embed).not.toBeNull();
+    expect((embed?.fields ?? []).map((f) => f.name)).not.toContain('모델');
+  });
 });

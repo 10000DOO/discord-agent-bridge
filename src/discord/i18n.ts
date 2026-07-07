@@ -143,6 +143,7 @@ const ko: Catalog = {
   'usage.weeklyOpus': '주간 (Opus)',
   'usage.weeklySonnet': '주간 (Sonnet)',
   'usage.context': '컨텍스트',
+  'usage.model': '모델',
   'usage.resets': '초기화 {reset}',
   // File download
   'file.escape': '워크스페이스를 벗어난 경로는 다운로드할 수 없습니다.',

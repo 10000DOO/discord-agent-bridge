@@ -114,7 +114,7 @@ async function waitFor(pred: () => boolean, budgetMs = 500): Promise<void> {
 // A scripted, ordered set of SDK messages covering every mapped kind.
 function scriptedMessages() {
   return [
-    { type: 'system', subtype: 'init', session_id: 'sess-abc', cwd: '/tmp/ws' },
+    { type: 'system', subtype: 'init', session_id: 'sess-abc', cwd: '/tmp/ws', model: 'claude-fable-5[1m]' },
     {
       type: 'stream_event',
       event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hel' } },
@@ -183,7 +183,8 @@ describe('ClaudeSession — SDK message mapping', () => {
       { kind: 'tool_use', id: 'tu-1', name: 'Read', input: { file_path: '/tmp/ws/a.txt' } },
       { kind: 'tool_result', id: 'tu-1', ok: true, content: 'file body' },
       { kind: 'result', text: 'done', costUsd: 0.0123, tokensIn: 100, tokensOut: 42, durationMs: 4200 },
-      { kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617 },
+      // Carries the init-reported RESOLVED model id for the usage panel.
+      { kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617, model: 'claude-fable-5[1m]' },
       {
         kind: 'rate_limit',
         resetAt: new Date(1000 * 1000).toISOString(),
@@ -192,6 +193,22 @@ describe('ClaudeSession — SDK message mapping', () => {
       },
     ]);
     expect(state.contextUsageCalls).toBe(1);
+  });
+
+  it('emits context_usage WITHOUT a model key when the init message carried none', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-no-model' },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+
+    const ev = events.find((e) => e.kind === 'context_usage');
+    expect(ev).toEqual({ kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617 });
+    expect(ev).not.toHaveProperty('model');
   });
 
   it('captures sessionId from the init message', async () => {

@@ -75,6 +75,11 @@ export function buildUsageEmbed(
       value: `${progressBar(ctxUsage.percentage)} **${Math.round(ctxUsage.percentage)}%**`,
     });
     maxUtil = Math.max(maxUtil, ctxUsage.percentage);
+    // The running model only ever arrives WITH a context_usage event, so it renders
+    // inside this block — model presence alone can never produce an embed.
+    if (ctxUsage.model) {
+      fields.push({ name: t('usage.model'), value: `\`${ctxUsage.model}\`` });
+    }
   }
 
   if (fields.length === 0) return null;

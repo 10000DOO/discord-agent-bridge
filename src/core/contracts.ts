@@ -61,7 +61,9 @@ export type AgentEvent =
       tokensOut?: number;
       durationMs?: number;
     }
-  | { kind: 'context_usage'; totalTokens: number; maxTokens: number; percentage: number } // Claude: query.getContextUsage()
+  // Claude: query.getContextUsage(); `model` is the init-reported RESOLVED model id
+  // actually serving the session (e.g. 'claude-fable-5[1m]'), shown on the usage panel.
+  | { kind: 'context_usage'; totalTokens: number; maxTokens: number; percentage: number; model?: string }
   | {
       kind: 'error';
       message: string;
