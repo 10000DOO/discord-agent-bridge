@@ -133,6 +133,8 @@ describe('ChannelWizard state machine (button-advance, backend-aware)', () => {
       permMode: 'read-only',
       profile: '수정허용',
       effort: 'high',
+      // The dropdown pick (non-default: codex reset the model to gpt-5.5) reaches start.
+      model: 'gpt-5.4',
     });
   });
 
@@ -150,10 +152,10 @@ describe('ChannelWizard state machine (button-advance, backend-aware)', () => {
     expect(await wizard.handle({ id: 'effort.next' })).toBe('perm');
     expect(await wizard.handle({ id: 'perm.start' })).toBe('done');
     expect(start).toHaveBeenCalledOnce();
-    // Defaults carried through: claude backend, high effort, default permission, no profile.
-    // (The model is threaded via resolved config, not the start params.)
+    // Defaults carried through: claude backend, default model, high effort, default
+    // permission, no profile — an untouched model dropdown still reaches start.
     expect(start).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'claude', effort: 'high', permMode: 'default', profile: null }),
+      expect.objectContaining({ mode: 'claude', model: 'opus', effort: 'high', permMode: 'default', profile: null }),
     );
   });
 

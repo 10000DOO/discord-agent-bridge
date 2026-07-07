@@ -67,16 +67,16 @@ describe('getClaudeModels (dynamic, mocked SDK)', () => {
     const { queryFn } = fakeQueryFn(async () => {
       throw new Error('unavailable (api-key-only)');
     });
-    const debug = vi.fn();
-    const choices = await getClaudeModels({ queryFn, logger: { debug, info() {}, warn() {}, error() {} } });
+    const warn = vi.fn();
+    const choices = await getClaudeModels({ queryFn, logger: { debug() {}, info() {}, warn, error() {} } });
     expect(choices).toEqual([
       { value: 'opus', label: 'opus' },
       { value: 'sonnet', label: 'sonnet' },
       { value: 'haiku', label: 'haiku' },
     ]);
     expect(choices.map((c) => c.value)).toEqual([...CLAUDE_MODEL_FALLBACK]);
-    // Logged at debug (not warn/error) as specified.
-    expect(debug).toHaveBeenCalledOnce();
+    // Logged at warn so a silent fallback (stale model list) is visible in ops logs.
+    expect(warn).toHaveBeenCalledOnce();
   });
 
   it('falls back to the aliases when supportedModels() TIMES OUT (never resolves)', async () => {
@@ -85,7 +85,7 @@ describe('getClaudeModels (dynamic, mocked SDK)', () => {
     vi.useFakeTimers();
     try {
       const promise = getClaudeModels({ queryFn });
-      await vi.advanceTimersByTimeAsync(5_100);
+      await vi.advanceTimersByTimeAsync(15_100);
       const choices = await promise;
       expect(choices.map((c) => c.value)).toEqual([...CLAUDE_MODEL_FALLBACK]);
     } finally {

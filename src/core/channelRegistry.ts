@@ -27,6 +27,10 @@ export interface ChannelBinding {
   // one from the wizard (persisted so resume-on-boot restores the same choice).
   permMode: SessionPermMode;
   profile: string | null;
+  // Model chosen in the wizard (a Claude model id/alias, or a Codex model id when mode
+  // is 'codex'); persisted so reactivation/resume restores the same choice. Absent =
+  // the resolved config default.
+  model?: string;
   projectAuth?: ProjectAuth;
   archived: boolean;
   createdAt: string;
@@ -56,6 +60,7 @@ function fromState(guildId: string, channelId: string, s: ChannelBindingState): 
     ownerId: s.ownerId,
     permMode: s.permissionMode,
     profile: s.permissionProfile,
+    ...(s.model !== undefined ? { model: s.model } : {}),
     projectAuth: s.projectAuth,
     archived: s.archived,
     createdAt: s.createdAt,
@@ -72,6 +77,7 @@ function toState(b: ChannelBinding): ChannelBindingState {
     ownerId: b.ownerId,
     permissionMode: b.permMode,
     permissionProfile: b.profile,
+    ...(b.model !== undefined ? { model: b.model } : {}),
     ...(b.projectAuth ? { projectAuth: b.projectAuth } : {}),
     createdAt: b.createdAt,
     updatedAt: b.updatedAt,

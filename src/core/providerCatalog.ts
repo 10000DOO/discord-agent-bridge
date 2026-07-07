@@ -153,7 +153,10 @@ export function effortChoicesFor(backend: string, supportedClaudeLevels?: readon
 export const CLAUDE_MODEL_FALLBACK: readonly string[] = ['opus', 'sonnet', 'haiku'];
 
 // How long we wait for supportedModels() before giving up and using the fallback.
-const SUPPORTED_MODELS_TIMEOUT_MS = 5_000;
+// The probe spawns the SDK's native CLI, whose cold init routinely exceeds 5s on this
+// host — a 5s budget races the probe and usually loses, silently hiding new models.
+// Wizard/config opens sit behind a deferred reply, so a longer wait is tolerable.
+const SUPPORTED_MODELS_TIMEOUT_MS = 15_000;
 
 // The injectable query() seam (mirrors modes/claude/session.ts QueryFn) so tests
 // supply a fake that returns a scripted Query exposing supportedModels() — no real
@@ -194,7 +197,7 @@ async function fetchClaudeModels(queryFn: QueryFn, logger?: Logger): Promise<Mod
     if (choices.length === 0) return fallbackChoices();
     return choices;
   } catch (err) {
-    logger?.debug('providerCatalog: supportedModels() unavailable; using alias fallback', {
+    logger?.warn('providerCatalog: supportedModels() unavailable; using alias fallback', {
       error: err instanceof Error ? err.message : String(err),
     });
     return fallbackChoices();

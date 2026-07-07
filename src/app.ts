@@ -173,10 +173,11 @@ export function createApp(deps: CreateAppDeps): App {
     // saved project favorites seed the browse roots; the model step offers the
     // per-backend model list. Codex's list is a small documented default (the
     // config `defaults.codexModel` — when set — plus common Codex model ids), so the
-    // wizard's model step isn't empty; a configured value is offered first. Selecting
-    // a Codex model here is cosmetic (like Claude's): the effective Codex model comes
-    // from config.defaults.codexModel — empty means `codex` uses its own config.toml
-    // default (operator-set). Override defaults.codexModel to force a model.
+    // wizard's model step isn't empty; a configured value is offered first. The
+    // wizard's model pick is EFFECTIVE: it rides StartParams.model and overrides the
+    // matching per-backend config field via SessionOrchestrator.buildContext (Claude →
+    // ctx.model, Codex → config.codexModel). Absent/untouched keeps the resolved
+    // config default (Codex: empty codexModel lets `codex` use its own config.toml).
     browseRoots: config.favorites,
     // Per-backend model options from the central provider catalog (§ providerCatalog).
     // Codex: a documented static default list (Codex has no model-list API; -m is

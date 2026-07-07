@@ -41,20 +41,20 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "discord.js": "^14.18.0",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.202",
     "@discordjs/rest": "^2.4.0",
     "@inquirer/prompts": "^8.0.0",
+    "discord.js": "^14.18.0",
     "open": "^11.0.0",
-    "zod": "^4.4.3",
-    "sql.js": "^1.14.1"
+    "sql.js": "^1.14.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "~5.7.0",
-    "tsx": "^4.0.0",
-    "vitest": "^3.0.0",
-    "eslint": "^9.0.0",
     "@types/node": "^20.0.0",
-    "@types/sql.js": "^1.4.11"
+    "@types/sql.js": "^1.4.11",
+    "eslint": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "~5.7.0",
+    "vitest": "^3.0.0"
   }
 }

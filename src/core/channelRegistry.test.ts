@@ -115,6 +115,18 @@ describe('ChannelRegistry', () => {
     expect(onDisk.scheduledCommands).toEqual([{ id: 'sched-1', cron: '0 9 * * *', command: 'status' }]);
   });
 
+  it('round-trips an optional model; a binding without one stays absent', () => {
+    const reg = new ChannelRegistry(new StateStore(dir), now);
+    reg.set(input({ model: 'claude-fable-5' }));
+    reg.set(input({ guildId: 'g2' })); // no model on this one
+
+    // A fresh registry over the same dir rehydrates the model from disk.
+    const reloaded = new ChannelRegistry(new StateStore(dir), now);
+    expect(reloaded.get('g1', 'c1')?.model).toBe('claude-fable-5');
+    // Absent stays absent (no undefined-valued key materialized by the round-trip).
+    expect('model' in (reloaded.get('g2', 'c1') ?? {})).toBe(false);
+  });
+
   it('preserves createdAt but refreshes updatedAt on replace', () => {
     const reg = new ChannelRegistry(new StateStore(dir), now);
     clock = '2026-01-01T00:00:00.000Z';

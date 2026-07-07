@@ -65,6 +65,9 @@ export interface StartParams {
   profile?: string | null;
   // Reasoning-effort level chosen in the wizard; threaded onto the ModeContext.
   effort?: string;
+  // Model chosen in the wizard (backend-specific: a Claude model id/alias, or a Codex
+  // model id when mode is 'codex'); routed onto the ModeContext by buildContext.
+  model?: string;
 }
 
 // Result of a send(): whether the turn ran immediately or was queued behind a
@@ -152,6 +155,7 @@ export class SessionOrchestrator {
       permMode: perm.permMode,
       allowedTools: perm.allowedTools,
       ...(params.effort !== undefined ? { effort: params.effort } : {}),
+      ...(params.model !== undefined ? { model: params.model } : {}),
     });
     const session = await agentMode.start(ctx);
 
@@ -165,6 +169,7 @@ export class SessionOrchestrator {
       ownerId,
       permMode: perm.permMode,
       profile: perm.profile,
+      ...(params.model !== undefined ? { model: params.model } : {}),
     });
     this.active.set(channelKey(guildId, channelId), {
       guildId,
@@ -216,6 +221,7 @@ export class SessionOrchestrator {
       permMode: perm.permMode,
       allowedTools: perm.allowedTools,
       ...(params.effort !== undefined ? { effort: params.effort } : {}),
+      ...(params.model !== undefined ? { model: params.model } : {}),
     });
     const session = await agentMode.resume(ctx, sessionId);
 
@@ -228,6 +234,7 @@ export class SessionOrchestrator {
       ownerId,
       permMode: perm.permMode,
       profile: perm.profile,
+      ...(params.model !== undefined ? { model: params.model } : {}),
     });
     this.active.set(channelKey(guildId, channelId), {
       guildId,
@@ -289,6 +296,7 @@ export class SessionOrchestrator {
         ownerId: binding.ownerId,
         permMode: binding.permMode,
         ...(binding.profile !== null ? { profile: binding.profile } : {}),
+        ...(binding.model !== undefined ? { model: binding.model } : {}),
       };
       try {
         if (binding.sessionId !== null) {
@@ -436,6 +444,7 @@ export class SessionOrchestrator {
           mode,
           permMode,
           allowedTools: perm.allowedTools,
+          ...(binding.model !== undefined ? { model: binding.model } : {}),
         });
         // A binding with no backend sessionId cannot be resumed against a
         // specific id. Skip it here — the next user turn will hit send()'s
@@ -561,11 +570,24 @@ export class SessionOrchestrator {
     permMode: SessionPermMode;
     allowedTools: string[];
     effort?: string;
+    model?: string;
   }): ModeContext {
     const { guildId, channelId, cwd, ownerId, permMode, allowedTools, effort } = args;
     const modeConfig = this.configResolver.resolveModeConfig(guildId, channelId);
     modeConfig.allowedTools = allowedTools;
     modeConfig.autoAllowClaudeTools = allowedTools;
+    // Per-backend model routing: each backend reads a different field — Codex reads
+    // config.codexModel (never ctx.model, which carries the Claude model), while the
+    // Claude mode reads ctx.model, fed by the modeConfig.model spread below. A wizard
+    // pick therefore overrides the matching config field; absent/empty keeps the
+    // resolved config default.
+    if (args.model !== undefined && args.model.length > 0) {
+      if (args.mode === 'codex') {
+        modeConfig.codexModel = args.model;
+      } else {
+        modeConfig.model = args.model;
+      }
+    }
     return {
       guildId,
       channelId,
@@ -599,6 +621,10 @@ export class SessionOrchestrator {
           permMode: binding.permMode,
           profile: binding.profile,
           ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
+          // Carry the persisted model forward — set() REPLACES the binding, so
+          // omitting it here would silently drop the wizard's model the moment
+          // the backend sessionId arrives.
+          ...(binding.model !== undefined ? { model: binding.model } : {}),
         });
         this.logger.info('registry updated with backend sessionId', {
           guildId,

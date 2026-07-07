@@ -31,6 +31,9 @@ export const channelBindingSchema = z.object({
   ownerId: z.string(),
   permissionMode: permModeSchema,
   permissionProfile: z.string().nullable(),
+  // Wizard-chosen model (Claude id/alias or Codex id). Optional so older state.json
+  // files without it still validate.
+  model: z.string().optional(),
   projectAuth: z
     .object({
       allowedRoleIds: z.array(z.string()),

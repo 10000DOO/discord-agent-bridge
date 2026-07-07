@@ -251,6 +251,33 @@ describe('SessionOrchestrator', () => {
     expect(h.mode.resumedCtx[0].config.allowedTools).toEqual(['Read', 'Glob', 'Grep']);
   });
 
+  it('start with a wizard model routes it to ctx.model (claude) and persists it on the binding', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', model: 'claude-fable-5' });
+
+    // Claude routing: the pick overrides modeConfig.model (default 'opus'), which
+    // flows into ctx.model — the field the Claude mode actually reads.
+    expect(h.mode.startedCtx[0].model).toBe('claude-fable-5');
+    // The binding carries the model (source of truth for reactivation/resume).
+    expect(h.channelRegistry.get('g1', 'c1')?.model).toBe('claude-fable-5');
+  });
+
+  it('start with mode codex routes the model to ctx.config.codexModel, not ctx.model', async () => {
+    const mode = new MockMode('codex');
+    const h = harness({ mode });
+    cleanup.push(h.dir, h.workspace);
+
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'codex', cwd: h.workspace, ownerId: 'u1', model: 'gpt-5.4' });
+
+    // Codex reads its OWN model field (config.codexModel); ctx.model must keep
+    // carrying the resolved Claude default, untouched by the codex pick.
+    const ctx = mode.startedCtx[0];
+    expect(ctx.config.codexModel).toBe('gpt-5.4');
+    expect(ctx.model).toBe('opus');
+  });
+
   it('processes queued turns sequentially, in order, dropping none (fixes A4)', async () => {
     // Gate the first send so it stays "running" while a second send arrives.
     let release!: () => void;
@@ -370,8 +397,9 @@ describe('SessionOrchestrator', () => {
   it('resumeAll rebinds sessions from persisted state via mode.resume', async () => {
     const h = harness();
     cleanup.push(h.dir, h.workspace);
-    // Persist two active bindings and one archived one that must be skipped.
-    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'sess-c1', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
+    // Persist two active bindings and one archived one that must be skipped. c1
+    // carries a wizard-chosen model to guard the boot-recovery threading.
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'sess-c1', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, model: 'claude-fable-5' });
     h.channelRegistry.set({ guildId: 'g1', channelId: 'c2', mode: 'claude', sessionId: 'sess-c2', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
     h.channelRegistry.set({ guildId: 'g2', channelId: 'c3', mode: 'claude', sessionId: 'sess-c3', cwd: h.workspace, ownerId: 'u2', permMode: 'default', profile: null, archived: true });
 
@@ -379,6 +407,10 @@ describe('SessionOrchestrator', () => {
 
     // Only the two non-archived bindings were resumed.
     expect(h.mode.resumedIds.sort()).toEqual(['sess-c1', 'sess-c2']);
+    // Boot recovery threads the persisted model onto the resumed ctx (c1); a binding
+    // without one keeps the resolved config default (c2 → 'opus').
+    expect(h.mode.resumedCtx[0].model).toBe('claude-fable-5');
+    expect(h.mode.resumedCtx[1].model).toBe('opus');
     // A resumed channel is live: a send() is accepted (does not throw "no session").
     await expect(h.orchestrator.send('g1', 'c1', { text: 'after-resume' })).resolves.toMatchObject({ status: 'started' });
   });
@@ -468,15 +500,32 @@ describe('SessionOrchestrator', () => {
     expect(h.channelRegistry.get('g1', 'c1')?.sessionId).toBe('sess-c1');
   });
 
+  it('onSessionIdReady re-persists the sessionId WITHOUT dropping the binding model', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', model: 'claude-fable-5' });
+    await new Promise((r) => setImmediate(r));
+
+    // A late backend id (differing from the start-persisted one) triggers a
+    // re-persist; the replacing set() must carry the model forward, not drop it.
+    h.mode.startedCtx[0].onSessionIdReady?.('real-backend-id');
+    const binding = h.channelRegistry.get('g1', 'c1');
+    expect(binding?.sessionId).toBe('real-backend-id');
+    expect(binding?.model).toBe('claude-fable-5');
+  });
+
   it('send: active absent + binding present with sessionId → auto-resume', async () => {
     const h = harness();
     cleanup.push(h.dir, h.workspace);
-    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'saved-sess', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'saved-sess', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, model: 'claude-fable-5' });
 
     // The channel is persisted but NOT active (resumeAll() was never called).
     const result = await h.orchestrator.send('g1', 'c1', { text: 'hi' });
     expect(result.status).toBe('started');
     expect(h.mode.resumedIds).toEqual(['saved-sess']);
+    // The reactivation's RESUME branch threads the persisted model too.
+    expect(h.mode.resumedCtx[0].model).toBe('claude-fable-5');
     // Give the queued drain a chance to run so the mock records the turn.
     await new Promise((r) => setTimeout(r, 0));
     expect(h.mode.lastSession?.turns.map((t) => t.text)).toEqual(['hi']);
@@ -494,6 +543,18 @@ describe('SessionOrchestrator', () => {
     expect(h.mode.resumedIds).toEqual([]);
     await new Promise((r) => setTimeout(r, 0));
     expect(h.mode.lastSession?.turns.map((t) => t.text)).toEqual(['hi']);
+  });
+
+  it('send: on-demand reactivation threads the persisted binding model onto the ctx', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: null, cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, model: 'claude-fable-5' });
+
+    // No live session → reactivation rebuilds StartParams from the binding; the
+    // persisted model must ride along into the rebuilt ctx and survive re-persist.
+    await h.orchestrator.send('g1', 'c1', { text: 'hi' });
+    expect(h.mode.startedCtx[0].model).toBe('claude-fable-5');
+    expect(h.channelRegistry.get('g1', 'c1')?.model).toBe('claude-fable-5');
   });
 
   it('send: no binding → throws (unchanged behavior)', async () => {

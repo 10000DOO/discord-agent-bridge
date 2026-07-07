@@ -350,10 +350,18 @@ function buildRouter(deps: {
     wiring: deps.wiring,
     usageService,
     logger: deps.logger ?? logger,
-    modelsFor: async () => [
-      { value: 'opus', label: 'opus' },
-      { value: 'sonnet', label: 'sonnet' },
-    ],
+    // Backend-aware, mirroring app.ts wiring: codex offers its own catalog (the
+    // configured default first), claude the probed list.
+    modelsFor: async (backend: string) =>
+      backend === 'codex'
+        ? [
+            { value: 'gpt-5.5', label: 'gpt-5.5' },
+            { value: 'gpt-5.4', label: 'gpt-5.4' },
+          ]
+        : [
+            { value: 'opus', label: 'opus' },
+            { value: 'sonnet', label: 'sonnet' },
+          ],
     ...(deps.browseRoots ? { browseRoots: deps.browseRoots } : {}),
     ...(deps.resolveGuildProvisioner ? { resolveGuildProvisioner: deps.resolveGuildProvisioner } : {}),
     ...(deps.resolveChannel ? { resolveChannel: deps.resolveChannel } : {}),
@@ -689,6 +697,27 @@ describe('InteractionRouter component interactions', () => {
       await router.handle(interaction);
     }
     expect(calls.start).toHaveBeenCalledOnce();
+  });
+
+  it('/agent start with default backend codex: an untouched wizard starts with the CODEX default model', async () => {
+    // Resolved default backend = codex. The wizard's initial model must come from the
+    // codex catalog (applyBackend only resets on a backend CHANGE), so an untouched
+    // flow must not leak the Claude default ('opus') into `codex -m`.
+    const cfg = store.load();
+    cfg.defaults.mode = 'codex';
+    store.save(cfg);
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+    for (const customId of ['dir:here', 'backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      await router.handle(component({ customId, user: { id: 'u1' } }).interaction);
+    }
+
+    expect(calls.start).toHaveBeenCalledOnce();
+    expect(calls.start).toHaveBeenCalledWith(expect.objectContaining({ mode: 'codex', model: 'gpt-5.5' }));
   });
 });
 

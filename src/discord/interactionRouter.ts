@@ -388,7 +388,11 @@ export class InteractionRouter {
       start: (params) => this.startSession(params),
       defaults: {
         backend,
-        model: resolved.claudeModel,
+        // Backend-aware initial model: applyBackend only resets on a backend CHANGE,
+        // so a codex default backend must not leak the Claude default into `codex -m`.
+        // getCodexModels offers config.defaults.codexModel first, so [0] is the
+        // configured Codex default when one is set.
+        model: backend === 'codex' ? (modelsFor('codex')[0]?.value ?? resolved.claudeModel) : resolved.claudeModel,
         permMode: resolved.permissionMode,
         profile: resolved.permissionProfile,
       },
@@ -778,7 +782,7 @@ export class InteractionRouter {
     }
     // Switching the backend starts a fresh context (§9 step 3): stop the current
     // session, then start a new one on the same cwd/owner/permMode and re-wire.
-    const { cwd, ownerId, permMode, profile } = binding;
+    const { cwd, ownerId, permMode, profile, model, mode: prevMode } = binding;
 
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
@@ -790,6 +794,9 @@ export class InteractionRouter {
       ownerId,
       permMode,
       profile,
+      // Carry the model only when restarting on the SAME backend; model ids are
+      // backend-specific, so a cross-backend switch discards it (config default).
+      ...(backend === prevMode && model !== undefined ? { model } : {}),
     });
     // Confirmation closes the ephemeral deferred reply (only the actor sees it). The
     // fresh-context warning (§9 step 3) is PUBLIC so the whole channel sees the context
@@ -824,6 +831,8 @@ export class InteractionRouter {
       ownerId: binding.ownerId,
       permMode: resolved.permMode,
       profile: resolved.profile,
+      // set() REPLACES the binding — carry the wizard-chosen model or it is dropped.
+      ...(binding.model !== undefined ? { model: binding.model } : {}),
       ...(binding.projectAuth ? { projectAuth: binding.projectAuth } : {}),
     });
     await i.editReply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }) });

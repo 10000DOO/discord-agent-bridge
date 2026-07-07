@@ -418,7 +418,7 @@ describe('ClaudeSession — query options', () => {
 // ---- canUseTool bridging ----------------------------------------------------
 
 describe('makeCanUseTool', () => {
-  const opts = { signal: new AbortController().signal, toolUseID: 'tu-x' };
+  const opts = { signal: new AbortController().signal, toolUseID: 'tu-x', requestId: 'req-x' };
 
   it('auto-allows a tool in the allowlist without calling requestPermission', async () => {
     const { ctx, permissionCalls } = makeCtx({ allowedTools: ['Read', 'Grep'] });
@@ -432,7 +432,7 @@ describe('makeCanUseTool', () => {
     const { ctx, permissionCalls } = makeCtx({ autoAllowClaudeTools: ['WebFetch'] });
     const canUse = makeCanUseTool(ctx);
     const result = await canUse('WebFetch', {}, opts);
-    expect(result.behavior).toBe('allow');
+    expect(result?.behavior).toBe('allow');
     expect(permissionCalls).toHaveLength(0);
   });
 

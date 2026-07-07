@@ -31,6 +31,7 @@ export interface StartParams {
   permMode?: SessionPermMode;
   profile?: string | null;
   effort?: string;
+  model?: string;
 }
 // The wizard's start callback returns the session AND the channel id the session was
 // actually bound to. A4D-style, the router CREATES a fresh session channel from the
@@ -287,6 +288,7 @@ export class ChannelWizard {
       permMode: this.selection.permMode,
       profile: this.selection.profile,
       effort: this.selection.effort,
+      model: this.selection.model,
     });
     this.createdChannelId = result.channelId;
     this.step = 'done';

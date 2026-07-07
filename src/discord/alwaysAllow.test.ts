@@ -192,12 +192,13 @@ describe('always-allow persistence', () => {
     const result = await makeCanUseTool(ctxProbe)('Bash', { command: 'ls' }, {
       signal: new AbortController().signal,
       toolUseID: 'tu-1',
+      requestId: 'req-1',
     });
-    expect(result.behavior).toBe('allow');
+    expect(result?.behavior).toBe('allow');
     expect(prompted).toBe(false);
     // sanity: canUse built from the same allowlist also allows.
-    const r2 = await canUse('Bash', {}, { signal: new AbortController().signal, toolUseID: 'tu-2' });
-    expect(r2.behavior).toBe('allow');
+    const r2 = await canUse('Bash', {}, { signal: new AbortController().signal, toolUseID: 'tu-2', requestId: 'req-2' });
+    expect(r2?.behavior).toBe('allow');
   });
 
   it('a plain Allow (not Always) does NOT persist the tool', async () => {
