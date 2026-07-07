@@ -1,4 +1,4 @@
-import type { PermMode, SessionPermMode } from './contracts.js';
+import type { SessionPermMode } from './contracts.js';
 import type { PolicyTier } from './commandPolicy.js';
 import type { ConfigStore } from './config.js';
 import type { ConfigResolver } from './configResolver.js';

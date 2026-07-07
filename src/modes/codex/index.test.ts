@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentEvent, ModeConfigView, ModeContext, PermMode } from '../../core/contracts.js';
-import { CodexMode, CodexSession, resolveCodexHome } from './index.js';
+import { CodexMode, resolveCodexHome } from './index.js';
 import type { RunCodexTurnOptions, RunCodexTurnResult } from './runner.js';
 import type { CodexDiscovery } from './discovery.js';
 import type { ResumableSession } from '../../core/contracts.js';

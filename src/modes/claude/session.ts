@@ -5,7 +5,7 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentEvent, ModeContext, ModeSession, SessionPermMode, TurnInput } from '../../core/contracts.js';
+import type { ModeContext, ModeSession, SessionPermMode, TurnInput } from '../../core/contracts.js';
 import { makeCanUseTool } from './permissions.js';
 import { createMcpFileTool, ATTACH_FILE_TOOL_NAME, type SendFileCallback } from './mcpFileTool.js';
 import { resolvePlugins } from './plugins.js';

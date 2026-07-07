@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { SessionWiring } from './wiring.js';
 import { EventBus } from '../core/eventBus.js';
 import { ModeRegistry } from '../core/modeRegistry.js';

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { ModelInfo } from '@anthropic-ai/claude-agent-sdk';
 import {
   getClaudeModels,
