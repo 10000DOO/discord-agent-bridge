@@ -192,7 +192,7 @@ export const CONFIG_DEFAULTS = {
   profiles: {} as Record<string, z.infer<typeof profileSchema>>,
   usage: {
     userAgent: 'claude-code',
-    cacheSec: 180,
+    cacheSec: 15,
   },
   audit: {
     channelId: null,

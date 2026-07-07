@@ -120,7 +120,7 @@ export interface UsageServiceOptions {
   // User-Agent version tag; the header is sent as `claude-code/<version>` to
   // reduce 429s on the undocumented endpoint. Defaults to 'unknown'.
   userAgentVersion?: string;
-  // Minimum seconds between refetches (also the base for 429 backoff). Default 180.
+  // Minimum seconds between refetches (also the base for 429 backoff). Default 15.
   cacheSec?: number;
   // Injected fetch (default: global fetch). typeof globalThis.fetch.
   fetchFn?: typeof fetch;
@@ -221,7 +221,7 @@ export class UsageService {
   constructor(options: UsageServiceOptions) {
     this.logger = options.logger;
     this.userAgent = `claude-code/${options.userAgentVersion ?? 'unknown'}`;
-    this.cacheMs = Math.max(0, (options.cacheSec ?? 180)) * 1000;
+    this.cacheMs = Math.max(0, (options.cacheSec ?? 15)) * 1000;
     this.fetchFn = options.fetchFn ?? fetch;
     this.credentialsPath = options.credentialsPath ?? defaultCredentialsPath();
     this.readKeychain = options.readKeychain ?? defaultReadKeychain;

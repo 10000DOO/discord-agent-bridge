@@ -108,8 +108,9 @@ export interface SessionNotifierOptions {
   // The resolved event filter (which kinds to forward).
   events: ResolvedNotifications['events'];
   // Latest usage snapshot source, used to backfill the rate_limit utilization % the
-  // SDK event omits. Optional (back-compat): absent → no fallback, just no %.
-  getUsage?: () => UsageResult | null;
+  // SDK event omits. Optional (back-compat): absent → no fallback, just no %. Sync or
+  // async — awaited per notification so the backfill reflects the current usage.
+  getUsage?: () => UsageResult | null | Promise<UsageResult | null>;
 }
 
 // One session's notification forwarder. On each AgentEvent, formats a summary line
@@ -122,11 +123,14 @@ export class SessionNotifier {
   // Subscribe to a session channel's event stream. Returns the unsubscribe function
   // (stored by the wiring layer, called on detach).
   subscribe(bus: EventBus, guildId: string, channelId: string): () => void {
-    return bus.on(guildId, channelId, (ev) => this.notify(ev));
+    return bus.on(guildId, channelId, (ev) => void this.notify(ev).catch(() => {}));
   }
 
-  private notify(ev: AgentEvent): void {
-    const line = formatNotification(ev, this.opts.sessionChannelId, this.opts.events, this.opts.getUsage?.() ?? null);
+  private async notify(ev: AgentEvent): Promise<void> {
+    // Only the rate_limit summary backfills its % from the usage snapshot; other event
+    // kinds never read usage, so skip the fetch for them.
+    const usage = ev.kind === 'rate_limit' ? ((await this.opts.getUsage?.()) ?? null) : null;
+    const line = formatNotification(ev, this.opts.sessionChannelId, this.opts.events, usage);
     if (line === null) return;
     void this.opts.statusChannel.send({ content: line }).catch(() => {});
   }

@@ -97,8 +97,6 @@ export class SessionWiring {
   private readonly onAlwaysAllow?: (toolName: string, ctx: AlwaysAllowContext) => void;
 
   private readonly channels = new Map<string, ChannelWiring>();
-  // Latest usage snapshot, refreshed lazily; fed into the usage embed synchronously.
-  private lastUsage: UsageResult | null = null;
 
   constructor(deps: SessionWiringDeps) {
     this.eventBus = deps.eventBus;
@@ -233,7 +231,7 @@ export class SessionWiring {
     const rendererSet = createDefaultRendererSet({
       channel,
       ownerId,
-      getUsage: () => this.usageSnapshotFor(mode),
+      getUsage: () => this.getUsageFor(mode),
       logger: this.logger,
     });
     // The dispatcher's permission renderer posts buttons via its own handler; we
@@ -258,8 +256,6 @@ export class SessionWiring {
       mode,
       ...(unsubscribeNotifier ? { unsubscribeNotifier } : {}),
     });
-    // Kick a usage refresh so the first usage embed has data (Claude only).
-    if (capabilities.usagePanel) void this.refreshUsage();
   }
 
   // Resolve the guild's notifications config + status channel and, when enabled with a
@@ -280,7 +276,7 @@ export class SessionWiring {
         statusChannel,
         sessionChannelId: channelId,
         events: notifications.events,
-        getUsage: () => this.usageSnapshotFor(mode),
+        getUsage: () => this.getUsageFor(mode),
       });
       return notifier.subscribe(this.eventBus, guildId, channelId);
     } catch (err) {
@@ -320,22 +316,14 @@ export class SessionWiring {
     };
   }
 
-  // Refresh the cached usage snapshot (Claude OAuth usage). Best-effort; never throws.
-  private async refreshUsage(): Promise<void> {
-    try {
-      this.lastUsage = await this.usageService.getUsage();
-    } catch (err) {
-      this.logger.warn('usage refresh failed', { err: String(err) });
-    }
-  }
-
-  // Usage feed for the embed: Codex is structurally unavailable; Claude uses the
-  // last poll snapshot (may be null until the first refresh completes).
-  private usageSnapshotFor(mode: string): UsageResult | null {
+  // Usage feed for the embed/notifier, read fresh per turn: Codex is structurally
+  // unavailable; Claude reads UsageService.getUsage() directly (its TTL cache coalesces
+  // rapid re-reads). getUsage() never throws by contract, so this needs no try/catch.
+  private getUsageFor(mode: string): Promise<UsageResult> {
     if (this.modeRegistry.has(mode) && !this.modeRegistry.get(mode).capabilities.usagePanel) {
-      return codexUsageUnavailable();
+      return Promise.resolve(codexUsageUnavailable());
     }
-    return this.lastUsage;
+    return this.usageService.getUsage();
   }
 
   // Race the decision against the permission timeout. On timeout, resolve the

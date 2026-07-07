@@ -109,14 +109,15 @@ export class RendererDispatcher {
 }
 
 // Options for the default renderer set. `getUsage` supplies the latest UsageResult
-// for the usage panel (7b/8 wires it to UsageService.getUsage; the poll trigger
-// lives there, not here).
+// for the usage panel (7b/8 wires it to UsageService.getUsage).
 export interface DefaultRendererSetOptions {
   channel: MessageChannel;
   ownerId: string;
   // Returns the latest usage snapshot (or unavailable) at render time; may be null
-  // until the poller has a value. Sync — the caller caches the last poll result.
-  getUsage?: () => UsageResult | null;
+  // when usage is not yet known. Sync or async — the callee fetches fresh each call
+  // (UsageService's own TTL coalesces rapid re-reads), so the panel reflects the
+  // current turn rather than an attach-time snapshot.
+  getUsage?: () => UsageResult | null | Promise<UsageResult | null>;
   // Optional: threaded into each StreamEmbedHandler so a swallowed best-effort preview
   // failure (deleted channel race / REST timeout) is debug-logged rather than silent.
   logger?: Logger;
@@ -139,7 +140,6 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
   const diff = new DiffViewHandler({ channel });
   const transcript = new TranscriptFeedHandler({ channel });
   const mention = new MentionOnCompleteHandler({ channel, ownerId });
-  let lastCtxUsage: Extract<AgentEvent, { kind: 'context_usage' }> | null = null;
   // Serializes the turn's terminal sends (done-line, mention, usage panel) BEHIND the
   // stream's finalized answer chunks, so none of them ever lands mid-answer. Each link
   // settles and is GC'd once done; only the latest reference is held, so no leak.
@@ -214,11 +214,14 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       swallow(tail);
     },
     usage(ev) {
-      lastCtxUsage = ev;
-      const usage = options.getUsage?.() ?? null;
-      const embed = buildUsageEmbed(usage, lastCtxUsage);
-      if (!embed) return;
-      tail = tail.catch(() => {}).then(() => channel.send({ embeds: [embed] }));
+      // Capture this turn's context event: getUsage is now awaited inside the tail
+      // chain, so a subsequent turn's usage event must not mutate what this send renders.
+      const ctx = ev;
+      tail = tail.catch(() => {}).then(async () => {
+        const usage = (await options.getUsage?.()) ?? null;
+        const embed = buildUsageEmbed(usage, ctx);
+        if (embed) await channel.send({ embeds: [embed] });
+      });
       swallow(tail);
     },
     mention(ev) {
@@ -230,8 +233,14 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
     },
     rateLimit(ev) {
       // Pass the latest usage snapshot so a %-less rate_limit event still shows the
-      // utilization for its window (backfilled from the snapshot).
-      swallow(channel.send({ content: formatRateLimitLine(ev, options.getUsage?.() ?? null) }));
+      // utilization for its window (backfilled from the snapshot). getUsage may be async,
+      // so await it in a self-invoking wrapper; the send stays immediate (not on tail).
+      swallow(
+        (async () => {
+          const usage = (await options.getUsage?.()) ?? null;
+          return channel.send({ content: formatRateLimitLine(ev, usage) });
+        })(),
+      );
     },
     dispose() {
       // Cancel the streaming/thinking debounce timers so a detach mid-stream cannot
