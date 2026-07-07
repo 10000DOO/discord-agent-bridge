@@ -347,7 +347,12 @@ export class SessionOrchestrator {
   }
 
   // §9 step 5 / §7.5 kill switch. Abort the running session, drain (clear) the
-  // channel's queue, archive the binding, and drop the live tracking. Audited.
+  // channel's queue, hard-delete the persisted binding, and drop the live
+  // tracking. Audited. NOTE: this is a hard delete (not an archive flag) so the
+  // channel is gone from state.json — a subsequent send() on the same channel
+  // must go through /agent start again. The `archived` flag remains in the
+  // schema + resumeAll() filter to stay backward-compatible with older
+  // state.json files that still carry archived:true entries.
   async stop(guildId: string, channelId: string): Promise<void> {
     const key = channelKey(guildId, channelId);
     const channel = this.active.get(key);
@@ -360,7 +365,7 @@ export class SessionOrchestrator {
       this.logger.error('session stop failed', { guildId, channelId, err: String(err) });
     }
     this.active.delete(key);
-    this.channelRegistry.markArchived(guildId, channelId);
+    this.channelRegistry.remove(guildId, channelId);
 
     this.auditLog.record({
       actorId: channel.ownerId,
@@ -433,82 +438,20 @@ export class SessionOrchestrator {
           allowedTools: perm.allowedTools,
         });
         // A binding with no backend sessionId cannot be resumed against a
-        // specific id directly. Try to recover: ask the mode for its resumable
-        // catalog (Claude SDK listSessions, Codex ~/.codex index) and match on
-        // cwd. Falls back to the original skip when nothing lines up. This
-        // repairs bindings persisted before the first `onSessionIdReady`
-        // callback ever fired (pre-fix boots wrote sessionId=null for every
-        // channel).
+        // specific id. Skip it here — the next user turn will hit send()'s
+        // on-demand reactivation path, which start()s a fresh session for the
+        // channel. Do NOT try to auto-recover an id from the mode's catalog by
+        // matching cwd: that couples an arbitrary Claude/Codex session on the
+        // host to this channel just because their cwds happen to match, which
+        // is wrong when multiple channels share a workspace or when unrelated
+        // sessions exist. resumeWizard / interactionRouter still use
+        // AgentMode.listResumable for the interactive resume UX.
         if (sessionId === null) {
-          let recovered: string | null = null;
-          try {
-            const candidates = (await agentMode.listResumable?.(ctx)) ?? [];
-            // A Codex resumed session records cwd='' (informational, Q4); such
-            // rows must NOT match an arbitrary channel — exclude them.
-            const match = candidates.find((s) => s.cwd !== '' && s.cwd === cwd) ?? null;
-            recovered = match?.sessionId ?? null;
-          } catch (err) {
-            this.logger.warn('listResumable failed during boot recovery', {
-              guildId,
-              channelId,
-              mode,
-              err: String(err),
-            });
-          }
-          if (recovered === null) {
-            this.logger.warn('skipping resume: no sessionId and no recoverable candidate', {
-              guildId,
-              channelId,
-              mode,
-            });
-            continue;
-          }
-          this.logger.info('boot recovered sessionId from mode catalog', {
+          this.logger.info('skipping resume: no sessionId; will fresh-start on next turn', {
             guildId,
             channelId,
             mode,
-            sessionId: recovered,
           });
-          const recoveredSession = await agentMode.resume(ctx, recovered);
-          this.active.set(channelKey(guildId, channelId), {
-            guildId,
-            channelId,
-            mode,
-            cwd,
-            ownerId,
-            permMode,
-            session: recoveredSession,
-            queue: [],
-            running: false,
-          });
-          // Codex's resume(ctx, sessionId) sets this.sessionId in the constructor,
-          // so its onSessionIdReady callback will NOT fire on the next turn (the
-          // "first capture" guard). Persist the recovered id here so state.json
-          // is repaired on this same boot instead of relying on the callback.
-          this.channelRegistry.set({
-            guildId,
-            channelId,
-            mode: mode as 'claude' | 'codex',
-            sessionId: recovered,
-            cwd,
-            ownerId,
-            permMode,
-            profile: binding.profile,
-            ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
-          });
-          this.auditLog.record({
-            actorId: ownerId,
-            roleTier: 'execute',
-            guildId,
-            channelId,
-            action: 'resume',
-            mode,
-            permMode,
-            cwd,
-            status: 'ok',
-            outcome: 'boot-recovered',
-          });
-          resumed++;
           continue;
         }
         const session = await agentMode.resume(ctx, sessionId);

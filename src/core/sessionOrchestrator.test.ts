@@ -345,8 +345,8 @@ describe('SessionOrchestrator', () => {
     expect(session.stopped).toBe(true);
     // After stop, the channel is no longer active (a send throws).
     await expect(h.orchestrator.send('g1', 'c1', { text: 'late' })).rejects.toThrow(/No active session/);
-    // Binding is archived so resume-on-boot skips it.
-    expect(h.channelRegistry.get('g1', 'c1')?.archived).toBe(true);
+    // The persisted binding is hard-deleted — a subsequent /agent start is required.
+    expect(h.channelRegistry.get('g1', 'c1')).toBeUndefined();
     expect(readAudit(h.dir).some((r) => r.action === 'stop')).toBe(true);
   });
 
@@ -397,9 +397,10 @@ describe('SessionOrchestrator', () => {
     await expect(h.orchestrator.send('g1', 'c1', { text: 'x' })).rejects.toThrow(/No active session/);
   });
 
-  it('skips resume for a null-sessionId binding when the mode catalog has no match (fallback path)', async () => {
-    // No `resumables` scripted → listResumable returns []. The recovered id is
-    // null so the null-sessionId binding is skipped; the other still resumes.
+  it('skips resume for a null-sessionId binding; on-demand start fires on next send', async () => {
+    // A null-sessionId binding is always skipped by resumeAll (no cwd-based
+    // catalog auto-recovery); the next send() reactivates the channel via
+    // start(). The other (id-carrying) binding still resumes normally.
     const mode = new MockMode('claude');
     const h = harness({ mode });
     cleanup.push(h.dir, h.workspace);
@@ -456,54 +457,15 @@ describe('SessionOrchestrator', () => {
     const cb = h.mode.startedCtx.at(-1)?.onSessionIdReady;
     expect(cb).toBeTypeOf('function');
 
-    // Archive c1 AFTER capturing the callback, then invoke it. The archived
-    // guard must reject the write — sessionId should NOT change.
-    await h.orchestrator.stop('g1', 'c1'); // this marks archived
+    // Flip archived directly on the registry (stop() now hard-deletes; this
+    // case still guards the archived-flag path for legacy state.json entries).
+    h.channelRegistry.markArchived('g1', 'c1');
     expect(h.channelRegistry.get('g1', 'c1')?.archived).toBe(true);
     const beforeUpdatedAt = h.channelRegistry.get('g1', 'c1')?.updatedAt;
     cb?.('late-arrival-id');
     // No mutation on archived binding.
     expect(h.channelRegistry.get('g1', 'c1')?.updatedAt).toBe(beforeUpdatedAt);
     expect(h.channelRegistry.get('g1', 'c1')?.sessionId).toBe('sess-c1');
-  });
-
-  it('resumeAll: null sessionId + matching listResumable candidate → boot-recovered', async () => {
-    // The mode's catalog reports a session whose cwd matches the channel's
-    // stored cwd; resumeAll must resume against that id, persist it, and audit.
-    const mode = new MockMode('claude', {
-      resumables: [{ sessionId: 'catalog-sess', cwd: '' /* placeholder, replaced below */ }],
-    });
-    const h = harness({ mode });
-    cleanup.push(h.dir, h.workspace);
-    // Overwrite the resumables' cwd to match the workspace exactly.
-    (mode as unknown as { opts: { resumables: { sessionId: string; cwd: string }[] } }).opts.resumables = [
-      { sessionId: 'catalog-sess', cwd: h.workspace },
-    ];
-    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: null, cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
-
-    await h.orchestrator.resumeAll();
-
-    expect(mode.resumedIds).toEqual(['catalog-sess']);
-    // The recovered id is persisted so future boots skip the scanner.
-    expect(h.channelRegistry.get('g1', 'c1')?.sessionId).toBe('catalog-sess');
-    // A boot-recovered audit entry is written.
-    const audit = readAudit(h.dir);
-    expect(audit.some((r) => r.action === 'resume' && r.outcome === 'boot-recovered')).toBe(true);
-  });
-
-  it('resumeAll: listResumable candidates with cwd="" (Codex informational) are excluded', async () => {
-    const mode = new MockMode('claude', {
-      resumables: [{ sessionId: 'blank-cwd', cwd: '' }],
-    });
-    const h = harness({ mode });
-    cleanup.push(h.dir, h.workspace);
-    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: null, cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null });
-
-    await h.orchestrator.resumeAll();
-
-    // A cwd='' candidate must NOT match — the binding stays skipped.
-    expect(mode.resumedIds).toEqual([]);
-    expect(h.channelRegistry.get('g1', 'c1')?.sessionId).toBeNull();
   });
 
   it('send: active absent + binding present with sessionId → auto-resume', async () => {
