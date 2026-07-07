@@ -123,7 +123,7 @@ describe('default renderer set — result line + mention', () => {
 });
 
 describe('default renderer set — rate limit line', () => {
-  it('backfills the utilization % from getUsage when the event omits it', async () => {
+  it('shows the snapshot windows from getUsage when the event omits utilization', async () => {
     const { channel, sent } = fakeChannel();
     const set = createDefaultRendererSet({
       channel,
@@ -134,7 +134,7 @@ describe('default renderer set — rate limit line', () => {
     dispatcher.dispatch({ kind: 'rate_limit', rateLimitType: 'five_hour' } as AgentEvent);
     await flush();
     const line = sent.find((m) => (m.content ?? '').includes('사용량 한도 알림'));
-    expect(line?.content).toContain('사용량 73%');
+    expect(line?.content).toBe('📊 사용량 한도 알림 · 5시간 73%');
   });
 });
 

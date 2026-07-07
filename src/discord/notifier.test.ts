@@ -124,14 +124,14 @@ describe('formatNotification', () => {
     expect(formatNotification({ kind: 'rate_limit' }, 'sess-1', ALL_ON)).toBe('📊 <#sess-1> 사용량 한도');
   });
 
-  it('rate_limit backfills the utilization % (+ label) from the usage snapshot', () => {
+  it('rate_limit shows all snapshot windows (multi-window, no reset → deterministic)', () => {
     const line = formatNotification(
       { kind: 'rate_limit', rateLimitType: 'five_hour' },
       'sess-1',
       ALL_ON,
-      { fetchedAt: 0, fiveHour: { utilization: 73 } },
+      { fetchedAt: 0, fiveHour: { utilization: 26 }, sevenDay: { utilization: 41 } },
     );
-    expect(line).toBe('📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 73%');
+    expect(line).toBe('📊 <#sess-1> 사용량 한도 · 5시간 26% · 주간 41%');
   });
 
   it('rate_limit omits % when no usage snapshot is available (label still shown, no crash)', () => {
@@ -146,14 +146,15 @@ describe('formatNotification', () => {
     ).toBe('📊 <#sess-1> 사용량 한도 · 주간 한도');
   });
 
-  it('rate_limit uses ev.utilization over the snapshot when present (regression)', () => {
+  it('rate_limit shows the snapshot window over the event util when a snapshot exists', () => {
+    // Snapshot present → full-window view; the event's own util (50) is not used.
     const line = formatNotification(
       { kind: 'rate_limit', rateLimitType: 'five_hour', utilization: 50 },
       'sess-1',
       ALL_ON,
       { fetchedAt: 0, fiveHour: { utilization: 99 } },
     );
-    expect(line).toBe('📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 50%');
+    expect(line).toBe('📊 <#sess-1> 사용량 한도 · 5시간 99%');
   });
 
   it('rate_limit is gated by the events.error filter (per minimal-change decision)', () => {
@@ -258,6 +259,6 @@ describe('SessionNotifier', () => {
     bus.emit('g1', 'sess-1', { kind: 'rate_limit', rateLimitType: 'five_hour' });
     await Promise.resolve();
 
-    expect(sent.map((m) => m.content)).toEqual(['📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 73%']);
+    expect(sent.map((m) => m.content)).toEqual(['📊 <#sess-1> 사용량 한도 · 5시간 73%']);
   });
 });

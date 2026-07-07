@@ -3,7 +3,7 @@ import type { EventBus } from '../core/eventBus.js';
 import type { ServerConfig } from '../core/configSchema.js';
 import type { UsageResult } from '../core/usageService.js';
 import type { MessageChannel } from './ports.js';
-import { rateLimitTypeLabel, usageLimitForRateType } from './renderers/index.js';
+import { rateLimitTypeLabel, formatUsageWindows } from './renderers/index.js';
 
 // Per-guild event notifier: forwards key AgentEvents (result, error; tool_use only when
 // enabled) from a session channel to ONE per-guild status channel as compact, one-line
@@ -71,15 +71,13 @@ export function formatNotification(
       // to be aware of" kind, and adding a new filter here would ripple into config
       // schema / defaults. If differentiation is needed later, split the flag.
       if (!events.error) return null;
+      // With a usage snapshot, show ALL windows with their resets (full picture);
+      // otherwise fall back to the event's own label + utilization + reset.
+      const windows = formatUsageWindows(usage ?? null);
+      if (windows) return `📊 <#${sessionChannelId}> 사용량 한도 · ${windows}`;
       let line = `📊 <#${sessionChannelId}> 사용량 한도`;
       if (ev.rateLimitType) line += ` · ${rateLimitTypeLabel(ev.rateLimitType)}`;
-      // Prefer the event's own utilization; the SDK usually omits it, so fall back to
-      // the matching window in the usage snapshot (same mapping as formatRateLimitLine).
-      const utilization =
-        typeof ev.utilization === 'number'
-          ? ev.utilization
-          : usageLimitForRateType(ev.rateLimitType, usage)?.utilization;
-      if (typeof utilization === 'number') line += ` · 사용량 ${Math.round(utilization)}%`;
+      if (typeof ev.utilization === 'number') line += ` · 사용량 ${Math.round(ev.utilization)}%`;
       if (ev.resetAt) {
         const ms = Date.parse(ev.resetAt);
         if (!Number.isNaN(ms)) {

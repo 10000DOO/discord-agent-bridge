@@ -1,23 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { formatRateLimitLine, rateLimitTypeLabel } from './index.js';
+import { formatRateLimitLine, formatUsageWindows, rateLimitTypeLabel } from './index.js';
 import type { AgentEvent } from '../../core/contracts.js';
 import type { UsageResult, UsageSnapshot } from '../../core/usageService.js';
 
-// formatRateLimitLine backfills the utilization % from the usage snapshot when the
-// SDK's rate_limit_event omits it (the common case — SDKRateLimitInfo.utilization is
-// optional and usually absent).
+// When a usage snapshot is available, the rate-limit line shows EVERY window with its
+// own reset. Without a snapshot it falls back to the SDK event's own label/util/reset.
 
 type RateLimitEvent = Extract<AgentEvent, { kind: 'rate_limit' }>;
-type LimitField = 'fiveHour' | 'sevenDay' | 'sevenDayOpus' | 'sevenDaySonnet';
 
 const ev = (over: Partial<RateLimitEvent> = {}): RateLimitEvent => ({ kind: 'rate_limit', ...over });
 const snapshot = (over: Partial<UsageSnapshot> = {}): UsageSnapshot => ({ fetchedAt: 0, ...over });
-const withWindow = (field: LimitField, utilization: number): UsageSnapshot => {
-  const s: UsageSnapshot = { fetchedAt: 0 };
-  s[field] = { utilization };
-  return s;
-};
 const unavailable: UsageResult = { available: false, reason: 'no-credentials' };
+
+// Build ISO reset times relative to the real clock, and render the EXPECTED string with
+// the same locale logic the formatter uses — so assertions are timezone-independent.
+function isoToday(): string {
+  const d = new Date();
+  d.setHours(13, 20, 0, 0);
+  return d.toISOString();
+}
+function isoFutureDay(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 2); // definitely not today
+  d.setHours(9, 0, 0, 0);
+  return d.toISOString();
+}
+function expectedReset(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const hhmm = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const sameDay =
+    d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hhmm : `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+}
 
 describe('rateLimitTypeLabel', () => {
   it('maps every known SDK rate-limit type', () => {
@@ -33,69 +48,91 @@ describe('rateLimitTypeLabel', () => {
   });
 });
 
-describe('formatRateLimitLine — utilization from the event (regression)', () => {
-  it('uses ev.utilization when present, ignoring the snapshot', () => {
-    const line = formatRateLimitLine(ev({ rateLimitType: 'five_hour', utilization: 42 }), withWindow('fiveHour', 99));
-    expect(line).toContain('사용량 42%');
-    expect(line).not.toContain('99%');
+describe('formatUsageWindows', () => {
+  it('returns null for a non-snapshot (null / unavailable)', () => {
+    expect(formatUsageWindows(null)).toBeNull();
+    expect(formatUsageWindows(unavailable)).toBeNull();
   });
 
-  it('rounds the utilization', () => {
+  it('returns null for a snapshot with no windows', () => {
+    expect(formatUsageWindows(snapshot())).toBeNull();
+  });
+
+  it('renders every present window, each with its own reset, in order', () => {
+    const today = isoToday();
+    const future = isoFutureDay();
+    const out = formatUsageWindows(
+      snapshot({ fiveHour: { utilization: 26, resetsAt: today }, sevenDay: { utilization: 41, resetsAt: future } }),
+    );
+    expect(out).toBe(`5시간 26% (리셋 ${expectedReset(today)}) · 주간 41% (리셋 ${expectedReset(future)})`);
+  });
+
+  it('renders only the windows that exist', () => {
+    const today = isoToday();
+    expect(formatUsageWindows(snapshot({ fiveHour: { utilization: 26, resetsAt: today } }))).toBe(
+      `5시간 26% (리셋 ${expectedReset(today)})`,
+    );
+  });
+
+  it('omits the reset parenthetical when resetsAt is absent or unparseable', () => {
+    expect(formatUsageWindows(snapshot({ fiveHour: { utilization: 26 } }))).toBe('5시간 26%');
+    expect(formatUsageWindows(snapshot({ fiveHour: { utilization: 26, resetsAt: 'not-a-date' } }))).toBe('5시간 26%');
+  });
+
+  it('rounds utilization and labels the opus/sonnet windows', () => {
+    expect(
+      formatUsageWindows(snapshot({ sevenDayOpus: { utilization: 12.6 }, sevenDaySonnet: { utilization: 0 } })),
+    ).toBe('주간(Opus) 13% · 주간(Sonnet) 0%');
+  });
+});
+
+describe('formatRateLimitLine — snapshot present (all windows)', () => {
+  it('shows every window with resets and ignores the event label/util/reset', () => {
+    const today = isoToday();
+    const future = isoFutureDay();
+    const line = formatRateLimitLine(
+      ev({ rateLimitType: 'five_hour', utilization: 99, resetAt: today }),
+      snapshot({ fiveHour: { utilization: 26, resetsAt: today }, sevenDay: { utilization: 41, resetsAt: future } }),
+    );
+    expect(line).toBe(
+      `📊 사용량 한도 알림 · 5시간 26% (리셋 ${expectedReset(today)}) · 주간 41% (리셋 ${expectedReset(future)})`,
+    );
+    expect(line).not.toContain('99'); // the event's own util is ignored on the snapshot path
+  });
+
+  it('shows a single window when the snapshot has only one', () => {
+    expect(formatRateLimitLine(ev({ rateLimitType: 'seven_day' }), snapshot({ sevenDay: { utilization: 41 } }))).toBe(
+      '📊 사용량 한도 알림 · 주간 41%',
+    );
+  });
+});
+
+describe('formatRateLimitLine — no snapshot (event-based fallback, regression)', () => {
+  it('uses the event label + utilization + reset when there is no snapshot', () => {
+    const resetAt = new Date(1000 * 1000).toISOString();
+    const hhmm = new Date(1000 * 1000).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour', utilization: 87, resetAt }), null)).toBe(
+      `📊 사용량 한도 알림 · 5시간 한도 · 사용량 87% · 리셋 ${hhmm}`,
+    );
+  });
+
+  it('rounds the event utilization', () => {
     expect(formatRateLimitLine(ev({ utilization: 42.7 }))).toContain('사용량 43%');
   });
 
-  it('omits % when neither the event nor a snapshot supplies it', () => {
-    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }))).not.toMatch(/사용량 \d+%/);
-  });
-});
-
-describe('formatRateLimitLine — utilization backfilled from the usage snapshot', () => {
-  const cases: Array<[string, LimitField]> = [
-    ['five_hour', 'fiveHour'],
-    ['seven_day', 'sevenDay'],
-    ['seven_day_opus', 'sevenDayOpus'],
-    ['seven_day_sonnet', 'sevenDaySonnet'],
-  ];
-  for (const [rateType, field] of cases) {
-    it(`maps ${rateType} → ${field} and shows its %`, () => {
-      const line = formatRateLimitLine(ev({ rateLimitType: rateType }), withWindow(field, 37));
-      expect(line).toContain('사용량 37%');
-    });
-  }
-
-  it('rounds a backfilled utilization', () => {
-    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }), withWindow('fiveHour', 12.4))).toContain('사용량 12%');
+  it('omits % when the event has none and there is no snapshot (null / unavailable / no arg)', () => {
+    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }), null)).toBe('📊 사용량 한도 알림 · 5시간 한도');
+    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }), unavailable)).toBe('📊 사용량 한도 알림 · 5시간 한도');
+    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }))).toBe('📊 사용량 한도 알림 · 5시간 한도');
   });
 
-  it('omits % for overage even with a full snapshot', () => {
-    const snap = snapshot({ fiveHour: { utilization: 50 }, sevenDay: { utilization: 60 } });
-    expect(formatRateLimitLine(ev({ rateLimitType: 'overage' }), snap)).not.toMatch(/사용량 \d+%/);
-  });
-
-  it('omits % for an unknown rate type', () => {
-    expect(formatRateLimitLine(ev({ rateLimitType: 'moon_phase' }), withWindow('fiveHour', 50))).not.toMatch(/사용량 \d+%/);
-  });
-
-  it('omits % when the matching window is missing from the snapshot', () => {
-    // seven_day requested but the snapshot only carries the five-hour window.
-    expect(formatRateLimitLine(ev({ rateLimitType: 'seven_day' }), withWindow('fiveHour', 50))).not.toMatch(/사용량 \d+%/);
-  });
-});
-
-describe('formatRateLimitLine — no snapshot / unavailable', () => {
-  it('omits % when usage is null', () => {
-    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }), null)).not.toMatch(/사용량 \d+%/);
-  });
-
-  it('omits % when usage is UsageUnavailable', () => {
-    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }), unavailable)).not.toMatch(/사용량 \d+%/);
-  });
-
-  it('omits % when the usage arg is not passed at all (back-compat)', () => {
-    expect(formatRateLimitLine(ev({ rateLimitType: 'five_hour' }))).not.toMatch(/사용량 \d+%/);
-  });
-
-  it('does not crash and omits % when there is no rateLimitType', () => {
-    expect(formatRateLimitLine(ev(), withWindow('fiveHour', 50))).not.toMatch(/사용량 \d+%/);
+  it('falls back to the event when the snapshot carries no windows', () => {
+    expect(formatRateLimitLine(ev({ rateLimitType: 'seven_day', utilization: 50 }), snapshot())).toBe(
+      '📊 사용량 한도 알림 · 주간 한도 · 사용량 50%',
+    );
   });
 });

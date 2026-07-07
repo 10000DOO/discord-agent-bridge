@@ -275,45 +275,53 @@ export function isUsageSnapshot(usage: UsageResult | null | undefined): usage is
   return !!usage && !('available' in usage);
 }
 
-// Map an SDK rateLimitType to the matching UsageSnapshot window, or undefined when
-// there is no tracked window for it (e.g. 'overage' / an unknown type). Used to
-// backfill the utilization % the SDK's rate_limit_event usually omits.
-export function usageLimitForRateType(
-  type: string | undefined,
-  usage: UsageResult | null | undefined,
-): UsageLimit | undefined {
-  if (!type || !isUsageSnapshot(usage)) return undefined;
-  switch (type) {
-    case 'five_hour':
-      return usage.fiveHour;
-    case 'seven_day':
-      return usage.sevenDay;
-    case 'seven_day_opus':
-      return usage.sevenDayOpus;
-    case 'seven_day_sonnet':
-      return usage.sevenDaySonnet;
-    default:
-      return undefined; // 'overage' and any unknown type have no snapshot window
-  }
+// Format a window's reset time: HH:mm when it falls today, else M/D HH:mm (ko-KR, 24h).
+// Returns null when absent/unparseable so the caller drops the reset parenthetical.
+function formatResetTime(resetsAt: string | undefined): string | null {
+  if (!resetsAt) return null;
+  const ms = Date.parse(resetsAt);
+  if (Number.isNaN(ms)) return null;
+  const d = new Date(ms);
+  const now = new Date();
+  const hhmm = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const sameDay =
+    d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hhmm : `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
 }
 
-// One-line summary of a rate_limit event: emoji + label + optional utilization %
-// and reset time. `usage` is an optional fallback source for the utilization %: the
-// SDK's rate_limit_event usually omits `ev.utilization`, so when it is absent we read
-// the matching window from the latest usage snapshot. Kept as a plain function (not on
-// RendererSet) so the notifier path can reuse the same phrasing if desired later.
+// Render every present usage window as `라벨 {util}% (리셋 …)` segments joined by ' · ',
+// or null when there is no snapshot / no window to show. Shared by the rate-limit alert
+// (renderers) and the status-channel notifier so both read identically.
+export function formatUsageWindows(usage: UsageResult | null): string | null {
+  if (!isUsageSnapshot(usage)) return null;
+  const segments: string[] = [];
+  const add = (limit: UsageLimit | undefined, label: string): void => {
+    if (!limit) return;
+    const reset = formatResetTime(limit.resetsAt);
+    segments.push(`${label} ${Math.round(limit.utilization)}%${reset ? ` (리셋 ${reset})` : ''}`);
+  };
+  add(usage.fiveHour, '5시간');
+  add(usage.sevenDay, '주간');
+  add(usage.sevenDayOpus, '주간(Opus)');
+  add(usage.sevenDaySonnet, '주간(Sonnet)');
+  return segments.length > 0 ? segments.join(' · ') : null;
+}
+
+// One-line summary of a rate_limit event. When a usage snapshot is available, show ALL
+// windows with their resets (the full picture, independent of the event's own type/util
+// — those are usually empty). Otherwise (API-key / non-macOS / no data yet) fall back to
+// the event's own label + utilization + reset. Kept as a plain function (not on
+// RendererSet) so the notifier path reuses the same phrasing.
 export function formatRateLimitLine(
   ev: Extract<AgentEvent, { kind: 'rate_limit' }>,
   usage?: UsageResult | null,
 ): string {
+  const windows = formatUsageWindows(usage ?? null);
+  if (windows) return `📊 사용량 한도 알림 · ${windows}`;
+
   let line = '📊 사용량 한도 알림';
   if (ev.rateLimitType) line += ` · ${rateLimitTypeLabel(ev.rateLimitType)}`;
-  // Prefer the event's own utilization; fall back to the snapshot window it maps to.
-  const utilization =
-    typeof ev.utilization === 'number'
-      ? ev.utilization
-      : usageLimitForRateType(ev.rateLimitType, usage)?.utilization;
-  if (typeof utilization === 'number') line += ` · 사용량 ${Math.round(utilization)}%`;
+  if (typeof ev.utilization === 'number') line += ` · 사용량 ${Math.round(ev.utilization)}%`;
   if (ev.resetAt) {
     const ms = Date.parse(ev.resetAt);
     if (!Number.isNaN(ms)) {
