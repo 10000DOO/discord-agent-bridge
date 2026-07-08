@@ -257,6 +257,147 @@ describe('ClaudeSession — SDK message mapping', () => {
     await session.stop();
   });
 
+  it('carries connected-MCP count, memory-file count and clearable tokens on context_usage', async () => {
+    const { ctx, events } = makeCtx();
+    // A fake query whose getContextUsage returns the hud-level extras.
+    const query = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sess-mcp',
+          mcp_servers: [
+            { name: 'discord', status: 'connected' },
+            { name: 'redmine', status: 'connected' },
+            { name: 'broken', status: 'failed' },
+          ],
+        };
+        yield { type: 'result', subtype: 'success', result: 'done' };
+      },
+      close() {},
+      async getContextUsage() {
+        return {
+          totalTokens: 42_000,
+          maxTokens: 200_000,
+          percentage: 21,
+          categories: [
+            { name: 'System prompt', tokens: 3_000, color: 'promptBorder' },
+            { name: 'Messages', tokens: 207_600, color: 'purple_FOR_SUBAGENTS_ONLY' },
+            { name: 'Free space', tokens: 100_000, color: 'promptBorder' },
+          ],
+          memoryFiles: [{ path: '/tmp/ws/CLAUDE.md', type: 'project', tokens: 500 }],
+        };
+      },
+    };
+    const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+
+    const ev = events.find((e) => e.kind === 'context_usage');
+    expect(ev).toMatchObject({
+      kind: 'context_usage',
+      clearableTokens: 207_600, // the 'Messages' category = what /clear reclaims
+      memoryFileCount: 1,
+      mcpServerCount: 2, // connected only; the failed server is not counted
+    });
+  });
+
+  it('captures the supportedModels displayName once and carries it on context_usage', async () => {
+    const { ctx, events } = makeCtx();
+    const state = { supportedModelsCalls: 0 };
+    const query = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'system', subtype: 'init', session_id: 'sess-dn', model: 'claude-fable-5[1m]' };
+        yield { type: 'result', subtype: 'success', result: 'done' };
+      },
+      close() {},
+      async supportedModels() {
+        state.supportedModelsCalls++;
+        return [
+          { value: 'opus', resolvedModel: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', description: '' },
+          { value: 'claude-fable-5', resolvedModel: 'claude-fable-5', displayName: 'Claude Fable 5', description: '' },
+        ];
+      },
+      async getContextUsage() {
+        // Give the async supportedModels() capture a beat to settle first.
+        await new Promise((r) => setTimeout(r, 20));
+        return { totalTokens: 1, maxTokens: 100, percentage: 1 };
+      },
+    };
+    const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+
+    // The '[1m]'-suffixed resolved id matches the bare catalog row.
+    const ev = events.find((e) => e.kind === 'context_usage');
+    expect(ev).toMatchObject({ model: 'claude-fable-5[1m]', modelDisplayName: 'Claude Fable 5' });
+    expect(state.supportedModelsCalls).toBe(1);
+  });
+
+  it('stays harmless when the query lacks supportedModels (older SDK/test double)', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-no-sm', model: 'claude-x' },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+    const ev = events.find((e) => e.kind === 'context_usage');
+    expect(ev).not.toHaveProperty('modelDisplayName');
+    expect(events.some((e) => e.kind === 'error')).toBe(false);
+  });
+
+  it('maps system/task_notification to a subagent_result event', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task-9',
+        tool_use_id: 'tu-9',
+        status: 'completed',
+        output_file: '/tmp/out.md',
+        summary: 'Fixed the model list',
+        usage: { total_tokens: 1234, tool_uses: 7, duration_ms: 12_000 },
+      },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+    await waitFor(() => events.some((e) => e.kind === 'subagent_result'));
+    await session.stop();
+    expect(events).toContainEqual({
+      kind: 'subagent_result',
+      taskId: 'task-9',
+      status: 'completed',
+      summary: 'Fixed the model list',
+      toolUseId: 'tu-9',
+      durationMs: 12_000,
+      toolUses: 7,
+    });
+  });
+
+  it('omits the optional subagent_result fields the notification does not carry', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task-min',
+        status: 'failed',
+        output_file: '/tmp/out.md',
+        summary: 'it broke',
+      },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+    await waitFor(() => events.some((e) => e.kind === 'subagent_result'));
+    await session.stop();
+    expect(events).toContainEqual({ kind: 'subagent_result', taskId: 'task-min', status: 'failed', summary: 'it broke' });
+  });
+
   it('flags a tool_result with is_error:true as ok:false', async () => {
     const { ctx, events } = makeCtx();
     const { queryFn } = fakeQueryFn([

@@ -59,6 +59,16 @@ export class ClaudeSession implements ModeSession {
   // alias like 'opus'. Carried on context_usage events for the usage panel.
   private activeModel: string | null = null;
 
+  // Human-readable display name for activeModel, captured once from
+  // supportedModels() after the first init (activeModel pattern). Best-effort:
+  // a failed/absent control request just leaves the panel showing the id.
+  private modelDisplayName: string | null = null;
+  private modelDisplayNameRequested = false;
+
+  // Count of connected MCP servers from the init message, carried on
+  // context_usage for the panel's "session composition" line.
+  private mcpServerCount: number | null = null;
+
   private readonly ctx: ModeContext;
   private readonly query: Query;
   private readonly abortController: AbortController;
@@ -187,12 +197,31 @@ export class ClaudeSession implements ModeSession {
       case 'system': {
         if (msg.subtype === 'init' && msg.session_id) {
           if (typeof msg.model === 'string' && msg.model.length > 0) this.activeModel = msg.model;
+          // The param annotation mirrors sdk.d.ts SDKSystemMessage.mcp_servers; the
+          // installed d.ts has unresolved names that degrade this member to `any`
+          // under skipLibCheck, so inference alone yields an implicit-any param.
+          if (msg.mcp_servers) {
+            this.mcpServerCount = msg.mcp_servers.filter((s: { name: string; status: string }) => s.status === 'connected').length;
+          }
+          this.captureModelDisplayName();
           const first = this.sessionId === null;
           this.sessionId = msg.session_id;
           // Only the FIRST capture notifies the orchestrator so it can persist the
           // real backend sessionId to the ChannelRegistry (start() saved the binding
           // with sessionId=null since init arrives asynchronously after start).
           if (first) this.ctx.onSessionIdReady?.(msg.session_id);
+        } else if (msg.subtype === 'task_notification') {
+          // Subagent completion → normalized subagent_result (§5a). Previously
+          // dropped via the default branch; now feeds the usage panel's list.
+          this.ctx.emit({
+            kind: 'subagent_result',
+            taskId: msg.task_id,
+            status: msg.status,
+            summary: msg.summary,
+            ...(msg.tool_use_id !== undefined ? { toolUseId: msg.tool_use_id } : {}),
+            ...(msg.usage?.duration_ms !== undefined ? { durationMs: msg.usage.duration_ms } : {}),
+            ...(msg.usage?.tool_uses !== undefined ? { toolUses: msg.usage.tool_uses } : {}),
+          });
         }
         return;
       }
@@ -229,6 +258,33 @@ export class ClaudeSession implements ModeSession {
         return;
       }
     }
+  }
+
+  // Resolve activeModel to its human-readable displayName via ONE supportedModels()
+  // control request after the first init (same defensive posture as providerCatalog's
+  // fetchClaudeModels: any failure — including a test double without the method —
+  // just leaves the display name unknown). ModelInfo.value may be an alias while the
+  // init model is the resolved wire id (possibly '[1m]'-suffixed), so match value and
+  // resolvedModel against both the exact id and the suffix-stripped one.
+  private captureModelDisplayName(): void {
+    if (this.modelDisplayNameRequested) return;
+    this.modelDisplayNameRequested = true;
+    void (async () => {
+      try {
+        const models = await this.query.supportedModels();
+        const active = this.activeModel;
+        if (!active || !Array.isArray(models)) return;
+        const bare = active.replace(/\[[^\]]*\]$/, '');
+        const info = models.find(
+          (m) => m && (m.value === active || m.resolvedModel === active || m.value === bare || m.resolvedModel === bare),
+        );
+        if (info && typeof info.displayName === 'string' && info.displayName.length > 0) {
+          this.modelDisplayName = info.displayName;
+        }
+      } catch {
+        // Best-effort: the usage panel shows the raw model id instead.
+      }
+    })();
   }
 
   // stream_event content_block_delta → text/thinking deltas (§5a). The SDK wraps
@@ -298,12 +354,24 @@ export class ClaudeSession implements ModeSession {
     void this.query
       .getContextUsage()
       .then((ctx) => {
+        // 'Messages' is the CLI's message-history category — exactly what /clear
+        // reclaims. Category names are matched defensively (an unknown/renamed set
+        // simply drops the hint), as do memoryFiles (a test double may omit both).
+        const messages = Array.isArray(ctx.categories)
+          ? ctx.categories.find((c) => c && c.name === 'Messages')
+          : undefined;
+        const clearableTokens = typeof messages?.tokens === 'number' ? messages.tokens : undefined;
+        const memoryFileCount = Array.isArray(ctx.memoryFiles) ? ctx.memoryFiles.length : undefined;
         this.ctx.emit({
           kind: 'context_usage',
           totalTokens: ctx.totalTokens,
           maxTokens: ctx.maxTokens,
           percentage: ctx.percentage,
           ...(this.activeModel !== null ? { model: this.activeModel } : {}),
+          ...(this.modelDisplayName !== null ? { modelDisplayName: this.modelDisplayName } : {}),
+          ...(clearableTokens !== undefined ? { clearableTokens } : {}),
+          ...(memoryFileCount !== undefined ? { memoryFileCount } : {}),
+          ...(this.mcpServerCount !== null ? { mcpServerCount: this.mcpServerCount } : {}),
         });
       })
       .catch(() => {

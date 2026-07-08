@@ -63,7 +63,35 @@ export type AgentEvent =
     }
   // Claude: query.getContextUsage(); `model` is the init-reported RESOLVED model id
   // actually serving the session (e.g. 'claude-fable-5[1m]'), shown on the usage panel.
-  | { kind: 'context_usage'; totalTokens: number; maxTokens: number; percentage: number; model?: string }
+  // The optional extras are best-effort session/turn facts for the usage panel — all
+  // optional so existing consumers (and backends that never learn them) are untouched:
+  //   modelDisplayName  supportedModels() displayName captured once at init
+  //   clearableTokens   getContextUsage() 'Messages' category tokens (= what /clear reclaims)
+  //   memoryFileCount   getContextUsage().memoryFiles.length (loaded CLAUDE.md files)
+  //   mcpServerCount    init mcp_servers with status 'connected'
+  | {
+      kind: 'context_usage';
+      totalTokens: number;
+      maxTokens: number;
+      percentage: number;
+      model?: string;
+      modelDisplayName?: string;
+      clearableTokens?: number;
+      memoryFileCount?: number;
+      mcpServerCount?: number;
+    }
+  // Claude: SDK system/task_notification mapped to a normalized subagent completion.
+  // `toolUseId` links back to the Task/Agent tool_use block that started it, so a
+  // renderer can pair the start (subagent_type/description) with this completion.
+  | {
+      kind: 'subagent_result';
+      taskId: string;
+      status: 'completed' | 'failed' | 'stopped';
+      summary: string;
+      toolUseId?: string;
+      durationMs?: number;
+      toolUses?: number;
+    }
   | {
       kind: 'error';
       message: string;
