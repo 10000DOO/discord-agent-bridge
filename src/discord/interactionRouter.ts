@@ -47,6 +47,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   'agent.stats': 'drive',
   'mode.backend': 'drive',
   'mode.perm': 'drive',
+  'mode.model': 'drive',
   stop: 'drive',
   'stop-all': 'admin',
 };
@@ -278,6 +279,9 @@ export class InteractionRouter {
           break;
         case 'mode.perm':
           await this.switchPerm(i);
+          break;
+        case 'mode.model':
+          await this.switchModel(i);
           break;
         case 'stop':
           await this.stop(i);
@@ -837,6 +841,24 @@ export class InteractionRouter {
       ...(binding.projectAuth ? { projectAuth: binding.projectAuth } : {}),
     });
     await i.editReply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }) });
+  }
+
+  // /mode model <value>: change the model on the live session (no restart, context
+  // kept). The orchestrator applies it and persists it; here we map the status to a notice.
+  private async switchModel(i: SlashInteraction): Promise<void> {
+    const guildId = i.guildId as string;
+    const value = i.getString('value');
+    if (!value) return;
+    const outcome = await this.deps.orchestrator.setModel(guildId, i.channelId, value);
+    const key =
+      outcome === 'ok'
+        ? 'cmd.model.switched'
+        : outcome === 'unsupported'
+          ? 'cmd.model.unsupported'
+          : outcome === 'no-session'
+            ? 'router.noSession'
+            : 'cmd.model.failed';
+    await i.editReply({ content: t(key, { model: value }) });
   }
 
   private async stop(i: SlashInteraction): Promise<void> {

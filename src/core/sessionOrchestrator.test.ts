@@ -651,4 +651,43 @@ describe('SessionOrchestrator', () => {
 
     await expect(h.orchestrator.send('g1', 'c1', { text: 'x' })).rejects.toThrow(/No active session/);
   });
+
+  it('setModel: no active session → "no-session"', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    expect(await h.orchestrator.setModel('g1', 'c1', 'sonnet')).toBe('no-session');
+  });
+
+  it('setModel: a session without setModel support → "unsupported", binding unchanged', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', model: 'opus' });
+
+    // MockSession does not implement the optional setModel, so it is not supported.
+    expect(await h.orchestrator.setModel('g1', 'c1', 'sonnet')).toBe('unsupported');
+    expect(h.channelRegistry.get('g1', 'c1')?.model).toBe('opus');
+  });
+
+  it('setModel: applies to the live session and persists the new model on the binding', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', model: 'opus' });
+
+    // Give the live session a setModel that records what it was asked to switch to.
+    const seen: (string | undefined)[] = [];
+    const session = h.mode.lastSession as unknown as { setModel?: (m?: string) => Promise<void> };
+    session.setModel = async (m) => {
+      seen.push(m);
+    };
+
+    expect(await h.orchestrator.setModel('g1', 'c1', 'sonnet')).toBe('ok');
+    // Applied to the live session…
+    expect(seen).toEqual(['sonnet']);
+    // …and persisted so a later resume reuses it.
+    expect(h.channelRegistry.get('g1', 'c1')?.model).toBe('sonnet');
+    // Audited.
+    const audit = readAudit(h.dir);
+    expect(audit.some((e) => e.outcome === 'model switched to sonnet' && e.status === 'ok')).toBe(true);
+  });
 });

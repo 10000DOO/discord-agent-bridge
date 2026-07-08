@@ -128,6 +128,9 @@ export interface ModeSession {
   // from stop()). Optional so existing modes/test doubles stay valid; a mode that omits it
   // simply has no interrupt path. Must be harmless/idempotent when nothing is running.
   interrupt?(): Promise<void>;
+  // Switch the model on the LIVE session, mid-conversation, without a restart. Optional:
+  // only backends whose transport supports it (Claude) implement it; callers duck-type.
+  setModel?(model?: string): Promise<void>;
   // Modes that support permissionPrompts call ctx.requestPermission; Discord resolves it.
 }
 

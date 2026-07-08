@@ -204,6 +204,9 @@ const ko: Catalog = {
   'cmd.mode.freshContext': '⚠️ {backend} 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다.',
   'cmd.mode.unavailable': '`{backend}` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요.',
   'cmd.perm.switched': '권한 설정을 바꿨어요: {perm}',
+  'cmd.model.switched': '이 세션의 모델을 바꿨어요: {model} (다음 응답부터 적용, 대화는 유지)',
+  'cmd.model.unsupported': '이 백엔드는 세션 중 모델 변경을 지원하지 않아요 (Claude만 가능).',
+  'cmd.model.failed': '모델 변경에 실패했어요. 터미널 로그를 확인해 주세요.',
   'cmd.error': '명령을 처리하지 못했어요: {error}',
   // Generic ack for an interaction that failed before/while routing (no detail leaked).
   'cmd.error.generic': '명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.',
@@ -241,6 +244,9 @@ const en: Catalog = {
   'cmd.interrupt.button': '⏹️ Stop',
   'cmd.interrupt.done': 'Stopped the current task. You can keep the conversation going.',
   'cmd.interrupt.none': 'No running task to stop.',
+  'cmd.model.switched': 'Switched this session’s model to {model} (applies from the next turn; conversation kept).',
+  'cmd.model.unsupported': 'This backend does not support switching the model mid-session (Claude only).',
+  'cmd.model.failed': 'Failed to switch the model. Check the terminal logs.',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

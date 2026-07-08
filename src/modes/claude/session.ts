@@ -392,6 +392,16 @@ export class ClaudeSession implements ModeSession {
     }
   }
 
+  // Change the model on the LIVE query mid-session (SDK setModel). A model name or
+  // alias ('opus'/'sonnet'/'haiku') is accepted; the SDK resolves it. Takes effect on
+  // the next turn of this same session — no restart, no lost context. activeModel is
+  // updated so the usage panel reflects the new choice.
+  async setModel(model?: string): Promise<void> {
+    if (this.closed) throw new Error('Claude session is closed.');
+    await this.query.setModel(model);
+    if (typeof model === 'string' && model.length > 0) this.activeModel = model;
+  }
+
   // Abort the underlying query and wind down the prompt stream (§7.5 kill switch).
   async stop(): Promise<void> {
     if (this.closed) return;
