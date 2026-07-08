@@ -74,13 +74,16 @@ function makeWiring(opts: {
   // Per-channelId resolver override (default: everything resolves to opts.channel),
   // so a test can hand the status channel a distinct sink from the session channel.
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
+  // Extra binding fields (cwd/permissionMode/createdAt) merged into the stub
+  // registry's binding, so getSessionMeta tests can shape the session meta.
+  binding?: Record<string, unknown>;
 }) {
   const eventBus = new EventBus();
   const modeRegistry = new ModeRegistry();
   modeRegistry.register(new StubMode('claude', CLAUDE_CAPS));
   modeRegistry.register(new StubMode('codex', { ...CLAUDE_CAPS, usagePanel: false }));
   const channelRegistry = {
-    get: () => ({ ownerId: opts.ownerId ?? 'owner' }),
+    get: () => ({ ownerId: opts.ownerId ?? 'owner', ...(opts.binding ?? {}) }),
   } as unknown as ChannelRegistry;
   const usageService = {
     isAvailable: () => opts.usage !== undefined,
@@ -337,6 +340,44 @@ describe('SessionWiring rendering + sendFile', () => {
     expect(msg).toContain('out.txt');
     const fileMsg = sent.find((m) => m.files && m.files.length > 0);
     expect(fileMsg?.files?.[0]).toEqual({ path: '/ws/out.txt', name: 'out.txt' });
+  });
+});
+
+describe('SessionWiring usage-panel session meta', () => {
+  // The usage embed lands asynchronously (getUsage + getSessionMeta awaited on the
+  // tail chain, git probe on a real subprocess), so poll with a real-time budget.
+  async function waitForUsageEmbed(sent: OutgoingMessage[], budgetMs = 2000) {
+    const start = Date.now();
+    for (;;) {
+      const embed = sent.flatMap((m) => m.embeds ?? []).find((e) => e.title?.includes('사용량'));
+      if (embed) return embed;
+      if (Date.now() - start > budgetMs) return undefined;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  it('renders binding cwd/permMode on the panel; a failing git probe just omits the branch', async () => {
+    const { channel, sent } = fakeChannel();
+    const { wiring, eventBus } = makeWiring({
+      channel,
+      binding: { cwd: '/nonexistent-dab-meta-dir', permMode: 'plan', createdAt: new Date().toISOString() },
+    });
+    await wiring.attach('g1', 'c1', 'claude');
+    eventBus.emit('g1', 'c1', { kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10, model: 'claude-x' });
+    const embed = await waitForUsageEmbed(sent);
+    expect(embed?.description).toContain('📁 nonexistent-dab-meta-dir');
+    expect(embed?.description).not.toContain('git:('); // cwd is not a repo → branch omitted
+    expect(embed?.footer).toBe('권한: 플랜 (읽기 전용) · claude-x');
+  });
+
+  it('includes the git branch when the binding cwd is a real repository', async () => {
+    const { channel, sent } = fakeChannel();
+    // This repo itself: `git rev-parse --abbrev-ref HEAD` resolves to SOME branch name.
+    const { wiring, eventBus } = makeWiring({ channel, binding: { cwd: process.cwd() } });
+    await wiring.attach('g1', 'c1', 'claude');
+    eventBus.emit('g1', 'c1', { kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 });
+    const embed = await waitForUsageEmbed(sent);
+    expect(embed?.description).toContain('git:(');
   });
 });
 

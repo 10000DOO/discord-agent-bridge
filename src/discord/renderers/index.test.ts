@@ -14,6 +14,7 @@ function spySet(): RendererSet {
     transcript: vi.fn(),
     result: vi.fn(),
     usage: vi.fn(),
+    subagent: vi.fn(),
     mention: vi.fn(),
     error: vi.fn(),
     rateLimit: vi.fn(),
@@ -118,6 +119,17 @@ describe('RendererDispatcher capability dispatch', () => {
     const set2 = spySet();
     new RendererDispatcher(set2, codexCaps).dispatch(ctxUsage);
     expect(set2.usage).not.toHaveBeenCalled();
+  });
+
+  it('fires the subagent collector for subagent_result only when usagePanel is set', () => {
+    const subagentEv: AgentEvent = { kind: 'subagent_result', taskId: 'task-1', status: 'completed', summary: 'done' };
+    const set = spySet();
+    new RendererDispatcher(set, claudeCaps).dispatch(subagentEv);
+    expect(set.subagent).toHaveBeenCalledWith(subagentEv);
+
+    const set2 = spySet();
+    new RendererDispatcher(set2, codexCaps).dispatch(subagentEv);
+    expect(set2.subagent).not.toHaveBeenCalled();
   });
 
   it('always fires result + mention on result; Codex additionally feeds final text to transcript', () => {

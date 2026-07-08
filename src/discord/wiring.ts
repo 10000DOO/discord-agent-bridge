@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import type { Client } from 'discord.js';
 import type { AgentEvent, Logger, PermissionDecision } from '../core/contracts.js';
 import type { EventBus } from '../core/eventBus.js';
@@ -8,6 +9,7 @@ import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { AuditLog } from '../core/auditLog.js';
 import type { PermissionRequest } from '../core/sessionOrchestrator.js';
 import { RendererDispatcher, createDefaultRendererSet, type RendererSet } from './renderers/index.js';
+import type { UsageSessionMeta } from './renderers/usageEmbed.js';
 import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
 import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
@@ -79,6 +81,20 @@ export interface SessionWiringDeps {
 
 function channelKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
+}
+
+// Current git branch of a session cwd — the same probe claude-hud runs
+// (`git rev-parse --abbrev-ref HEAD`, short timeout). Resolves null on ANY
+// failure (not a repo, git missing, bad cwd, timeout) so the panel simply
+// omits the branch; never rejects.
+function gitBranch(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 1000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const branch = stdout.trim();
+      resolve(branch.length > 0 ? branch : null);
+    });
+  });
 }
 
 export class SessionWiring {
@@ -232,6 +248,7 @@ export class SessionWiring {
       channel,
       ownerId,
       getUsage: () => this.getUsageFor(mode),
+      getSessionMeta: () => this.getSessionMetaFor(guildId, channelId),
       logger: this.logger,
     });
     // The dispatcher's permission renderer posts buttons via its own handler; we
@@ -314,6 +331,23 @@ export class SessionWiring {
       await wiring.channel.send({ files: [{ path: absPath, ...(filename ? { name: filename } : {}) }] });
       return `Sent ${filename ?? absPath} to the channel.`;
     };
+  }
+
+  // Session facts for the usage panel header/footer, read fresh at render time
+  // (once per turn) so a permission-mode switch or branch change shows up on the
+  // next panel. Never throws: a missing binding yields null and a git failure
+  // (not a repo, no git, timeout) just omits the branch.
+  private async getSessionMetaFor(guildId: string, channelId: string): Promise<UsageSessionMeta | null> {
+    const binding = this.channelRegistry.get(guildId, channelId);
+    if (!binding) return null;
+    const meta: UsageSessionMeta = {
+      ...(binding.cwd ? { cwd: binding.cwd } : {}),
+      ...(binding.permMode ? { permMode: binding.permMode } : {}),
+      ...(binding.createdAt ? { createdAt: binding.createdAt } : {}),
+    };
+    const branch = binding.cwd ? await gitBranch(binding.cwd) : null;
+    if (branch) meta.gitBranch = branch;
+    return meta;
   }
 
   // Usage feed for the embed/notifier, read fresh per turn: Codex is structurally

@@ -9,7 +9,7 @@ import { DiffViewHandler } from './diffView.js';
 import { TranscriptFeedHandler } from './transcriptFeed.js';
 import { MentionOnCompleteHandler } from './mentionOnComplete.js';
 import { buildResultLine } from './resultLine.js';
-import { buildUsageEmbed } from './usageEmbed.js';
+import { buildUsageEmbed, type SubagentRun, type UsageSessionMeta } from './usageEmbed.js';
 import { chunkMessage } from '../format.js';
 
 // The capability dispatcher (§6): subscribes a channel's AgentEvent stream and, for
@@ -40,6 +40,8 @@ export interface RendererSet {
   result(ev: Extract<AgentEvent, { kind: 'result' }>): void;
   // caps: usagePanel
   usage(ev: Extract<AgentEvent, { kind: 'context_usage' }>): void;
+  // caps: usagePanel — subagent completions feed the panel's turn-local list.
+  subagent(ev: Extract<AgentEvent, { kind: 'subagent_result' }>): void;
   // Always: @mention the owner on completion.
   mention(ev: Extract<AgentEvent, { kind: 'result' }>): void;
   // Always: surface an error.
@@ -98,6 +100,9 @@ export class RendererDispatcher {
       case 'context_usage':
         if (caps.usagePanel) this.renderers.usage(ev);
         break;
+      case 'subagent_result':
+        if (caps.usagePanel) this.renderers.subagent(ev);
+        break;
       case 'error':
         this.renderers.error(ev);
         break;
@@ -118,6 +123,11 @@ export interface DefaultRendererSetOptions {
   // (UsageService's own TTL coalesces rapid re-reads), so the panel reflects the
   // current turn rather than an attach-time snapshot.
   getUsage?: () => UsageResult | null | Promise<UsageResult | null>;
+  // Session facts for the usage panel header/footer (binding cwd/permMode/createdAt
+  // + git branch), read fresh at render time like getUsage. Must never throw; a
+  // provider that cannot resolve anything returns null and the panel degrades to
+  // its original layout.
+  getSessionMeta?: () => UsageSessionMeta | null | Promise<UsageSessionMeta | null>;
   // Optional: threaded into each StreamEmbedHandler so a swallowed best-effort preview
   // failure (deleted channel race / REST timeout) is debug-logged rather than silent.
   logger?: Logger;
@@ -140,6 +150,34 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
   const diff = new DiffViewHandler({ channel });
   const transcript = new TranscriptFeedHandler({ channel });
   const mention = new MentionOnCompleteHandler({ channel, ownerId });
+  // Turn-local stats for the usage panel (design_hud_usage_panel.md §5.5): tool_use
+  // counts + tool_result failures per name, plus subagent runs (a subagent_result
+  // paired with its starting Task/Agent tool_use input). usage() snapshots and
+  // resets these SYNCHRONOUSLY so a next-turn event arriving while the panel send
+  // is still queued on `tail` can never leak into this turn's panel.
+  const toolCounts = new Map<string, { count: number; failed: number }>();
+  const toolNamesById = new Map<string, string>();
+  const taskInputsById = new Map<string, { type?: string; description?: string }>();
+  let agentRuns: SubagentRun[] = [];
+  const noteToolEvent = (ev: Extract<AgentEvent, { kind: 'tool_use' | 'tool_result' }>) => {
+    if (ev.kind === 'tool_use') {
+      toolNamesById.set(ev.id, ev.name);
+      const stat = toolCounts.get(ev.name) ?? { count: 0, failed: 0 };
+      stat.count += 1;
+      toolCounts.set(ev.name, stat);
+      if (ev.name === 'Task' || ev.name === 'Agent') {
+        const input = ev.input as { subagent_type?: unknown; description?: unknown } | null;
+        taskInputsById.set(ev.id, {
+          ...(typeof input?.subagent_type === 'string' ? { type: input.subagent_type } : {}),
+          ...(typeof input?.description === 'string' ? { description: input.description } : {}),
+        });
+      }
+    } else if (!ev.ok) {
+      const name = toolNamesById.get(ev.id);
+      const stat = name !== undefined ? toolCounts.get(name) : undefined;
+      if (stat) stat.failed += 1;
+    }
+  };
   // Serializes the turn's terminal sends (done-line, mention, usage panel) BEHIND the
   // stream's finalized answer chunks, so none of them ever lands mid-answer. Each link
   // settles and is GC'd once done; only the latest reference is held, so no leak.
@@ -163,6 +201,7 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       }
     },
     toolThread(ev) {
+      noteToolEvent(ev);
       swallow(toolThread.handle(ev));
     },
     diff(ev) {
@@ -213,13 +252,32 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       tail = finalized.catch(() => {}).then(() => (line ? channel.send({ content: line }) : undefined));
       swallow(tail);
     },
+    subagent(ev) {
+      const started = ev.toolUseId !== undefined ? taskInputsById.get(ev.toolUseId) : undefined;
+      agentRuns.push({
+        status: ev.status,
+        summary: ev.summary,
+        ...(started?.type !== undefined ? { type: started.type } : {}),
+        ...(started?.description !== undefined ? { description: started.description } : {}),
+        ...(ev.durationMs !== undefined ? { durationMs: ev.durationMs } : {}),
+      });
+    },
     usage(ev) {
-      // Capture this turn's context event: getUsage is now awaited inside the tail
-      // chain, so a subsequent turn's usage event must not mutate what this send renders.
+      // Capture this turn's context event AND its turn-local stats synchronously:
+      // getUsage/getSessionMeta are awaited inside the tail chain, so a subsequent
+      // turn's events must not mutate what this send renders. Consuming the stats
+      // here also resets them for the next turn.
       const ctx = ev;
+      const tools = [...toolCounts.entries()].map(([name, s]) => ({ name, count: s.count, failed: s.failed }));
+      const agents = agentRuns;
+      toolCounts.clear();
+      toolNamesById.clear();
+      taskInputsById.clear();
+      agentRuns = [];
       tail = tail.catch(() => {}).then(async () => {
         const usage = (await options.getUsage?.()) ?? null;
-        const embed = buildUsageEmbed(usage, ctx);
+        const meta = (await options.getSessionMeta?.()) ?? null;
+        const embed = buildUsageEmbed(usage, ctx, { meta, tools, agents });
         if (embed) await channel.send({ embeds: [embed] });
       });
       swallow(tail);

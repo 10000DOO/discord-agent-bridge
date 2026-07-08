@@ -257,6 +257,78 @@ describe('default renderer set — rate_limit rendering', () => {
   });
 });
 
+describe('default renderer set — usage panel extras (hud-level panel)', () => {
+  // The usage send is chained on the tail promise (getUsage/getSessionMeta are
+  // awaited inside), so drain a few microtask rounds before asserting.
+  const flushTwice = async () => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+  const usageEmbedFrom = (sent: OutgoingMessage[]) =>
+    sent.flatMap((m) => m.embeds ?? []).find((e) => e.title?.includes('사용량'));
+
+  it('renders session meta (description + footer) via getSessionMeta', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({
+      channel,
+      ownerId: 'u1',
+      getSessionMeta: () => ({ cwd: '/tmp/proj', gitBranch: 'master', permMode: 'plan' }),
+    });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10, model: 'claude-fable-5' } as AgentEvent);
+    await flushTwice();
+    const embed = usageEmbedFrom(sent);
+    expect(embed?.description).toBe('📁 proj git:(master)');
+    expect(embed?.footer).toBe('권한: 플랜 (읽기 전용) · claude-fable-5');
+  });
+
+  it('aggregates this turn\'s tools and subagents into the panel, then resets for the next turn', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Bash', input: {} } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't2', name: 'Bash', input: {} } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_result', id: 't2', ok: false, content: 'boom' } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't3', name: 'Task', input: { subagent_type: 'developer', description: 'Fix bug' } } as AgentEvent);
+    dispatcher.dispatch({ kind: 'subagent_result', taskId: 'task-1', status: 'completed', summary: 'ok', toolUseId: 't3', durationMs: 12_000 } as AgentEvent);
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 } as AgentEvent);
+    await flushTwice();
+    const embed = usageEmbedFrom(sent);
+    const tools = embed?.fields?.find((f) => f.name === '이번 턴 도구');
+    expect(tools?.value).toBe('❌ Bash ×2 · ✅ Task ×1');
+    const agents = embed?.fields?.find((f) => f.name === '서브에이전트');
+    expect(agents?.value).toBe('✅ developer: Fix bug (12초)');
+
+    // Next turn: stats were consumed — a fresh panel carries no stale tool/agent rows.
+    sent.length = 0;
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 } as AgentEvent);
+    await flushTwice();
+    const embed2 = usageEmbedFrom(sent);
+    expect(embed2).toBeDefined();
+    expect(embed2?.fields?.map((f) => f.name)).not.toContain('이번 턴 도구');
+    expect(embed2?.fields?.map((f) => f.name)).not.toContain('서브에이전트');
+  });
+
+  it('renders the /clear hint and session composition from the context event fields', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({
+      kind: 'context_usage',
+      totalTokens: 42_000,
+      maxTokens: 200_000,
+      percentage: 21,
+      clearableTokens: 207_600,
+      memoryFileCount: 1,
+      mcpServerCount: 3,
+    } as AgentEvent);
+    await flushTwice();
+    const embed = usageEmbedFrom(sent);
+    expect(embed?.fields?.find((f) => f.name === '컨텍스트')?.value).toContain('/clear 시 ~207.6K 토큰 절약');
+    expect(embed?.fields?.find((f) => f.name === '세션 구성')?.value).toBe('CLAUDE.md 1 · MCP 3');
+  });
+});
+
 describe('default renderer set — dispose after result (§6)', () => {
   it('cancels ended handlers still finalizing: no late thinking embed after dispose', async () => {
     vi.useFakeTimers();
