@@ -121,6 +121,22 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
         .addStringOption((o) =>
           o.setName('value').setDescription('Permission mode or profile name').setRequired(true),
         ),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('model')
+        .setDescription('Switch the model for this session (Claude, applied live)')
+        .addStringOption((o) =>
+          o
+            .setName('value')
+            .setDescription('Model to switch to')
+            .setRequired(true)
+            .addChoices(
+              { name: 'Opus (최고 성능)', value: 'opus' },
+              { name: 'Sonnet (균형)', value: 'sonnet' },
+              { name: 'Haiku (빠름·경제적)', value: 'haiku' },
+            ),
+        ),
     );
 
   const stop = new SlashCommandBuilder()

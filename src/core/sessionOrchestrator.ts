@@ -369,6 +369,62 @@ export class SessionOrchestrator {
   // must go through /agent start again. The `archived` flag remains in the
   // schema + resumeAll() filter to stay backward-compatible with older
   // state.json files that still carry archived:true entries.
+  // Switch the model on a channel's LIVE session and persist the choice to the binding
+  // (so a later resume reuses it). Only a session exposing setModel (Claude) supports
+  // this; others return 'unsupported'. Returns a status the Discord layer maps to a
+  // user-facing notice. The session and its context are kept — no restart.
+  async setModel(
+    guildId: string,
+    channelId: string,
+    model: string,
+  ): Promise<'ok' | 'no-session' | 'unsupported' | 'error'> {
+    const key = channelKey(guildId, channelId);
+    const channel = this.active.get(key);
+    if (!channel) return 'no-session';
+
+    const session = channel.session;
+    if (typeof session.setModel !== 'function') return 'unsupported';
+
+    try {
+      await session.setModel(model);
+    } catch (err) {
+      this.logger.error('setModel failed', { guildId, channelId, model, err: String(err) });
+      return 'error';
+    }
+
+    // Persist the new model onto the binding so resume-on-boot / reactivation keeps it.
+    const binding = this.channelRegistry.get(guildId, channelId);
+    if (binding && !binding.archived) {
+      this.channelRegistry.set({
+        guildId,
+        channelId,
+        mode: binding.mode,
+        sessionId: binding.sessionId,
+        cwd: binding.cwd,
+        ownerId: binding.ownerId,
+        permMode: binding.permMode,
+        profile: binding.profile,
+        model,
+        ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
+      });
+    }
+
+    this.auditLog.record({
+      actorId: channel.ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'turn',
+      mode: channel.mode,
+      permMode: channel.permMode,
+      cwd: channel.cwd,
+      outcome: `model switched to ${model}`,
+      status: 'ok',
+    });
+    this.logger.info('model switched', { guildId, channelId, model });
+    return 'ok';
+  }
+
   async stop(guildId: string, channelId: string): Promise<void> {
     const key = channelKey(guildId, channelId);
     const channel = this.active.get(key);

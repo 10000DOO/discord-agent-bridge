@@ -95,6 +95,9 @@ export interface ModeSession {
   readonly sessionId: string | null; // backend session id (may be null pre-init)
   send(turn: TurnInput): Promise<void>; // deliver a user turn
   stop(): Promise<void>; // abort / terminate
+  // Switch the model on the LIVE session, mid-conversation, without a restart. Optional:
+  // only backends whose transport supports it (Claude) implement it; callers duck-type.
+  setModel?(model?: string): Promise<void>;
   // Modes that support permissionPrompts call ctx.requestPermission; Discord resolves it.
 }
 
