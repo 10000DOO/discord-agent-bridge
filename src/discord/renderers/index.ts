@@ -7,11 +7,13 @@ import { buildInterruptButton } from './interruptButton.js';
 import { ToolThreadHandler } from './toolThread.js';
 import { PermissionButtonsHandler } from './permissionButtons.js';
 import { DiffViewHandler } from './diffView.js';
+import { TurnThreadHolder } from './turnThread.js';
 import { TranscriptFeedHandler } from './transcriptFeed.js';
 import { MentionOnCompleteHandler } from './mentionOnComplete.js';
 import { buildResultLine } from './resultLine.js';
 import { buildUsageEmbed, type SubagentRun, type UsageSessionMeta } from './usageEmbed.js';
 import { chunkMessage } from '../format.js';
+import { t } from '../i18n.js';
 
 // The capability dispatcher (§6): subscribes a channel's AgentEvent stream and, for
 // each event, invokes the matching renderer ONLY IF the mode's Capabilities flag is
@@ -161,9 +163,12 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
   // Ended-but-still-finalizing handlers from a previous turn: dispose() must cancel
   // these too, or an armed debounce timer could fire a late send/edit after detach (§6).
   const endedStreams = new Set<StreamEmbedHandler>();
-  const toolThread = new ToolThreadHandler({ channel });
+  // One shared work thread per turn: ToolThreadHandler and DiffViewHandler both post
+  // into it (lazily opened on the turn's first tool activity, reset at each turn end).
+  const turnThread = new TurnThreadHolder({ channel, name: t('thread.work') });
+  const toolThread = new ToolThreadHandler({ thread: turnThread });
   const permission = new PermissionButtonsHandler({ channel });
-  const diff = new DiffViewHandler({ channel });
+  const diff = new DiffViewHandler({ thread: turnThread });
   const transcript = new TranscriptFeedHandler({ channel });
   const mention = new MentionOnCompleteHandler({ channel, ownerId });
   // Turn-local stats for the usage panel (design_hud_usage_panel.md §5.5): tool_use
@@ -250,6 +255,12 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       endedStreams.add(endedThinking);
       textStream = new StreamEmbedHandler(textStreamDeps());
       thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking', logger });
+      // Turn boundary for the shared tool-activity thread: drop the reference so the next
+      // turn opens a fresh work thread. In-flight fire-and-forget sends kept their own
+      // captured thread and complete safely; a turn with no tools never opened one (no-op).
+      // The handler's turn-local state (buffered result, id→name map) is cleared alongside.
+      turnThread.reset();
+      toolThread.resetTurn();
       const finalized = endedText
         .finalize()
         .then(() => endedThinking.finalize())

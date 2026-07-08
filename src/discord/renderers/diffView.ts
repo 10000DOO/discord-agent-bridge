@@ -1,15 +1,18 @@
 import type { AgentEvent } from '../../core/contracts.js';
-import type { MessageChannel } from '../ports.js';
 import { chunkMessage } from '../format.js';
+import type { TurnThreadHolder } from './turnThread.js';
 
 // File-change diff view (§6, §5a — Claude, cap fileDiff): when a file-editing tool
-// (Edit/Write/NotebookEdit) completes successfully, post a diff of the change. The
-// diff must be built from the tool INPUT (old/new strings), which lives on the
-// `tool_use` event, not the `tool_result` — so this handler tracks edit inputs by
-// id and renders on the matching successful result (mirrors A4D's changeTracker →
-// diffViewer flow). No discord.js: the sink is the MessageChannel port.
+// (Edit/Write/NotebookEdit) completes successfully, post a diff of the change into the
+// turn's shared work thread. The diff must be built from the tool INPUT (old/new
+// strings), which lives on the `tool_use` event, not the `tool_result` — so this
+// handler tracks edit inputs by id and renders on the matching successful result
+// (mirrors A4D's changeTracker → diffViewer flow). No discord.js: the sink is the
+// MessageThread port (via TurnThreadHolder).
 
-const FILE_EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+// The tools whose input this handler renders as a pretty diff. Exported so
+// ToolThreadHandler skips their raw input (rendering it too would duplicate the change).
+export const FILE_EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 
 interface EditInput {
   filePath: string;
@@ -19,16 +22,16 @@ interface EditInput {
 }
 
 export interface DiffViewDeps {
-  channel: MessageChannel;
+  thread: TurnThreadHolder;
 }
 
 export class DiffViewHandler {
-  private readonly channel: MessageChannel;
+  private readonly thread: TurnThreadHolder;
   // toolUseId → the edit input, kept until the matching result arrives.
   private readonly edits = new Map<string, EditInput>();
 
   constructor(deps: DiffViewDeps) {
-    this.channel = deps.channel;
+    this.thread = deps.thread;
   }
 
   // Record a file-edit tool_use so its result can be diffed. Non-edit tools are
@@ -48,8 +51,9 @@ export class DiffViewHandler {
     if (!ev.ok) return;
     const diff = renderDiff(edit);
     if (!diff) return;
+    const thread = await this.thread.get();
     for (const chunk of chunkMessage('```diff\n' + diff + '\n```')) {
-      await this.channel.send({ content: chunk });
+      await thread.send({ content: chunk });
     }
   }
 }

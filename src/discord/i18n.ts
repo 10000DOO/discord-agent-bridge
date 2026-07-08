@@ -134,6 +134,7 @@ const ko: Catalog = {
   'stream.thinking': '생각 중…',
   'stream.thought': '{sec}초 동안 생각함',
   // Tool thread
+  'thread.work': '작업 내역',
   'tool.result': '결과',
   'tool.error': '오류',
   // Usage panel
@@ -226,6 +227,7 @@ const en: Catalog = {
   'perm.button.always': 'Always allow',
   'perm.button.deny': 'Deny',
   'status.usage.codex': 'usage/limits unavailable (Codex CLI limitation)',
+  'thread.work': 'Work log',
   'transcript.working': 'working…',
   'boot.noConfig': 'No configuration found. Run setup first:  node dist/cli.js --setup',
   'boot.noToken': 'Discord token is not set — run --setup again.',

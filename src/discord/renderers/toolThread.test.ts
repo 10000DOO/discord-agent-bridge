@@ -1,61 +1,100 @@
 import { describe, it, expect } from 'vitest';
 import { ToolThreadHandler } from './toolThread.js';
+import { TurnThreadHolder } from './turnThread.js';
 import type { AgentEvent } from '../../core/contracts.js';
 import type { MessageChannel, MessageThread, OutgoingMessage } from '../ports.js';
 
 type ToolEvent = Extract<AgentEvent, { kind: 'tool_use' | 'tool_result' }>;
 const ev = (e: ToolEvent): ToolEvent => e;
 
-function fakeChannel() {
-  const threadPosts: Record<string, OutgoingMessage[]> = {};
+function setup() {
+  const threadPosts: OutgoingMessage[] = [];
   const threadNames: string[] = [];
   let seq = 0;
   const channel: MessageChannel = {
     async send() {
-      return { id: `m${++seq}`, async edit() {} };
+      throw new Error('tool activity must post to the thread, not the channel');
     },
     async startThread(name) {
       threadNames.push(name);
       const id = `t${++seq}`;
-      threadPosts[id] = [];
       const thread: MessageThread = {
         id,
         async send(message) {
-          threadPosts[id].push(message);
+          threadPosts.push(message);
           return { id: `tm${++seq}`, async edit() {} };
         },
       };
       return thread;
     },
   };
-  return { channel, threadPosts, threadNames };
+  const holder = new TurnThreadHolder({ channel, name: '작업 내역' });
+  const h = new ToolThreadHandler({ thread: holder });
+  return { h, holder, threadPosts, threadNames };
 }
 
 const flush = () => new Promise((r) => setImmediate(r));
 
 describe('ToolThreadHandler', () => {
-  it('opens a thread named from tool+input and posts the result back', async () => {
-    const { channel, threadPosts, threadNames } = fakeChannel();
-    const h = new ToolThreadHandler({ channel });
+  it('posts a summary header + input and the result into the shared thread', async () => {
+    const { h, threadPosts, threadNames } = setup();
     await h.handle(ev({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls -la' } }));
     await h.handle(ev({ kind: 'tool_result', id: 't1', ok: true, content: 'output' }));
-    expect(threadNames[0]).toBe('Bash: ls -la');
-    const posts = Object.values(threadPosts)[0].map((m) => m.content ?? '');
+    expect(threadNames).toEqual(['작업 내역']);
+    const posts = threadPosts.map((m) => m.content ?? '');
+    expect(posts.some((c) => c.includes('Bash: ls -la'))).toBe(true); // summary header before input
     expect(posts.some((c) => c.includes('결과'))).toBe(true);
     expect(posts.some((c) => c.includes('output'))).toBe(true);
   });
 
-  it('buffers a result that arrives before its thread and flushes on open', async () => {
-    const { channel, threadPosts } = fakeChannel();
-    const h = new ToolThreadHandler({ channel });
-    // Result first (out of order).
+  it('reuses one shared thread across multiple tools in a turn', async () => {
+    const { h, threadNames } = setup();
+    await h.handle(ev({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }));
+    await h.handle(ev({ kind: 'tool_use', id: 't2', name: 'Grep', input: { pattern: 'x' } }));
+    expect(threadNames).toHaveLength(1);
+  });
+
+  it('buffers a result that arrives before its thread and flushes on open, naming the tool', async () => {
+    const { h, threadPosts } = setup();
+    // Result first (out of order) → no thread yet, nothing posted.
     await h.handle(ev({ kind: 'tool_result', id: 't9', ok: true, content: 'early' }));
-    // No thread yet → no posts.
-    expect(Object.keys(threadPosts)).toHaveLength(0);
-    // Now the tool_use opens the thread and the buffered result is flushed.
+    expect(threadPosts).toHaveLength(0);
+    // The tool_use opens the thread and the buffered result is flushed.
     await h.handle(ev({ kind: 'tool_use', id: 't9', name: 'Read', input: { file_path: '/ws/x' } }));
     await flush();
-    const posts = Object.values(threadPosts)[0].map((m) => m.content ?? '');
+    const posts = threadPosts.map((m) => m.content ?? '');
     expect(posts.some((c) => c.includes('early'))).toBe(true);
+    expect(posts.some((c) => c.includes('Read'))).toBe(true); // result header names the tool
+  });
+
+  it('skips raw input for diff-rendered tools but still posts their result', async () => {
+    const { h, threadPosts } = setup();
+    await h.handle(ev({ kind: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '/ws/a.ts', old_string: 'a', new_string: 'b' } }));
+    await h.handle(ev({ kind: 'tool_result', id: 't1', ok: true, content: 'done' }));
+    const posts = threadPosts.map((m) => m.content ?? '');
+    // No raw input JSON for the edit (DiffViewHandler renders the diff instead).
+    expect(posts.some((c) => c.includes('"file_path"'))).toBe(false);
+    // The result header is still shown so success/failure stays visible.
+    expect(posts.some((c) => c.includes('결과'))).toBe(true);
+  });
+
+  it('posts an error header for a failed result', async () => {
+    const { h, threadPosts } = setup();
+    await h.handle(ev({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'nope' } }));
+    await h.handle(ev({ kind: 'tool_result', id: 't1', ok: false, content: 'boom' }));
+    const posts = threadPosts.map((m) => m.content ?? '');
+    expect(posts.some((c) => c.includes('오류'))).toBe(true);
+    expect(posts.some((c) => c.includes('boom'))).toBe(true);
+  });
+
+  it('resetTurn drops a buffered result so it cannot misfire into the next turn', async () => {
+    const { h, threadPosts } = setup();
+    // An out-of-order result buffers (no thread yet); the turn then ends.
+    await h.handle(ev({ kind: 'tool_result', id: 't1', ok: true, content: 'stale' }));
+    h.resetTurn();
+    // Next turn: a tool_use opens the thread — the stale buffered result must NOT resurface.
+    await h.handle(ev({ kind: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls' } }));
+    const posts = threadPosts.map((m) => m.content ?? '');
+    expect(posts.some((c) => c.includes('stale'))).toBe(false);
   });
 });

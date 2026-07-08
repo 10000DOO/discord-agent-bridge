@@ -6,6 +6,7 @@ import type { EditableMessage, MessageChannel, OutgoingMessage } from '../ports.
 function fakeChannel() {
   const sent: OutgoingMessage[] = [];
   const edits: OutgoingMessage[] = [];
+  const threadNames: string[] = [];
   let seq = 0;
   const channel: MessageChannel = {
     async send(message) {
@@ -19,6 +20,7 @@ function fakeChannel() {
       return em;
     },
     async startThread(name) {
+      threadNames.push(name);
       const id = `t${++seq}`;
       return {
         id,
@@ -29,7 +31,7 @@ function fakeChannel() {
       };
     },
   };
-  return { channel, sent, edits };
+  return { channel, sent, edits, threadNames };
 }
 
 const flush = () => new Promise((r) => setImmediate(r));
@@ -362,6 +364,88 @@ describe('default renderer set — usage panel extras (hud-level panel)', () => 
     const embed = usageEmbedFrom(sent);
     expect(embed?.fields?.find((f) => f.name === '🟢 컨텍스트')?.value).toContain('/clear 시 ~207.6K 토큰 절약');
     expect(embed?.fields?.find((f) => f.name === '⚙️ 세션 구성')?.value).toBe('CLAUDE.md 1 · MCP 3');
+  });
+});
+
+describe('default renderer set — shared per-turn work thread', () => {
+  const threadPosts = (sent: OutgoingMessage[]) =>
+    sent.filter((m) => (m.content ?? '').startsWith('[thread:'));
+
+  it('opens a single shared thread for all tool activity in a turn', async () => {
+    const { channel, sent, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_result', id: 't1', ok: true, content: 'out' } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't2', name: 'Grep', input: { pattern: 'x' } } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_result', id: 't2', ok: true, content: 'hit' } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(1); // one thread, not one-per-tool
+    expect(threadPosts(sent).length).toBeGreaterThan(0); // tool posts landed in it
+  });
+
+  it('opens a fresh thread on the next turn (turn boundary reset)', async () => {
+    const { channel, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } } as AgentEvent);
+    await flush();
+    dispatcher.dispatch({ kind: 'result', costUsd: 0.01 } as AgentEvent);
+    await flush();
+    dispatcher.dispatch({ kind: 'tool_use', id: 't2', name: 'Bash', input: { command: 'pwd' } } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(2);
+  });
+
+  it('opens no thread for a turn with no tool activity (reset is a no-op)', async () => {
+    const { channel, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'result', costUsd: 0.01 } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(0);
+  });
+
+  it('renders a file diff into the shared thread — not the channel — with no duplicated raw input', async () => {
+    const { channel, sent, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '/ws/a.ts', old_string: 'a', new_string: 'b' } } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_result', id: 't1', ok: true, content: 'ok' } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(1);
+    const diffPost = sent.find((m) => (m.content ?? '').includes('```diff'));
+    expect(diffPost).toBeTruthy();
+    expect((diffPost!.content ?? '').startsWith('[thread:')).toBe(true); // in the thread
+    // The edit is shown once (as a diff), not also as raw input JSON from toolThread.
+    expect(sent.some((m) => (m.content ?? '').includes('"file_path"'))).toBe(false);
+  });
+
+  it('opens exactly one thread when toolThread and diff race on the first tool', async () => {
+    const { channel, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    // A single tool_use dispatch invokes both toolThread and diff synchronously; both
+    // are async, so their first thread access races. The holder must still open once.
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '/ws/a.ts', old_string: 'a', new_string: 'b' } } as AgentEvent);
+    dispatcher.dispatch({ kind: 'tool_result', id: 't1', ok: true, content: 'ok' } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(1);
+  });
+
+  it('buffers an out-of-order result and flushes it into the shared thread', async () => {
+    const { channel, sent, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    // Result before any tool_use (out of order): no thread yet → buffered.
+    dispatcher.dispatch({ kind: 'tool_result', id: 't1', ok: true, content: 'early-result' } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(0);
+    // The tool_use opens the thread and the buffered result is flushed into it.
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } } as AgentEvent);
+    await flush();
+    expect(threadNames).toHaveLength(1);
+    expect(threadPosts(sent).some((m) => (m.content ?? '').includes('early-result'))).toBe(true);
   });
 });
 
