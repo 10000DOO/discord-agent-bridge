@@ -95,6 +95,9 @@ export interface ModeSession {
   readonly sessionId: string | null; // backend session id (may be null pre-init)
   send(turn: TurnInput): Promise<void>; // deliver a user turn
   stop(): Promise<void>; // abort / terminate
+  // Interrupt ONLY the in-flight turn, keeping the session alive for more turns.
+  // Optional: only backends whose transport supports it (Claude) implement it.
+  interrupt?(): Promise<void>;
   // Modes that support permissionPrompts call ctx.requestPermission; Discord resolves it.
 }
 

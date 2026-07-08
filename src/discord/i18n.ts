@@ -133,6 +133,11 @@ const ko: Catalog = {
   'stream.responding': '응답 중…',
   'stream.thinking': '생각 중…',
   'stream.thought': '{sec}초 동안 생각함',
+  // ⏹ cancel-turn button (interrupt the in-flight turn, keep the session)
+  'turn.cancel': '⏹ 중단',
+  'turn.cancelled': '⏹ 진행 중인 응답을 취소했어요. 세션은 유지되니 계속 메시지를 보내면 됩니다.',
+  'turn.cancel.unsupported': '이 백엔드는 진행 중인 응답 취소를 지원하지 않아요.',
+  'turn.cancel.failed': '응답 취소에 실패했어요. 터미널 로그를 확인해 주세요.',
   // Tool thread
   'tool.result': '결과',
   'tool.error': '오류',
@@ -225,6 +230,10 @@ const en: Catalog = {
   'dir.select': 'Go into a subfolder…',
   'dir.here': '✅ Start in this folder',
   'dir.current': 'Current location',
+  'turn.cancel': '⏹ Cancel',
+  'turn.cancelled': '⏹ Cancelled the in-flight response. The session stays alive — just keep messaging.',
+  'turn.cancel.unsupported': 'This backend does not support cancelling an in-flight response.',
+  'turn.cancel.failed': 'Failed to cancel the response. Check the terminal logs.',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

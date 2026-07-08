@@ -330,6 +330,14 @@ export class ClaudeSession implements ModeSession {
     }
   }
 
+  // Interrupt ONLY the in-flight turn (the ⏹ cancel button): the SDK stops the current
+  // generation, but the query and prompt stream stay alive so the session keeps
+  // accepting turns — unlike stop(), which is the §7.5 kill switch that ends the session.
+  async interrupt(): Promise<void> {
+    if (this.closed) return;
+    await this.query.interrupt();
+  }
+
   // Abort the underlying query and wind down the prompt stream (§7.5 kill switch).
   async stop(): Promise<void> {
     if (this.closed) return;

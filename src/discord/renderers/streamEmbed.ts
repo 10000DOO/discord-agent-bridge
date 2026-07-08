@@ -1,7 +1,15 @@
 import type { AgentEvent, Logger } from '../../core/contracts.js';
-import type { EditableMessage, MessageChannel } from '../ports.js';
+import type { ComponentRow, EditableMessage, MessageChannel } from '../ports.js';
 import { COLORS, EMBED_DESC_LIMIT, chunkMessage, truncate } from '../format.js';
 import { t } from '../i18n.js';
+
+// The ⏹ cancel-turn button attached to every live text-streaming embed. Its fixed
+// custom_id is routed by the interaction router → orchestrator.interruptTurn; the
+// target session is derived from the interaction's channel. finalize() strips it so a
+// finished answer can no longer be "cancelled".
+function cancelTurnButtonRow(): ComponentRow {
+  return { components: [{ type: 'button', customId: 'turn:cancel', label: t('turn.cancel'), style: 'danger' }] };
+}
 
 // Live text/thinking embeds, debounced edit then finalize to chunked text (§6).
 // Ports A4D StreamHandler behavior: accumulate deltas into a buffer, edit a single
@@ -98,10 +106,12 @@ export class StreamEmbedHandler {
       // an unhandledRejection, and a later push()/finalize() would await a poisoned
       // `inflight`. Dropping a preview frame is harmless; the turn continues.
       try {
+        // Carry a ⏹ cancel-turn button while the answer is still streaming.
+        const components = [cancelTurnButtonRow()];
         if (this.message) {
-          await this.message.edit({ embeds: [embed] });
+          await this.message.edit({ embeds: [embed], components });
         } else {
-          this.message = await this.channel.send({ embeds: [embed] });
+          this.message = await this.channel.send({ embeds: [embed], components });
         }
         this.emitted = true;
       } catch (err) {
@@ -134,7 +144,8 @@ export class StreamEmbedHandler {
     if (this.kind === 'thinking') {
       const sec = this.elapsedSec();
       const embed = { title: t('stream.thought', { sec }), color: COLORS.thinking };
-      if (this.message) await this.message.edit({ embeds: [embed] });
+      // Strip the ⏹ cancel button — the turn is no longer interruptible here.
+      if (this.message) await this.message.edit({ embeds: [embed], components: [] });
       else await this.channel.send({ embeds: [embed] });
       this.emitted = true;
       return;
@@ -146,7 +157,7 @@ export class StreamEmbedHandler {
     const chunks = chunkMessage(this.buffer);
     const [first, ...rest] = chunks;
     if (this.message) {
-      await this.message.edit({ content: first, embeds: [] });
+      await this.message.edit({ content: first, embeds: [], components: [] });
     } else {
       await this.channel.send({ content: first });
     }

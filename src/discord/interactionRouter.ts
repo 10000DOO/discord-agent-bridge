@@ -883,6 +883,29 @@ export class InteractionRouter {
       return;
     }
 
+    // The ⏹ cancel-turn button (on a live streaming embed): interrupt the in-flight
+    // turn but keep the session bound. Drive-gated like the permission buttons;
+    // deferUpdate keeps the embed as-is (the stream's own finalize cleans it up) and
+    // the outcome is surfaced as a followUp notice.
+    if (i.customId === 'turn:cancel') {
+      if (!this.authorize(i, 'drive')) return;
+      if (!(await this.ackDeferUpdate(i))) return;
+      if (!i.guildId) return;
+      await this.guarded(i, async () => {
+        const outcome = await this.deps.orchestrator.interruptTurn(i.guildId as string, i.channelId);
+        const key =
+          outcome === 'ok'
+            ? 'turn.cancelled'
+            : outcome === 'unsupported'
+              ? 'turn.cancel.unsupported'
+              : outcome === 'no-session'
+                ? 'router.noSession'
+                : 'turn.cancel.failed';
+        await safe(i.followUp({ content: t(key), ephemeral: false }));
+      });
+      return;
+    }
+
     // The 📁 Create button opens a modal, and showModal IS the ack — it must NOT be
     // preceded by a deferUpdate (a deferred component can no longer show a modal). So
     // this is handled BEFORE the generic defer below. Drive-gated + owner-bound.

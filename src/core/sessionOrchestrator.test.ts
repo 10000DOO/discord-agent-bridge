@@ -578,4 +578,39 @@ describe('SessionOrchestrator', () => {
 
     await expect(h.orchestrator.send('g1', 'c1', { text: 'x' })).rejects.toThrow(/No active session/);
   });
+
+  it('interruptTurn: no active session → "no-session"', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    expect(await h.orchestrator.interruptTurn('g1', 'c1')).toBe('no-session');
+  });
+
+  it('interruptTurn: a session without interrupt support → "unsupported"', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1' });
+
+    // MockSession does not implement the optional interrupt, so it is not supported.
+    expect(await h.orchestrator.interruptTurn('g1', 'c1')).toBe('unsupported');
+  });
+
+  it('interruptTurn: calls the live session interrupt, keeps the binding, and audits', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1' });
+
+    let interrupted = 0;
+    const session = h.mode.lastSession as unknown as { interrupt?: () => Promise<void> };
+    session.interrupt = async () => {
+      interrupted += 1;
+    };
+
+    expect(await h.orchestrator.interruptTurn('g1', 'c1')).toBe('ok');
+    expect(interrupted).toBe(1);
+    // Unlike stop(), the binding is kept so the session lives on for more turns.
+    expect(h.channelRegistry.get('g1', 'c1')).toBeDefined();
+    const audit = readAudit(h.dir);
+    expect(audit.some((e) => e.outcome === 'interrupted by user' && e.status === 'ok')).toBe(true);
+  });
 });

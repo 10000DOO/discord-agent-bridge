@@ -68,6 +68,20 @@ describe('StreamEmbedHandler (text)', () => {
     expect(finalEdit?.msg.embeds).toEqual([]); // embed cleared
   });
 
+  it('the live embed carries a ⏹ cancel-turn button; finalize strips it', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
+    s.push({ kind: 'text', text: 'answer', delta: true });
+    await h.fire();
+    // While streaming, the message carries a single danger button with the fixed id.
+    const btn = h.sent[0].components?.[0].components[0];
+    expect(btn).toMatchObject({ type: 'button', customId: 'turn:cancel', style: 'danger' });
+
+    await s.finalize();
+    // Once finalized, the button is gone (the answer is no longer interruptible).
+    expect(h.edits.at(-1)?.msg.components).toEqual([]);
+  });
+
   it('finalize with no prior flush sends plain content directly', async () => {
     const h = harness();
     const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });

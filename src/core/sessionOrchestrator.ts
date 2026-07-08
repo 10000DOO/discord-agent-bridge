@@ -362,6 +362,46 @@ export class SessionOrchestrator {
     };
   }
 
+  // Interrupt the channel's IN-FLIGHT turn but keep the session alive and bound
+  // (unlike stop(), which aborts and removes the binding). Any queued turns are
+  // dropped too, so a cancel does not immediately kick off the next buffered prompt.
+  // Only a session exposing interrupt() (Claude) supports this; others return
+  // 'unsupported'. Returns a status the Discord layer maps to a user notice.
+  async interruptTurn(
+    guildId: string,
+    channelId: string,
+  ): Promise<'ok' | 'no-session' | 'unsupported' | 'error'> {
+    const key = channelKey(guildId, channelId);
+    const channel = this.active.get(key);
+    if (!channel) return 'no-session';
+
+    const session = channel.session;
+    if (typeof session.interrupt !== 'function') return 'unsupported';
+
+    channel.queue.length = 0;
+    try {
+      await session.interrupt();
+    } catch (err) {
+      this.logger.error('turn interrupt failed', { guildId, channelId, err: String(err) });
+      return 'error';
+    }
+
+    this.auditLog.record({
+      actorId: channel.ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'turn',
+      mode: channel.mode,
+      permMode: channel.permMode,
+      cwd: channel.cwd,
+      outcome: 'interrupted by user',
+      status: 'ok',
+    });
+    this.logger.info('turn interrupted', { guildId, channelId });
+    return 'ok';
+  }
+
   // §9 step 5 / §7.5 kill switch. Abort the running session, drain (clear) the
   // channel's queue, hard-delete the persisted binding, and drop the live
   // tracking. Audited. NOTE: this is a hard delete (not an archive flag) so the
