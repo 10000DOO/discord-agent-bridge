@@ -3,6 +3,7 @@ import type { MessageChannel } from '../ports.js';
 import type { EventBus } from '../../core/eventBus.js';
 import type { UsageResult, UsageSnapshot, UsageLimit } from '../../core/usageService.js';
 import { StreamEmbedHandler } from './streamEmbed.js';
+import { buildInterruptButton } from './interruptButton.js';
 import { ToolThreadHandler } from './toolThread.js';
 import { PermissionButtonsHandler } from './permissionButtons.js';
 import { DiffViewHandler } from './diffView.js';
@@ -118,6 +119,12 @@ export class RendererDispatcher {
 export interface DefaultRendererSetOptions {
   channel: MessageChannel;
   ownerId: string;
+  // The channel this set renders for. When both are present, the streaming
+  // "Responding…" embed carries an interrupt "stop" button (custom_id
+  // interrupt:<guildId>:<channelId>). Optional so tests/consumers that omit them
+  // simply render no button (the streaming embed only exists for Claude anyway).
+  guildId?: string;
+  channelId?: string;
   // Returns the latest usage snapshot (or unavailable) at render time; may be null
   // when usage is not yet known. Sync or async — the callee fetches fresh each call
   // (UsageService's own TTL coalesces rapid re-reads), so the panel reflects the
@@ -138,9 +145,18 @@ export interface DefaultRendererSetOptions {
 // the orchestrator's error events remain the user-visible failure signal.
 export function createDefaultRendererSet(options: DefaultRendererSetOptions): RendererSet {
   const { channel, ownerId, logger } = options;
+  // The interrupt "stop" button rides the streaming text embed when the channel is known
+  // (production always wires it; tests may omit it). One spec array, reused for each
+  // per-turn text handler instance below.
+  const interruptActions =
+    options.guildId !== undefined && options.channelId !== undefined
+      ? [buildInterruptButton(options.guildId, options.channelId)]
+      : undefined;
+  const textStreamDeps = () =>
+    ({ channel, kind: 'text' as const, logger, ...(interruptActions ? { actions: interruptActions } : {}) });
   // `let`: finalize() permanently closes a StreamEmbedHandler, so one instance
   // serves exactly one turn — the result renderer swaps in fresh instances.
-  let textStream = new StreamEmbedHandler({ channel, kind: 'text', logger });
+  let textStream = new StreamEmbedHandler(textStreamDeps());
   let thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking', logger });
   // Ended-but-still-finalizing handlers from a previous turn: dispose() must cancel
   // these too, or an armed debounce timer could fire a late send/edit after detach (§6).
@@ -232,7 +248,7 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       const endedThinking = thinkingStream;
       endedStreams.add(endedText);
       endedStreams.add(endedThinking);
-      textStream = new StreamEmbedHandler({ channel, kind: 'text', logger });
+      textStream = new StreamEmbedHandler(textStreamDeps());
       thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking', logger });
       const finalized = endedText
         .finalize()

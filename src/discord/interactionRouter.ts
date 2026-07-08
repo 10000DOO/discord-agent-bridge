@@ -21,6 +21,7 @@ import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { ResumeWizard } from './wizard/resumeWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
+import { parseInterruptId } from './renderers/interruptButton.js';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
 import type { ComponentRow, EmbedSpec, MessageChannel, ModalSpec } from './ports.js';
 import { buildStatusEmbed } from './renderers/statusEmbed.js';
@@ -879,6 +880,25 @@ export class InteractionRouter {
         if (i.guildId) {
           await this.deps.wiring.resolvePermission(i.guildId, i.channelId, i.customId, i.user.id);
         }
+      });
+      return;
+    }
+
+    // Interrupt "stop" button on a streaming embed: interrupt:<guildId>:<channelId>.
+    // Cancels the CURRENT turn only — the session/binding/context are kept, so the same
+    // channel continues on the next message (terminal-`claude` ESC; NOT /stop). Same tier
+    // as /stop (drive / session driver). Ack FIRST (deferUpdate keeps the message; a
+    // showModal is not involved), THEN interrupt via the orchestrator's single shared
+    // path. CRITICAL: never wiring.detach() here — the renderer subscription must stay so
+    // the interrupted stream finalizes and the next turn renders. Feedback is an ephemeral
+    // followUp (does not clobber the streaming embed message).
+    const interruptTarget = parseInterruptId(i.customId);
+    if (interruptTarget) {
+      if (!this.authorize(i, 'drive')) return;
+      if (!(await this.ackDeferUpdate(i))) return;
+      await this.guarded(i, async () => {
+        const ok = await this.deps.orchestrator.interrupt(interruptTarget.guildId, interruptTarget.channelId);
+        await safe(i.followUp({ content: ok ? t('cmd.interrupt.done') : t('cmd.interrupt.none'), ephemeral: true }));
       });
       return;
     }

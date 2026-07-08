@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentEvent, ModeConfigView, ModeContext, PermMode } from '../../core/contracts.js';
-import { CodexMode, resolveCodexHome } from './index.js';
+import { CodexMode, CodexSession, resolveCodexHome } from './index.js';
 import type { RunCodexTurnOptions, RunCodexTurnResult } from './runner.js';
 import type { CodexDiscovery } from './discovery.js';
 import type { ResumableSession } from '../../core/contracts.js';
@@ -178,19 +178,28 @@ describe('CodexMode.resume', () => {
 });
 
 describe('CodexSession.stop', () => {
-  it('aborts the in-flight turn via the signal the runner is given', async () => {
+  it('aborts the IN-FLIGHT turn via the signal the runner is given', async () => {
+    // The turn-based controller is cleared once a turn completes, so stop() only kills a
+    // turn that is actually running. Hold the turn in flight with a gate, abort, release.
     let capturedSignal: AbortSignal | undefined;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
     const runTurn = vi.fn(async (o: RunCodexTurnOptions) => {
       capturedSignal = o.signal;
+      await gate;
       return okResult('t');
     });
     const session = await new CodexMode({ runTurn }).start(makeCtx().ctx);
-    await session.send({ text: 'hi' });
+    const sending = session.send({ text: 'hi' }); // in flight — awaits the gate
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(capturedSignal).toBeInstanceOf(AbortSignal);
     expect(capturedSignal?.aborted).toBe(false);
     await session.stop();
     expect(capturedSignal?.aborted).toBe(true);
+    release();
+    await sending;
   });
 
   it('a send() after stop() throws (closed session)', async () => {
@@ -198,6 +207,51 @@ describe('CodexSession.stop', () => {
     const session = await new CodexMode({ runTurn }).start(makeCtx().ctx);
     await session.stop();
     await expect(session.send({ text: 'late' })).rejects.toThrow(/closed/);
+  });
+});
+
+describe('CodexSession.interrupt', () => {
+  it('kills the in-flight turn WITHOUT closing the session; a later send() still runs', async () => {
+    // Same gate trick: interrupt() aborts the running turn's child but, unlike stop(),
+    // leaves the session open so the NEXT send() runs a fresh/resume turn.
+    const signals: (AbortSignal | undefined)[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let turnCount = 0;
+    const runTurn = vi.fn(async (o: RunCodexTurnOptions) => {
+      signals.push(o.signal);
+      // Only the FIRST turn parks on the gate so it is interruptible; later turns resolve
+      // at once (so a fresh signal for turn 2 is observed as non-aborted).
+      if (turnCount++ === 0) await gate;
+      return okResult('thread-i');
+    });
+    // Cast to the concrete CodexSession: interrupt() is optional on the ModeSession
+    // contract but a declared method here.
+    const session = (await new CodexMode({ runTurn }).start(makeCtx().ctx)) as CodexSession;
+    const first = session.send({ text: 'one' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(signals[0]?.aborted).toBe(false);
+    await session.interrupt();
+    expect(signals[0]?.aborted).toBe(true);
+    release();
+    await first;
+
+    // Session is NOT closed → a subsequent turn runs with a fresh (non-aborted) signal.
+    await session.send({ text: 'two' });
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it('is a no-op when no turn is in flight (idempotent / harmless)', async () => {
+    const { runTurn } = makeRunTurn([okResult('t')]);
+    const session = (await new CodexMode({ runTurn }).start(makeCtx().ctx)) as CodexSession;
+    // Nothing running yet → interrupt() must not throw.
+    await expect(session.interrupt()).resolves.toBeUndefined();
+    // The session is still usable afterwards.
+    await session.send({ text: 'hi' });
+    expect(session.sessionId).toBe('t');
   });
 });
 

@@ -102,10 +102,13 @@ export class CodexSession implements ModeSession {
   private readonly runTurn: (opts: RunCodexTurnOptions) => Promise<RunCodexTurnResult>;
   private readonly cwd: string;
   private readonly model: string;
-  // A single AbortController for the session; stop() aborts it so the in-flight
-  // runCodexTurn kills its `codex` child. Turns are serialized by the orchestrator's
-  // per-channel queue, so at most one turn is ever in flight.
-  private readonly abortController: AbortController;
+  // The in-flight turn's AbortController, or null when idle. Per-turn (not per-session):
+  // aborting a controller is terminal, so a single session-level one could not be reused
+  // across turns after interrupt(). stop() aborts it (kill child + close session);
+  // interrupt() aborts it WITHOUT closing (kill child, keep the session for the next
+  // turn). Turns are serialized by the orchestrator's per-channel queue, so at most one
+  // is ever in flight.
+  private currentTurn: AbortController | null = null;
   private closed = false;
 
   constructor(ctx: ModeContext, deps: CodexSessionDeps = {}) {
@@ -115,7 +118,6 @@ export class CodexSession implements ModeSession {
     // Codex reads its OWN model (not ctx.model, which carries the Claude model).
     // Empty → omit `-m` so `codex` uses its own config default (operator-set).
     this.model = ctx.config.codexModel ?? '';
-    this.abortController = new AbortController();
     if (deps.resumeId !== undefined) {
       this.sessionId = deps.resumeId;
     }
@@ -129,36 +131,53 @@ export class CodexSession implements ModeSession {
   // cwd on resume anyway.
   async send(turn: TurnInput): Promise<void> {
     if (this.closed) throw new Error('Codex session is closed.');
-    const result = await this.runTurn({
-      prompt: turn.text,
-      cwd: this.cwd,
-      permMode: this.ctx.permMode,
-      ...(this.model.length > 0 ? { model: this.model } : {}),
-      ...(this.ctx.effort !== undefined && this.ctx.effort.length > 0 ? { effort: this.ctx.effort } : {}),
-      ...(this.sessionId !== null ? { resumeId: this.sessionId } : {}),
-      timeoutMs: this.ctx.config.codexTimeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS,
-      ...(this.ctx.config.codexCliCommand !== undefined ? { codexCommand: this.ctx.config.codexCliCommand } : {}),
-      ...(this.ctx.config.codexHome !== undefined ? { codexHome: resolveCodexHome(this.ctx.config.codexHome) } : {}),
-      emit: this.ctx.emit,
-      logger: this.ctx.logger,
-      signal: this.abortController.signal,
-    });
-    // Capture the thread id from the first (fresh) turn so subsequent turns resume it.
-    if (this.sessionId === null && result.sessionId !== null) {
-      this.sessionId = result.sessionId;
-      // Persist the real backend sessionId (start() saved sessionId=null because
-      // Codex only surfaces the thread id after the first turn completes).
-      this.ctx.onSessionIdReady?.(result.sessionId);
+    // A fresh per-turn controller so stop()/interrupt() can kill THIS turn's child.
+    const turnAbort = new AbortController();
+    this.currentTurn = turnAbort;
+    try {
+      const result = await this.runTurn({
+        prompt: turn.text,
+        cwd: this.cwd,
+        permMode: this.ctx.permMode,
+        ...(this.model.length > 0 ? { model: this.model } : {}),
+        ...(this.ctx.effort !== undefined && this.ctx.effort.length > 0 ? { effort: this.ctx.effort } : {}),
+        ...(this.sessionId !== null ? { resumeId: this.sessionId } : {}),
+        timeoutMs: this.ctx.config.codexTimeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS,
+        ...(this.ctx.config.codexCliCommand !== undefined ? { codexCommand: this.ctx.config.codexCliCommand } : {}),
+        ...(this.ctx.config.codexHome !== undefined ? { codexHome: resolveCodexHome(this.ctx.config.codexHome) } : {}),
+        emit: this.ctx.emit,
+        logger: this.ctx.logger,
+        signal: turnAbort.signal,
+      });
+      // Capture the thread id from the first (fresh) turn so subsequent turns resume it.
+      if (this.sessionId === null && result.sessionId !== null) {
+        this.sessionId = result.sessionId;
+        // Persist the real backend sessionId (start() saved sessionId=null because
+        // Codex only surfaces the thread id after the first turn completes).
+        this.ctx.onSessionIdReady?.(result.sessionId);
+      }
+    } finally {
+      // Clear only if a newer turn has not already replaced it (turns are serialized,
+      // so this is the same controller in practice) → interrupt() with nothing running
+      // is a clean no-op.
+      if (this.currentTurn === turnAbort) this.currentTurn = null;
     }
   }
 
-  // Abort the in-flight `codex` child (§7.5 kill switch). The runner drains and
-  // resolves the turn as aborted; the AbortController stays aborted so a late turn
-  // cannot spawn a fresh child.
+  // Abort the in-flight `codex` child and CLOSE the session (§7.5 kill switch). The
+  // runner drains and resolves the turn as aborted; `closed` blocks any later send().
   async stop(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.abortController.abort();
+    this.currentTurn?.abort();
+  }
+
+  // Cancel the CURRENT turn only: kill the in-flight `codex` child but keep the session
+  // open (closed stays false) so the next send() runs a fresh/`exec resume` turn with a
+  // new controller. A no-op when nothing is running (currentTurn === null) — the ESC
+  // equivalent, distinct from stop().
+  async interrupt(): Promise<void> {
+    this.currentTurn?.abort();
   }
 }
 

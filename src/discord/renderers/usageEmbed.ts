@@ -13,14 +13,14 @@ import { t } from '../i18n.js';
 //
 // claude-hud-level extras (design_hud_usage_panel.md §5.5), all optional so the
 // original panel is the degraded baseline:
-//   description  [display name] · 📁 folder git:(branch) · ⏱️ session elapsed
+//   description  display name · 📁 folder git:(branch) · ⏱️ session elapsed
 //   context      … · "/clear saves ~N tokens" hint
 //   fields       session composition (CLAUDE.md/MCP counts) · this turn's tools ·
 //                subagent runs
 //   footer       permission mode · resolved model id (absorbs the old 모델 field)
 
 const BAR_LEN = 20;
-const BAR_FILLED = '▓';
+const BAR_FILLED = '█';
 const BAR_EMPTY = '░';
 
 // Discord embed hard limit for one field value.
@@ -73,6 +73,15 @@ function utilizationColor(maxUtil: number): number {
   return COLORS.idle;
 }
 
+// Per-gauge status dot. Thresholds are kept IN LOCKSTEP with utilizationColor
+// (≥90 red, ≥70 yellow, else green) so a gauge's dot and the panel's left color
+// bar always agree.
+function utilizationEmoji(utilization: number): string {
+  if (utilization >= 90) return '🔴';
+  if (utilization >= 70) return '🟡';
+  return '🟢';
+}
+
 function progressBar(utilization: number): string {
   const clamped = Math.max(0, Math.min(100, utilization));
   const filled = Math.round((clamped / 100) * BAR_LEN);
@@ -89,7 +98,7 @@ function resetLine(limit: UsageLimit): string {
 
 function limitField(label: string, limit: UsageLimit, inline?: boolean) {
   return {
-    name: label,
+    name: `${utilizationEmoji(limit.utilization)} ${label}`,
     value: `${progressBar(limit.utilization)} **${Math.round(limit.utilization)}%**${resetLine(limit)}`,
     ...(inline ? { inline: true } : {}),
   };
@@ -114,7 +123,7 @@ function formatRunDuration(ms: number): string {
   return t('usage.duration.minSec', { m: Math.floor(totalSec / 60), s: totalSec % 60 });
 }
 
-// Header line: [display name] · 📁 folder git:(branch) · ⏱️ elapsed — only the
+// Header line: display name · 📁 folder git:(branch) · ⏱️ elapsed — only the
 // segments that are actually known.
 function buildDescription(
   ctxUsage: Extract<AgentEvent, { kind: 'context_usage' }> | null,
@@ -122,7 +131,7 @@ function buildDescription(
   now: number,
 ): string | null {
   const segments: string[] = [];
-  if (ctxUsage?.modelDisplayName) segments.push(`[${ctxUsage.modelDisplayName}]`);
+  if (ctxUsage?.modelDisplayName) segments.push(ctxUsage.modelDisplayName);
   if (meta?.cwd) {
     const branch = meta.gitBranch ? ` git:(${meta.gitBranch})` : '';
     segments.push(`📁 ${path.basename(meta.cwd)}${branch}`);
@@ -193,7 +202,7 @@ export function buildUsageEmbed(
         ? ` · ${t('usage.clearHint', { tokens: formatTokens(ctxUsage.clearableTokens) })}`
         : '';
     fields.push({
-      name: t('usage.context'),
+      name: `${utilizationEmoji(ctxUsage.percentage)} ${t('usage.context')}`,
       value: `${progressBar(ctxUsage.percentage)} **${Math.round(ctxUsage.percentage)}%**${clearHint}`,
     });
     maxUtil = Math.max(maxUtil, ctxUsage.percentage);
@@ -204,15 +213,15 @@ export function buildUsageEmbed(
     if (ctxUsage.memoryFileCount !== undefined) composition.push(`CLAUDE.md ${ctxUsage.memoryFileCount}`);
     if (ctxUsage.mcpServerCount !== undefined) composition.push(`MCP ${ctxUsage.mcpServerCount}`);
     if (composition.length > 0) {
-      fields.push({ name: t('usage.session'), value: composition.join(' · '), inline: true });
+      fields.push({ name: `⚙️ ${t('usage.session')}`, value: composition.join(' · '), inline: true });
     }
   }
 
   const toolsValue = buildToolsValue(extras?.tools ?? []);
-  if (toolsValue) fields.push({ name: t('usage.tools'), value: toolsValue, inline: true });
+  if (toolsValue) fields.push({ name: `🛠️ ${t('usage.tools')}`, value: toolsValue, inline: true });
 
   const agentsValue = buildAgentsValue(extras?.agents ?? []);
-  if (agentsValue) fields.push({ name: t('usage.agents'), value: agentsValue });
+  if (agentsValue) fields.push({ name: `🤖 ${t('usage.agents')}`, value: agentsValue });
 
   if (fields.length === 0) return null;
 

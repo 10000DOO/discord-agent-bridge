@@ -32,18 +32,35 @@ describe('buildUsageEmbed', () => {
     };
     const embed = buildUsageEmbed(snapshot, ctx);
     const names = (embed?.fields ?? []).map((f) => f.name);
-    expect(names).toContain('5시간');
-    expect(names).toContain('주간');
-    expect(names).toContain('주간 (Opus)');
-    expect(names).toContain('컨텍스트');
+    // Field names carry a per-gauge status emoji (fiveHour 42 → 🟢, weekly 10 → 🟢,
+    // weeklyOpus 80 → 🟡, context 30 → 🟢).
+    expect(names).toContain('🟢 5시간');
+    expect(names).toContain('🟢 주간');
+    expect(names).toContain('🟡 주간 (Opus)');
+    expect(names).toContain('🟢 컨텍스트');
     // Highest utilization (80) → yellow band color, not green.
     expect(embed?.color).not.toBeUndefined();
+  });
+
+  it('renders █ progress bars and a per-gauge status emoji tied to utilization', () => {
+    const snapshot: UsageResult = {
+      fetchedAt: 1000,
+      fiveHour: { utilization: 30 }, // green
+      sevenDay: { utilization: 72 }, // yellow
+    };
+    const embed = buildUsageEmbed(snapshot, { ...ctx, percentage: 95 }); // context → red
+    const fiveHour = (embed?.fields ?? []).find((f) => f.name === '🟢 5시간');
+    expect(fiveHour?.value).toContain('█');
+    expect(fiveHour?.value).not.toContain('▓');
+    const names = (embed?.fields ?? []).map((f) => f.name);
+    expect(names).toContain('🟡 주간');
+    expect(names).toContain('🔴 컨텍스트');
   });
 
   it('renders a context-only panel when only a context figure is present', () => {
     const embed = buildUsageEmbed({ available: false, reason: 'no-credentials' }, ctx);
     expect(embed).not.toBeNull();
-    expect((embed?.fields ?? []).map((f) => f.name)).toEqual(['컨텍스트']);
+    expect((embed?.fields ?? []).map((f) => f.name)).toEqual(['🟢 컨텍스트']);
   });
 
   it('shows the running model id in the footer (the old 모델 field is absorbed)', () => {
@@ -65,7 +82,7 @@ describe('buildUsageEmbed', () => {
     const embed = buildUsageEmbed(null, withName, {
       meta: { cwd: '/Volumes/src/discord-agent-bridge', gitBranch: 'master', createdAt },
     });
-    expect(embed?.description).toBe('[Claude Fable 5] · 📁 discord-agent-bridge git:(master) · ⏱️ 5시간 16분');
+    expect(embed?.description).toBe('Claude Fable 5 · 📁 discord-agent-bridge git:(master) · ⏱️ 5시간 16분');
   });
 
   it('omits the git:(…) segment when no branch is known and the whole description when nothing is', () => {
@@ -83,21 +100,21 @@ describe('buildUsageEmbed', () => {
   it('appends the /clear savings hint to the context line when clearableTokens is present', () => {
     const withClearable = { ...ctx, clearableTokens: 207_600 };
     const embed = buildUsageEmbed(null, withClearable);
-    const field = (embed?.fields ?? []).find((f) => f.name === '컨텍스트');
+    const field = (embed?.fields ?? []).find((f) => f.name === '🟢 컨텍스트');
     expect(field?.value).toContain('/clear 시 ~207.6K 토큰 절약');
     // Zero clearable tokens → no hint.
     const zero = buildUsageEmbed(null, { ...ctx, clearableTokens: 0 });
-    expect((zero?.fields ?? []).find((f) => f.name === '컨텍스트')?.value).not.toContain('/clear');
+    expect((zero?.fields ?? []).find((f) => f.name === '🟢 컨텍스트')?.value).not.toContain('/clear');
   });
 
   it('renders the session-composition field from memoryFileCount/mcpServerCount', () => {
     const withCounts = { ...ctx, memoryFileCount: 1, mcpServerCount: 3 };
     const embed = buildUsageEmbed(null, withCounts);
-    const field = (embed?.fields ?? []).find((f) => f.name === '세션 구성');
+    const field = (embed?.fields ?? []).find((f) => f.name === '⚙️ 세션 구성');
     expect(field?.value).toBe('CLAUDE.md 1 · MCP 3');
     expect(field?.inline).toBe(true);
     // Neither count → no field.
-    expect((buildUsageEmbed(null, ctx)?.fields ?? []).map((f) => f.name)).not.toContain('세션 구성');
+    expect((buildUsageEmbed(null, ctx)?.fields ?? []).map((f) => f.name)).not.toContain('⚙️ 세션 구성');
   });
 
   it('renders the turn tools field: top 4 by count, ❌ on failure, +N overflow', () => {
@@ -109,10 +126,10 @@ describe('buildUsageEmbed', () => {
       { name: 'Glob', count: 1, failed: 0 },
     ];
     const embed = buildUsageEmbed(null, ctx, { tools });
-    const field = (embed?.fields ?? []).find((f) => f.name === '이번 턴 도구');
+    const field = (embed?.fields ?? []).find((f) => f.name === '🛠️ 이번 턴 도구');
     expect(field?.value).toBe('✅ Bash ×20 · ✅ Read ×3 · ✅ Grep ×2 · ❌ Edit ×1 · +1');
     // No tools this turn → no field.
-    expect((buildUsageEmbed(null, ctx, { tools: [] })?.fields ?? []).map((f) => f.name)).not.toContain('이번 턴 도구');
+    expect((buildUsageEmbed(null, ctx, { tools: [] })?.fields ?? []).map((f) => f.name)).not.toContain('🛠️ 이번 턴 도구');
   });
 
   it('renders subagent runs with status icon, type: description label and duration', () => {
@@ -121,7 +138,7 @@ describe('buildUsageEmbed', () => {
       { status: 'failed' as const, summary: 'it broke' },
     ];
     const embed = buildUsageEmbed(null, ctx, { agents });
-    const field = (embed?.fields ?? []).find((f) => f.name === '서브에이전트');
+    const field = (embed?.fields ?? []).find((f) => f.name === '🤖 서브에이전트');
     expect(field?.value).toBe('✅ developer: Fix model list (12초)\n❌ it broke');
   });
 
@@ -131,7 +148,7 @@ describe('buildUsageEmbed', () => {
       summary: `run-${i} ${'x'.repeat(400)}`,
     }));
     const embed = buildUsageEmbed(null, ctx, { agents });
-    const field = (embed?.fields ?? []).find((f) => f.name === '서브에이전트');
+    const field = (embed?.fields ?? []).find((f) => f.name === '🤖 서브에이전트');
     expect(field).toBeDefined();
     expect(field!.value.length).toBeLessThanOrEqual(1024);
   });

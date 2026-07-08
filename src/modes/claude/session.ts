@@ -1,5 +1,6 @@
 import {
   query as realQuery,
+  type ModelInfo,
   type Options,
   type Query,
   type SDKMessage,
@@ -263,9 +264,8 @@ export class ClaudeSession implements ModeSession {
   // Resolve activeModel to its human-readable displayName via ONE supportedModels()
   // control request after the first init (same defensive posture as providerCatalog's
   // fetchClaudeModels: any failure — including a test double without the method —
-  // just leaves the display name unknown). ModelInfo.value may be an alias while the
-  // init model is the resolved wire id (possibly '[1m]'-suffixed), so match value and
-  // resolvedModel against both the exact id and the suffix-stripped one.
+  // just leaves the display name unknown). The resolution (exact-value preference,
+  // sentinel exclusion, humanized fallback) lives in resolveModelDisplayName below.
   private captureModelDisplayName(): void {
     if (this.modelDisplayNameRequested) return;
     this.modelDisplayNameRequested = true;
@@ -274,13 +274,7 @@ export class ClaudeSession implements ModeSession {
         const models = await this.query.supportedModels();
         const active = this.activeModel;
         if (!active || !Array.isArray(models)) return;
-        const bare = active.replace(/\[[^\]]*\]$/, '');
-        const info = models.find(
-          (m) => m && (m.value === active || m.resolvedModel === active || m.value === bare || m.resolvedModel === bare),
-        );
-        if (info && typeof info.displayName === 'string' && info.displayName.length > 0) {
-          this.modelDisplayName = info.displayName;
-        }
+        this.modelDisplayName = resolveModelDisplayName(active, models);
       } catch {
         // Best-effort: the usage panel shows the raw model id instead.
       }
@@ -410,6 +404,24 @@ export class ClaudeSession implements ModeSession {
       // Closing an already-finished query is a no-op we can ignore.
     }
   }
+
+  // Cancel the CURRENT turn only, keeping the query (and its prompt stream) open so
+  // the next send() continues the same conversation — the terminal-`claude` ESC. Unlike
+  // stop(), `closed` is never set. Empty the pending buffer first: send() returns
+  // immediately, so a queued turn may already sit in `pending`, and interrupting must
+  // not let it auto-continue. query.interrupt() is a streaming-input control request
+  // (we run in streaming-input mode via promptStream); wrap it so an idle/finished query
+  // is harmless (mirrors stop()'s query.close() guard).
+  async interrupt(): Promise<void> {
+    if (this.closed) return;
+    this.pending.length = 0;
+    try {
+      await this.query.interrupt();
+    } catch {
+      // Interrupting an idle/already-finished query is a no-op we can ignore; the
+      // prompt stream stays open for the next turn.
+    }
+  }
 }
 
 // Flatten a tool_result `content` (string, or an array of text blocks, or other)
@@ -428,4 +440,42 @@ function flattenToolResult(content: unknown): string {
       .join('');
   }
   return content == null ? '' : String(content);
+}
+
+// Generic "policy" rows that supportedModels() can include — a default/recommended/
+// latest pointer whose displayName is a policy label, not a real model name. Matching
+// one is what produced the '[Default (recommended)]' header, so such rows are excluded
+// from displayName resolution.
+const GENERIC_MODEL_SENTINEL = /\b(?:default|recommended|latest)\b/i;
+
+function isSentinelModel(m: ModelInfo): boolean {
+  return GENERIC_MODEL_SENTINEL.test(m.value) || GENERIC_MODEL_SENTINEL.test(m.displayName);
+}
+
+// Reduce a resolved wire id to a human label as a last resort: drop the '[…]' routing
+// suffix (e.g. '[1m]') and the 'claude-' prefix, turn version segments '4-8' into '4.8',
+// remaining hyphens into spaces, and capitalize name words — 'claude-opus-4-8[1m]' →
+// 'Opus 4.8'. Simple and defensive; returns the input unchanged if nothing is left.
+export function humanizeModelId(id: string): string {
+  const bare = id.replace(/\[[^\]]*\]$/, '').replace(/^claude-/, '');
+  if (bare.length === 0) return id;
+  return bare
+    .replace(/(\d)-(?=\d)/g, '$1.')
+    .replace(/-/g, ' ')
+    .split(' ')
+    .map((word) => (/^[a-z]/i.test(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}
+
+// Resolve the active (resolved, possibly '[1m]'-suffixed) model id to a display name
+// from supportedModels(). Prefer a row whose `value` exactly matches the id or its
+// suffix-stripped form, then a `resolvedModel` match, always skipping generic sentinel
+// rows. Falls back to humanizeModelId when no clean name is found.
+export function resolveModelDisplayName(active: string, models: ModelInfo[]): string {
+  const bare = active.replace(/\[[^\]]*\]$/, '');
+  const named = models.filter((m) => m && m.displayName && !isSentinelModel(m));
+  const match =
+    named.find((m) => m.value === active || m.value === bare) ??
+    named.find((m) => m.resolvedModel === active || m.resolvedModel === bare);
+  return match ? match.displayName : humanizeModelId(active);
 }

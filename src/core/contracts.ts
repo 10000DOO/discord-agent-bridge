@@ -122,7 +122,12 @@ export interface TurnInput {
 export interface ModeSession {
   readonly sessionId: string | null; // backend session id (may be null pre-init)
   send(turn: TurnInput): Promise<void>; // deliver a user turn
-  stop(): Promise<void>; // abort / terminate
+  stop(): Promise<void>; // abort / terminate (session ends)
+  // Cancel ONLY the turn currently in flight, keeping the session/context alive so the
+  // next send() continues the same conversation (terminal-`claude` ESC semantics; distinct
+  // from stop()). Optional so existing modes/test doubles stay valid; a mode that omits it
+  // simply has no interrupt path. Must be harmless/idempotent when nothing is running.
+  interrupt?(): Promise<void>;
   // Modes that support permissionPrompts call ctx.requestPermission; Discord resolves it.
 }
 

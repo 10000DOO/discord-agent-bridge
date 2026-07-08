@@ -257,6 +257,42 @@ describe('default renderer set — rate_limit rendering', () => {
   });
 });
 
+describe('default renderer set — interrupt button on the streaming embed (option B)', () => {
+  it('rides the interrupt button on the live "Responding…" embed when guild/channel are known', async () => {
+    vi.useFakeTimers();
+    try {
+      const { channel, sent } = fakeChannel();
+      const set = createDefaultRendererSet({ channel, ownerId: 'u1', guildId: 'g1', channelId: 'c1' });
+      const dispatcher = new RendererDispatcher(set, claudeCaps);
+      dispatcher.dispatch({ kind: 'text', text: 'streaming…', delta: true } as AgentEvent);
+      await vi.advanceTimersByTimeAsync(1000); // fire the text debounce → the live embed posts
+      const embedMsg = sent.find((m) => m.embeds && m.components);
+      expect(embedMsg).toBeTruthy();
+      const button = embedMsg!.components?.[0].components?.[0] as { type: string; customId: string };
+      expect(button.type).toBe('button');
+      expect(button.customId).toBe('interrupt:g1:c1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adds NO interrupt button when guild/channel are absent (unchanged behavior)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { channel, sent } = fakeChannel();
+      const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+      const dispatcher = new RendererDispatcher(set, claudeCaps);
+      dispatcher.dispatch({ kind: 'text', text: 'streaming…', delta: true } as AgentEvent);
+      await vi.advanceTimersByTimeAsync(1000);
+      const embedMsg = sent.find((m) => m.embeds);
+      expect(embedMsg).toBeTruthy();
+      expect(embedMsg!.components).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('default renderer set — usage panel extras (hud-level panel)', () => {
   // The usage send is chained on the tail promise (getUsage/getSessionMeta are
   // awaited inside), so drain a few microtask rounds before asserting.
@@ -294,9 +330,9 @@ describe('default renderer set — usage panel extras (hud-level panel)', () => 
     dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 } as AgentEvent);
     await flushTwice();
     const embed = usageEmbedFrom(sent);
-    const tools = embed?.fields?.find((f) => f.name === '이번 턴 도구');
+    const tools = embed?.fields?.find((f) => f.name === '🛠️ 이번 턴 도구');
     expect(tools?.value).toBe('❌ Bash ×2 · ✅ Task ×1');
-    const agents = embed?.fields?.find((f) => f.name === '서브에이전트');
+    const agents = embed?.fields?.find((f) => f.name === '🤖 서브에이전트');
     expect(agents?.value).toBe('✅ developer: Fix bug (12초)');
 
     // Next turn: stats were consumed — a fresh panel carries no stale tool/agent rows.
@@ -305,8 +341,8 @@ describe('default renderer set — usage panel extras (hud-level panel)', () => 
     await flushTwice();
     const embed2 = usageEmbedFrom(sent);
     expect(embed2).toBeDefined();
-    expect(embed2?.fields?.map((f) => f.name)).not.toContain('이번 턴 도구');
-    expect(embed2?.fields?.map((f) => f.name)).not.toContain('서브에이전트');
+    expect(embed2?.fields?.map((f) => f.name)).not.toContain('🛠️ 이번 턴 도구');
+    expect(embed2?.fields?.map((f) => f.name)).not.toContain('🤖 서브에이전트');
   });
 
   it('renders the /clear hint and session composition from the context event fields', async () => {
@@ -324,8 +360,8 @@ describe('default renderer set — usage panel extras (hud-level panel)', () => 
     } as AgentEvent);
     await flushTwice();
     const embed = usageEmbedFrom(sent);
-    expect(embed?.fields?.find((f) => f.name === '컨텍스트')?.value).toContain('/clear 시 ~207.6K 토큰 절약');
-    expect(embed?.fields?.find((f) => f.name === '세션 구성')?.value).toBe('CLAUDE.md 1 · MCP 3');
+    expect(embed?.fields?.find((f) => f.name === '🟢 컨텍스트')?.value).toContain('/clear 시 ~207.6K 토큰 절약');
+    expect(embed?.fields?.find((f) => f.name === '⚙️ 세션 구성')?.value).toBe('CLAUDE.md 1 · MCP 3');
   });
 });
 

@@ -140,6 +140,7 @@ function fakeOrchestrator(active: ActiveChannelInfo[] = []) {
     resume: vi.fn(async (_p: unknown, sessionId: string) => ({ sessionId, async send() {}, async stop() {} }) as ModeSession),
     stop: vi.fn(async (_g: string, _c: string) => {}),
     stopAll: vi.fn(async () => {}),
+    interrupt: vi.fn(async (_g: string, _c: string) => true),
     listActive: vi.fn((_guildId: string) => active),
     // A minimal read-only ModeContext for listResumable (cwd/config/logger only).
     buildListContext: vi.fn((_mode: string, cwd: string) => ({
@@ -644,6 +645,46 @@ describe('InteractionRouter component interactions', () => {
     await router.handle(interaction);
     // The acting user id is threaded so the handler can enforce the approver binding.
     expect(calls.resolvePermission).toHaveBeenCalledWith('g1', 'c1', 'perm:req-1:allow', 'u1');
+  });
+
+  it('interrupt:<guild>:<channel> button routes to orchestrator.interrupt WITHOUT detaching renderers', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, acks } = component({ customId: 'interrupt:g1:c1', user: { id: 'u1' } });
+    await router.handle(interaction);
+    // The single shared orchestrator interrupt path is called with the parsed channel.
+    expect(calls.interrupt).toHaveBeenCalledWith('g1', 'c1');
+    // CRITICAL: the interrupt path must NOT detach — the renderer subscription stays so
+    // the next turn renders (the key difference from /stop).
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.stop).not.toHaveBeenCalled();
+    // Acked via deferUpdate (keeps the streaming message), then an ephemeral confirmation.
+    expect(acks[0].kind).toBe('deferUpdate');
+    const followUp = acks.find((a) => a.kind === 'followUp');
+    expect(followUp?.payload?.ephemeral).toBe(true);
+    expect(followUp?.payload?.content).toContain('중단');
+  });
+
+  it('interrupt button tells the user when there is no running task (orchestrator returns false)', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    calls.interrupt.mockResolvedValueOnce(false);
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, acks } = component({ customId: 'interrupt:g1:c1', user: { id: 'u1' } });
+    await router.handle(interaction);
+    const followUp = acks.find((a) => a.kind === 'followUp');
+    expect(followUp?.payload?.content).toContain('없어요');
+  });
+
+  it('a denied user clicking the interrupt button does NOT interrupt', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = component({ customId: 'interrupt:g1:c1', roles: ['role-nobody'] });
+    await router.handle(interaction);
+    expect(calls.interrupt).not.toHaveBeenCalled();
+    expect(replies[0].content).toContain('권한이 없습니다');
   });
 
   it('a foreign (non-perm, no-wizard) component is safely ignored (deferUpdate, no resolve)', async () => {

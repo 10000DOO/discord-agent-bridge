@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentEvent, ModeContext, PermissionDecision } from '../../core/contracts.js';
 import { ClaudeMode } from './index.js';
-import { ClaudeSession, type QueryFn } from './session.js';
+import { ClaudeSession, humanizeModelId, resolveModelDisplayName, type QueryFn } from './session.js';
 import { makeCanUseTool } from './permissions.js';
 import { attachFileConfined } from './mcpFileTool.js';
 
@@ -66,7 +66,7 @@ function makeCtx(opts: {
 // getContextUsage() calls and whether close() ran. `stallForever` makes the
 // stream never end (so the consume loop is still open when stop() aborts).
 function makeFakeQuery(messages: unknown[], opts: { stallForever?: boolean } = {}) {
-  const state = { closed: false, contextUsageCalls: 0 };
+  const state = { closed: false, contextUsageCalls: 0, interruptCalls: 0 };
   const query = {
     async *[Symbol.asyncIterator]() {
       for (const m of messages) yield m;
@@ -77,6 +77,9 @@ function makeFakeQuery(messages: unknown[], opts: { stallForever?: boolean } = {
     },
     close() {
       state.closed = true;
+    },
+    async interrupt() {
+      state.interruptCalls++;
     },
     async getContextUsage() {
       state.contextUsageCalls++;
@@ -90,7 +93,7 @@ function makeFakeQuery(messages: unknown[], opts: { stallForever?: boolean } = {
 function fakeQueryFn(messages: unknown[], opts: { stallForever?: boolean } = {}): {
   queryFn: QueryFn;
   captured: { options?: unknown };
-  state: { closed: boolean; contextUsageCalls: number };
+  state: { closed: boolean; contextUsageCalls: number; interruptCalls: number };
 } {
   const { query, state } = makeFakeQuery(messages, opts);
   const captured: { options?: unknown } = {};
@@ -338,6 +341,37 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(state.supportedModelsCalls).toBe(1);
   });
 
+  it('skips the generic default/recommended sentinel row and resolves the real model', async () => {
+    const { ctx, events } = makeCtx();
+    const query = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'system', subtype: 'init', session_id: 'sess-sentinel', model: 'claude-opus-4-8[1m]' };
+        yield { type: 'result', subtype: 'success', result: 'done' };
+      },
+      close() {},
+      async supportedModels() {
+        // The bug: a sentinel row whose resolvedModel equals the current default is
+        // listed FIRST, so the old .find() matched it and showed 'Default (recommended)'.
+        return [
+          { value: 'default', resolvedModel: 'claude-opus-4-8', displayName: 'Default (recommended)', description: '' },
+          { value: 'claude-opus-4-8', resolvedModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', description: '' },
+        ];
+      },
+      async getContextUsage() {
+        await new Promise((r) => setTimeout(r, 20));
+        return { totalTokens: 1, maxTokens: 100, percentage: 1 };
+      },
+    };
+    const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+
+    const ev = events.find((e) => e.kind === 'context_usage');
+    expect(ev).toMatchObject({ model: 'claude-opus-4-8[1m]', modelDisplayName: 'Claude Opus 4.8' });
+  });
+
   it('stays harmless when the query lacks supportedModels (older SDK/test double)', async () => {
     const { ctx, events } = makeCtx();
     const { queryFn } = fakeQueryFn([
@@ -449,6 +483,70 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(state.closed).toBe(true);
   });
 
+  it('interrupt() calls query.interrupt() WITHOUT aborting or closing the query', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn, captured, state } = fakeQueryFn([], { stallForever: true });
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    const options = captured.options as { abortController: AbortController };
+    await session.interrupt();
+    expect(state.interruptCalls).toBe(1);
+    // Unlike stop(): the query is NOT closed and the abortController is NOT aborted, so
+    // the prompt stream stays open for the next turn.
+    expect(state.closed).toBe(false);
+    expect(options.abortController.signal.aborted).toBe(false);
+    await session.stop();
+  });
+
+  it('interrupt() drops a buffered (not-yet-consumed) turn so it does not auto-continue', async () => {
+    // A query that never pulls from the prompt stream: a send() before interrupt lands in
+    // `pending` and, once cleared, must never reach the (later-attached) consumer.
+    const received: unknown[] = [];
+    const state = { interruptCalls: 0 };
+    let startConsuming: (() => void) | null = null;
+    const gate = new Promise<void>((r) => { startConsuming = r; });
+    const query = {
+      async *[Symbol.asyncIterator]() {},
+      close() {},
+      async interrupt() { state.interruptCalls++; },
+      async getContextUsage() { return { totalTokens: 0, maxTokens: 0, percentage: 0 }; },
+    };
+    const queryFn: QueryFn = ({ prompt }) => {
+      void (async () => {
+        await gate; // delay consumption until AFTER interrupt clears `pending`
+        for await (const msg of prompt) received.push(msg);
+      })();
+      return query as unknown as ReturnType<QueryFn>;
+    };
+    const session = new ClaudeSession(makeCtx().ctx, { queryFn });
+    await session.send({ text: 'queued-before-interrupt' });
+    await session.interrupt();
+    expect(state.interruptCalls).toBe(1);
+    startConsuming!();
+    // A fresh turn AFTER the interrupt is the one that should flow to the consumer.
+    await session.send({ text: 'after-interrupt' });
+    await waitFor(() => received.length > 0);
+    expect((received[0] as { message: { content: string } }).message.content).toBe('after-interrupt');
+    await session.stop();
+  });
+
+  it('interrupt() is harmless when query.interrupt() rejects (idle/finished query)', async () => {
+    const query = {
+      async *[Symbol.asyncIterator]() {},
+      close() {},
+      async interrupt() {
+        throw new Error('nothing to interrupt');
+      },
+      async getContextUsage() { return { totalTokens: 0, maxTokens: 0, percentage: 0 }; },
+    };
+    const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
+    const session = new ClaudeSession(makeCtx().ctx, { queryFn });
+    // The reject is swallowed — interrupt() resolves and the session stays usable.
+    await expect(session.interrupt()).resolves.toBeUndefined();
+    await expect(session.send({ text: 'still works' })).resolves.toBeUndefined();
+    await session.stop();
+  });
+
   it('feeds a sent turn into the SDK prompt stream', async () => {
     const { ctx } = makeCtx();
     const received: unknown[] = [];
@@ -479,6 +577,34 @@ describe('ClaudeSession — SDK message mapping', () => {
       message: { role: 'user', content: 'hello there' },
     });
     await session.stop();
+  });
+});
+
+// ---- model display-name resolution ------------------------------------------
+
+describe('resolveModelDisplayName / humanizeModelId', () => {
+  const sentinel = { value: 'default', resolvedModel: 'claude-opus-4-8', displayName: 'Default (recommended)', description: '' };
+  const opus = { value: 'claude-opus-4-8', resolvedModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', description: '' };
+
+  it('prefers an exact value match over a leading generic sentinel row', () => {
+    // '[1m]'-suffixed resolved id: the bare-id value match wins, sentinel excluded.
+    expect(resolveModelDisplayName('claude-opus-4-8[1m]', [sentinel, opus])).toBe('Claude Opus 4.8');
+  });
+
+  it('matches an alias row by resolvedModel when no value matches', () => {
+    const alias = { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', description: '' };
+    expect(resolveModelDisplayName('claude-opus-4-8[1m]', [sentinel, alias])).toBe('Claude Opus 4.8');
+  });
+
+  it('falls back to a humanized id when only sentinel rows (or none) match', () => {
+    expect(resolveModelDisplayName('claude-opus-4-8[1m]', [sentinel])).toBe('Opus 4.8');
+    expect(resolveModelDisplayName('claude-opus-4-8', [])).toBe('Opus 4.8');
+  });
+
+  it('humanizes resolved ids: strips claude- + [suffix], dots version segments', () => {
+    expect(humanizeModelId('claude-opus-4-8[1m]')).toBe('Opus 4.8');
+    expect(humanizeModelId('claude-fable-5')).toBe('Fable 5');
+    expect(humanizeModelId('claude-sonnet-4-6')).toBe('Sonnet 4.6');
   });
 });
 

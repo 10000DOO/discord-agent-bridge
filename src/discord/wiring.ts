@@ -247,6 +247,8 @@ export class SessionWiring {
     const rendererSet = createDefaultRendererSet({
       channel,
       ownerId,
+      guildId,
+      channelId,
       getUsage: () => this.getUsageFor(mode),
       getSessionMeta: () => this.getSessionMetaFor(guildId, channelId),
       logger: this.logger,

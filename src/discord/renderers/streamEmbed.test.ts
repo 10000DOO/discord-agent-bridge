@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { StreamEmbedHandler } from './streamEmbed.js';
-import type { EditableMessage, MessageChannel, OutgoingMessage } from '../ports.js';
+import type { ButtonSpec, EditableMessage, MessageChannel, OutgoingMessage } from '../ports.js';
 
 // A fake channel + a manual timer: the handler's debounce is driven by firing the
 // captured timer callback explicitly, so no real time passes.
@@ -134,6 +134,42 @@ describe('StreamEmbedHandler — per-turn lifecycle', () => {
     const t2 = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
     await t2.finalize(); // no deltas this turn
     expect(t2.hasEmitted()).toBe(false);
+  });
+});
+
+describe('StreamEmbedHandler — interrupt action button (option B)', () => {
+  const stopButton: ButtonSpec = { type: 'button', customId: 'interrupt:g1:c1', label: '⏹️ 중단', style: 'secondary' };
+
+  it('renders the enabled action button on the live embed while streaming', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer, actions: [stopButton] });
+    s.push({ kind: 'text', text: 'hi', delta: true });
+    await h.fire();
+    expect(h.sent[0].embeds?.[0].description).toBe('hi');
+    expect(h.sent[0].components?.[0].components).toEqual([stopButton]); // enabled on the live embed
+  });
+
+  it('re-renders the button DISABLED on finalize so a stale click cannot fire', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer, actions: [stopButton] });
+    s.push({ kind: 'text', text: 'answer', delta: true });
+    await h.fire();
+    await s.finalize();
+    const finalEdit = h.edits.at(-1);
+    expect(finalEdit?.msg.content).toBe('answer');
+    const button = finalEdit?.msg.components?.[0].components?.[0] as ButtonSpec;
+    expect(button.disabled).toBe(true);
+    expect(button.customId).toBe('interrupt:g1:c1');
+  });
+
+  it('adds no components when finalize sends WITHOUT a prior flush (the button was never shown)', async () => {
+    const h = harness();
+    const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer, actions: [stopButton] });
+    s.push({ kind: 'text', text: 'quick', delta: true });
+    await s.finalize(); // no debounce flush → plain send, no live embed ever carried a button
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].content).toBe('quick');
+    expect(h.sent[0].components).toBeUndefined();
   });
 });
 

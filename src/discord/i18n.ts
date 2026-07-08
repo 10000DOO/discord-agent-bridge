@@ -196,6 +196,10 @@ const ko: Catalog = {
   'cmd.close.done': '세션을 종료하고 보관했어요.',
   'cmd.stop.done': '세션을 중지했어요.',
   'cmd.stopAll.done': '모든 세션을 중지했어요 ({count}개).',
+  // Interrupt (⏹️ stop button): cancels the current turn only; the session/context stay.
+  'cmd.interrupt.button': '⏹️ 중단',
+  'cmd.interrupt.done': '현재 작업을 중단했어요. 이어서 대화할 수 있어요.',
+  'cmd.interrupt.none': '중단할 실행 중인 작업이 없어요.',
   'cmd.mode.switched': '백엔드를 {backend} 로 바꿨어요.',
   'cmd.mode.freshContext': '⚠️ {backend} 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다.',
   'cmd.mode.unavailable': '`{backend}` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요.',
@@ -234,6 +238,9 @@ const en: Catalog = {
   'dir.select': 'Go into a subfolder…',
   'dir.here': '✅ Start in this folder',
   'dir.current': 'Current location',
+  'cmd.interrupt.button': '⏹️ Stop',
+  'cmd.interrupt.done': 'Stopped the current task. You can keep the conversation going.',
+  'cmd.interrupt.none': 'No running task to stop.',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

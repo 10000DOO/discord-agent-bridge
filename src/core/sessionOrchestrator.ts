@@ -397,6 +397,41 @@ export class SessionOrchestrator {
     this.logger.info('session stopped', { guildId, channelId });
   }
 
+  // Cancel ONLY the turn in flight for a channel, KEEPING the session and its binding
+  // alive so the same channel continues the conversation on the next message (the
+  // terminal-`claude` ESC; distinct from stop()'s hard delete). Clears the queue so a
+  // waiting turn does not auto-start after the interrupt (matters for Codex, whose
+  // queued turns spawn fresh children; Claude's queue is normally empty and the mode
+  // additionally drops its own prompt buffer). Unlike stop() it NEVER touches `active`
+  // or the ChannelRegistry — that preservation is the whole point. Returns true when a
+  // live session existed (interrupt attempted), false when there was nothing to
+  // interrupt so the caller can say "no running task". Backend-neutral: a future
+  // /interrupt command can reuse it unchanged.
+  async interrupt(guildId: string, channelId: string): Promise<boolean> {
+    const key = channelKey(guildId, channelId);
+    const channel = this.active.get(key);
+    if (!channel) return false;
+    channel.queue.length = 0;
+    try {
+      await channel.session.interrupt?.();
+    } catch (err) {
+      this.logger.error('interrupt failed', { guildId, channelId, err: String(err) });
+    }
+    this.auditLog.record({
+      actorId: channel.ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'interrupt',
+      mode: channel.mode,
+      permMode: channel.permMode,
+      cwd: channel.cwd,
+      status: 'ok',
+    });
+    this.logger.info('session interrupted', { guildId, channelId });
+    return true;
+  }
+
   // §7.5 admin kill switch. Stop every active session across all guilds. The
   // tier check happens at the router; the orchestrator just executes. Each stop
   // is isolated so one failure does not abort the rest.

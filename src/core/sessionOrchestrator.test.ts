@@ -43,6 +43,7 @@ class MockSession implements ModeSession {
   sessionId: string | null;
   readonly turns: TurnInput[] = [];
   stopped = false;
+  interrupted = false;
   private readonly ctx: ModeContext;
   private readonly gate?: Promise<void>;
   private gateUsed = false;
@@ -66,6 +67,10 @@ class MockSession implements ModeSession {
 
   async stop(): Promise<void> {
     this.stopped = true;
+  }
+
+  async interrupt(): Promise<void> {
+    this.interrupted = true;
   }
 }
 
@@ -377,6 +382,74 @@ describe('SessionOrchestrator', () => {
     // The persisted binding is hard-deleted — a subsequent /agent start is required.
     expect(h.channelRegistry.get('g1', 'c1')).toBeUndefined();
     expect(readAudit(h.dir).some((r) => r.action === 'stop')).toBe(true);
+  });
+
+  it('interrupt cancels the current turn but PRESERVES the session, binding, and active tracking', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    await h.orchestrator.start({
+      guildId: 'g1',
+      channelId: 'c1',
+      mode: 'claude',
+      cwd: h.workspace,
+      ownerId: 'u1',
+    });
+    const session = h.mode.lastSession!;
+
+    const ok = await h.orchestrator.interrupt('g1', 'c1');
+    expect(ok).toBe(true);
+    // The session was interrupted, NOT stopped.
+    expect(session.interrupted).toBe(true);
+    expect(session.stopped).toBe(false);
+    // The binding is preserved (unlike stop()'s hard delete) — the key difference.
+    expect(h.channelRegistry.get('g1', 'c1')).toBeDefined();
+    // The channel stays active: a follow-up turn continues the SAME session (no throw,
+    // no reactivation) and reuses the live session instance.
+    const result = await h.orchestrator.send('g1', 'c1', { text: 'continue' });
+    expect(result.status).toBe('started');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.mode.lastSession).toBe(session); // same live session, not a fresh start/resume
+    expect(session.turns.map((t) => t.text)).toEqual(['continue']);
+    // The interrupt was audited.
+    expect(readAudit(h.dir).some((r) => r.action === 'interrupt' && r.status === 'ok')).toBe(true);
+  });
+
+  it('interrupt clears a queued turn so it does not auto-start after the interrupt', async () => {
+    // Gate the first turn "running" so a second turn queues behind it; interrupt must
+    // empty the queue so the gated turn's completion does not drain the second one.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mode = new MockMode('claude', { gate });
+    const h = harness({ mode });
+    cleanup.push(h.dir, h.workspace);
+
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1' });
+
+    await h.orchestrator.send('g1', 'c1', { text: 'first' }); // starts (gated)
+    await h.orchestrator.send('g1', 'c1', { text: 'second' }); // queued behind it
+
+    await h.orchestrator.interrupt('g1', 'c1'); // clears the queue
+
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Only the first (already in-flight) turn ran; the queued 'second' was dropped.
+    expect(h.mode.lastSession?.turns.map((t) => t.text)).toEqual(['first']);
+    // Still active + bound afterwards.
+    expect(h.channelRegistry.get('g1', 'c1')).toBeDefined();
+  });
+
+  it('interrupt on a channel with no live session returns false and records no audit', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    const ok = await h.orchestrator.interrupt('g1', 'nope');
+    expect(ok).toBe(false);
+    expect(readAudit(h.dir).some((r) => r.action === 'interrupt')).toBe(false);
   });
 
   it('stopAll stops sessions across multiple guilds', async () => {

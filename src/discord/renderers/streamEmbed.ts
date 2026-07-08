@@ -1,5 +1,5 @@
 import type { AgentEvent, Logger } from '../../core/contracts.js';
-import type { EditableMessage, MessageChannel } from '../ports.js';
+import type { ButtonSpec, EditableMessage, MessageChannel, OutgoingMessage } from '../ports.js';
 import { COLORS, EMBED_DESC_LIMIT, chunkMessage, truncate } from '../format.js';
 import { t } from '../i18n.js';
 
@@ -28,6 +28,11 @@ export interface StreamEmbedDeps {
   // Optional: debug-log a swallowed best-effort preview failure (channel deleted
   // mid-stream / REST timeout). Absent in unit tests that construct the handler bare.
   logger?: Logger;
+  // Optional action buttons rendered on the LIVE embed (the interrupt "stop" button,
+  // option B). Only meaningful for the 'text' ("Responding…") embed; when set they ride
+  // every flush and are re-rendered DISABLED on finalize so a stale click cannot fire
+  // against a finished turn. Absent → the embed carries no components (existing behavior).
+  actions?: ButtonSpec[];
 }
 
 export class StreamEmbedHandler {
@@ -38,6 +43,7 @@ export class StreamEmbedHandler {
   private readonly clearTimer: (handle: unknown) => void;
   private readonly now: () => number;
   private readonly logger: Logger | undefined;
+  private readonly actions: ButtonSpec[] | undefined;
 
   private buffer = '';
   private deltaCount = 0;
@@ -60,6 +66,7 @@ export class StreamEmbedHandler {
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.now = deps.now ?? Date.now;
     this.logger = deps.logger;
+    this.actions = deps.actions;
   }
 
   // Accumulate one delta and (re)arm the debounce timer. delta:false is treated as
@@ -91,6 +98,12 @@ export class StreamEmbedHandler {
       const title = this.kind === 'thinking' ? t('stream.thinking') : t('stream.responding');
       const color = this.kind === 'thinking' ? COLORS.thinking : COLORS.streaming;
       const embed = { title, description: desc, color, footer: this.footer() };
+      // Ride the interrupt "stop" button on the live embed when actions are wired (text
+      // only). Enabled while the turn streams; finalize re-renders it disabled.
+      const payload: OutgoingMessage = {
+        embeds: [embed],
+        ...(this.actions ? { components: [{ components: this.actions }] } : {}),
+      };
       // The live preview is best-effort: a channel deleted mid-stream (Unknown Channel
       // 10003) or a REST/network timeout makes edit/send reject. Swallow it so this
       // callback ALWAYS resolves and `inflight` never enters a rejected state —
@@ -99,9 +112,9 @@ export class StreamEmbedHandler {
       // `inflight`. Dropping a preview frame is harmless; the turn continues.
       try {
         if (this.message) {
-          await this.message.edit({ embeds: [embed] });
+          await this.message.edit(payload);
         } else {
-          this.message = await this.channel.send({ embeds: [embed] });
+          this.message = await this.channel.send(payload);
         }
         this.emitted = true;
       } catch (err) {
@@ -146,7 +159,17 @@ export class StreamEmbedHandler {
     const chunks = chunkMessage(this.buffer);
     const [first, ...rest] = chunks;
     if (this.message) {
-      await this.message.edit({ content: first, embeds: [] });
+      // Disable the interrupt button on the finalized message so a stale click cannot
+      // fire against a turn that already ended. Only rendered when the live embed
+      // carried it (message exists AND actions wired); the else-branch below never
+      // showed a button, so it stays plain.
+      await this.message.edit({
+        content: first,
+        embeds: [],
+        ...(this.actions
+          ? { components: [{ components: this.actions.map((a) => ({ ...a, disabled: true })) }] }
+          : {}),
+      });
     } else {
       await this.channel.send({ content: first });
     }
