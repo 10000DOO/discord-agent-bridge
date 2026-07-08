@@ -36,6 +36,28 @@ describe('buildSlashCommands — /mode backend choices', () => {
   });
 });
 
+describe('buildSlashCommands — /model', () => {
+  it('registers a top-level /model command with a required value option offering opus/sonnet/haiku', () => {
+    const commands = buildSlashCommands(['claude']);
+    const model = commands.find((c) => c.name === 'model') as unknown as {
+      name: string;
+      options: { name: string; required?: boolean; choices?: { value: string }[] }[];
+    };
+    expect(model).toBeDefined();
+    const value = model.options.find((o) => o.name === 'value');
+    expect(value?.required).toBe(true);
+    expect((value?.choices ?? []).map((c) => c.value)).toEqual(['opus', 'sonnet', 'haiku']);
+  });
+
+  it('does NOT expose model as a /mode subcommand', () => {
+    const commands = buildSlashCommands(['claude']);
+    const mode = commands.find((c) => c.name === 'mode') as unknown as {
+      options: { name: string }[];
+    };
+    expect(mode.options.some((o) => o.name === 'model')).toBe(false);
+  });
+});
+
 describe('buildSlashCommands — /config', () => {
   it('registers /config gated to the Administrator default member permission', () => {
     const commands = buildSlashCommands(['claude']);

@@ -47,7 +47,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   'agent.stats': 'drive',
   'mode.backend': 'drive',
   'mode.perm': 'drive',
-  'mode.model': 'drive',
+  model: 'drive',
   stop: 'drive',
   'stop-all': 'admin',
 };
@@ -280,7 +280,7 @@ export class InteractionRouter {
         case 'mode.perm':
           await this.switchPerm(i);
           break;
-        case 'mode.model':
+        case 'model':
           await this.switchModel(i);
           break;
         case 'stop':
@@ -843,7 +843,7 @@ export class InteractionRouter {
     await i.editReply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }) });
   }
 
-  // /mode model <value>: change the model on the live session (no restart, context
+  // /model <value>: change the model on the live session (no restart, context
   // kept). The orchestrator applies it and persists it; here we map the status to a notice.
   private async switchModel(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string;

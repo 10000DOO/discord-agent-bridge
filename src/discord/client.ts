@@ -121,21 +121,22 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
         .addStringOption((o) =>
           o.setName('value').setDescription('Permission mode or profile name').setRequired(true),
         ),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('model')
-        .setDescription('Switch the model for this session (Claude, applied live)')
-        .addStringOption((o) =>
-          o
-            .setName('value')
-            .setDescription('Model to switch to')
-            .setRequired(true)
-            .addChoices(
-              { name: 'Opus (최고 성능)', value: 'opus' },
-              { name: 'Sonnet (균형)', value: 'sonnet' },
-              { name: 'Haiku (빠름·경제적)', value: 'haiku' },
-            ),
+    );
+
+  // /model switches the model on the live session (Claude), applied from the next turn
+  // with no restart. A top-level command (not a /mode subcommand) for quick access.
+  const model = new SlashCommandBuilder()
+    .setName('model')
+    .setDescription('Switch the model for this session (Claude, applied live)')
+    .addStringOption((o) =>
+      o
+        .setName('value')
+        .setDescription('Model to switch to')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Opus (최고 성능)', value: 'opus' },
+          { name: 'Sonnet (균형)', value: 'sonnet' },
+          { name: 'Haiku (빠름·경제적)', value: 'haiku' },
         ),
     );
 
@@ -163,7 +164,15 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
     .setDescription('Create the agent control channel and sessions category')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
+  return [
+    agent.toJSON(),
+    mode.toJSON(),
+    model.toJSON(),
+    stop.toJSON(),
+    stopAll.toJSON(),
+    config.toJSON(),
+    init.toJSON(),
+  ];
 }
 
 // ---------------------------------------------------------------------------
