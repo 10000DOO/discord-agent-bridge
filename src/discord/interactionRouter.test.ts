@@ -141,6 +141,7 @@ function fakeOrchestrator(active: ActiveChannelInfo[] = []) {
     stop: vi.fn(async (_g: string, _c: string) => {}),
     stopAll: vi.fn(async () => {}),
     interrupt: vi.fn(async (_g: string, _c: string) => true),
+    setModel: vi.fn(async (_g: string, _c: string, _m: string) => 'ok' as const),
     listActive: vi.fn((_guildId: string) => active),
     // A minimal read-only ModeContext for listResumable (cwd/config/logger only).
     buildListContext: vi.fn((_mode: string, cwd: string) => ({
@@ -633,6 +634,116 @@ describe('InteractionRouter slash commands', () => {
     await router.handle(interaction);
     expect(calls.stop).toHaveBeenCalledWith('g1', 'c1');
     expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
+  });
+
+  it('/model (TOP-LEVEL, no subcommand) switches the live session model', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({ commandName: 'model', subcommand: null, getStringValue: 'sonnet' });
+    await router.handle(interaction);
+    expect(calls.setModel).toHaveBeenCalledWith('g1', 'c1', 'sonnet');
+    expect(replies[0].content).toContain('sonnet');
+  });
+});
+
+describe('InteractionRouter.getModelAutocomplete — /model value suggestions', () => {
+  it('an empty query returns the full live Claude catalog (never a static list)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    expect(await router.getModelAutocomplete('')).toEqual([
+      { name: 'opus', value: 'opus' },
+      { name: 'sonnet', value: 'sonnet' },
+    ]);
+  });
+
+  it('filters case-insensitively against either the id or the display label', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    expect(await router.getModelAutocomplete('OP')).toEqual([{ name: 'opus', value: 'opus' }]);
+    expect(await router.getModelAutocomplete('xyz')).toEqual([]);
+  });
+
+  it('always queries the Claude catalog, even when never asked to fetch Codex models', async () => {
+    // /model only supports Claude (setModel is Claude-only); a router whose modelsFor
+    // rejects for any backend but 'claude' must still answer, proving the fixed
+    // backend argument rather than something derived from channel state.
+    const orchestrator = fakeOrchestrator().orchestrator;
+    const { wiring } = fakeWiring();
+    const router = new InteractionRouter({
+      authorizer,
+      orchestrator,
+      channelRegistry,
+      configStore: store,
+      configResolver,
+      permissionResolver,
+      modeRegistry,
+      wiring,
+      usageService: { isAvailable: () => false, getUsage: async () => ({ available: false as const, reason: 'no-credentials' as const }) } as unknown as UsageService,
+      logger,
+      modelsFor: async (backend: string) => {
+        if (backend !== 'claude') throw new Error(`unexpected backend: ${backend}`);
+        return [{ value: 'claude-fable-5[1m]', label: 'Fable 5' }];
+      },
+    });
+    expect(await router.getModelAutocomplete('fable')).toEqual([{ name: 'Fable 5', value: 'claude-fable-5[1m]' }]);
+  });
+
+  it('caps results at Discord’s 25-choice autocomplete limit', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ value: `model-${i}`, label: `Model ${i}` }));
+    const orchestrator = fakeOrchestrator().orchestrator;
+    const { wiring } = fakeWiring();
+    const router = new InteractionRouter({
+      authorizer,
+      orchestrator,
+      channelRegistry,
+      configStore: store,
+      configResolver,
+      permissionResolver,
+      modeRegistry,
+      wiring,
+      usageService: { isAvailable: () => false, getUsage: async () => ({ available: false as const, reason: 'no-credentials' as const }) } as unknown as UsageService,
+      logger,
+      modelsFor: async () => many,
+    });
+    expect((await router.getModelAutocomplete('')).length).toBe(25);
+  });
+
+  it('caches the Claude catalog for 60s so a typing burst pays for only ONE fetch', async () => {
+    const modelsFor = vi.fn(async () => [{ value: 'opus', label: 'opus' }]);
+    const orchestrator = fakeOrchestrator().orchestrator;
+    const { wiring } = fakeWiring();
+    const router = new InteractionRouter({
+      authorizer,
+      orchestrator,
+      channelRegistry,
+      configStore: store,
+      configResolver,
+      permissionResolver,
+      modeRegistry,
+      wiring,
+      usageService: { isAvailable: () => false, getUsage: async () => ({ available: false as const, reason: 'no-credentials' as const }) } as unknown as UsageService,
+      logger,
+      modelsFor,
+    });
+    vi.useFakeTimers();
+    try {
+      // Three "keystrokes" within the same second: only the first should hit modelsFor —
+      // Discord's ~3s autocomplete window has no room for a fresh SDK-CLI spawn per key.
+      await router.getModelAutocomplete('o');
+      await router.getModelAutocomplete('op');
+      await router.getModelAutocomplete('opu');
+      expect(modelsFor).toHaveBeenCalledOnce();
+
+      // Once the cache goes stale (60s), the next lookup re-fetches.
+      await vi.advanceTimersByTimeAsync(60_001);
+      await router.getModelAutocomplete('opus');
+      expect(modelsFor).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

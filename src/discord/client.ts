@@ -19,6 +19,7 @@ import {
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   type Guild,
   type Interaction,
@@ -121,22 +122,19 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
         .addStringOption((o) =>
           o.setName('value').setDescription('Permission mode or profile name').setRequired(true),
         ),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('model')
-        .setDescription('Switch the model for this session (Claude, applied live)')
-        .addStringOption((o) =>
-          o
-            .setName('value')
-            .setDescription('Model to switch to')
-            .setRequired(true)
-            .addChoices(
-              { name: 'Opus (최고 성능)', value: 'opus' },
-              { name: 'Sonnet (균형)', value: 'sonnet' },
-              { name: 'Haiku (빠름·경제적)', value: 'haiku' },
-            ),
-        ),
+    );
+
+  // /model <value>: switch the Claude model for this session, applied live (no
+  // restart). A top-level command (not a /mode subcommand) since it is the operator's
+  // most frequent switch. `value` is autocomplete-driven (client.ts InteractionCreate
+  // handler → InteractionRouter.getModelAutocomplete → providerCatalog.getClaudeModels),
+  // NOT a static addChoices() list — Discord's own opus/sonnet/haiku aliases plus every
+  // model the account's SDK actually reports (e.g. a Fable/Mythos release) all show up.
+  const model = new SlashCommandBuilder()
+    .setName('model')
+    .setDescription('Switch the model for this session (Claude, applied live)')
+    .addStringOption((o) =>
+      o.setName('value').setDescription('Model to switch to').setRequired(true).setAutocomplete(true),
     );
 
   const stop = new SlashCommandBuilder()
@@ -163,7 +161,7 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
     .setDescription('Create the agent control channel and sessions category')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
+  return [agent.toJSON(), mode.toJSON(), model.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +526,15 @@ export class DiscordClient {
     });
 
     this.client.on(Events.InteractionCreate, (interaction: Interaction) => {
+      // Autocomplete has its own reply shape (interaction.respond, no defer/reply) and
+      // fires on every keystroke, so it is handled separately from — and before — the
+      // logged/adapted slash/component/modal path below.
+      if (interaction.isAutocomplete()) {
+        void this.handleAutocomplete(interaction).catch((err) => {
+          this.logger.error('autocomplete handler failed', { err: errWithStack(err) });
+        });
+        return;
+      }
       // Earliest-possible operator log: record that the gateway delivered SOMETHING,
       // even if adaptation/routing below fails. This is the line that was missing when
       // /config showed "application did not respond" with a silent terminal.
@@ -542,7 +549,7 @@ export class DiscordClient {
         void ackFailedInteraction(interaction);
         return;
       }
-      if (!adapted) return; // autocomplete / unsupported: ignored (modals are adapted)
+      if (!adapted) return; // unsupported interaction type: ignored (autocomplete returns above; modals are adapted)
       void this.interactionRouter.handle(adapted).catch((err) => {
         this.logger.error('interaction router failed', { err: errWithStack(err) });
         void ackFailedInteraction(interaction);
@@ -589,6 +596,24 @@ export class DiscordClient {
         guildId: interaction.guildId,
         userId: interaction.user.id,
       });
+    }
+  }
+
+  // Answer a slash command's autocomplete request. Only /model's `value` option wires
+  // one today; any other autocomplete-enabled option would need a branch here too.
+  // Never throws into the InteractionCreate handler: a respond() failure (e.g. the
+  // interaction already expired past Discord's ~3s autocomplete window, which has no
+  // defer/extend mechanism — unlike a slash command's deferReply) is logged at warn,
+  // not debug, so a live miss is visible at the app's default log level.
+  private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+    const choices =
+      interaction.commandName === 'model'
+        ? await this.interactionRouter.getModelAutocomplete(interaction.options.getFocused())
+        : [];
+    try {
+      await interaction.respond(choices);
+    } catch (err) {
+      this.logger.warn('autocomplete respond failed', { err: String(err) });
     }
   }
 

@@ -47,7 +47,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   'agent.stats': 'drive',
   'mode.backend': 'drive',
   'mode.perm': 'drive',
-  'mode.model': 'drive',
+  model: 'drive',
   stop: 'drive',
   'stop-all': 'admin',
 };
@@ -174,6 +174,11 @@ export class InteractionRouter {
   // Active /config panels keyed by guildId:channelId, so follow-up role/string
   // selects + Save route back to the panel that holds the pending selections.
   private readonly configPanels = new Map<string, ConfigPanel>();
+  // Short-lived cache for /model's autocomplete ONLY (see getModelAutocomplete).
+  // deps.modelsFor stays uncached for the wizard/config panel, which need the
+  // freshest list on every (rare) open.
+  private modelAutocompleteCache: { choices: ModelChoice[]; fetchedAt: number } | null = null;
+  private static readonly MODEL_AUTOCOMPLETE_CACHE_MS = 60_000;
 
   constructor(deps: InteractionRouterDeps) {
     this.deps = deps;
@@ -280,7 +285,7 @@ export class InteractionRouter {
         case 'mode.perm':
           await this.switchPerm(i);
           break;
-        case 'mode.model':
+        case 'model':
           await this.switchModel(i);
           break;
         case 'stop':
@@ -843,7 +848,7 @@ export class InteractionRouter {
     await i.editReply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }) });
   }
 
-  // /mode model <value>: change the model on the live session (no restart, context
+  // /model <value>: change the model on the live session (no restart, context
   // kept). The orchestrator applies it and persists it; here we map the status to a notice.
   private async switchModel(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string;
@@ -859,6 +864,43 @@ export class InteractionRouter {
             ? 'router.noSession'
             : 'cmd.model.failed';
     await i.editReply({ content: t(key, { model: value }) });
+  }
+
+  // /model's `value` option autocomplete: live suggestions from the Claude model
+  // catalog (providerCatalog.getClaudeModels — never a static id list), filtered by
+  // the user's partial input against either the model id or its display label.
+  // Discord caps autocomplete results at 25; getClaudeModels never throws (falls
+  // back to the alias list on any failure), so this never rejects either.
+  async getModelAutocomplete(query: string): Promise<{ name: string; value: string }[]> {
+    const models = await this.claudeModelsForAutocomplete();
+    const q = query.trim().toLowerCase();
+    const matches =
+      q.length === 0
+        ? models
+        : models.filter((m) => m.value.toLowerCase().includes(q) || m.label.toLowerCase().includes(q));
+    return matches.slice(0, 25).map((m) => ({ name: m.label, value: m.value }));
+  }
+
+  // The Claude model list, cached for MODEL_AUTOCOMPLETE_CACHE_MS. Discord's autocomplete
+  // interaction expires ~3s after it fires; getClaudeModels() spawns the native SDK CLI
+  // fresh on every call (no cross-invocation cache, by design — the wizard/config panel
+  // want the newest list on every rare open), which routinely exceeds that window,
+  // especially right after boot while resume-on-boot is spawning several sessions at
+  // once. A minute-stale model list is an acceptable tradeoff here: the account's model
+  // catalog does not change second to second, and a burst of keystrokes from one typed
+  // command should not each pay a fresh subprocess spawn — only the first keystroke
+  // after the cache goes stale does.
+  private async claudeModelsForAutocomplete(): Promise<ModelChoice[]> {
+    const now = Date.now();
+    if (
+      this.modelAutocompleteCache &&
+      now - this.modelAutocompleteCache.fetchedAt < InteractionRouter.MODEL_AUTOCOMPLETE_CACHE_MS
+    ) {
+      return this.modelAutocompleteCache.choices;
+    }
+    const choices = (await this.deps.modelsFor?.('claude')) ?? [];
+    this.modelAutocompleteCache = { choices, fetchedAt: now };
+    return choices;
   }
 
   private async stop(i: SlashInteraction): Promise<void> {

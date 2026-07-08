@@ -36,6 +36,25 @@ describe('buildSlashCommands — /mode backend choices', () => {
   });
 });
 
+describe('buildSlashCommands — /model', () => {
+  it('registers /model as a TOP-LEVEL command (not a /mode subcommand)', () => {
+    const commands = buildSlashCommands(['claude']);
+    expect(commands.some((c) => c.name === 'model')).toBe(true);
+    const mode = commands.find((c) => c.name === 'mode') as unknown as { options: { name: string }[] };
+    expect(mode.options.some((o) => o.name === 'model')).toBe(false);
+  });
+
+  it('the `value` option is autocomplete-driven, NOT a static addChoices() list', () => {
+    const commands = buildSlashCommands(['claude']);
+    const model = commands.find((c) => c.name === 'model') as unknown as {
+      options: { name: string; autocomplete?: boolean; choices?: unknown[] }[];
+    };
+    const value = model.options.find((o) => o.name === 'value');
+    expect(value?.autocomplete).toBe(true);
+    expect(value?.choices).toBeUndefined();
+  });
+});
+
 describe('buildSlashCommands — /config', () => {
   it('registers /config gated to the Administrator default member permission', () => {
     const commands = buildSlashCommands(['claude']);
@@ -88,6 +107,50 @@ describe('DiscordClient — channelDelete subscription', () => {
     const handlers = harness((channelId, guildId) => seen.push([channelId, guildId]));
     handlers.get(Events.ChannelDelete)!({ id: 'd1', isDMBased: () => true });
     expect(seen).toEqual([]);
+  });
+});
+
+describe('DiscordClient — /model autocomplete', () => {
+  function harness(getModelAutocomplete: (q: string) => Promise<{ name: string; value: string }[]>) {
+    const handlers = new Map<string, (arg: unknown) => void>();
+    const client = {
+      once: (event: string, h: (arg: unknown) => void) => handlers.set(event, h),
+      on: (event: string, h: (arg: unknown) => void) => handlers.set(event, h),
+    } as unknown as Client;
+    const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+    new DiscordClient({
+      clientId: 'app-1',
+      logger,
+      messageRouter: {} as unknown as MessageRouter,
+      interactionRouter: { getModelAutocomplete } as unknown as InteractionRouter,
+      backends: () => ['claude'],
+      onReady: async () => {},
+      client,
+    });
+    return handlers;
+  }
+
+  it('routes /model value autocomplete through InteractionRouter.getModelAutocomplete', async () => {
+    const getModelAutocomplete = vi.fn(async (q: string) => [{ name: `Opus (${q})`, value: 'opus' }]);
+    const respond = vi.fn(async () => {});
+    const fire = harness(getModelAutocomplete).get(Events.InteractionCreate);
+    fire!({ isAutocomplete: () => true, commandName: 'model', options: { getFocused: () => 'op' }, respond });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getModelAutocomplete).toHaveBeenCalledWith('op');
+    expect(respond).toHaveBeenCalledWith([{ name: 'Opus (op)', value: 'opus' }]);
+  });
+
+  it('responds empty for a command with no wired autocomplete handler', async () => {
+    const getModelAutocomplete = vi.fn();
+    const respond = vi.fn(async () => {});
+    const fire = harness(getModelAutocomplete).get(Events.InteractionCreate);
+    fire!({ isAutocomplete: () => true, commandName: 'other', options: { getFocused: () => '' }, respond });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getModelAutocomplete).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith([]);
   });
 });
 
