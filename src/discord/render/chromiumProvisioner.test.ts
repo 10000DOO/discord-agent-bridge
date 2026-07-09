@@ -2,8 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Browser, type InstalledBrowser } from '@puppeteer/browsers';
-import { ChromiumProvisioner, type InstallFn } from './chromiumProvisioner.js';
+import { ChromiumProvisioner, type ProvisionFn } from './chromiumProvisioner.js';
 
 function tmpCache(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dab-chromium-'));
@@ -22,25 +21,39 @@ describe('ChromiumProvisioner', () => {
     expect(p.executablePath()).toBeUndefined();
   });
 
-  it('install() downloads via the injected fn when nothing is present, returning the path', async () => {
-    const installFn: InstallFn = vi.fn(async ({ downloadProgressCallback }) => {
-      downloadProgressCallback?.(50, 100);
-      downloadProgressCallback?.(100, 100);
-      return { executablePath: '/cache/chrome/stable/chrome', browser: Browser.CHROME } as unknown as InstalledBrowser;
-    });
-    const seen: number[] = [];
-    const p = new ChromiumProvisioner({ cacheDir: tmpCache(), systemChrome: () => undefined, installFn });
-    const out = await p.install((pct) => seen.push(pct));
-    expect(out).toBe('/cache/chrome/stable/chrome');
-    expect(installFn).toHaveBeenCalledOnce();
-    expect(seen).toContain(50);
-    expect(seen).toContain(100);
+  it('detects a provisioned Chromium on disk (cross-platform layout scan)', () => {
+    const cacheDir = tmpCache();
+    // Mimic the extracted layout: <cache>/chrome/<platform>-<buildId>/chrome-linux64/chrome
+    const exe = path.join(cacheDir, 'chrome', 'linux-123', 'chrome-linux64', 'chrome');
+    fs.mkdirSync(path.dirname(exe), { recursive: true });
+    fs.writeFileSync(exe, '#!/bin/true\n');
+    const p = new ChromiumProvisioner({ cacheDir, systemChrome: () => undefined });
+    expect(p.isInstalled()).toBe(true);
+    expect(p.executablePath()).toBe(exe);
   });
 
-  it('install() short-circuits (no download) when a system Chrome already exists', async () => {
-    const installFn: InstallFn = vi.fn();
-    const p = new ChromiumProvisioner({ cacheDir: tmpCache(), systemChrome: () => '/usr/bin/google-chrome', installFn });
+  it('install() runs the provision step, reports progress, and returns the executable', async () => {
+    const cacheDir = tmpCache();
+    const seen: number[] = [];
+    // Fake provision: create a launchable executable at a scanned path + report progress.
+    const provisionFn: ProvisionFn = vi.fn(async ({ onProgress }) => {
+      onProgress?.(50);
+      const exe = path.join(cacheDir, 'chrome', 'linux-123', 'chrome-linux64', 'chrome');
+      fs.mkdirSync(path.dirname(exe), { recursive: true });
+      fs.writeFileSync(exe, '#!/bin/true\n');
+      onProgress?.(100);
+    });
+    const p = new ChromiumProvisioner({ cacheDir, systemChrome: () => undefined, provisionFn });
+    const out = await p.install((pct) => seen.push(pct));
+    expect(out).toContain('chrome-linux64');
+    expect(provisionFn).toHaveBeenCalledOnce();
+    expect(seen).toEqual([50, 100]);
+  });
+
+  it('install() short-circuits (no provision) when a system Chrome already exists', async () => {
+    const provisionFn: ProvisionFn = vi.fn();
+    const p = new ChromiumProvisioner({ cacheDir: tmpCache(), systemChrome: () => '/usr/bin/google-chrome', provisionFn });
     expect(await p.install()).toBe('/usr/bin/google-chrome');
-    expect(installFn).not.toHaveBeenCalled();
+    expect(provisionFn).not.toHaveBeenCalled();
   });
 });

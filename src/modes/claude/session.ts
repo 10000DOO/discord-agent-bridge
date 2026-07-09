@@ -111,7 +111,9 @@ export class ClaudeSession implements ModeSession {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: `Your working directory is ${ctx.cwd}. Unless the user gives an absolute path, create and edit all files relative to this working directory, NOT the home directory.`,
+        append: `Your working directory is ${ctx.cwd}. Unless the user gives an absolute path, create and edit all files relative to this working directory, NOT the home directory.
+
+When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render them to images yourself, DO NOT run md-to-image scripts, and DO NOT use any attach-file tool for them. Just write the raw Markdown normally (keep tables as pipe tables and diagrams inside \`\`\`mermaid fences, in place). This Discord bridge automatically renders tables and mermaid blocks to inline PNG images at send time. Never insert placeholder markers (e.g. ⬇️) or notes about a client plugin; output clean Markdown only.`,
       },
       permissionMode,
       // The SDK REQUIRES this flag to be true when permissionMode is

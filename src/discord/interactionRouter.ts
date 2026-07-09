@@ -553,16 +553,25 @@ export class InteractionRouter {
     }
     this.deps.configStore.setChromiumDecision('accepted');
     if (prov.isInstalled()) {
-      await safe(i.followUp({ content: t('render.setup.already'), ephemeral: false }));
+      await safe(i.editReply({ content: t('render.setup.already'), components: [] }));
       return;
     }
-    await safe(i.followUp({ content: t('render.setup.installing'), ephemeral: false }));
+    // Morph the prompt message (deferUpdate'd component → editReply edits it) into a live
+    // progress bar as the download runs, then a completion line. Buttons removed.
+    const bar = (pct: number): string => {
+      const n = Math.max(0, Math.min(10, Math.round(pct / 10)));
+      return t('render.setup.progress', { bar: '▓'.repeat(n) + '░'.repeat(10 - n), pct: String(pct) });
+    };
+    await safe(i.editReply({ content: bar(0), components: [] }));
     try {
-      await prov.install((pct) => this.deps.logger.info('chromium install progress', { pct }));
-      await safe(i.followUp({ content: t('render.setup.done'), ephemeral: false }));
+      await prov.install((pct) => {
+        this.deps.logger.info('chromium install progress', { pct });
+        void safe(i.editReply({ content: bar(pct), components: [] }));
+      });
+      await safe(i.editReply({ content: t('render.setup.done'), components: [] }));
     } catch (err) {
       this.deps.logger.error('chromium install failed', { err: String(err) });
-      await safe(i.followUp({ content: t('render.setup.failed'), ephemeral: false }));
+      await safe(i.editReply({ content: t('render.setup.failed'), components: [] }));
     }
   }
 

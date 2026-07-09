@@ -91,6 +91,7 @@ const ko: Catalog = {
   'render.setup.declined': '알겠어요. 나중에 `/config` 에서 설치할 수 있어요.',
   'render.setup.already': '이미 사용 가능한 브라우저가 있어요. 이미지 렌더링이 켜졌습니다.',
   'render.setup.installing': 'Chromium을 내려받는 중이에요… (백그라운드, 몇 분 걸릴 수 있어요)',
+  'render.setup.progress': '⏬ **Chromium 설치 중**\n`{bar}` {pct}%',
   'render.setup.done': '✅ 설치 완료! 이제 표·다이어그램이 이미지로 렌더링됩니다.',
   'render.setup.failed': '설치에 실패했어요. 잠시 후 `/config` 에서 다시 시도해 주세요.',
   // Backend / permission mode labels
