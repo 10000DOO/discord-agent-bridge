@@ -143,6 +143,7 @@ function makeConfig(): AppConfig {
     locale: 'ko',
     logLevel: 'error',
     favorites: [],
+    autoUpdate: { enabled: true },
   };
 }
 

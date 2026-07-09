@@ -29,6 +29,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     locale: 'ko',
     logLevel: 'info',
     favorites: [],
+    autoUpdate: { enabled: true },
     ...overrides,
   };
 }
@@ -70,6 +71,19 @@ describe('ConfigStore', () => {
     expect(loaded.autoAllowClaudeTools).toEqual(['Read', 'Glob', 'Grep']);
     expect(loaded.auth.dmPolicy).toBe('deny');
     expect(loaded.logLevel).toBe('info');
+    // Auto-update defaults ON, filled for a config.json that predates the field.
+    expect(loaded.autoUpdate).toEqual({ enabled: true });
+  });
+
+  it('preserves an explicit autoUpdate.enabled=false (backward-compatible)', () => {
+    const store = new ConfigStore(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      store.configPath,
+      JSON.stringify({ discord: { token: 't', clientId: 'c' }, autoUpdate: { enabled: false } }),
+      'utf-8',
+    );
+    expect(store.load().autoUpdate.enabled).toBe(false);
   });
 
   it('merges nested overrides over defaults', () => {

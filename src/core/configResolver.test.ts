@@ -32,6 +32,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     locale: 'ko',
     logLevel: 'info',
     favorites: [],
+    autoUpdate: { enabled: true },
     ...overrides,
   };
 }

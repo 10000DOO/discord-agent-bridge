@@ -45,16 +45,34 @@ export const channelBindingSchema = z.object({
   archived: z.boolean(),
 });
 
+// Auto-update bookkeeping (§8). lastCheckAt guards the 24h cadence across restarts;
+// dismissedVersion silences a version the operator declined (a newer one re-enables it).
+// A .default (like scheduledCommands) means NO version bump / migration is needed — an
+// existing state.json without the field loads with the default.
+export const autoUpdateStateSchema = z
+  .object({
+    lastCheckAt: z.number(),
+    dismissedVersion: z.string().nullable(),
+  })
+  .default({ lastCheckAt: 0, dismissedVersion: null });
+
 export const appStateSchema = z.object({
   version: z.number(),
   channels: z.record(z.string(), channelBindingSchema),
   scheduledCommands: z.array(z.unknown()).default([]),
+  autoUpdate: autoUpdateStateSchema,
 });
 
 export type AppState = z.infer<typeof appStateSchema>;
 export type ChannelBindingState = z.infer<typeof channelBindingSchema>;
+export type AutoUpdateState = z.infer<typeof autoUpdateStateSchema>;
 
 // A fresh, empty v2 state used when no state.json exists yet.
 export function emptyState(): AppState {
-  return { version: STATE_VERSION, channels: {}, scheduledCommands: [] };
+  return {
+    version: STATE_VERSION,
+    channels: {},
+    scheduledCommands: [],
+    autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
+  };
 }

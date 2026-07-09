@@ -38,6 +38,42 @@ describe('StateStore', () => {
     expect(state.version).toBe(STATE_VERSION);
     expect(state.channels).toEqual({});
     expect(state.scheduledCommands).toEqual([]);
+    expect(state.autoUpdate).toEqual({ lastCheckAt: 0, dismissedVersion: null });
+  });
+
+  it('fills the autoUpdate default for a state.json that predates the field (no migration)', () => {
+    const store = new StateStore(dir);
+    // A pre-existing v2 file WITHOUT autoUpdate must still load (default applied).
+    fs.writeFileSync(
+      store.statePath,
+      JSON.stringify({ version: STATE_VERSION, channels: {}, scheduledCommands: [] }),
+      'utf-8',
+    );
+    expect(store.load().autoUpdate).toEqual({ lastCheckAt: 0, dismissedVersion: null });
+  });
+
+  it('getUpdateMeta / setUpdateMeta round-trip and patch independently', () => {
+    const store = new StateStore(dir);
+    expect(store.getUpdateMeta()).toEqual({ lastCheckAt: 0, dismissedVersion: null });
+    store.setUpdateMeta({ lastCheckAt: 12345 });
+    expect(store.getUpdateMeta()).toEqual({ lastCheckAt: 12345, dismissedVersion: null });
+    // A second patch preserves the untouched sibling field.
+    store.setUpdateMeta({ dismissedVersion: '1.2.3' });
+    expect(store.getUpdateMeta()).toEqual({ lastCheckAt: 12345, dismissedVersion: '1.2.3' });
+  });
+
+  it('setUpdateMeta preserves channel bindings', () => {
+    const store = new StateStore(dir);
+    store.save({
+      version: STATE_VERSION,
+      channels: { 'g1:c1': binding() },
+      scheduledCommands: [],
+      autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
+    });
+    store.setUpdateMeta({ lastCheckAt: 999 });
+    const loaded = store.load();
+    expect(loaded.channels['g1:c1']).toEqual(binding());
+    expect(loaded.autoUpdate.lastCheckAt).toBe(999);
   });
 
   it('round-trips save → load', () => {
@@ -46,6 +82,7 @@ describe('StateStore', () => {
       version: STATE_VERSION,
       channels: { 'g1:c1': binding() },
       scheduledCommands: [],
+      autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
     };
     store.save(state);
     expect(store.load()).toEqual(state);
@@ -109,6 +146,7 @@ describe('StateStore', () => {
       version: STATE_VERSION,
       channels: { 'g1:c1': binding() },
       scheduledCommands: [],
+      autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
     };
     expect(() => store.save(state)).toThrow();
     // The occupied path is untouched: still a directory holding the sentinel,

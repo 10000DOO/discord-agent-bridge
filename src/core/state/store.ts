@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { appStateSchema, emptyState, STATE_VERSION, type AppState } from './schema.js';
+import { appStateSchema, emptyState, STATE_VERSION, type AppState, type AutoUpdateState } from './schema.js';
 
 // Versioned JSON state store. Loads state.json, runs ordered migrations up to the
 // current version, zod-validates, and writes atomically (tmp + rename). Unknown
@@ -90,5 +90,20 @@ export class StateStore {
     const tmp = `${this.statePath}.tmp`;
     fs.writeFileSync(tmp, data, { encoding: 'utf-8' });
     fs.renameSync(tmp, this.statePath);
+  }
+
+  // Auto-update bookkeeping convenience accessors (§8), mirroring ConfigStore's
+  // addAutoAllowClaudeTool style: the AutoUpdater reads/patches this block without
+  // touching the channel bindings. getUpdateMeta returns the resolved (defaulted) block.
+  getUpdateMeta(): AutoUpdateState {
+    return this.load().autoUpdate;
+  }
+
+  // Patch the auto-update block (lastCheckAt and/or dismissedVersion) and persist.
+  // Load → merge → save so an unrelated concurrent field is preserved.
+  setUpdateMeta(patch: Partial<AutoUpdateState>): void {
+    const state = this.load();
+    state.autoUpdate = { ...state.autoUpdate, ...patch };
+    this.save(state);
   }
 }

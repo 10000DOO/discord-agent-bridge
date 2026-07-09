@@ -59,6 +59,7 @@ function applyDefaults(raw: Record<string, unknown>): unknown {
     policy: mergeNested(raw['policy'], CONFIG_DEFAULTS.policy),
     usage: mergeNested(raw['usage'], CONFIG_DEFAULTS.usage),
     audit: mergeNested(raw['audit'], CONFIG_DEFAULTS.audit),
+    autoUpdate: mergeNested(raw['autoUpdate'], CONFIG_DEFAULTS.autoUpdate),
   };
 }
 

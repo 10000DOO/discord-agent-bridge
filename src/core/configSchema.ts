@@ -76,6 +76,12 @@ export const configSchema = z.object({
   locale: z.string(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
   favorites: z.array(z.string()),
+  // Host-wide auto-update toggle (§8). Filled by CONFIG_DEFAULTS/applyDefaults so an
+  // existing config.json without it still loads. The 24h cadence stays a constant
+  // (not exposed); on/off is edited directly in config.json (no /config or wizard UI).
+  autoUpdate: z.object({
+    enabled: z.boolean(),
+  }),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -200,4 +206,7 @@ export const CONFIG_DEFAULTS = {
   locale: 'ko',
   logLevel: 'info' as const,
   favorites: [] as string[],
+  // Auto-update is ON by default; disable by setting "autoUpdate": { "enabled": false }
+  // in config.json (documented; no in-app toggle — §14).
+  autoUpdate: { enabled: true },
 } satisfies Omit<AppConfig, 'discord'>;

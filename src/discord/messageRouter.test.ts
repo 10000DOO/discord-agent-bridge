@@ -356,6 +356,7 @@ describe('MessageRouter Administrator authorization', () => {
       locale: 'ko',
       logLevel: 'info',
       favorites: [],
+      autoUpdate: { enabled: true },
     };
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
