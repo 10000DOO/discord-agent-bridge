@@ -20,11 +20,47 @@ afterEach(() => {
 });
 
 describe('DirectoryBrowser', () => {
-  it('lists only subdirectories, sorted, hiding files and dotfiles', () => {
+  it('lists subdirectories (files excluded), hidden (dot) folders included but sorted last', () => {
     fs.mkdirSync(path.join(root, '.hidden'));
     fs.mkdirSync(path.join(root, 'aaa'));
     const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
-    expect(b.listChildren()).toEqual(['aaa', 'sub']);
+    // file.txt is still skipped; '.hidden' is now included, ordered after the normal folders.
+    expect(b.listChildren()).toEqual(['aaa', 'sub', '.hidden']);
+  });
+
+  it('orders all non-dot folders before all dot folders, each group alphabetical', () => {
+    for (const name of ['banana', '.zeta', 'apple', '.alpha', 'cherry']) {
+      fs.mkdirSync(path.join(root, name));
+    }
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const list = b.listChildren();
+    // 'sub' pre-exists in the fixture; it sorts within the non-dot group.
+    expect(list).toEqual(['apple', 'banana', 'cherry', 'sub', '.alpha', '.zeta']);
+    // Structural guarantee: a non-dot prefix, then a dot suffix — no interleaving.
+    const firstDot = list.findIndex((n) => n.startsWith('.'));
+    expect(firstDot).toBeGreaterThan(0);
+    expect(list.slice(0, firstDot).every((n) => !n.startsWith('.'))).toBe(true);
+    expect(list.slice(firstDot).every((n) => n.startsWith('.'))).toBe(true);
+  });
+
+  it('protects real (non-dot) folders from the 25-option cap: dots never crowd them out', () => {
+    // Many hidden folders + a few normal ones; even capped at 25, all normals survive.
+    for (let i = 0; i < 30; i++) fs.mkdirSync(path.join(root, `.hidden${i}`));
+    for (const name of ['proj-a', 'proj-b', 'proj-c']) fs.mkdirSync(path.join(root, name));
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const list = b.listChildren();
+    expect(list).toHaveLength(25); // MAX_SELECT_OPTIONS
+    // Every non-dot folder (fixture 'sub' + the three projects) is present, up front.
+    for (const name of ['proj-a', 'proj-b', 'proj-c', 'sub']) expect(list).toContain(name);
+    const firstDot = list.findIndex((n) => n.startsWith('.'));
+    expect(list.slice(0, firstDot).every((n) => !n.startsWith('.'))).toBe(true);
+  });
+
+  it('can descend INTO a hidden (dot) folder (regression)', () => {
+    fs.mkdirSync(path.join(root, '.hidden'));
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    expect(b.into('.hidden')).toBe(true);
+    expect(b.cwd()).toBe(path.join(root, '.hidden'));
   });
 
   it('descends into a child and back up', () => {

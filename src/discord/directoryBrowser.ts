@@ -60,6 +60,8 @@ export class DirectoryBrowser {
 
   // Names of immediate subdirectories of the current folder (sorted, capped). Unreadable
   // dirs and non-directory entries are skipped; a permission error yields an empty list.
+  // Hidden (dot) folders ARE listed, but sorted AFTER normal folders so they can't push
+  // real project folders past the MAX_SELECT_OPTIONS cap; each group stays alphabetical.
   listChildren(): string[] {
     let entries: fs.Dirent[];
     try {
@@ -68,9 +70,13 @@ export class DirectoryBrowser {
       return [];
     }
     return entries
-      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .filter((e) => e.isDirectory())
       .map((e) => e.name)
-      .sort((a, b) => a.localeCompare(b))
+      .sort((a, b) => {
+        const ah = a.startsWith('.'), bh = b.startsWith('.');
+        if (ah !== bh) return ah ? 1 : -1; // non-dot first, dot last
+        return a.localeCompare(b);
+      })
       .slice(0, MAX_SELECT_OPTIONS);
   }
 
