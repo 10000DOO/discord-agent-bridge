@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { RendererDispatcher, createDefaultRendererSet } from './index.js';
 import type { AgentEvent, Capabilities } from '../../core/contracts.js';
 import type { EditableMessage, MessageChannel, OutgoingMessage } from '../ports.js';
+import type { ImageRenderer } from '../render/segment.js';
 
 function fakeChannel() {
   const sent: OutgoingMessage[] = [];
@@ -446,6 +447,59 @@ describe('default renderer set — shared per-turn work thread', () => {
     await flush();
     expect(threadNames).toHaveLength(1);
     expect(threadPosts(sent).some((m) => (m.content ?? '').includes('early-result'))).toBe(true);
+  });
+});
+
+describe('default renderer set — Codex answer ordering vs done-line (A1)', () => {
+  const flushTwice = async () => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  it('sends the Codex plain-text answer BEFORE the done-line', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, codexCaps);
+    // Codex delivers its whole answer as one non-streaming text event, then a result.
+    dispatcher.dispatch({ kind: 'text', text: 'the codex answer', delta: false } as AgentEvent);
+    dispatcher.dispatch({ kind: 'result', costUsd: 0.01 } as AgentEvent);
+    await flushTwice();
+    const answerIdx = sent.findIndex((m) => m.content === 'the codex answer');
+    const doneIdx = sent.findIndex((m) => (m.content ?? '').includes('완료'));
+    expect(answerIdx).toBeGreaterThanOrEqual(0);
+    expect(doneIdx).toBeGreaterThan(answerIdx);
+  });
+
+  it('holds the done-line AND image behind a pending image render, then emits image → done-line', async () => {
+    const { channel, sent } = fakeChannel();
+    // A renderer whose render() blocks until we release it: models an async PNG render that
+    // outlives the (synchronous) done-line scheduling. The buggy fire-and-forget path would
+    // publish the done-line (and never wait for the image) before release.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const renderImage: ImageRenderer = {
+      async render(seg) {
+        await gate;
+        return { data: Buffer.from(`png:${seg.kind}`), name: `${seg.kind}.png` };
+      },
+    };
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1', renderImage });
+    const dispatcher = new RendererDispatcher(set, codexCaps);
+    const md = '| a | b |\n|---|---|\n| 1 | 2 |';
+    dispatcher.dispatch({ kind: 'text', text: md, delta: false } as AgentEvent);
+    dispatcher.dispatch({ kind: 'result', costUsd: 0.01 } as AgentEvent);
+    await flushTwice();
+    // Render still pending: NOTHING downstream of the answer (image or done-line) has shipped.
+    expect(sent.some((m) => m.files)).toBe(false);
+    expect(sent.some((m) => (m.content ?? '').includes('완료'))).toBe(false);
+
+    release();
+    await flushTwice();
+    // After release: the image lands, THEN the done-line — order preserved.
+    const imgIdx = sent.findIndex((m) => m.files);
+    const doneIdx = sent.findIndex((m) => (m.content ?? '').includes('완료'));
+    expect(imgIdx).toBeGreaterThanOrEqual(0);
+    expect(doneIdx).toBeGreaterThan(imgIdx);
   });
 });
 

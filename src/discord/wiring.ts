@@ -9,6 +9,9 @@ import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { AuditLog } from '../core/auditLog.js';
 import type { PermissionRequest } from '../core/sessionOrchestrator.js';
 import { RendererDispatcher, createDefaultRendererSet, type RendererSet } from './renderers/index.js';
+import type { ImageRenderer } from './render/segment.js';
+import { chromeAvailable } from './render/chrome.js';
+import type { ChromiumProvisioner } from './render/chromiumProvisioner.js';
 import type { UsageSessionMeta } from './renderers/usageEmbed.js';
 import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
 import { ChannelAdapter, resolveChannelAdapter } from './client.js';
@@ -61,6 +64,10 @@ export interface SessionWiringDeps {
   // settings (enabled/channelId/events). Optional so tests that do not exercise
   // notifications need not supply it; when absent, no notifier is wired.
   configStore?: ConfigStore;
+  // Chromium provisioner (image render). When present, attach() resolves the browser
+  // executable + install state through it so a provisioned (downloaded) Chromium is used
+  // as well as a system one. Absent → detection falls back to a system Chrome only.
+  imageProvisioner?: ChromiumProvisioner;
   // Append-only audit trail (§7.5). The always-allow persistence path records a
   // who/when/what entry around the GLOBAL config write. Optional so tests that do
   // not exercise always-allow need not supply it.
@@ -110,9 +117,13 @@ export class SessionWiring {
   private readonly permissionTimeoutMs: number;
   private readonly auditLog?: AuditLog;
   private readonly configStore?: ConfigStore;
+  private readonly imageProvisioner?: ChromiumProvisioner;
   private readonly onAlwaysAllow?: (toolName: string, ctx: AlwaysAllowContext) => void;
 
   private readonly channels = new Map<string, ChannelWiring>();
+  // Lazily-created image renderer (tables/mermaid → PNG). Built on first use so the
+  // heavy puppeteer module only loads when rendering is actually enabled + available.
+  private imageRenderer: ImageRenderer | null = null;
 
   constructor(deps: SessionWiringDeps) {
     this.eventBus = deps.eventBus;
@@ -122,6 +133,7 @@ export class SessionWiring {
     this.logger = deps.logger;
     this.auditLog = deps.auditLog;
     this.configStore = deps.configStore;
+    this.imageProvisioner = deps.imageProvisioner;
     this.resolveChannel = deps.resolveChannel ?? (() => Promise.resolve(null));
     // 0 sentinel means "no timer" (infinite wait); withTimeout skips the setTimeout
     // path so a slow-to-respond operator is not auto-denied.
@@ -230,6 +242,44 @@ export class SessionWiring {
   // Attach renderers + permission handler for a channel that just started/resumed.
   // Idempotent: re-attaching first tears down any prior subscription so a resume
   // after a restart does not double-render.
+  // Resolve the image renderer for a session, or null when the render branch is off
+  // (config disabled or no Chrome). Lazily constructs the puppeteer-backed renderer on
+  // first use (dynamic import so puppeteer never loads at boot / when disabled). Never
+  // throws — any failure degrades to null (text-only).
+  private async resolveImageRenderer(): Promise<ImageRenderer | null> {
+    try {
+      const enabled = this.configStore?.load().render?.enabled ?? true;
+      if (!enabled) return null;
+      // Prefer the provisioner (knows about a downloaded Chromium too); fall back to a
+      // bare system-Chrome check when no provisioner is wired.
+      const execPath = this.imageProvisioner?.executablePath();
+      const available = this.imageProvisioner ? this.imageProvisioner.isInstalled() : chromeAvailable();
+      if (!available) return null;
+      if (!this.imageRenderer) {
+        const { BrowserImageRenderer } = await import('./render/browserRenderer.js');
+        this.imageRenderer = new BrowserImageRenderer({
+          logger: this.logger,
+          ...(execPath ? { executablePath: execPath } : {}),
+        });
+      }
+      return this.imageRenderer;
+    } catch (err) {
+      this.logger.warn('image renderer unavailable', { err: String(err) });
+      return null;
+    }
+  }
+
+  // Close the lazily-built image renderer (its warm browser), if any. Called from the app's
+  // shutdown path (app.destroy) so a graceful stop releases the ~100–300MB Chromium rather
+  // than leaning on the idle timer / process-exit hook alone. Best-effort — never throws.
+  async closeImageRenderer(): Promise<void> {
+    try {
+      await this.imageRenderer?.close?.();
+    } catch (err) {
+      this.logger.warn('image renderer close failed', { err: String(err) });
+    }
+  }
+
   async attach(guildId: string, channelId: string, mode: string): Promise<void> {
     const key = channelKey(guildId, channelId);
     this.detach(guildId, channelId);
@@ -243,12 +293,19 @@ export class SessionWiring {
     const ownerId = binding?.ownerId ?? '';
     const capabilities = this.modeRegistry.get(mode).capabilities;
 
+    // Render branch (design §7): decide at session start whether tables/mermaid become
+    // PNG images. Enabled ⇔ global config render.enabled (default true) AND a browser is
+    // available — a system Chrome OR a Chromium provisioned on demand via the /init and
+    // /config install prompts (imageProvisioner). Absent → text-only (existing behavior).
+    const renderImage = (await this.resolveImageRenderer()) ?? undefined;
+
     const permission = new PermissionButtonsHandler({ channel });
     const rendererSet = createDefaultRendererSet({
       channel,
       ownerId,
       guildId,
       channelId,
+      ...(renderImage ? { renderImage } : {}),
       getUsage: () => this.getUsageFor(mode),
       getSessionMeta: () => this.getSessionMetaFor(guildId, channelId),
       logger: this.logger,

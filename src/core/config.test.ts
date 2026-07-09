@@ -26,6 +26,8 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     profiles: {},
     usage: { userAgent: 'claude-code', cacheSec: 180 },
     audit: { channelId: null },
+    render: { enabled: true },
+    chromium: { decision: 'undecided' as const },
     locale: 'ko',
     logLevel: 'info',
     favorites: [],
@@ -84,6 +86,20 @@ describe('ConfigStore', () => {
       'utf-8',
     );
     expect(store.load().autoUpdate.enabled).toBe(false);
+  });
+
+  it('backfills render/chromium defaults for an older config that omits both keys', () => {
+    const store = new ConfigStore(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    // A pre-feature config.json: valid, but written before render/chromium existed.
+    fs.writeFileSync(
+      store.configPath,
+      JSON.stringify({ discord: { token: 't', clientId: 'c' } }),
+      'utf-8',
+    );
+    const loaded = store.load();
+    expect(loaded.render).toEqual({ enabled: true });
+    expect(loaded.chromium).toEqual({ decision: 'undecided' });
   });
 
   it('merges nested overrides over defaults', () => {

@@ -45,6 +45,11 @@ const IDS = {
   notifOpen: 'config.notif.open',
   notifToggle: 'config.notif.toggle',
   notifChannel: 'config.notif.channel',
+  // Image-render sub-panel: a button opens an ephemeral sub-panel with an on/off toggle
+  // and an install button (download Chromium). Mirrors the notifications sub-panel.
+  renderOpen: 'config.render.open',
+  renderToggle: 'config.render.toggle',
+  renderInstall: 'config.render.install',
 } as const;
 
 // True when a component id belongs to a /config panel (router routing predicate).
@@ -127,6 +132,12 @@ export type ConfigPanelResult =
   // A notifications toggle/channel change persisted and re-rendered the sub-panel in
   // place (edited on its own message).
   | { kind: 'notifUpdated'; embed: EmbedSpec; rows: ComponentRow[] }
+  // The 🖼 button opened the image-render sub-panel (fresh ephemeral message).
+  | { kind: 'renderPanel'; embed: EmbedSpec; rows: ComponentRow[] }
+  // The render on/off toggle persisted and re-rendered the sub-panel in place.
+  | { kind: 'renderUpdated'; embed: EmbedSpec; rows: ComponentRow[] }
+  // The install button was pressed — the router runs the Chromium provisioner.
+  | { kind: 'renderInstall' }
   | { kind: 'ignored' };
 
 const TIER_BY_ID: Record<string, Tier> = {
@@ -178,6 +189,12 @@ export class ConfigPanel {
         return this.autosaveLocale(input.value);
       case IDS.notifOpen:
         return { kind: 'notifPanel', ...this.renderNotifications() };
+      case IDS.renderOpen:
+        return { kind: 'renderPanel', ...this.renderRenderPanel() };
+      case IDS.renderToggle:
+        return this.toggleRender();
+      case IDS.renderInstall:
+        return { kind: 'renderInstall' };
       case IDS.notifToggle:
         return this.toggleNotifications();
       case IDS.notifChannel:
@@ -319,6 +336,41 @@ export class ConfigPanel {
     return { kind: 'notifUpdated', ...this.renderNotifications() };
   }
 
+  // ---- Image-render sub-panel (GLOBAL config; host-wide) ----
+
+  private renderEnabled(): boolean {
+    return this.opts.configStore.load().render?.enabled ?? true;
+  }
+
+  // Flip the GLOBAL render.enabled flag, persist it, and re-render the sub-panel.
+  private toggleRender(): ConfigPanelResult {
+    this.opts.configStore.setRenderEnabled(!this.renderEnabled());
+    return { kind: 'renderUpdated', ...this.renderRenderPanel() };
+  }
+
+  private renderRenderPanel(): { embed: EmbedSpec; rows: ComponentRow[] } {
+    const enabled = this.renderEnabled();
+    const toggle: ButtonSpec = {
+      type: 'button',
+      customId: IDS.renderToggle,
+      label: enabled ? t('config.render.disable') : t('config.render.enable'),
+      style: enabled ? 'danger' : 'success',
+    };
+    const install: ButtonSpec = {
+      type: 'button',
+      customId: IDS.renderInstall,
+      label: t('config.render.install'),
+      style: 'primary',
+    };
+    return {
+      embed: {
+        title: t('config.render.title'),
+        description: t('config.render.intro', { state: enabled ? t('config.render.on') : t('config.render.off') }),
+      },
+      rows: [{ components: [toggle, install] }],
+    };
+  }
+
   // Merge ONE notifications field over the guild's current server config and persist,
   // preserving every other field (auth, defaults, channels, locale).
   private patchNotifications(patch: Partial<NonNullable<ServerConfig['notifications']>>): void {
@@ -439,6 +491,9 @@ export class ConfigPanel {
     // so the primary message stays within Discord's 5-action-row limit (it shares the
     // Save row: a single action row can hold up to 5 buttons).
     const notif: ButtonSpec = { type: 'button', customId: IDS.notifOpen, label: t('config.notif.button'), style: 'secondary' };
+    // 🖼 opens the image-render sub-panel (on/off + install). Shares the Save row (a
+    // single action row holds up to 5 buttons), so no extra row is used.
+    const render: ButtonSpec = { type: 'button', customId: IDS.renderOpen, label: t('config.render.button'), style: 'secondary' };
 
     return {
       embed: { title: t('config.title'), description: t('config.intro') },
@@ -446,7 +501,7 @@ export class ConfigPanel {
         { components: [adminSelect] },
         { components: [execSelect] },
         { components: [readSelect] },
-        { components: [save, notif] },
+        { components: [save, notif, render] },
       ],
       defaultRows: [
         { components: [backendSelect] },

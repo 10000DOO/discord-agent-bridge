@@ -31,6 +31,7 @@ import type { ActiveChannelInfo, SessionOrchestrator } from '../core/sessionOrch
 import type { AutoUpdater, DecisionCtx } from '../update/autoUpdater.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { SessionWiring } from './wiring.js';
+import type { ChromiumProvisioner } from './render/chromiumProvisioner.js';
 
 const logger = createLogger('test', { level: 'error', sink: { write() {} } });
 
@@ -334,6 +335,7 @@ function buildRouter(deps: {
   resolveGuildProvisioner?: (guildId: string) => Promise<GuildChannelProvisioner | null>;
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
   usageService?: UsageService;
+  imageProvisioner?: ChromiumProvisioner;
   customBackendLabel?: () => string;
 }): InteractionRouter {
   // Default: Claude usage unavailable (API-key-only / no OAuth) so /agent stats shows the
@@ -370,8 +372,15 @@ function buildRouter(deps: {
     ...(deps.browseRoots ? { browseRoots: deps.browseRoots } : {}),
     ...(deps.resolveGuildProvisioner ? { resolveGuildProvisioner: deps.resolveGuildProvisioner } : {}),
     ...(deps.resolveChannel ? { resolveChannel: deps.resolveChannel } : {}),
+    ...(deps.imageProvisioner ? { imageProvisioner: deps.imageProvisioner } : {}),
     ...(deps.customBackendLabel ? { customBackendLabel: deps.customBackendLabel } : {}),
   });
+}
+
+// A fake ChromiumProvisioner exposing only isInstalled() — the sole method
+// maybePromptRenderSetup consults for the render-setup gate.
+function fakeProvisioner(installed: boolean): ChromiumProvisioner {
+  return { isInstalled: () => installed } as unknown as ChromiumProvisioner;
 }
 
 // A fake provisioner for /init + session-channel tests: records creates + deletes and
@@ -1764,5 +1773,79 @@ describe('InteractionRouter auto-update buttons', () => {
     // ack posts an ephemeral followUp.
     const followUp = replies.find((r) => r.content === 'done');
     expect(followUp?.ephemeral).toBe(true);
+  });
+});
+
+// The render-setup prompt gate (design §9.2 + new-guild auto-provision). The app calls
+// maybePromptRenderSetup on a fresh invite; it posts the [예]/[아니오] prompt ONLY when the
+// feature is enabled, no browser is installed, and the operator has not yet decided.
+describe('InteractionRouter.maybePromptRenderSetup gating', () => {
+  it('posts the prompt when enabled + undecided + not installed', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { channel, posts } = fakeMessageChannel();
+    const router = buildRouter({
+      orchestrator,
+      wiring,
+      imageProvisioner: fakeProvisioner(false),
+      resolveChannel: async () => channel,
+    });
+    await router.maybePromptRenderSetup('ctrl-1');
+    expect(posts).toHaveLength(1);
+    // The single post carries the install/decline buttons.
+    expect((posts[0] as { components?: unknown[] }).components?.length).toBe(1);
+  });
+
+  it('does NOT post when a browser is already installed', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { channel, posts } = fakeMessageChannel();
+    const router = buildRouter({
+      orchestrator,
+      wiring,
+      imageProvisioner: fakeProvisioner(true),
+      resolveChannel: async () => channel,
+    });
+    await router.maybePromptRenderSetup('ctrl-1');
+    expect(posts).toHaveLength(0);
+  });
+
+  it('does NOT post when the operator has declined', async () => {
+    store.setChromiumDecision('declined');
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { channel, posts } = fakeMessageChannel();
+    const router = buildRouter({
+      orchestrator,
+      wiring,
+      imageProvisioner: fakeProvisioner(false),
+      resolveChannel: async () => channel,
+    });
+    await router.maybePromptRenderSetup('ctrl-1');
+    expect(posts).toHaveLength(0);
+  });
+
+  it('does NOT post when image rendering is disabled', async () => {
+    store.setRenderEnabled(false);
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { channel, posts } = fakeMessageChannel();
+    const router = buildRouter({
+      orchestrator,
+      wiring,
+      imageProvisioner: fakeProvisioner(false),
+      resolveChannel: async () => channel,
+    });
+    await router.maybePromptRenderSetup('ctrl-1');
+    expect(posts).toHaveLength(0);
+  });
+
+  it('does NOT post when no provisioner is wired', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { channel, posts } = fakeMessageChannel();
+    const router = buildRouter({ orchestrator, wiring, resolveChannel: async () => channel });
+    await router.maybePromptRenderSetup('ctrl-1');
+    expect(posts).toHaveLength(0);
   });
 });
