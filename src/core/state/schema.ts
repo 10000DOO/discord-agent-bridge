@@ -25,7 +25,7 @@ export const STATE_VERSION = 2;
 
 export const channelBindingSchema = z.object({
   guildId: z.string(),
-  mode: z.enum(['claude', 'codex']),
+  mode: z.enum(['claude', 'codex', 'custom']),
   sessionId: z.string().nullable(),
   cwd: z.string(),
   ownerId: z.string(),

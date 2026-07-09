@@ -60,6 +60,12 @@ export interface ChannelWizardOptions {
   defaults: WizardDefaults;
   // Backends offered in the backend step (from modeRegistry.list()).
   backends: string[];
+  // Overrides the 'custom' backend's displayed label (mirrors /mode backend's
+  // choice — see client.ts buildSlashCommands): names the ANTHROPIC_MODEL the
+  // operator's shell dotfile actually resolves to (e.g. "Custom (kimi-k2.7-code)"),
+  // computed fresh when the wizard opens. Absent → falls back to the i18n
+  // 'backend.custom' key (plain "Custom").
+  customBackendLabel?: string;
   // Models offered for a backend, as English {value,label} pairs from the provider
   // catalog (Claude = dynamic/cached; Codex = documented list). Read once the backend
   // is chosen so the model step reflects the right catalog.
@@ -311,7 +317,12 @@ export class ChannelWizard {
           'wizard.step.backend',
           'backend',
           this.opts.backends.map((b) => ({
-            label: t(`backend.${b}`) === `backend.${b}` ? b : t(`backend.${b}`),
+            label:
+              b === 'custom' && this.opts.customBackendLabel
+                ? this.opts.customBackendLabel
+                : t(`backend.${b}`) === `backend.${b}`
+                  ? b
+                  : t(`backend.${b}`),
             value: b,
             default: b === (this.pending.backend ?? this.selection.backend),
           })),

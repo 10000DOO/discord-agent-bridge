@@ -34,6 +34,7 @@ import {
   type TextBasedChannel,
 } from 'discord.js';
 import type { Logger } from '../core/contracts.js';
+import { customBackendLabel } from '../modes/custom/shellEnv.js';
 import type { GuildChannelProvisioner, ProvisionedChannel } from './guildChannels.js';
 import { t } from './i18n.js';
 import type {
@@ -80,7 +81,9 @@ const INTENTS = [
 // ---------------------------------------------------------------------------
 
 // Human-readable choice labels for known backends; an unknown backend falls back to
-// its raw id, so a newly registered backend still appears (just un-prettified).
+// its raw id, so a newly registered backend still appears (just un-prettified). `custom`
+// is deliberately absent — its label names the ACTUAL configured provider (e.g. "Custom
+// (kimi-k2.7-code)"), computed fresh via customBackendLabel() below, not a fixed string.
 const BACKEND_LABELS: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
@@ -90,7 +93,13 @@ const BACKEND_LABELS: Record<string, string> = {
 // (modeRegistry.list()): only these appear as `/mode backend` choices, so a backend
 // that is not yet registered (e.g. Codex before Phase 2) is not offered. Generic —
 // a backend registered later automatically becomes a choice.
-export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCommandsJSONBody[] {
+// `opts.customBackendLabel` overrides the `custom` backend's choice label — tests inject
+// a literal string so this stays a pure function; production leaves it undefined and
+// falls back to a fresh dotfile scan (customBackendLabel(), see modes/custom/shellEnv.ts).
+export function buildSlashCommands(
+  backends: string[],
+  opts: { customBackendLabel?: string } = {},
+): RESTPostAPIApplicationCommandsJSONBody[] {
   const agent = new SlashCommandBuilder()
     .setName('agent')
     .setDescription('Manage the agent session in this channel')
@@ -99,7 +108,10 @@ export function buildSlashCommands(backends: string[]): RESTPostAPIApplicationCo
     .addSubcommand((s) => s.setName('close').setDescription('Stop and archive this channel’s session'))
     .addSubcommand((s) => s.setName('stats').setDescription('활성 세션·바인딩·사용량 요약 보기'));
 
-  const backendChoices = backends.map((b) => ({ name: BACKEND_LABELS[b] ?? b, value: b }));
+  const backendChoices = backends.map((b) => ({
+    name: b === 'custom' ? opts.customBackendLabel ?? customBackendLabel() : BACKEND_LABELS[b] ?? b,
+    value: b,
+  }));
   const mode = new SlashCommandBuilder()
     .setName('mode')
     .setDescription('Switch the backend or permission mode')

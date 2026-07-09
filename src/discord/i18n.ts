@@ -97,6 +97,7 @@ const ko: Catalog = {
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',
+  'backend.custom': 'Custom',
   // Confirmation/notice labels (NOT the dropdown OPTION labels — those are English,
   // sourced from providerCatalog). Used in save/switch notices and the wizard confirm.
   'perm.default': '기본 (매번 확인)',
@@ -243,6 +244,7 @@ const ko: Catalog = {
 };
 
 const en: Catalog = {
+  'backend.custom': 'Custom',
   'wizard.title': 'Start session',
   'wizard.confirm': 'Start a {backend} session in `{cwd}`? (permission: {perm})',
   'perm.button.allow': 'Allow',

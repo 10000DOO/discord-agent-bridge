@@ -40,7 +40,7 @@ export const configSchema = z.object({
     dmPolicy: dmPolicySchema,
   }),
   defaults: z.object({
-    mode: z.enum(['claude', 'codex']),
+    mode: z.enum(['claude', 'codex', 'custom']),
     claudeModel: z.string(),
     codexModel: z.string(),
     permissionMode: permModeSchema,
@@ -111,7 +111,7 @@ export const serverConfigSchema = z.object({
     .optional(),
   defaults: z
     .object({
-      mode: z.enum(['claude', 'codex']),
+      mode: z.enum(['claude', 'codex', 'custom']),
       claudeModel: z.string(),
       codexModel: z.string(),
       permissionMode: permModeSchema,

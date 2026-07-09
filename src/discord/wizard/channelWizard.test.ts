@@ -330,6 +330,51 @@ describe('ChannelWizard render (step guidance + labels + buttons)', () => {
     const hangul = /[가-힣]/;
     for (const o of permSelect) expect(hangul.test(o.label)).toBe(false);
   });
+
+  it('the "custom" backend option is named after the resolved provider when injected', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const wizard = new ChannelWizard({
+      guildId: 'g1',
+      channelId: 'c1',
+      ownerId: 'u1',
+      start,
+      defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: null },
+      backends: ['claude', 'custom'],
+      customBackendLabel: 'Custom (kimi-k2.7-code)',
+      modelsFor: () => CLAUDE_MODELS,
+      profiles: [],
+      permsFor: (b) => permissionChoicesFor(b),
+      effortsFor: (b) => effortChoicesFor(b),
+      defaultEffortFor,
+      browser,
+    });
+    await wizard.handle({ id: 'dir:here' });
+    const custom = selectOptions(wizard, 'backend').find((o) => o.value === 'custom');
+    expect(custom?.label).toBe('Custom (kimi-k2.7-code)');
+  });
+
+  it('falls back to the plain i18n label when no custom-backend label is injected', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const wizard = new ChannelWizard({
+      guildId: 'g1',
+      channelId: 'c1',
+      ownerId: 'u1',
+      start,
+      defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: null },
+      backends: ['claude', 'custom'],
+      modelsFor: () => CLAUDE_MODELS,
+      profiles: [],
+      permsFor: (b) => permissionChoicesFor(b),
+      effortsFor: (b) => effortChoicesFor(b),
+      defaultEffortFor,
+      browser,
+    });
+    await wizard.handle({ id: 'dir:here' });
+    const custom = selectOptions(wizard, 'backend').find((o) => o.value === 'custom');
+    expect(custom?.label).toBe('Custom');
+  });
 });
 
 // Guard the exported Codex sandbox catalog stays the three documented sandbox modes.

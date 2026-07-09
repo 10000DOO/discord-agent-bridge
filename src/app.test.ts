@@ -101,15 +101,17 @@ describe('createApp — composition root', () => {
     expect(app.discord).toBeDefined();
   });
 
-  it('registers BOTH the Claude and Codex modes in the mode registry', () => {
+  it('registers the Claude, Codex, and Custom modes in the mode registry', () => {
     const fc = fakeClient();
     const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
     expect(app.modeRegistry.has('claude')).toBe(true);
     expect(app.modeRegistry.get('claude').name).toBe('claude');
     expect(app.modeRegistry.has('codex')).toBe(true);
     expect(app.modeRegistry.get('codex').name).toBe('codex');
-    // Both registered → both offered as /mode backend choices and in the wizard.
-    expect(app.modeRegistry.list().sort()).toEqual(['claude', 'codex']);
+    expect(app.modeRegistry.has('custom')).toBe(true);
+    expect(app.modeRegistry.get('custom').name).toBe('custom');
+    // All registered → offered as /mode backend choices and in the wizard.
+    expect(app.modeRegistry.list().sort()).toEqual(['claude', 'codex', 'custom']);
   });
 
   it('exposes Codex capabilities (no permission prompts, no usage panel, transcript UX)', () => {

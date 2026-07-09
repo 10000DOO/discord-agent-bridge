@@ -36,6 +36,35 @@ describe('buildSlashCommands — /mode backend choices', () => {
   });
 });
 
+describe('buildSlashCommands — /mode backend "custom" label', () => {
+  function customChoiceName(backends: string[], opts?: { customBackendLabel?: string }) {
+    const commands = buildSlashCommands(backends, opts);
+    const mode = commands.find((c) => c.name === 'mode') as unknown as {
+      options: { name: string; options?: { name: string; choices?: { name: string; value: string }[] }[] }[];
+    };
+    const backendOpt = mode.options.find((o) => o.name === 'backend')?.options?.find((o) => o.name === 'backend');
+    return backendOpt?.choices?.find((c) => c.value === 'custom')?.name;
+  }
+
+  it('names the ACTUAL configured provider, not a fixed one (e.g. Kimi)', () => {
+    expect(customChoiceName(['claude', 'custom'], { customBackendLabel: 'Custom (kimi-k2.7-code)' })).toBe(
+      'Custom (kimi-k2.7-code)',
+    );
+    // A different dotfile → a different label, proving it is not hardcoded per-provider.
+    expect(customChoiceName(['custom'], { customBackendLabel: 'Custom (some-other-model)' })).toBe(
+      'Custom (some-other-model)',
+    );
+  });
+
+  it('falls back to a live dotfile scan when no label is injected (never throws)', () => {
+    // No opts.customBackendLabel — production's real path. customBackendLabel() never
+    // throws (resolveCustomEnv degrades to {} on any read failure), so this must resolve
+    // to SOME string rather than crashing command registration.
+    expect(() => buildSlashCommands(['custom'])).not.toThrow();
+    expect(typeof customChoiceName(['custom'])).toBe('string');
+  });
+});
+
 describe('buildSlashCommands — /model', () => {
   it('registers /model as a TOP-LEVEL command (not a /mode subcommand)', () => {
     const commands = buildSlashCommands(['claude']);
