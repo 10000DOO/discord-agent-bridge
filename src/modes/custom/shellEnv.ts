@@ -78,6 +78,16 @@ export function resolveCustomEnv(opts: ResolveCustomEnvOptions = {}): CustomEnvR
   return { env, source, hasDangerousFlag };
 }
 
+// A short display label for the resolved custom-backend config — e.g.
+// "Custom (kimi-k2-0711-preview)" when the operator's dotfile sets
+// ANTHROPIC_MODEL, or plain "Custom" when nothing is configured yet (no
+// dotfile entry found). Read fresh each call (same cost as resolveCustomEnv:
+// a few small file reads) so a dotfile edit shows up without a bot restart.
+export function customBackendLabel(opts: ResolveCustomEnvOptions = {}): string {
+  const { env } = resolveCustomEnv(opts);
+  return env.ANTHROPIC_MODEL ? `Custom (${env.ANTHROPIC_MODEL})` : 'Custom';
+}
+
 // Extract ALLOWED_KEYS env assignments from the full file content. Supports:
 //   export ANTHROPIC_MODEL="kimi-k2.7-code"
 //   ANTHROPIC_BASE_URL='https://...'

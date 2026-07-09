@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveCustomEnv } from './shellEnv.js';
+import { resolveCustomEnv, customBackendLabel } from './shellEnv.js';
 
 const NONEXISTENT_HOME = '/this-home-dir-does-not-exist-for-tests';
 
@@ -139,5 +139,20 @@ ANTHROPIC_MODEL="third"
       },
     });
     expect(result.env.ANTHROPIC_MODEL).toBe('$(rm -rf /)');
+  });
+});
+
+describe('customBackendLabel', () => {
+  it('names the resolved ANTHROPIC_MODEL, not a fixed provider name', () => {
+    const label = customBackendLabel({
+      homeDir: NONEXISTENT_HOME,
+      files: { '.zshrc': 'export ANTHROPIC_MODEL="kimi-k2.7-code"' },
+    });
+    expect(label).toBe('Custom (kimi-k2.7-code)');
+  });
+
+  it('falls back to plain "Custom" when no dotfile sets ANTHROPIC_MODEL', () => {
+    const label = customBackendLabel({ homeDir: NONEXISTENT_HOME, files: {} });
+    expect(label).toBe('Custom');
   });
 });
