@@ -28,6 +28,11 @@ export function buildRunScript(d: ResolvedServiceDeps): string {
       'else',
       `  export PATH="${d.nodeDir}:$PATH"`,
       'fi',
+      // Mark this process as launched by a KeepAlive/Restart supervisor (launchd/systemd).
+      // run.sh is ONLY generated for those, so the marker precisely means "exiting me
+      // relaunches me" — the auto-updater reads it to pick method A (exit-only) restart
+      // and never escape the supervisor with a detached respawn (§3.2).
+      'export DAB_SUPERVISED=1',
       'exec discord-agent-bridge',
       '',
     ].join('\n')

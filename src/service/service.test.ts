@@ -131,6 +131,9 @@ describe('runServiceCommand — macOS (launchd)', () => {
     expect(script?.mode).toBe(0o755);
     expect(script?.content).toContain('nvm use default');
     expect(script?.content).toContain('export PATH="/opt/node/bin:$PATH"');
+    // Supervisor marker (§3.2): run.sh is only generated for launchd/systemd, so this
+    // marks the process as "exit relaunches me" for the auto-updater's method-A restart.
+    expect(script?.content).toContain('export DAB_SUPERVISED=1');
     expect(script?.content).toContain('exec discord-agent-bridge');
 
     // plist: bash + run.sh, RunAtLoad/KeepAlive, HOME env, log paths.
