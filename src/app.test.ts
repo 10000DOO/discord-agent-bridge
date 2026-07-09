@@ -21,6 +21,10 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   } as AppConfig;
 }
 
+// The AutoUpdater's boot check (fired from onReady) would otherwise hit the npm registry.
+// Inject a non-OK fetch so fetchLatestVersion resolves to null: no network, no prompt.
+const noNetworkFetch = (async () => new Response('nope', { status: 404 })) as unknown as typeof fetch;
+
 // A fake discord.js Client good enough for createApp + firing ClientReady WITHOUT
 // a real gateway. It captures event handlers registered via once()/on() so a test
 // can fire ClientReady; guilds.cache is empty so no slash-command REST call runs.
@@ -94,7 +98,7 @@ describe('createApp — composition root', () => {
 
   it('constructs the full graph with a fake client without throwing', () => {
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     expect(app.orchestrator).toBeDefined();
     expect(app.wiring).toBeDefined();
     expect(app.usageService).toBeDefined();
@@ -103,7 +107,7 @@ describe('createApp — composition root', () => {
 
   it('registers the Claude, Codex, and Custom modes in the mode registry', () => {
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     expect(app.modeRegistry.has('claude')).toBe(true);
     expect(app.modeRegistry.get('claude').name).toBe('claude');
     expect(app.modeRegistry.has('codex')).toBe(true);
@@ -116,7 +120,7 @@ describe('createApp — composition root', () => {
 
   it('exposes Codex capabilities (no permission prompts, no usage panel, transcript UX)', () => {
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     const caps = app.modeRegistry.get('codex').capabilities;
     expect(caps.permissionPrompts).toBe(false);
     expect(caps.usagePanel).toBe(false);
@@ -126,7 +130,7 @@ describe('createApp — composition root', () => {
 
   it('wires orchestrator.requestPermission to the wiring layer (denies when unwired)', async () => {
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     // The orchestrator's requestPermission is the wiring hook: with no channel wired,
     // it fails safe (deny) — proving the hook is the wiring's, not the default stub.
     const decision = await app.wiring.requestPermission(
@@ -138,14 +142,14 @@ describe('createApp — composition root', () => {
 
   it('login() forwards the config token to the client', async () => {
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     await app.login();
     expect(fc.loginCalls).toEqual(['fake-token-value']);
   });
 
   it('onReady triggers orchestrator.resumeAll()', async () => {
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     const spy = vi.spyOn(app.orchestrator, 'resumeAll');
     await fc.fireReady();
     expect(spy).toHaveBeenCalledTimes(1);
@@ -187,7 +191,7 @@ describe('createApp — channelDelete cleans up a bound session (crash-loop root
   it('stops + detaches when a BOUND, non-archived session channel is deleted', async () => {
     seedBinding();
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
     const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
 
@@ -201,7 +205,7 @@ describe('createApp — channelDelete cleans up a bound session (crash-loop root
   it('ignores an unbound (control) channel deletion', async () => {
     // No binding seeded for c-control → it is not a session channel.
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
     const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
 
@@ -215,7 +219,7 @@ describe('createApp — channelDelete cleans up a bound session (crash-loop root
   it('ignores an ARCHIVED binding deletion (no live session)', async () => {
     seedBinding({ channelId: 'c-arch', archived: true });
     const fc = fakeClient();
-    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
     const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
 

@@ -1,3 +1,8 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { PermissionFlagsBits, type Client } from 'discord.js';
 import { ConfigStore, type AppConfig } from './core/config.js';
 import { StateStore } from './core/state/store.js';
@@ -22,7 +27,37 @@ import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
 import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
 import { autoProvisionGuild } from './discord/guildChannels.js';
+import { resolveNotifications } from './discord/notifier.js';
+import { buildUpdatePrompt } from './discord/renderers/updateButton.js';
+import type { MessageChannel } from './discord/ports.js';
 import { setLocale, t, type Locale } from './discord/i18n.js';
+import { readVersion } from './version.js';
+import { AutoUpdater, type UpdateMeta } from './update/autoUpdater.js';
+import { fetchLatestVersion } from './update/registry.js';
+import { detectRestartStrategy } from './update/environment.js';
+import {
+  installLatest,
+  performRestart,
+  realCommandRunner,
+  writePidFile,
+  removePidFile,
+  type MinimalFs,
+} from './update/installer.js';
+
+// The real fs slice for PID-file writes (§3.5). Module-level so startBot (write) and
+// App.destroy (remove) share one implementation.
+const realMinimalFs: MinimalFs = {
+  writeFileSync: (filePath, data) => fs.writeFileSync(filePath, data, 'utf-8'),
+  existsSync: (filePath) => fs.existsSync(filePath),
+  rmSync: (filePath, options) => fs.rmSync(filePath, options),
+};
+
+// dist/cli.js resolved relative to this module (dist/app.js → ./cli.js; src/app.ts →
+// ./cli.ts in dev). The method-B respawn runs `node <this>` — after `npm i -g` the
+// global package was replaced in place, so the same entry path is now the new version.
+function appCliEntry(): string {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.js');
+}
 
 // The application composition root (§2, §4, §9). createApp() builds the full core
 // graph, registers the Claude mode, wires permission requests + resume-on-boot +
@@ -217,6 +252,9 @@ export function createApp(deps: CreateAppDeps): App {
       for (const binding of channelRegistry.list().filter((b) => !b.archived)) {
         await wiring.attach(binding.guildId, binding.channelId, binding.mode);
       }
+      // Start the auto-updater only now — the gateway + guilds are ready, so postPrompt
+      // can enumerate guilds and resolve their status channels (§4). No-op when disabled.
+      autoUpdater.start();
       logger.info('boot complete', { guilds: client.guilds.cache.size });
     },
     // Auto-provision each guild's channel structure on ready / guild-join so /init is
@@ -249,6 +287,73 @@ export function createApp(deps: CreateAppDeps): App {
   interactionRouter.setResolveGuildProvisioner((guildId) => resolveGuildProvisioner(discord.raw, guildId));
   interactionRouter.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));
 
+  // ---- Auto-update (§7). Created AFTER the client so postPrompt/announce can enumerate
+  // guilds and resolve each guild's status channel over the live gateway. This closure is
+  // the ONE place guild/discord.js meets the updater — src/update/ depends only on ports.
+  // Notifications target each guild's status channel (notifier's resolution), admin-gated
+  // at the button in interactionRouter. ----
+  const resolveStatusChannel = SessionWiring.resolveOverClient(discord.raw);
+  const forEachStatusChannel = async (fn: (channel: MessageChannel) => Promise<void>): Promise<void> => {
+    for (const guildId of discord.raw.guilds.cache.keys()) {
+      const server = configStore.loadServerConfig(guildId);
+      const channelId = resolveNotifications(server).channelId;
+      if (!channelId) continue;
+      const channel = await resolveStatusChannel(channelId);
+      if (!channel) continue;
+      try {
+        await fn(channel);
+      } catch (err) {
+        logger.warn('auto-update notify failed', { guildId, err: String(err) });
+      }
+    }
+  };
+  const autoUpdater = new AutoUpdater({
+    currentVersion: readVersion(),
+    // Read fresh each check so a config.json edit + restart takes effect.
+    enabled: () => config.autoUpdate.enabled,
+    fetchLatest: () =>
+      fetchLatestVersion(deps.fetchFn ?? fetch, { logger, userAgent: `discord-agent-bridge/${readVersion()}` }),
+    readMeta: () => stateStore.getUpdateMeta(),
+    writeMeta: (patch: Partial<UpdateMeta>) => stateStore.setUpdateMeta(patch),
+    postPrompt: async (version: string) => {
+      const { embed, rows } = buildUpdatePrompt(version, readVersion());
+      await forEachStatusChannel(async (channel) => {
+        await channel.send({ embeds: [embed], components: rows });
+      });
+    },
+    announce: async (text: string) => {
+      await forEachStatusChannel(async (channel) => {
+        await channel.send({ content: text });
+      });
+    },
+    install: () => installLatest(realCommandRunner, process.platform),
+    // Detect the run form (§3.3) and restart accordingly: supervised = exit only (the
+    // service manager relaunches, so `service restart`/`uninstall` stay in control);
+    // respawn = spawn a detached successor then exit (foreground / npx / Windows).
+    restart: () =>
+      performRestart({
+        strategy: detectRestartStrategy({
+          platform: process.platform,
+          env: process.env,
+          home: os.homedir(),
+          fileExists: (p) => fs.existsSync(p),
+        }),
+        nodePath: process.execPath,
+        cliEntry: appCliEntry(),
+        spawn: (command, args, options) => spawn(command, args, options),
+        exit: (code) => process.exit(code),
+        env: process.env,
+      }),
+    messages: {
+      busy: t('update.busy'),
+      installed: t('update.installed'),
+      installFailed: t('update.installFailed'),
+      dismissed: t('update.dismissed'),
+    },
+    logger,
+  });
+  interactionRouter.setAutoUpdater(autoUpdater);
+
   return {
     discord,
     orchestrator,
@@ -258,7 +363,16 @@ export function createApp(deps: CreateAppDeps): App {
     logger,
     config,
     login: () => discord.login(config.discord.token),
-    destroy: () => discord.destroy(),
+    destroy: async () => {
+      // Stop the update interval and clear the PID file before tearing down the gateway.
+      autoUpdater.stop();
+      try {
+        removePidFile(configStore.dir, realMinimalFs);
+      } catch (err) {
+        logger.warn('failed to remove pid file', { err: String(err) });
+      }
+      await discord.destroy();
+    },
   };
 }
 
@@ -325,6 +439,14 @@ export async function startBot(opts: StartBotOptions = {}): Promise<App | undefi
   const logger = createLogger('app', { level: config.logLevel });
   installGlobalSafetyNet(logger);
   const app = createApp({ config, configStore, logger });
+  // Record this process's PID (§3.5) so an operator can terminate a detached-respawned
+  // (method-B) instance in the foreground case. Best-effort — a write failure never
+  // blocks boot. App.destroy removes it.
+  try {
+    writePidFile(configStore.dir, process.pid, realMinimalFs);
+  } catch (err) {
+    logger.warn('failed to write pid file', { err: String(err) });
+  }
   await app.login();
   return app;
 }
