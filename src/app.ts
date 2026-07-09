@@ -15,6 +15,7 @@ import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
 import { CodexMode } from './modes/codex/index.js';
 import { CustomMode } from './modes/custom/index.js';
+import { customBackendLabel } from './modes/custom/shellEnv.js';
 import { getClaudeModels, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
@@ -196,6 +197,9 @@ export function createApp(deps: CreateAppDeps): App {
       backend === 'codex'
         ? getCodexModels(config.defaults.codexModel)
         : await getClaudeModels({ logger }),
+    // Names the wizard's 'custom' backend choice after the operator's actual dotfile
+    // config (mirrors /mode backend's choice label — client.ts buildSlashCommands).
+    customBackendLabel,
   });
 
   const discord = new DiscordClient({

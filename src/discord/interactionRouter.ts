@@ -147,6 +147,12 @@ export interface InteractionRouterDeps {
   // catalog. Async so every /config or /agent start open re-probes the SDK's live
   // model list (Codex still resolves synchronously from its documented default).
   modelsFor?: (backend: string) => Promise<ModelChoice[]>;
+  // Names the 'custom' backend's actual configured provider (e.g. "Custom
+  // (kimi-k2.7-code)"), mirroring /mode backend's choice label (client.ts
+  // buildSlashCommands) — see modes/custom/shellEnv.ts customBackendLabel().
+  // Optional so tests/deploys without the custom backend need not wire it; the
+  // wizard then falls back to the plain i18n 'backend.custom' label.
+  customBackendLabel?: () => string;
   // Resolve a guildId to a channel provisioner over the live gateway (A4D-style /init
   // + auto-created session channels). Returns null when the guild is unknown or the
   // client is not connected yet (tests inject a fake). Optional so the pre-gateway
@@ -407,6 +413,12 @@ export class InteractionRouter {
         profile: resolved.permissionProfile,
       },
       backends,
+      // Computed fresh on every wizard open (same dotfile scan /mode backend's choice
+      // uses at command-registration time, but here it is live — no bot restart needed
+      // to see a dotfile edit). Absent when the custom backend is not registered.
+      ...(backends.includes('custom') && this.deps.customBackendLabel
+        ? { customBackendLabel: this.deps.customBackendLabel() }
+        : {}),
       modelsFor,
       profiles,
       permsFor,

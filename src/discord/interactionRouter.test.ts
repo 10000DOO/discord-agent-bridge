@@ -332,6 +332,7 @@ function buildRouter(deps: {
   resolveGuildProvisioner?: (guildId: string) => Promise<GuildChannelProvisioner | null>;
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
   usageService?: UsageService;
+  customBackendLabel?: () => string;
 }): InteractionRouter {
   // Default: Claude usage unavailable (API-key-only / no OAuth) so /agent stats shows the
   // login notice; a test can inject a usage snapshot to exercise the utilization lines.
@@ -367,6 +368,7 @@ function buildRouter(deps: {
     ...(deps.browseRoots ? { browseRoots: deps.browseRoots } : {}),
     ...(deps.resolveGuildProvisioner ? { resolveGuildProvisioner: deps.resolveGuildProvisioner } : {}),
     ...(deps.resolveChannel ? { resolveChannel: deps.resolveChannel } : {}),
+    ...(deps.customBackendLabel ? { customBackendLabel: deps.customBackendLabel } : {}),
   });
 }
 
@@ -511,6 +513,25 @@ describe('InteractionRouter slash commands', () => {
     const rows = (edited!.components ?? []) as { components: { type: string; customId: string }[] }[];
     const flat = rows.flatMap((r) => r.components);
     expect(flat.some((c) => c.type === 'select' && c.customId === 'backend')).toBe(true);
+  });
+
+  it('/agent start: the "custom" backend option is named after the resolved provider', async () => {
+    modeRegistry.register(new StubMode('custom', CLAUDE_CAPS));
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring, customBackendLabel: () => 'Custom (kimi-k2.7-code)' });
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+
+    const { interaction: pick, replies } = component({ customId: 'dir:here', user: { id: 'u1' } });
+    await router.handle(pick);
+    const edited = replies.find((r) => r.components && (r.components as unknown[]).length > 0);
+    const rows = (edited!.components ?? []) as {
+      components: { type: string; customId: string; options?: { value: string; label: string }[] }[];
+    }[];
+    const backendSelect = rows.flatMap((r) => r.components).find((c) => c.customId === 'backend');
+    const custom = backendSelect?.options?.find((o) => o.value === 'custom');
+    expect(custom?.label).toBe('Custom (kimi-k2.7-code)');
   });
 
   it('/agent start: EVERY step advances via its BUTTON and re-renders the next step with components', async () => {
