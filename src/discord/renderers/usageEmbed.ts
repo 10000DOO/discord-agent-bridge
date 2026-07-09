@@ -19,9 +19,9 @@ import { t } from '../i18n.js';
 //                subagent runs
 //   footer       permission mode · resolved model id (absorbs the old 모델 field)
 
-const BAR_LEN = 20;
-const BAR_FILLED = '█';
-const BAR_EMPTY = '░';
+// Emoji squares read far better than █/░ on mobile; each cell is 10% of the gauge.
+const BAR_LEN = 10;
+const BAR_EMPTY = '⬜';
 
 // Discord embed hard limit for one field value.
 const FIELD_VALUE_MAX = 1024;
@@ -82,10 +82,19 @@ function utilizationEmoji(utilization: number): string {
   return '🟢';
 }
 
+// Progress-bar fill color. Thresholds are kept IN LOCKSTEP with utilizationColor
+// and utilizationEmoji (≥90 red, ≥70 yellow, else green) so a gauge's bar, its
+// status dot, and the panel's left color bar always agree.
+function barFilledEmoji(utilization: number): string {
+  if (utilization >= 90) return '🟥';
+  if (utilization >= 70) return '🟨';
+  return '🟩';
+}
+
 function progressBar(utilization: number): string {
   const clamped = Math.max(0, Math.min(100, utilization));
   const filled = Math.round((clamped / 100) * BAR_LEN);
-  return BAR_FILLED.repeat(filled) + BAR_EMPTY.repeat(BAR_LEN - filled);
+  return barFilledEmoji(clamped).repeat(filled) + BAR_EMPTY.repeat(BAR_LEN - filled);
 }
 
 // A "resets <t:unix:R>" Discord relative-timestamp line, or '' when no reset is known.

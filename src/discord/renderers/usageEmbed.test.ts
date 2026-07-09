@@ -42,7 +42,7 @@ describe('buildUsageEmbed', () => {
     expect(embed?.color).not.toBeUndefined();
   });
 
-  it('renders █ progress bars and a per-gauge status emoji tied to utilization', () => {
+  it('renders emoji-square progress bars whose fill color tracks utilization', () => {
     const snapshot: UsageResult = {
       fetchedAt: 1000,
       fiveHour: { utilization: 30 }, // green
@@ -50,11 +50,13 @@ describe('buildUsageEmbed', () => {
     };
     const embed = buildUsageEmbed(snapshot, { ...ctx, percentage: 95 }); // context → red
     const fiveHour = (embed?.fields ?? []).find((f) => f.name === '🟢 5시간');
-    expect(fiveHour?.value).toContain('█');
-    expect(fiveHour?.value).not.toContain('▓');
-    const names = (embed?.fields ?? []).map((f) => f.name);
-    expect(names).toContain('🟡 주간');
-    expect(names).toContain('🔴 컨텍스트');
+    expect(fiveHour?.value).toContain('🟩');
+    expect(fiveHour?.value).toContain('⬜');
+    expect(fiveHour?.value).not.toContain('█');
+    const weekly = (embed?.fields ?? []).find((f) => f.name === '🟡 주간');
+    expect(weekly?.value).toContain('🟨');
+    const context = (embed?.fields ?? []).find((f) => f.name === '🔴 컨텍스트');
+    expect(context?.value).toContain('🟥');
   });
 
   it('renders a context-only panel when only a context figure is present', () => {
