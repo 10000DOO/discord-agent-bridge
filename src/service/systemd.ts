@@ -7,8 +7,15 @@ import { ensureRunScript } from './runScript.js';
 // (so it survives reboot before the user logs in). ExecStart runs the shared run.sh
 // wrapper for node-version independence.
 
+// The unit path, derived from just the home dir. Exported so the update layer's
+// restart-strategy detection can check for a systemd install WITHOUT duplicating the
+// path convention (update/environment.ts old-install fallback, §3.2).
+export function systemdUnitPath(home: string): string {
+  return path.join(home, '.config', 'systemd', 'user', `${SERVICE_NAME}.service`);
+}
+
 function unitPath(d: ResolvedServiceDeps): string {
-  return path.join(d.home, '.config', 'systemd', 'user', `${SERVICE_NAME}.service`);
+  return systemdUnitPath(d.home);
 }
 
 function buildUnit(scriptPath: string): string {

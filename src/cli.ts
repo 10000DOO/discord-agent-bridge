@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startBot } from './app.js';
 import { runSetup } from './setup/wizard.js';
 import { runServiceCommand } from './service/index.js';
 import { ConfigStore } from './core/config.js';
+import { readVersion } from './version.js';
 
 // Thin entrypoint (§4): `--version` prints the package version, `--setup` runs the
 // first-run wizard only (explicit re-configure), `service <sub>` manages OS auto-start
@@ -14,15 +14,10 @@ import { ConfigStore } from './core/config.js';
 // boots the bot. All real work lives in app.ts / setup/wizard.ts / service/; this file
 // only parses argv, decides, and dispatches.
 
-// Read the package version from package.json (two levels up from dist/cli.js, and
-// from src/cli.ts in dev). Kept as a function so a test can call it directly.
-export function readVersion(): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  // dist/cli.js → ../package.json ; src/cli.ts → ../package.json
-  const pkgPath = path.join(here, '..', 'package.json');
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version?: string };
-  return pkg.version ?? '0.0.0';
-}
+// readVersion lives in version.ts (extracted so app.ts can read the package version
+// without an app↔cli import cycle). Re-exported here so existing callers — and cli.test
+// — keep importing it from './cli.js' unchanged.
+export { readVersion } from './version.js';
 
 // Is this a first run that needs the wizard? True when there is no config.json yet,
 // OR a config exists but its Discord token is empty/whitespace — the same two

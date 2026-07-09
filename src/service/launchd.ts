@@ -6,8 +6,15 @@ import { ensureRunScript } from './runScript.js';
 // it starts on login and is relaunched if it exits — the closest launchd equivalent
 // of "start at boot and keep alive".
 
+// The plist path, derived from just the home dir. Exported so the update layer's
+// restart-strategy detection can check for a launchd install WITHOUT duplicating the
+// path convention (update/environment.ts old-install fallback, §3.2).
+export function launchdPlistPath(home: string): string {
+  return path.join(home, 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`);
+}
+
 function plistPath(d: ResolvedServiceDeps): string {
-  return path.join(d.home, 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`);
+  return launchdPlistPath(d.home);
 }
 function outLogPath(d: ResolvedServiceDeps): string {
   return path.join(d.baseDir, 'agent.out.log');
