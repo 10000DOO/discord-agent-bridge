@@ -73,6 +73,23 @@ export const configSchema = z.object({
   audit: z.object({
     channelId: z.string().nullable(),
   }),
+  // Image rendering (tables/mermaid → PNG). GLOBAL only — Chromium is a single host
+  // resource shared by all guilds, so the toggle is host-wide (no per-server override).
+  // Optional with a default so existing config.json files load unchanged.
+  render: z
+    .object({
+      enabled: z.boolean(),
+    })
+    .optional(),
+  // Chromium provisioning decision (host-wide). 'undecided' → the /init prompt may offer
+  // the install button; 'declined' → never re-prompt (only /config can re-enable);
+  // 'accepted' → the operator opted in. The installed state itself is NOT stored here —
+  // it is detected on disk (chromiumProvisioner) to avoid drift.
+  chromium: z
+    .object({
+      decision: z.enum(['undecided', 'accepted', 'declined']),
+    })
+    .optional(),
   locale: z.string(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
   favorites: z.array(z.string()),
@@ -196,6 +213,12 @@ export const CONFIG_DEFAULTS = {
   },
   audit: {
     channelId: null,
+  },
+  render: {
+    enabled: true,
+  },
+  chromium: {
+    decision: 'undecided' as const,
   },
   locale: 'ko',
   logLevel: 'info' as const,

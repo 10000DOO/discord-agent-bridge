@@ -18,6 +18,7 @@ import { getClaudeModels, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
+import { ChromiumProvisioner } from './discord/render/chromiumProvisioner.js';
 import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
 import { autoProvisionGuild } from './discord/guildChannels.js';
 import { setLocale, t, type Locale } from './discord/i18n.js';
@@ -80,6 +81,13 @@ export function createApp(deps: CreateAppDeps): App {
   const stateStore = new StateStore(configStore.dir);
   const channelRegistry = new ChannelRegistry(stateStore);
   const eventBus = new EventBus();
+  // Chromium provisioner for image rendering (tables/mermaid → PNG). Cheap to construct
+  // (no download/launch here); shared by the wiring layer (executable resolution) and the
+  // interaction router (/init + /config install prompts). Cache dir lives in the app home.
+  const imageProvisioner = new ChromiumProvisioner({
+    cacheDir: ChromiumProvisioner.cacheDirFor(configStore.dir),
+    logger,
+  });
   const configResolver = new ConfigResolver(configStore, channelRegistry);
   const permissionResolver = new PermissionResolver(configStore, configResolver);
   const authorizer = new Authorizer(configStore, channelRegistry);
@@ -107,6 +115,8 @@ export function createApp(deps: CreateAppDeps): App {
     // Read the guild's notifications config at attach() to forward key session events
     // (result/error; tool_use if enabled) to the per-guild status channel.
     configStore,
+    // Resolve the browser executable + install state for image rendering at attach().
+    imageProvisioner,
     permissionTimeoutSec: config.limits.permissionTimeoutSec,
     // Always-allow persistence (§7A): a tool the operator chose "always-allow" for
     // is written into the GLOBAL autoAllowClaudeTools set, so the next turn (on any
@@ -169,6 +179,9 @@ export function createApp(deps: CreateAppDeps): App {
     wiring,
     usageService,
     logger,
+    // Chromium provisioner: /init offers a background-install prompt when no browser is
+    // present, and /config can install/toggle image rendering later.
+    imageProvisioner,
     // Folder-browser roots + per-backend model list are config-driven (§8.1): the
     // saved project favorites seed the browse roots; the model step offers the
     // per-backend model list. Codex's list is a small documented default (the

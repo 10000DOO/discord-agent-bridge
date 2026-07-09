@@ -72,6 +72,27 @@ const ko: Catalog = {
   'config.notif.enable': '알림 켜기',
   'config.notif.disable': '알림 끄기',
   'config.notif.channel.placeholder': '상태 채널 선택 (비우면 기본 상태 채널)',
+  // Image-render sub-panel (🖼): on/off toggle + Chromium install.
+  'config.render.button': '🖼 이미지 렌더',
+  'config.render.title': '표·다이어그램 이미지 렌더링',
+  'config.render.intro':
+    '답변의 표(table)와 mermaid 다이어그램을 이미지로 렌더링해 첨부합니다.\n현재 상태: **{state}**\n렌더링에는 Chromium이 필요합니다. 시스템 Chrome이 있으면 그대로 쓰고, 없으면 아래 **설치**로 내려받을 수 있어요(약 300MB, 백그라운드).',
+  'config.render.on': '켜짐',
+  'config.render.off': '꺼짐',
+  'config.render.enable': '렌더 켜기',
+  'config.render.disable': '렌더 끄기',
+  'config.render.install': 'Chromium 설치/재설치',
+  // Chromium install prompt (posted at /init) + install flow notices.
+  'render.setup.prompt':
+    '🖼 표·다이어그램을 **이미지로** 보시겠어요? 렌더링에 필요한 Chromium(약 300MB)을 설치할 수 있어요. 설치하지 않아도 답변은 원문 텍스트로 정상 표시됩니다.',
+  'render.setup.install': '설치',
+  'render.setup.decline': '나중에',
+  'render.setup.unavailable': '이 호스트에서는 설치를 사용할 수 없어요.',
+  'render.setup.declined': '알겠어요. 나중에 `/config` 에서 설치할 수 있어요.',
+  'render.setup.already': '이미 사용 가능한 브라우저가 있어요. 이미지 렌더링이 켜졌습니다.',
+  'render.setup.installing': 'Chromium을 내려받는 중이에요… (백그라운드, 몇 분 걸릴 수 있어요)',
+  'render.setup.done': '✅ 설치 완료! 이제 표·다이어그램이 이미지로 렌더링됩니다.',
+  'render.setup.failed': '설치에 실패했어요. 잠시 후 `/config` 에서 다시 시도해 주세요.',
   // Backend / permission mode labels
   'backend.claude': 'Claude Code',
   'backend.codex': 'Codex',

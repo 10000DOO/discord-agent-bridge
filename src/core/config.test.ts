@@ -26,6 +26,8 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     profiles: {},
     usage: { userAgent: 'claude-code', cacheSec: 180 },
     audit: { channelId: null },
+    render: { enabled: true },
+    chromium: { decision: 'undecided' as const },
     locale: 'ko',
     logLevel: 'info',
     favorites: [],

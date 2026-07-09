@@ -1,6 +1,8 @@
 import type { AgentEvent, Logger } from '../../core/contracts.js';
 import type { ButtonSpec, EditableMessage, MessageChannel, OutgoingMessage } from '../ports.js';
-import { COLORS, EMBED_DESC_LIMIT, chunkMessage, truncate } from '../format.js';
+import type { ImageRenderer } from '../render/segment.js';
+import { COLORS, EMBED_DESC_LIMIT, truncate } from '../format.js';
+import { deliverAnswer } from './answerDelivery.js';
 import { t } from '../i18n.js';
 
 // Live text/thinking embeds, debounced edit then finalize to chunked text (§6).
@@ -33,6 +35,9 @@ export interface StreamEmbedDeps {
   // every flush and are re-rendered DISABLED on finalize so a stale click cannot fire
   // against a finished turn. Absent → the embed carries no components (existing behavior).
   actions?: ButtonSpec[];
+  // Optional image renderer (tables/mermaid → PNG). Present ⇔ the render branch is on
+  // for this session (Chrome available + config enabled). Absent → text-only delivery.
+  renderImage?: ImageRenderer;
 }
 
 export class StreamEmbedHandler {
@@ -44,6 +49,7 @@ export class StreamEmbedHandler {
   private readonly now: () => number;
   private readonly logger: Logger | undefined;
   private readonly actions: ButtonSpec[] | undefined;
+  private readonly renderImage: ImageRenderer | undefined;
 
   private buffer = '';
   private deltaCount = 0;
@@ -67,6 +73,7 @@ export class StreamEmbedHandler {
     this.now = deps.now ?? Date.now;
     this.logger = deps.logger;
     this.actions = deps.actions;
+    this.renderImage = deps.renderImage;
   }
 
   // Accumulate one delta and (re)arm the debounce timer. delta:false is treated as
@@ -153,30 +160,21 @@ export class StreamEmbedHandler {
       return;
     }
 
-    // Text: post the full answer as plain chunked message(s). Edit the first chunk
-    // into the live embed's message (replacing the streaming embed) and send the
-    // remainder as follow-ups.
-    const chunks = chunkMessage(this.buffer);
-    const [first, ...rest] = chunks;
-    if (this.message) {
-      // Disable the interrupt button on the finalized message so a stale click cannot
-      // fire against a turn that already ended. Only rendered when the live embed
-      // carried it (message exists AND actions wired); the else-branch below never
-      // showed a button, so it stays plain.
-      await this.message.edit({
-        content: first,
-        embeds: [],
-        ...(this.actions
-          ? { components: [{ components: this.actions.map((a) => ({ ...a, disabled: true })) }] }
-          : {}),
-      });
-    } else {
-      await this.channel.send({ content: first });
-    }
+    // Text: deliver the full answer in order via the shared helper. It reuses the live
+    // embed message as the first output (edited in place, interrupt button disabled) and
+    // — when an image renderer is wired — replaces GFM tables / ```mermaid``` fences with
+    // inline PNGs in place. Without a renderer this is byte-for-byte the old chunked-text
+    // behavior. The disabled interrupt row is preserved on the finalized first message.
+    const disabledComponents = this.actions
+      ? [{ components: this.actions.map((a) => ({ ...a, disabled: true })) }]
+      : undefined;
+    await deliverAnswer(this.buffer, {
+      channel: this.channel,
+      firstSink: this.message,
+      ...(this.renderImage ? { renderImage: this.renderImage } : {}),
+      ...(disabledComponents ? { disabledComponents } : {}),
+    });
     this.emitted = true;
-    for (const chunk of rest) {
-      await this.channel.send({ content: chunk });
-    }
   }
 
   // Whether a send/edit has actually delivered any content for this stream. The

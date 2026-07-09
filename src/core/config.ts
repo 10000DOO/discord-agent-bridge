@@ -59,6 +59,8 @@ function applyDefaults(raw: Record<string, unknown>): unknown {
     policy: mergeNested(raw['policy'], CONFIG_DEFAULTS.policy),
     usage: mergeNested(raw['usage'], CONFIG_DEFAULTS.usage),
     audit: mergeNested(raw['audit'], CONFIG_DEFAULTS.audit),
+    render: mergeNested(raw['render'], CONFIG_DEFAULTS.render),
+    chromium: mergeNested(raw['chromium'], CONFIG_DEFAULTS.chromium),
   };
 }
 
@@ -119,6 +121,20 @@ export class ConfigStore {
     config.autoAllowClaudeTools = [...config.autoAllowClaudeTools, toolName];
     this.save(config);
     return true;
+  }
+
+  // Global partial-update helpers for the image-render feature (load → patch → save,
+  // mirroring addAutoAllowClaudeTool). Both keys are host-wide (no per-server override).
+  setRenderEnabled(enabled: boolean): void {
+    const config = this.load();
+    config.render = { enabled };
+    this.save(config);
+  }
+
+  setChromiumDecision(decision: 'undecided' | 'accepted' | 'declined'): void {
+    const config = this.load();
+    config.chromium = { decision };
+    this.save(config);
   }
 
   // Fail-safe: a corrupt/hand-edited server file (bad JSON or failing zod) is
