@@ -84,7 +84,9 @@ const INTENTS = [
 const BACKEND_LABELS: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  custom: 'Custom (Kimi)',
+  // Generic — the actual provider (Kimi or otherwise) is whatever the operator's shell
+  // dotfile resolves to (see modes/custom/shellEnv.ts), so the label does not name one.
+  custom: 'Custom',
 };
 
 // Build the slash commands. `backends` is the list of REGISTERED backend ids
