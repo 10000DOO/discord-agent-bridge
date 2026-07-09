@@ -24,6 +24,9 @@ export interface ClaudeSessionDeps {
   sendFile?: SendFileCallback;
   // Existing backend session id to resume; omitted for a fresh session.
   resumeId?: string;
+  // Optional full env override for the SDK subprocess. Used by the `custom` backend
+  // to inject env vars extracted from shell aliases without affecting other modes.
+  env?: Options['env'];
 }
 
 // Map our PermMode straight onto the SDK's native `permissionMode` (§7A). PermMode is
@@ -135,6 +138,9 @@ export class ClaudeSession implements ModeSession {
         : {}),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
       ...(allowedTools.length > 0 ? { allowedTools } : {}),
+      // The `custom` backend injects env vars from shell aliases here. Spreading after
+      // the fixed options lets the alias env override the subprocess environment.
+      ...(deps.env !== undefined ? { env: deps.env } : {}),
       ...(deps.resumeId !== undefined ? { resume: deps.resumeId } : {}),
     };
     if (deps.resumeId !== undefined) {

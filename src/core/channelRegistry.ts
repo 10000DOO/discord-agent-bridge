@@ -19,7 +19,7 @@ export interface ProjectAuth {
 export interface ChannelBinding {
   guildId: string;
   channelId: string;
-  mode: 'claude' | 'codex';
+  mode: 'claude' | 'codex' | 'custom';
   sessionId: string | null;
   cwd: string;
   ownerId: string;

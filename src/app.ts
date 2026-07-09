@@ -14,6 +14,7 @@ import { createLogger } from './core/logger.js';
 import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
 import { CodexMode } from './modes/codex/index.js';
+import { CustomMode } from './modes/custom/index.js';
 import { getClaudeModels, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
@@ -143,6 +144,11 @@ export function createApp(deps: CreateAppDeps): App {
   // and ~/.codex discovery are wired inside the mode. Its capabilities disable the
   // Discord renderers Codex doesn't support (§5b/§6).
   modeRegistry.register(new CodexMode());
+  // Custom: reuses the Claude SDK but injects env vars extracted from the operator's
+  // shell aliases (kimi / claude). Wired like Claude for attach_file delivery.
+  modeRegistry.register(
+    new CustomMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
+  );
 
   // ---- Discord client (§2/§4). onReady resumes persisted sessions AND re-attaches a
   // RendererDispatcher per resumed channel so a restart restores the live UX (§9). ----

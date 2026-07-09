@@ -20,6 +20,8 @@ const SENSITIVE_KEYS = new Set([
   'secret',
   'password',
   'credentials',
+  'anthropic_auth_token',
+  'anthropic_api_key',
 ]);
 
 // Value-shape patterns for secrets that may appear inside free-form strings.

@@ -84,6 +84,7 @@ const INTENTS = [
 const BACKEND_LABELS: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  custom: 'Custom (Kimi)',
 };
 
 // Build the slash commands. `backends` is the list of REGISTERED backend ids

@@ -167,7 +167,7 @@ export class SessionOrchestrator {
     this.channelRegistry.set({
       guildId,
       channelId,
-      mode: mode as 'claude' | 'codex',
+      mode: mode as 'claude' | 'codex' | 'custom',
       sessionId: session.sessionId,
       cwd,
       ownerId,
@@ -235,7 +235,7 @@ export class SessionOrchestrator {
     this.channelRegistry.set({
       guildId,
       channelId,
-      mode: mode as 'claude' | 'codex',
+      mode: mode as 'claude' | 'codex' | 'custom',
       sessionId: session.sessionId ?? sessionId,
       cwd,
       ownerId,

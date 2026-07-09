@@ -194,7 +194,7 @@ export class ConfigPanel {
   private autosaveBackend(backend: string): ConfigPanelResult {
     // Only known enum backends are stored on defaults.mode; a future backend id is
     // ignored (same guard as the original Save path).
-    if (backend === 'claude' || backend === 'codex') {
+    if (backend === 'claude' || backend === 'codex' || backend === 'custom') {
       this.patchDefaults({ mode: backend });
     }
     return { kind: 'autosaved', notice: t('config.autosaved.backend', { backend }) };
