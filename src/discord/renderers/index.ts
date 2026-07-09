@@ -228,8 +228,11 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
     plainText(ev) {
       // Non-streaming backends (Codex) deliver the whole answer in one text event.
       // deliverAnswer preserves the old chunked-text behavior when no renderer is wired,
-      // and renders tables/mermaid inline (in order) when one is.
-      swallow(deliverAnswer(ev.text, { channel, ...(renderImage ? { renderImage } : {}) }));
+      // and renders tables/mermaid inline (in order) when one is. Chained on `tail` (not
+      // fire-and-forget) so the done-line/mention/usage that result() appends behind it land
+      // AFTER the whole answer — essential when an async image render delays the delivery.
+      tail = tail.catch(() => {}).then(() => deliverAnswer(ev.text, { channel, ...(renderImage ? { renderImage } : {}) }));
+      swallow(tail);
     },
     toolThread(ev) {
       noteToolEvent(ev);
@@ -283,8 +286,24 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
           endedStreams.delete(endedText);
           endedStreams.delete(endedThinking);
         });
+      // Seal the finalize chain's rejection NOW: the real handler is attached later via
+      // `tail` (behind a possibly-pending prevTail), so without this an early reject would
+      // surface as an unhandled-rejection warning before that handler exists.
+      void finalized.catch(() => {});
       const line = buildResultLine(ev);
-      tail = finalized.catch(() => {}).then(() => (line ? channel.send({ content: line }) : undefined));
+      // Chain the done-line BEHIND the current tail (which, for Codex, holds the plainText
+      // answer delivery) AND the stream finalize, so answer → done-line holds even while the
+      // answer is still delivering (e.g. a pending image render). finalize() was already
+      // called synchronously above (snapshots the stream now); we merely await it here after
+      // prevTail. mention/usage then chain behind this tail → answer → done-line → mention →
+      // usage. For Claude (no plainText) prevTail is the settled prior-turn tail, so this
+      // adds no observable latency.
+      const prevTail = tail;
+      tail = prevTail
+        .catch(() => {})
+        .then(() => finalized)
+        .catch(() => {})
+        .then(() => (line ? channel.send({ content: line }) : undefined));
       swallow(tail);
     },
     subagent(ev) {

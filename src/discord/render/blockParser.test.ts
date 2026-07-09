@@ -59,6 +59,27 @@ describe('splitAnswerSegments', () => {
     const md = '| a |\n|---|\n| 1 |\n\n\n| b |\n|---|\n| 2 |';
     expect(splitAnswerSegments(md).map((s) => s.kind)).toEqual(['table', 'table']);
   });
+
+  it('does NOT treat pipe prose over a lone horizontal rule as a table (cell-count mismatch)', () => {
+    // `enable | disable` is 2 cells; `---` is a single horizontal rule (1 cell) → not GFM.
+    const md = 'enable | disable\n---';
+    const segs = splitAnswerSegments(md);
+    expect(segs).toHaveLength(1);
+    expect(segs[0].kind).toBe('text');
+    expect((segs[0] as { text: string }).text).toContain('enable | disable');
+  });
+
+  it('still recognizes a single-column table (header/delimiter cell counts match at 1)', () => {
+    const segs = splitAnswerSegments('| only |\n|---|\n| x |');
+    expect(segs.map((s) => s.kind)).toEqual(['table']);
+    expect(segs[0]).toMatchObject({ kind: 'table', source: '| only |\n|---|\n| x |' });
+  });
+
+  it('does NOT treat a 2-column header over a 3-column delimiter as a table', () => {
+    const segs = splitAnswerSegments('| a | b |\n|---|---|---|');
+    expect(segs).toHaveLength(1);
+    expect(segs[0].kind).toBe('text');
+  });
 });
 
 describe('splitRow', () => {

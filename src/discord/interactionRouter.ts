@@ -525,8 +525,10 @@ export class InteractionRouter {
 
   // Post the one-time Chromium install prompt to a channel when image rendering is
   // enabled, no browser is present, and the operator has not yet decided. Best-effort:
-  // a failure never affects /init. Anyone can act on it (host-wide decision).
-  private async maybePromptRenderSetup(channelId: string): Promise<void> {
+  // a failure never affects /init or guild provisioning. Anyone can act on it (host-wide
+  // decision). Public so the app's GuildCreate auto-provision path can offer it on a fresh
+  // invite (guarded there so ClientReady re-provisioning never re-posts it).
+  async maybePromptRenderSetup(channelId: string): Promise<void> {
     const prov = this.deps.imageProvisioner;
     if (!prov) return;
     const cfg = this.deps.configStore.load();

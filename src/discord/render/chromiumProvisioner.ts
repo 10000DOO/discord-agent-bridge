@@ -45,6 +45,10 @@ export class ChromiumProvisioner {
   private readonly logger: Logger | undefined;
   private readonly provisionFn: ProvisionFn;
   private readonly systemChrome: () => string | undefined;
+  // In-flight install guard: concurrent install() callers (e.g. a button click racing an
+  // /init prompt) join THIS promise instead of kicking off a second download/unzip into the
+  // same cache dir (which would race/corrupt). Cleared once the install settles.
+  private installing: Promise<string> | null = null;
 
   constructor(deps: ChromiumProvisionerDeps) {
     this.cacheDir = deps.cacheDir;
@@ -143,11 +147,22 @@ export class ChromiumProvisioner {
   }
 
   // Download Chromium into the cache dir (background). No-op (returns the existing path)
-  // when a browser is already available. Throws on failure; the caller reports it and
-  // keeps the raw-text fallback.
+  // when a browser is already available. Concurrent callers join a single in-flight install
+  // (no duplicate download). Throws on failure; the caller reports it and keeps the raw-text
+  // fallback. A subsequent call after a failure retries (the guard is cleared on settle).
   async install(onProgress?: (pct: number) => void): Promise<string> {
     const existing = this.executablePath();
     if (existing) return existing;
+    if (this.installing) return this.installing;
+    this.installing = this.runInstall(onProgress);
+    try {
+      return await this.installing;
+    } finally {
+      this.installing = null;
+    }
+  }
+
+  private async runInstall(onProgress?: (pct: number) => void): Promise<string> {
     const platform = detectBrowserPlatform();
     if (!platform) throw new Error('unsupported platform for Chromium download');
     const buildId = await resolveBuildId(Browser.CHROME, platform, 'stable');

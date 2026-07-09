@@ -74,6 +74,20 @@ describe('ConfigStore', () => {
     expect(loaded.logLevel).toBe('info');
   });
 
+  it('backfills render/chromium defaults for an older config that omits both keys', () => {
+    const store = new ConfigStore(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    // A pre-feature config.json: valid, but written before render/chromium existed.
+    fs.writeFileSync(
+      store.configPath,
+      JSON.stringify({ discord: { token: 't', clientId: 'c' } }),
+      'utf-8',
+    );
+    const loaded = store.load();
+    expect(loaded.render).toEqual({ enabled: true });
+    expect(loaded.chromium).toEqual({ decision: 'undecided' });
+  });
+
   it('merges nested overrides over defaults', () => {
     const store = new ConfigStore(dir);
     fs.mkdirSync(dir, { recursive: true });

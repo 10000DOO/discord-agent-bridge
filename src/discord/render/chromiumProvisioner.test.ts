@@ -56,4 +56,30 @@ describe('ChromiumProvisioner', () => {
     expect(await p.install()).toBe('/usr/bin/google-chrome');
     expect(provisionFn).not.toHaveBeenCalled();
   });
+
+  it('joins concurrent install() calls into ONE in-flight provision (no duplicate download)', async () => {
+    const cacheDir = tmpCache();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    // The provision blocks until released, so the second install() lands while the first is
+    // still running — the guard must make it join, not start a second download/unzip.
+    const provisionFn: ProvisionFn = vi.fn(async () => {
+      await gate;
+      const exe = path.join(cacheDir, 'chrome', 'linux-123', 'chrome-linux64', 'chrome');
+      fs.mkdirSync(path.dirname(exe), { recursive: true });
+      fs.writeFileSync(exe, '#!/bin/true\n');
+    });
+    const p = new ChromiumProvisioner({ cacheDir, systemChrome: () => undefined, provisionFn });
+    const first = p.install();
+    const second = p.install();
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toBe(b);
+    expect(a).toContain('chrome-linux64');
+    expect(provisionFn).toHaveBeenCalledOnce();
+    // After it settles the guard is cleared, so a later install() short-circuits on the
+    // now-present executable (still no second provision).
+    expect(await p.install()).toBe(a);
+    expect(provisionFn).toHaveBeenCalledOnce();
+  });
 });

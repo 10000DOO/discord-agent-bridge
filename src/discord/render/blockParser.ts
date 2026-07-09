@@ -6,11 +6,23 @@ import type { Segment } from './segment.js';
 
 // A GFM table delimiter row: `|---|:--:|`, `--- | :--- | ---:`, etc.
 const DELIM = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
+// A single delimiter CELL: `-`+ with optional leading/trailing `:` alignment marker.
+const DELIM_CELL = /^:?-{1,}:?$/;
 // A fence open line: ``` or ~~~ with an optional info string (language).
 const FENCE = /^(\s*)(`{3,}|~{3,})\s*([^\s`~]*)/;
 
 function isTableRow(line: string): boolean {
   return line.includes('|') && line.trim().length > 0;
+}
+
+// True when `delim` is a valid GFM delimiter row FOR `header`: its cell count matches the
+// header's AND every cell is a pure `:?-+:?` alignment marker. DELIM alone accepts a lone
+// horizontal rule (`---`, one cell), so a pipe-prose header over such a rule (e.g.
+// `enable | disable` over `---`, 2 cells vs 1) would be misread as a table without this.
+function isTableDelimiterFor(header: string, delim: string): boolean {
+  const headerCells = splitRow(header);
+  const delimCells = splitRow(delim);
+  return headerCells.length === delimCells.length && delimCells.every((c) => DELIM_CELL.test(c));
 }
 
 // Split a table row into trimmed cells, honoring `\|` escapes and leading/trailing pipes.
@@ -89,8 +101,9 @@ export function splitAnswerSegments(text: string): Segment[] {
       continue;
     }
 
-    // GFM table: a pipe row immediately followed by a delimiter row.
-    if (isTableRow(line) && i + 1 < lines.length && DELIM.test(lines[i + 1])) {
+    // GFM table: a pipe row immediately followed by a delimiter row whose cell count and
+    // per-cell markers match the header (rejects pipe-prose + a lone horizontal rule).
+    if (isTableRow(line) && i + 1 < lines.length && DELIM.test(lines[i + 1]) && isTableDelimiterFor(line, lines[i + 1])) {
       const tbl = [line, lines[i + 1]];
       let j = i + 2;
       for (; j < lines.length; j++) {

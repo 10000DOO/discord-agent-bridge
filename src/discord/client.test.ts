@@ -312,7 +312,7 @@ describe('DiscordClient auto-provision on ready / guild-join', () => {
     };
   }
 
-  function build(client: Client, autoProvisionGuild?: (guildId: string) => Promise<void>) {
+  function build(client: Client, autoProvisionGuild?: (guildId: string, isNewGuild: boolean) => Promise<void>) {
     const messageRouter = {} as unknown as MessageRouter;
     const interactionRouter = {} as unknown as InteractionRouter;
     return new DiscordClient({
@@ -354,6 +354,18 @@ describe('DiscordClient auto-provision on ready / guild-join', () => {
     const fc = fakeGatewayClient(['g1']);
     build(fc.client); // no autoProvisionGuild wired
     await expect(fc.fireReady()).resolves.toBeUndefined();
+  });
+
+  it('passes isNewGuild=false on ClientReady (existing) and true on GuildCreate (fresh invite)', async () => {
+    // The flag is how the app decides to post the render-setup prompt on a fresh invite only,
+    // never on the re-provisioning of existing guilds every restart.
+    const fc = fakeGatewayClient(['existing-1']);
+    const calls: Array<{ guildId: string; isNewGuild: boolean }> = [];
+    build(fc.client, async (guildId, isNewGuild) => { calls.push({ guildId, isNewGuild }); });
+    await fc.fireReady();
+    await fc.fireGuildCreate('fresh-invite');
+    expect(calls).toContainEqual({ guildId: 'existing-1', isNewGuild: false });
+    expect(calls).toContainEqual({ guildId: 'fresh-invite', isNewGuild: true });
   });
 });
 

@@ -23,4 +23,8 @@ export interface ImageRenderer {
   // (unavailable, parse error, oversize, timeout) — NEVER throws; the caller falls back
   // to the block's raw text so the answer is never broken.
   render(seg: Extract<Segment, { kind: 'table' | 'mermaid' }>): Promise<RenderedImage | null>;
+  // Release any warm browser / held resources on shutdown. Optional so a fake/light renderer
+  // need not implement it; the puppeteer-backed renderer closes its Chromium here. Called
+  // from the app's shutdown path (SessionWiring.closeImageRenderer). Best-effort.
+  close?(): Promise<void>;
 }

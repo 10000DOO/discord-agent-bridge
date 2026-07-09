@@ -225,9 +225,16 @@ export function createApp(deps: CreateAppDeps): App {
     // Auto-provision each guild's channel structure on ready / guild-join so /init is
     // optional. Resolves the guild's provisioner over the live gateway, then runs the
     // idempotent, Manage-Channels-guarded, non-throwing provisioner.
-    autoProvisionGuild: async (guildId: string) => {
+    autoProvisionGuild: async (guildId: string, isNewGuild: boolean) => {
       const provisioner = await resolveGuildProvisioner(discord.raw, guildId);
-      if (provisioner) await autoProvisionGuild(provisioner, configStore, logger);
+      if (!provisioner) return;
+      const channels = await autoProvisionGuild(provisioner, configStore, logger);
+      // Only a FRESH invite (GuildCreate) posts the one-time Chromium install prompt to the
+      // new control channel. ClientReady re-provisions every existing guild on each restart,
+      // so prompting there would re-post the prompt after every boot. The prompt is further
+      // gated (render.enabled + chromium.decision==='undecided' + !isInstalled) inside
+      // maybePromptRenderSetup, and is best-effort (never affects provisioning).
+      if (isNewGuild && channels) await interactionRouter.maybePromptRenderSetup(channels.controlChannelId);
     },
     // A user deleted a channel directly in Discord. If it was a BOUND, non-archived
     // session channel, detach its renderers (dispose cancels any armed stream/thinking
@@ -261,7 +268,12 @@ export function createApp(deps: CreateAppDeps): App {
     logger,
     config,
     login: () => discord.login(config.discord.token),
-    destroy: () => discord.destroy(),
+    destroy: async () => {
+      // Release the warm image-render browser (if one was launched) before tearing down the
+      // gateway, so a graceful shutdown frees Chromium instead of relying on the idle timer.
+      await wiring.closeImageRenderer();
+      await discord.destroy();
+    },
   };
 }
 

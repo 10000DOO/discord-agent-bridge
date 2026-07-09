@@ -269,6 +269,17 @@ export class SessionWiring {
     }
   }
 
+  // Close the lazily-built image renderer (its warm browser), if any. Called from the app's
+  // shutdown path (app.destroy) so a graceful stop releases the ~100–300MB Chromium rather
+  // than leaning on the idle timer / process-exit hook alone. Best-effort — never throws.
+  async closeImageRenderer(): Promise<void> {
+    try {
+      await this.imageRenderer?.close?.();
+    } catch (err) {
+      this.logger.warn('image renderer close failed', { err: String(err) });
+    }
+  }
+
   async attach(guildId: string, channelId: string, mode: string): Promise<void> {
     const key = channelKey(guildId, channelId);
     this.detach(guildId, channelId);
@@ -283,9 +294,9 @@ export class SessionWiring {
     const capabilities = this.modeRegistry.get(mode).capabilities;
 
     // Render branch (design §7): decide at session start whether tables/mermaid become
-    // PNG images. Enabled ⇔ global config render.enabled (default true) AND a system
-    // Chrome is present. Absent → text-only (existing behavior); the design's Chromium
-    // provisioning UX would slot into the "no Chrome" case (not built here).
+    // PNG images. Enabled ⇔ global config render.enabled (default true) AND a browser is
+    // available — a system Chrome OR a Chromium provisioned on demand via the /init and
+    // /config install prompts (imageProvisioner). Absent → text-only (existing behavior).
     const renderImage = (await this.resolveImageRenderer()) ?? undefined;
 
     const permission = new PermissionButtonsHandler({ channel });
