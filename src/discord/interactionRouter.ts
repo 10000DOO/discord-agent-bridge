@@ -22,6 +22,8 @@ import { ResumeWizard } from './wizard/resumeWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
 import { parseInterruptId } from './renderers/interruptButton.js';
+import { parseUpdateId, buildUpdateDecidedRow } from './renderers/updateButton.js';
+import type { AutoUpdater, DecisionCtx } from '../update/autoUpdater.js';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
 import type { ComponentRow, EmbedSpec, MessageChannel, ModalSpec } from './ports.js';
 import { buildStatusEmbed } from './renderers/statusEmbed.js';
@@ -163,6 +165,10 @@ export interface InteractionRouterDeps {
   // freshly created session channel). Defaults to the wiring's resolver; app boot
   // binds it to the live gateway. Optional for the same reason as above.
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
+  // The auto-update orchestrator (§7). Optional so the pre-gateway graph and most tests
+  // build without it; app boot injects it via setAutoUpdater once the client exists.
+  // Update-prompt button clicks (approve/dismiss) route here after the admin gate.
+  autoUpdater?: AutoUpdater;
 }
 
 function channelKey(guildId: string, channelId: string): string {
@@ -199,6 +205,12 @@ export class InteractionRouter {
   }
   setResolveChannel(fn: (channelId: string) => Promise<MessageChannel | null>): void {
     this.deps.resolveChannel = fn;
+  }
+  // Inject the auto-updater AFTER construction (app boot): the client depends on this
+  // router, and the updater depends on the client (guild enumeration for postPrompt), so
+  // it cannot be a constructor dep — same late-binding pattern as the resolvers above.
+  setAutoUpdater(autoUpdater: AutoUpdater): void {
+    this.deps.autoUpdater = autoUpdater;
   }
 
   async handle(interaction: RouterInteraction): Promise<void> {
@@ -975,6 +987,39 @@ export class InteractionRouter {
       await this.guarded(i, async () => {
         const ok = await this.deps.orchestrator.interrupt(interruptTarget.guildId, interruptTarget.channelId);
         await safe(i.followUp({ content: ok ? t('cmd.interrupt.done') : t('cmd.interrupt.none'), ephemeral: true }));
+      });
+      return;
+    }
+
+    // Auto-update prompt buttons: dab-update:<approve|dismiss>:<version>. Admin-gated —
+    // the SAME gate as opening /config (Discord Administrator OR the admin tier); a
+    // non-admin click gets an ephemeral denial and is ignored (mirrors permission-button
+    // approver gating). Ack FIRST (deferUpdate keeps the prompt message), THEN drive the
+    // AutoUpdater: approve installs + restarts the process (no drain), dismiss silences the
+    // version. The DecisionCtx keeps this layer's discord.js out of update/: ack posts an
+    // ephemeral followUp, disableButtons collapses the clicked prompt via editReply.
+    const updateTarget = parseUpdateId(i.customId);
+    if (updateTarget) {
+      if (!this.authorizeConfig(i)) {
+        await safe(i.reply({ content: t('update.denied'), ephemeral: true }));
+        return;
+      }
+      if (!(await this.ackDeferUpdate(i))) return;
+      await this.guarded(i, async () => {
+        const updater = this.deps.autoUpdater;
+        if (!updater) return;
+        const ctx: DecisionCtx = {
+          actorId: i.user.id,
+          guildId: i.guildId ?? '',
+          channelId: i.channelId,
+          ack: (text) => safe(i.followUp({ content: text, ephemeral: true })),
+          disableButtons: () => safe(i.editReply({ components: [buildUpdateDecidedRow(updateTarget.action)] })),
+        };
+        if (updateTarget.action === 'approve') {
+          await updater.approve(updateTarget.version, ctx);
+        } else {
+          await updater.dismiss(updateTarget.version, ctx);
+        }
       });
       return;
     }

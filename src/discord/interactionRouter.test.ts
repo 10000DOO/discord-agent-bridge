@@ -28,6 +28,7 @@ import type {
   ResumableSession,
 } from '../core/contracts.js';
 import type { ActiveChannelInfo, SessionOrchestrator } from '../core/sessionOrchestrator.js';
+import type { AutoUpdater, DecisionCtx } from '../update/autoUpdater.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { SessionWiring } from './wiring.js';
 
@@ -101,6 +102,7 @@ function writeConfig(dir: string): void {
     locale: 'ko',
     logLevel: 'info',
     favorites: [],
+    autoUpdate: { enabled: true },
   };
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
@@ -1674,5 +1676,93 @@ describe('InteractionRouter Resume Session flow', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('InteractionRouter auto-update buttons', () => {
+  // A recording AutoUpdater double: approve/dismiss capture their (version, ctx) args.
+  function fakeUpdater() {
+    const approve = vi.fn(async (_v: string, _ctx: DecisionCtx) => {});
+    const dismiss = vi.fn(async (_v: string, _ctx: DecisionCtx) => {});
+    return { updater: { approve, dismiss } as unknown as AutoUpdater, approve, dismiss };
+  }
+
+  function routerWithUpdater(updater: AutoUpdater): InteractionRouter {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    router.setAutoUpdater(updater);
+    return router;
+  }
+
+  it('admin (Administrator) approve → autoUpdater.approve(version, ctx); deferUpdate first', async () => {
+    const { updater, approve } = fakeUpdater();
+    const router = routerWithUpdater(updater);
+    const { interaction, acks } = component({ customId: 'dab-update:approve:1.1.0', hasAdminPermission: true });
+    await router.handle(interaction);
+    expect(approve).toHaveBeenCalledTimes(1);
+    const [version, ctx] = approve.mock.calls[0]!;
+    expect(version).toBe('1.1.0');
+    expect(ctx.actorId).toBe('u1');
+    expect(ctx.guildId).toBe('g1');
+    expect(ctx.channelId).toBe('c1');
+    // Acked via deferUpdate (keeps the prompt message), not a fresh reply.
+    expect(acks.some((a) => a.kind === 'deferUpdate')).toBe(true);
+  });
+
+  it('admin (admin tier role) dismiss → autoUpdater.dismiss(version, ctx)', async () => {
+    const { updater, dismiss } = fakeUpdater();
+    const router = routerWithUpdater(updater);
+    const { interaction } = component({ customId: 'dab-update:dismiss:1.1.0', roles: [ADMIN_ROLE] });
+    await router.handle(interaction);
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(dismiss.mock.calls[0]![0]).toBe('1.1.0');
+  });
+
+  it('non-admin click is denied ephemerally and never reaches the updater', async () => {
+    const { updater, approve, dismiss } = fakeUpdater();
+    const router = routerWithUpdater(updater);
+    const { interaction, replies, acks } = component({
+      customId: 'dab-update:approve:1.1.0',
+      roles: [EXEC_ROLE],
+      hasAdminPermission: false,
+    });
+    await router.handle(interaction);
+    expect(approve).not.toHaveBeenCalled();
+    expect(dismiss).not.toHaveBeenCalled();
+    expect(acks.some((a) => a.kind === 'deferUpdate')).toBe(false);
+    expect(replies[0]?.content).toBeTruthy();
+    expect(replies[0]?.ephemeral).toBe(true);
+  });
+
+  it('a tampered custom_id is not routed to the updater', async () => {
+    const { updater, approve, dismiss } = fakeUpdater();
+    const router = routerWithUpdater(updater);
+    const { interaction } = component({ customId: 'dab-update:install:1.1.0', hasAdminPermission: true });
+    await router.handle(interaction);
+    expect(approve).not.toHaveBeenCalled();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('the DecisionCtx wires ephemeral ack (followUp) and button-disable (editReply)', async () => {
+    const { updater, approve } = fakeUpdater();
+    // This fake approve exercises the router-supplied ctx ports.
+    approve.mockImplementationOnce(async (_v, ctx) => {
+      await ctx.disableButtons();
+      await ctx.ack('done');
+    });
+    const router = routerWithUpdater(updater);
+    const { interaction, replies, acks } = component({
+      customId: 'dab-update:approve:1.1.0',
+      hasAdminPermission: true,
+    });
+    await router.handle(interaction);
+    // disableButtons edits the clicked prompt with a (disabled) component row.
+    const edit = acks.find((a) => a.kind === 'editReply');
+    expect(edit).toBeTruthy();
+    expect((edit?.payload?.components as unknown[])?.length).toBe(1);
+    // ack posts an ephemeral followUp.
+    const followUp = replies.find((r) => r.content === 'done');
+    expect(followUp?.ephemeral).toBe(true);
   });
 });

@@ -219,6 +219,20 @@ const ko: Catalog = {
   'setup.rolesInDiscord': '역할은 봇을 서버에 초대한 뒤 Discord에서 `/config` 명령으로 클릭 설정하세요.',
   // Terminal setup guidance: model/language/permission defaults move to `/config`.
   'setup.defaultsInDiscord': '모델·언어·권한 등 기본값은 봇 초대 후 Discord `/config`에서 설정하세요.',
+  // Auto-update (§7): the status-channel prompt + admin decision notices.
+  'update.title': '🔄 새 버전이 있어요',
+  'update.body':
+    '`discord-agent-bridge` {latest} 버전이 나왔어요 (현재 {current}).\n지금 업데이트할까요? 관리자만 결정할 수 있어요.\n**예**를 누르면 설치 후 새 버전으로 바로 재시작합니다 (진행 중 작업은 종료돼요).',
+  'update.button.yes': '예, 업데이트',
+  'update.button.no': '아니오',
+  'update.decided.approved': '업데이트 진행 중…',
+  'update.decided.dismissed': '이 버전 건너뜀',
+  'update.busy': '이미 업데이트가 진행 중이에요.',
+  'update.installed': '✅ 설치 완료. 새 버전으로 재시작합니다…',
+  'update.installFailed':
+    '❌ 자동 업데이트 설치에 실패했어요. 수동으로 `npm i -g discord-agent-bridge@latest` 를 실행한 뒤 `discord-agent-bridge service restart` 로 재시작하세요 (권한이 필요할 수 있어요).',
+  'update.dismissed': '이 버전 알림을 껐어요. 더 새 버전이 나오면 다시 알려드릴게요.',
+  'update.denied': '자동 업데이트는 서버 관리자(Administrator) 또는 admin 티어만 결정할 수 있어요.',
 };
 
 const en: Catalog = {
@@ -251,6 +265,19 @@ const en: Catalog = {
   'cmd.model.switched': 'Switched this session’s model to {model} (applies from the next turn; conversation kept).',
   'cmd.model.unsupported': 'This backend does not support switching the model mid-session (Claude only).',
   'cmd.model.failed': 'Failed to switch the model. Check the terminal logs.',
+  'update.title': '🔄 A new version is available',
+  'update.body':
+    '`discord-agent-bridge` {latest} is available (current {current}).\nUpdate now? Only an admin can decide.\nPressing **Yes** installs it and restarts into the new version immediately (in-flight work is dropped).',
+  'update.button.yes': 'Yes, update',
+  'update.button.no': 'No',
+  'update.decided.approved': 'Updating…',
+  'update.decided.dismissed': 'Version skipped',
+  'update.busy': 'An update is already in progress.',
+  'update.installed': '✅ Installed. Restarting into the new version…',
+  'update.installFailed':
+    '❌ Auto-update failed to install. Run `npm i -g discord-agent-bridge@latest` manually, then `discord-agent-bridge service restart` (elevated permissions may be required).',
+  'update.dismissed': 'Muted this version. I’ll notify you again when a newer one ships.',
+  'update.denied': 'Only a server Administrator or the admin tier can decide auto-updates.',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };
