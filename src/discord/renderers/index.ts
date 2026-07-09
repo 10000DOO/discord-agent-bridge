@@ -2,7 +2,9 @@ import type { AgentEvent, Capabilities, Logger } from '../../core/contracts.js';
 import type { MessageChannel } from '../ports.js';
 import type { EventBus } from '../../core/eventBus.js';
 import type { UsageResult, UsageSnapshot, UsageLimit } from '../../core/usageService.js';
+import type { ImageRenderer } from '../render/segment.js';
 import { StreamEmbedHandler } from './streamEmbed.js';
+import { deliverAnswer } from './answerDelivery.js';
 import { buildInterruptButton } from './interruptButton.js';
 import { ToolThreadHandler } from './toolThread.js';
 import { PermissionButtonsHandler } from './permissionButtons.js';
@@ -12,7 +14,6 @@ import { TranscriptFeedHandler } from './transcriptFeed.js';
 import { MentionOnCompleteHandler } from './mentionOnComplete.js';
 import { buildResultLine } from './resultLine.js';
 import { buildUsageEmbed, type SubagentRun, type UsageSessionMeta } from './usageEmbed.js';
-import { chunkMessage } from '../format.js';
 import { t } from '../i18n.js';
 
 // The capability dispatcher (§6): subscribes a channel's AgentEvent stream and, for
@@ -140,6 +141,10 @@ export interface DefaultRendererSetOptions {
   // Optional: threaded into each StreamEmbedHandler so a swallowed best-effort preview
   // failure (deleted channel race / REST timeout) is debug-logged rather than silent.
   logger?: Logger;
+  // Optional image renderer (tables/mermaid → PNG). Injected by wiring ONLY when the
+  // render branch is on for this session (Chrome available + config enabled); absent →
+  // all three final-text paths deliver raw text (existing behavior).
+  renderImage?: ImageRenderer;
 }
 
 // Wire the concrete handlers over one channel. Async handler work is fire-and-forget
@@ -154,8 +159,15 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
     options.guildId !== undefined && options.channelId !== undefined
       ? [buildInterruptButton(options.guildId, options.channelId)]
       : undefined;
+  const renderImage = options.renderImage;
   const textStreamDeps = () =>
-    ({ channel, kind: 'text' as const, logger, ...(interruptActions ? { actions: interruptActions } : {}) });
+    ({
+      channel,
+      kind: 'text' as const,
+      logger,
+      ...(interruptActions ? { actions: interruptActions } : {}),
+      ...(renderImage ? { renderImage } : {}),
+    });
   // `let`: finalize() permanently closes a StreamEmbedHandler, so one instance
   // serves exactly one turn — the result renderer swaps in fresh instances.
   let textStream = new StreamEmbedHandler(textStreamDeps());
@@ -215,11 +227,12 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
     },
     plainText(ev) {
       // Non-streaming backends (Codex) deliver the whole answer in one text event.
-      // Split to Discord's 2000-char limit or the send is rejected and swallowed —
-      // same chunking the transcript feed uses. Empty text → chunkMessage returns [].
-      for (const chunk of chunkMessage(ev.text)) {
-        swallow(channel.send({ content: chunk }));
-      }
+      // deliverAnswer preserves the old chunked-text behavior when no renderer is wired,
+      // and renders tables/mermaid inline (in order) when one is. Chained on `tail` (not
+      // fire-and-forget) so the done-line/mention/usage that result() appends behind it land
+      // AFTER the whole answer — essential when an async image render delays the delivery.
+      tail = tail.catch(() => {}).then(() => deliverAnswer(ev.text, { channel, ...(renderImage ? { renderImage } : {}) }));
+      swallow(tail);
     },
     toolThread(ev) {
       noteToolEvent(ev);
@@ -266,17 +279,31 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
         .then(() => endedThinking.finalize())
         .then(async () => {
           if (!endedText.hasEmitted() && typeof ev.text === 'string' && ev.text.length > 0) {
-            for (const chunk of chunkMessage(ev.text)) {
-              await channel.send({ content: chunk });
-            }
+            await deliverAnswer(ev.text, { channel, ...(renderImage ? { renderImage } : {}) });
           }
         })
         .finally(() => {
           endedStreams.delete(endedText);
           endedStreams.delete(endedThinking);
         });
+      // Seal the finalize chain's rejection NOW: the real handler is attached later via
+      // `tail` (behind a possibly-pending prevTail), so without this an early reject would
+      // surface as an unhandled-rejection warning before that handler exists.
+      void finalized.catch(() => {});
       const line = buildResultLine(ev);
-      tail = finalized.catch(() => {}).then(() => (line ? channel.send({ content: line }) : undefined));
+      // Chain the done-line BEHIND the current tail (which, for Codex, holds the plainText
+      // answer delivery) AND the stream finalize, so answer → done-line holds even while the
+      // answer is still delivering (e.g. a pending image render). finalize() was already
+      // called synchronously above (snapshots the stream now); we merely await it here after
+      // prevTail. mention/usage then chain behind this tail → answer → done-line → mention →
+      // usage. For Claude (no plainText) prevTail is the settled prior-turn tail, so this
+      // adds no observable latency.
+      const prevTail = tail;
+      tail = prevTail
+        .catch(() => {})
+        .then(() => finalized)
+        .catch(() => {})
+        .then(() => (line ? channel.send({ content: line }) : undefined));
       swallow(tail);
     },
     subagent(ev) {

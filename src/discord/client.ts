@@ -463,11 +463,13 @@ export interface DiscordClientDeps {
   onReady: (client: Client) => Promise<void>;
   // Auto-provision the 🤖 Agent category + #session-generator control channel + sessions
   // category for a guild, so /init is optional (§ auto-provision). Called for every
-  // existing guild on ClientReady and for a guild the bot is added to on GuildCreate.
-  // Idempotent + Manage-Channels-guarded + non-throwing (see autoProvisionGuild). App
-  // boot wires it to resolve the guild's provisioner over the live gateway; optional so
+  // existing guild on ClientReady (isNewGuild=false) and for a guild the bot is added to on
+  // GuildCreate (isNewGuild=true). The flag lets the app post the one-time render-setup
+  // prompt ONLY on a fresh invite, not on every restart's re-provisioning of existing
+  // guilds. Idempotent + Manage-Channels-guarded + non-throwing (see autoProvisionGuild).
+  // App boot wires it to resolve the guild's provisioner over the live gateway; optional so
   // a test without it just skips provisioning.
-  autoProvisionGuild?: (guildId: string) => Promise<void>;
+  autoProvisionGuild?: (guildId: string, isNewGuild: boolean) => Promise<void>;
   // Called when Discord signals a channel was deleted (Events.ChannelDelete, received
   // via the Guilds intent). The app boot wires it to stop + detach the bound session
   // so no renderer keeps editing a channel a user deleted directly in Discord — the
@@ -487,7 +489,7 @@ export class DiscordClient {
   private readonly interactionRouter: InteractionRouter;
   private readonly backends: () => string[];
   private readonly onReady: (client: Client) => Promise<void>;
-  private readonly autoProvisionGuild?: (guildId: string) => Promise<void>;
+  private readonly autoProvisionGuild?: (guildId: string, isNewGuild: boolean) => Promise<void>;
   private readonly onChannelDelete?: (channelId: string, guildId: string) => void | Promise<void>;
 
   constructor(deps: DiscordClientDeps) {
@@ -524,7 +526,8 @@ export class DiscordClient {
         this.logger.error('guild-join command registration failed', { guildId: guild.id, err: String(err) });
       });
       if (this.autoProvisionGuild) {
-        void this.autoProvisionGuild(guild.id).catch((err) => {
+        // isNewGuild=true: a fresh invite → the app may post the one-time render-setup prompt.
+        void this.autoProvisionGuild(guild.id, true).catch((err) => {
           this.logger.error('guild-join auto-provision failed', { guildId: guild.id, err: String(err) });
         });
       }
@@ -637,8 +640,10 @@ export class DiscordClient {
       });
       // Auto-provision each existing guild so the control/session channels appear
       // without a manual /init (idempotent + Manage-Channels-guarded + non-throwing).
+      // isNewGuild=false: re-provisioning an existing guild on (re)boot must NOT re-post the
+      // render-setup prompt — only a fresh invite (GuildCreate) does.
       if (this.autoProvisionGuild) {
-        await this.autoProvisionGuild(guildId).catch((err) => {
+        await this.autoProvisionGuild(guildId, false).catch((err) => {
           this.logger.error('auto-provision failed', { guildId, err: String(err) });
         });
       }

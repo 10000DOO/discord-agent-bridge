@@ -22,6 +22,8 @@ import { ResumeWizard } from './wizard/resumeWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
 import { parseInterruptId } from './renderers/interruptButton.js';
+import { buildRenderSetupButtons, parseRenderSetupId } from './renderers/renderSetupButton.js';
+import type { ChromiumProvisioner } from './render/chromiumProvisioner.js';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelInput } from './configPanel.js';
 import type { ComponentRow, EmbedSpec, MessageChannel, ModalSpec } from './ports.js';
 import { buildStatusEmbed } from './renderers/statusEmbed.js';
@@ -137,6 +139,10 @@ export interface InteractionRouterDeps {
   permissionResolver: PermissionResolver;
   modeRegistry: ModeRegistry;
   wiring: SessionWiring;
+  // Chromium provisioner (image render). When present, /init offers a background-install
+  // prompt if no browser is present yet, and /config can install/toggle later. Absent →
+  // no install UX (rendering still works when a system Chrome exists).
+  imageProvisioner?: ChromiumProvisioner;
   // Claude usage/limits service (§7.4). Read by /agent stats for the usage summary
   // (Claude-global; unavailable line when OAuth is not logged in).
   usageService: UsageService;
@@ -525,6 +531,62 @@ export class InteractionRouter {
     await i.editReply({
       content: t('cmd.init.done', { control: `<#${channels.controlChannelId}>` }),
     });
+    // Offer the Chromium install prompt in the fresh control channel (design §9.2).
+    await this.maybePromptRenderSetup(channels.controlChannelId);
+  }
+
+  // Post the one-time Chromium install prompt to a channel when image rendering is
+  // enabled, no browser is present, and the operator has not yet decided. Best-effort:
+  // a failure never affects /init or guild provisioning. Anyone can act on it (host-wide
+  // decision). Public so the app's GuildCreate auto-provision path can offer it on a fresh
+  // invite (guarded there so ClientReady re-provisioning never re-posts it).
+  async maybePromptRenderSetup(channelId: string): Promise<void> {
+    const prov = this.deps.imageProvisioner;
+    if (!prov) return;
+    const cfg = this.deps.configStore.load();
+    const enabled = cfg.render?.enabled ?? true;
+    const decision = cfg.chromium?.decision ?? 'undecided';
+    if (!enabled || decision !== 'undecided' || prov.isInstalled()) return;
+    const sink = this.deps.resolveChannel ? await this.deps.resolveChannel(channelId) : null;
+    if (!sink) return;
+    await safe(sink.send({ content: t('render.setup.prompt'), components: [buildRenderSetupButtons()] }));
+  }
+
+  // Handle the render-setup buttons. install → download Chromium in the background with
+  // progress edits, persist 'accepted'; decline → persist 'declined' (no re-prompt).
+  private async handleRenderSetup(i: ComponentInteraction, action: 'install' | 'decline'): Promise<void> {
+    const prov = this.deps.imageProvisioner;
+    if (!prov) {
+      await safe(i.followUp({ content: t('render.setup.unavailable'), ephemeral: true }));
+      return;
+    }
+    if (action === 'decline') {
+      this.deps.configStore.setChromiumDecision('declined');
+      await safe(i.followUp({ content: t('render.setup.declined'), ephemeral: false }));
+      return;
+    }
+    this.deps.configStore.setChromiumDecision('accepted');
+    if (prov.isInstalled()) {
+      await safe(i.editReply({ content: t('render.setup.already'), components: [] }));
+      return;
+    }
+    // Morph the prompt message (deferUpdate'd component → editReply edits it) into a live
+    // progress bar as the download runs, then a completion line. Buttons removed.
+    const bar = (pct: number): string => {
+      const n = Math.max(0, Math.min(10, Math.round(pct / 10)));
+      return t('render.setup.progress', { bar: '▓'.repeat(n) + '░'.repeat(10 - n), pct: String(pct) });
+    };
+    await safe(i.editReply({ content: bar(0), components: [] }));
+    try {
+      await prov.install((pct) => {
+        this.deps.logger.info('chromium install progress', { pct });
+        void safe(i.editReply({ content: bar(pct), components: [] }));
+      });
+      await safe(i.editReply({ content: t('render.setup.done'), components: [] }));
+    } catch (err) {
+      this.deps.logger.error('chromium install failed', { err: String(err) });
+      await safe(i.editReply({ content: t('render.setup.failed'), components: [] }));
+    }
   }
 
   // Route a /config panel component (role/string select or Save) to its panel. Gated
@@ -576,6 +638,22 @@ export class InteractionRouter {
       // with a deferUpdate, then edit the sub-panel's own message with the new state.
       await safe(i.deferUpdate());
       await safe(i.editReply({ embeds: [result.embed], components: result.rows }));
+      return;
+    }
+    if (result.kind === 'renderPanel') {
+      // 🖼 opens the image-render sub-panel as a fresh ephemeral message.
+      await safe(i.reply({ embeds: [result.embed], components: result.rows, ephemeral: true }));
+      return;
+    }
+    if (result.kind === 'renderUpdated') {
+      await safe(i.deferUpdate());
+      await safe(i.editReply({ embeds: [result.embed], components: result.rows }));
+      return;
+    }
+    if (result.kind === 'renderInstall') {
+      // Install from /config reuses the same provisioner flow as the /init button.
+      await safe(i.deferUpdate());
+      await this.handleRenderSetup(i, 'install');
       return;
     }
     // A pending selection or an ignored input: just acknowledge (keep the panel open).
@@ -976,6 +1054,17 @@ export class InteractionRouter {
         const ok = await this.deps.orchestrator.interrupt(interruptTarget.guildId, interruptTarget.channelId);
         await safe(i.followUp({ content: ok ? t('cmd.interrupt.done') : t('cmd.interrupt.none'), ephemeral: true }));
       });
+      return;
+    }
+
+    // Chromium install prompt (render-setup:install|decline) — post at /init. Anyone may
+    // trigger it (design §8.2: no owner gate beyond the component's drive tier). The
+    // decision is host-wide; install downloads Chromium in the background with progress.
+    const renderSetup = parseRenderSetupId(i.customId);
+    if (renderSetup) {
+      if (!this.authorize(i, 'drive')) return;
+      if (!(await this.ackDeferUpdate(i))) return;
+      await this.guarded(i, () => this.handleRenderSetup(i, renderSetup.action));
       return;
     }
 

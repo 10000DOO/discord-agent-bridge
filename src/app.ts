@@ -20,6 +20,7 @@ import { getClaudeModels, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
+import { ChromiumProvisioner } from './discord/render/chromiumProvisioner.js';
 import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
 import { autoProvisionGuild } from './discord/guildChannels.js';
 import { setLocale, t, type Locale } from './discord/i18n.js';
@@ -82,6 +83,13 @@ export function createApp(deps: CreateAppDeps): App {
   const stateStore = new StateStore(configStore.dir);
   const channelRegistry = new ChannelRegistry(stateStore);
   const eventBus = new EventBus();
+  // Chromium provisioner for image rendering (tables/mermaid → PNG). Cheap to construct
+  // (no download/launch here); shared by the wiring layer (executable resolution) and the
+  // interaction router (/init + /config install prompts). Cache dir lives in the app home.
+  const imageProvisioner = new ChromiumProvisioner({
+    cacheDir: ChromiumProvisioner.cacheDirFor(configStore.dir),
+    logger,
+  });
   const configResolver = new ConfigResolver(configStore, channelRegistry);
   const permissionResolver = new PermissionResolver(configStore, configResolver);
   const authorizer = new Authorizer(configStore, channelRegistry);
@@ -109,6 +117,8 @@ export function createApp(deps: CreateAppDeps): App {
     // Read the guild's notifications config at attach() to forward key session events
     // (result/error; tool_use if enabled) to the per-guild status channel.
     configStore,
+    // Resolve the browser executable + install state for image rendering at attach().
+    imageProvisioner,
     permissionTimeoutSec: config.limits.permissionTimeoutSec,
     // Always-allow persistence (§7A): a tool the operator chose "always-allow" for
     // is written into the GLOBAL autoAllowClaudeTools set, so the next turn (on any
@@ -176,6 +186,9 @@ export function createApp(deps: CreateAppDeps): App {
     wiring,
     usageService,
     logger,
+    // Chromium provisioner: /init offers a background-install prompt when no browser is
+    // present, and /config can install/toggle image rendering later.
+    imageProvisioner,
     // Folder-browser roots + per-backend model list are config-driven (§8.1): the
     // saved project favorites seed the browse roots; the model step offers the
     // per-backend model list. Codex's list is a small documented default (the
@@ -222,9 +235,16 @@ export function createApp(deps: CreateAppDeps): App {
     // Auto-provision each guild's channel structure on ready / guild-join so /init is
     // optional. Resolves the guild's provisioner over the live gateway, then runs the
     // idempotent, Manage-Channels-guarded, non-throwing provisioner.
-    autoProvisionGuild: async (guildId: string) => {
+    autoProvisionGuild: async (guildId: string, isNewGuild: boolean) => {
       const provisioner = await resolveGuildProvisioner(discord.raw, guildId);
-      if (provisioner) await autoProvisionGuild(provisioner, configStore, logger);
+      if (!provisioner) return;
+      const channels = await autoProvisionGuild(provisioner, configStore, logger);
+      // Only a FRESH invite (GuildCreate) posts the one-time Chromium install prompt to the
+      // new control channel. ClientReady re-provisions every existing guild on each restart,
+      // so prompting there would re-post the prompt after every boot. The prompt is further
+      // gated (render.enabled + chromium.decision==='undecided' + !isInstalled) inside
+      // maybePromptRenderSetup, and is best-effort (never affects provisioning).
+      if (isNewGuild && channels) await interactionRouter.maybePromptRenderSetup(channels.controlChannelId);
     },
     // A user deleted a channel directly in Discord. If it was a BOUND, non-archived
     // session channel, detach its renderers (dispose cancels any armed stream/thinking
@@ -258,7 +278,12 @@ export function createApp(deps: CreateAppDeps): App {
     logger,
     config,
     login: () => discord.login(config.discord.token),
-    destroy: () => discord.destroy(),
+    destroy: async () => {
+      // Release the warm image-render browser (if one was launched) before tearing down the
+      // gateway, so a graceful shutdown frees Chromium instead of relying on the idle timer.
+      await wiring.closeImageRenderer();
+      await discord.destroy();
+    },
   };
 }
 

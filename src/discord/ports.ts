@@ -27,7 +27,9 @@ export interface OutgoingMessage {
 }
 
 export interface OutgoingFile {
-  path: string;
+  // A filesystem path OR an in-memory Buffer (e.g. a rendered PNG). discord.js
+  // AttachmentBuilder accepts either, so the render layer can attach without a temp file.
+  path: string | Buffer;
   name?: string;
 }
 
