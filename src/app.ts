@@ -209,6 +209,13 @@ export function createApp(deps: CreateAppDeps): App {
     // A server admin can drive a session by messaging even with an empty role config
     // (never locked out): the router reads this bit off the member's permissions.
     administratorBit: PermissionFlagsBits.Administrator,
+    // Best-effort renderer re-attach before each turn: a resumed session whose boot attach
+    // failed transiently regains its sink before send produces output (lazy re-wire, §6.0).
+    // Delegates to the wiring's finite-retry ensureAttached (a no-op when already attached);
+    // the AttachOutcome is discarded — the router only needs the attach to have been tried.
+    ensureRenderers: async (guildId, channelId, mode) => {
+      await wiring.ensureAttached(guildId, channelId, mode);
+    },
   });
   const interactionRouter = new InteractionRouter({
     authorizer,
@@ -250,6 +257,22 @@ export function createApp(deps: CreateAppDeps): App {
     customBackendLabel,
   });
 
+  // A channel is GONE — either a live ChannelDelete or a boot re-wire that resolved to
+  // 10003 (a delete missed while the bot was offline). If it was a BOUND, non-archived
+  // session channel, detach its renderers (dispose cancels any armed stream/thinking
+  // debounce so no late edit fires at the deleted channel) and stop the turn — a hard
+  // remove that also clears any orphan session resumeAll may have created for it. Shared
+  // by onChannelDelete and the boot attach loop so both take the EXACT same cleanup path
+  // (§7.3). Control channels and unbound/archived channels have no live session → ignored.
+  const handleChannelGone = (guildId: string, channelId: string): void => {
+    const binding = channelRegistry.get(guildId, channelId);
+    if (!binding || binding.archived) return;
+    wiring.detach(guildId, channelId);
+    void orchestrator.stop(guildId, channelId).catch((err) => {
+      logger.error('stop on channel-gone failed', { guildId, channelId, err: String(err) });
+    });
+  };
+
   const discord = new DiscordClient({
     clientId: config.discord.clientId,
     logger,
@@ -259,12 +282,25 @@ export function createApp(deps: CreateAppDeps): App {
     // command-registration time, so both Claude and Codex now appear.
     backends: () => modeRegistry.list(),
     onReady: async (client: Client) => {
-      // Resume every persisted, non-archived channel binding (fixes A2), then
-      // re-attach its renderers so the live UX survives a restart (§9 step 4).
+      // Resume every persisted, non-archived channel binding (fixes A2), then re-wire its
+      // renderers so the live UX survives a restart (§9 step 4). The attach loop runs in
+      // PARALLEL (resumeAll stays sequential): attachWithRetry adds finite backoff on a
+      // transient fetch, so serial awaits would stack per-channel delay — Promise.allSettled
+      // collapses the worst case to a single channel's retry window (§6.2). Each channel
+      // gets its own independent boot retry budget (≤5).
       await orchestrator.resumeAll();
-      for (const binding of channelRegistry.list().filter((b) => !b.archived)) {
-        await wiring.attach(binding.guildId, binding.channelId, binding.mode);
-      }
+      await Promise.allSettled(
+        channelRegistry
+          .list()
+          .filter((b) => !b.archived)
+          .map(async (binding) => {
+            const outcome = await wiring.attachWithRetry(binding.guildId, binding.channelId, binding.mode);
+            // 'gone' (10003) = a delete missed while offline → hard-clean the stale binding
+            // (same path as a live ChannelDelete). 'unavailable' (retries exhausted) keeps
+            // the binding for the next message's lazy ensureAttached to retry. 'attached' = ok.
+            if (outcome === 'gone') handleChannelGone(binding.guildId, binding.channelId);
+          }),
+      );
       // Start the auto-updater only now — the gateway + guilds are ready, so postPrompt
       // can enumerate guilds and resolve their status channels (§4). No-op when disabled.
       autoUpdater.start();
@@ -284,24 +320,19 @@ export function createApp(deps: CreateAppDeps): App {
       // maybePromptRenderSetup, and is best-effort (never affects provisioning).
       if (isNewGuild && channels) await interactionRouter.maybePromptRenderSetup(channels.controlChannelId);
     },
-    // A user deleted a channel directly in Discord. If it was a BOUND, non-archived
-    // session channel, detach its renderers (dispose cancels any armed stream/thinking
-    // debounce so no late edit fires at the deleted channel) and stop the turn. This is
-    // the ROOT fix for the Unknown Channel (10003) crash. Control channels and
-    // unbound/archived channels have no live session → ignored.
-    onChannelDelete: (channelId, guildId) => {
-      const binding = channelRegistry.get(guildId, channelId);
-      if (!binding || binding.archived) return;
-      wiring.detach(guildId, channelId);
-      void orchestrator.stop(guildId, channelId).catch((err) => {
-        logger.error('stop on channelDelete failed', { guildId, channelId, err: String(err) });
-      });
-    },
+    // A user deleted a channel directly in Discord. Route it through the shared
+    // handleChannelGone (detach + stop, hard remove) — the ROOT fix for the Unknown
+    // Channel (10003) crash, and the exact same cleanup the boot loop applies to a
+    // delete missed while the bot was offline.
+    onChannelDelete: (channelId, guildId) => handleChannelGone(guildId, channelId),
     ...(deps.client ? { client: deps.client } : {}),
   });
 
-  // Bind the wiring's channel resolver to the live gateway now that the client exists.
+  // Bind the wiring's channel resolvers to the live gateway now that the client exists.
+  // The result-aware resolver (ok/gone/unavailable) drives attach's retry-vs-cleanup;
+  // the plain null-or-channel resolver still backs notifier/sendFile.
   wiring.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));
+  wiring.setResolveChannelResult(SessionWiring.resolveResultOverClient(discord.raw));
   // Bind the interaction router's guild/channel resolvers for /init + auto-created
   // session channels (same late-binding pattern: the client depends on the router).
   interactionRouter.setResolveGuildProvisioner((guildId) => resolveGuildProvisioner(discord.raw, guildId));

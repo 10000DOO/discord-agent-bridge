@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Events, type Client } from 'discord.js';
+import { DiscordAPIError, Events, type Client } from 'discord.js';
 import { createApp, installGlobalSafetyNet } from './app.js';
 import { ConfigStore } from './core/config.js';
 import { ChannelRegistry, type ChannelBinding } from './core/channelRegistry.js';
@@ -36,7 +36,7 @@ interface FakeClient {
   destroyed: boolean;
 }
 
-function fakeClient(): FakeClient {
+function fakeClient(opts: { channelsFetch?: (id: string) => Promise<unknown> } = {}): FakeClient {
   const onceHandlers = new Map<string, (arg: unknown) => void>();
   const onHandlers = new Map<string, (arg: unknown) => void>();
   const state = { loginCalls: [] as string[], destroyed: false };
@@ -57,8 +57,9 @@ function fakeClient(): FakeClient {
     destroy: async () => {
       state.destroyed = true;
     },
-    // resolveOverClient uses channels.fetch; onReady uses guilds.cache.size.
-    channels: { fetch: async () => null },
+    // resolveOverClient / resolveResultOverClient use channels.fetch; onReady uses
+    // guilds.cache.size. A test can override the fetch to script a boot re-wire outcome.
+    channels: { fetch: opts.channelsFetch ?? (async () => null) },
     guilds: { cache: { size: 0 } },
     token: 'fake-token-value',
   } as unknown as Client;
@@ -228,6 +229,147 @@ describe('createApp — channelDelete cleans up a bound session (crash-loop root
 
     expect(stopSpy).not.toHaveBeenCalled();
     expect(detachSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('createApp — boot re-wire robustness (§6/§7)', () => {
+  let dir: string;
+  let store: ConfigStore;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-app-rewire-'));
+    store = new ConfigStore(dir);
+    store.save(makeConfig());
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function seedBinding(over: Partial<ChannelBinding> = {}): void {
+    const registry = new ChannelRegistry(new StateStore(store.dir));
+    registry.set({
+      guildId: 'g1',
+      channelId: 'c-bound',
+      mode: 'claude',
+      sessionId: null,
+      cwd: '/ws',
+      ownerId: 'u1',
+      permMode: 'default',
+      profile: null,
+      ...over,
+    });
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  // A real DiscordAPIError(10003) — the single permanent "channel is gone" signal.
+  function djs10003(): DiscordAPIError {
+    return new DiscordAPIError({ code: 10003, message: 'Unknown Channel' }, 10003, 404, 'GET', 'https://x', {
+      files: [],
+      body: {},
+    });
+  }
+
+  it('boot: a 10003 fetch hard-cleans the stale binding (detach + stop), end-to-end', async () => {
+    seedBinding();
+    const fc = fakeClient({ channelsFetch: async () => { throw djs10003(); } });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
+    // Isolate the attach loop: keep resumeAll from spawning real sessions.
+    vi.spyOn(app.orchestrator, 'resumeAll').mockResolvedValue(undefined);
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    await fc.fireReady();
+    await settle();
+
+    // The whole chain ran: fetch → resolveChannelResult(gone) → attachWithRetry(gone,
+    // 1 attempt, no delay) → handleChannelGone → detach + stop.
+    expect(detachSpy).toHaveBeenCalledWith('g1', 'c-bound');
+    expect(stopSpy).toHaveBeenCalledWith('g1', 'c-bound');
+  });
+
+  it('boot: a transient failure preserves the binding (no detach/stop)', async () => {
+    seedBinding();
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
+    vi.spyOn(app.orchestrator, 'resumeAll').mockResolvedValue(undefined);
+    // Stub the retry to report exhaustion without waiting the real backoff.
+    vi.spyOn(app.wiring, 'attachWithRetry').mockResolvedValue('unavailable');
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    await fc.fireReady();
+    await settle();
+
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(detachSpy).not.toHaveBeenCalled();
+  });
+
+  it('boot: parallel attach — a gone channel is cleaned without blocking a healthy one', async () => {
+    seedBinding({ channelId: 'c-gone' });
+    seedBinding({ channelId: 'c-ok' });
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
+    vi.spyOn(app.orchestrator, 'resumeAll').mockResolvedValue(undefined);
+    const attachSpy = vi
+      .spyOn(app.wiring, 'attachWithRetry')
+      .mockImplementation(async (_guildId, channelId) => (channelId === 'c-gone' ? 'gone' : 'attached'));
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    await fc.fireReady();
+    await settle();
+
+    // Both channels were attempted (allSettled fans out); only the gone one is cleaned.
+    expect(attachSpy).toHaveBeenCalledWith('g1', 'c-gone', 'claude');
+    expect(attachSpy).toHaveBeenCalledWith('g1', 'c-ok', 'claude');
+    expect(detachSpy).toHaveBeenCalledWith('g1', 'c-gone');
+    expect(stopSpy).toHaveBeenCalledWith('g1', 'c-gone');
+    expect(stopSpy).not.toHaveBeenCalledWith('g1', 'c-ok');
+  });
+
+  it('boot: a throwing attachWithRetry does not kill boot; other channels still attach (allSettled)', async () => {
+    seedBinding({ channelId: 'c-throws' });
+    seedBinding({ channelId: 'c-ok' });
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
+    vi.spyOn(app.orchestrator, 'resumeAll').mockResolvedValue(undefined);
+    const attachSpy = vi.spyOn(app.wiring, 'attachWithRetry').mockImplementation(async (_guildId, channelId) => {
+      if (channelId === 'c-throws') throw new Error('attach blew up');
+      return 'attached';
+    });
+
+    // Promise.allSettled isolates the rejection: the ready handler must not reject.
+    await expect(fc.fireReady()).resolves.toBeUndefined();
+    await settle();
+
+    expect(attachSpy).toHaveBeenCalledWith('g1', 'c-throws', 'claude');
+    expect(attachSpy).toHaveBeenCalledWith('g1', 'c-ok', 'claude');
+  });
+
+  it('onChannelDelete and a boot 10003 take the same cleanup path (shared handleChannelGone)', async () => {
+    seedBinding();
+    const fc = fakeClient({ channelsFetch: async () => { throw djs10003(); } });
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
+    vi.spyOn(app.orchestrator, 'resumeAll').mockResolvedValue(undefined);
+    const stopSpy = vi.spyOn(app.orchestrator, 'stop').mockResolvedValue(undefined);
+    const detachSpy = vi.spyOn(app.wiring, 'detach').mockImplementation(() => {});
+
+    // Path 1: the boot re-wire hits 10003 → one cleanup.
+    await fc.fireReady();
+    await settle();
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(detachSpy).toHaveBeenCalledTimes(1);
+
+    // Path 2: a live ChannelDelete for the same channel → identical cleanup call.
+    fc.fireChannelDelete({ id: 'c-bound', guildId: 'g1', isDMBased: () => false });
+    await settle();
+    expect(stopSpy).toHaveBeenCalledTimes(2);
+    expect(detachSpy).toHaveBeenCalledTimes(2);
+    expect(stopSpy).toHaveBeenNthCalledWith(1, 'g1', 'c-bound');
+    expect(stopSpy).toHaveBeenNthCalledWith(2, 'g1', 'c-bound');
+    expect(detachSpy).toHaveBeenNthCalledWith(1, 'g1', 'c-bound');
+    expect(detachSpy).toHaveBeenNthCalledWith(2, 'g1', 'c-bound');
   });
 });
 

@@ -137,3 +137,14 @@ export interface MessageChannel {
   // that message (discord.js message.startThread); otherwise a standalone thread.
   startThread(name: string, startFromMessageId?: string): Promise<MessageThread>;
 }
+
+// The outcome of resolving a channel id to a sink. 'gone' = the channel no longer
+// exists (permanent; Discord 10003 Unknown Channel). 'unavailable' = a transient
+// failure (network/timeout, a momentary permission loss, an unready gateway cache)
+// that a later retry may recover. The discord.js layer (client.ts) classifies the raw
+// fetch outcome into these; the wiring layer's attach uses the distinction to decide
+// retry-vs-cleanup — the null-or-channel port stays unchanged for every other caller.
+export type ChannelResolution =
+  | { status: 'ok'; channel: MessageChannel }
+  | { status: 'gone' }
+  | { status: 'unavailable' };

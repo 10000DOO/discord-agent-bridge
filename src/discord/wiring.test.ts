@@ -17,7 +17,7 @@ import type { AuditEntry } from '../core/contracts.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { ConfigStore } from '../core/config.js';
 import type { ServerConfig } from '../core/configSchema.js';
-import type { EditableMessage, MessageChannel, OutgoingMessage } from './ports.js';
+import type { ChannelResolution, EditableMessage, MessageChannel, OutgoingMessage } from './ports.js';
 
 const logger = createLogger('test', { level: 'error', sink: { write() {} } });
 
@@ -74,6 +74,13 @@ function makeWiring(opts: {
   // Per-channelId resolver override (default: everything resolves to opts.channel),
   // so a test can hand the status channel a distinct sink from the session channel.
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
+  // Result-aware resolver override (ok/gone/unavailable), so the attach/retry tests can
+  // script a sequence of resolution outcomes. When omitted, attach falls back to wrapping
+  // resolveChannel as ok|unavailable.
+  resolveChannelResult?: (channelId: string) => Promise<ChannelResolution>;
+  // Inter-retry delay override; the retry tests inject an immediate-resolve sleep (that
+  // records the requested ms) so they never actually wait the real backoff.
+  sleep?: (ms: number) => Promise<void>;
   // Extra binding fields (cwd/permissionMode/createdAt) merged into the stub
   // registry's binding, so getSessionMeta tests can shape the session meta.
   binding?: Record<string, unknown>;
@@ -104,6 +111,8 @@ function makeWiring(opts: {
     ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),
     ...(opts.onAlwaysAllow ? { onAlwaysAllow: opts.onAlwaysAllow } : {}),
     ...(configStore ? { configStore } : {}),
+    ...(opts.resolveChannelResult ? { resolveChannelResult: opts.resolveChannelResult } : {}),
+    ...(opts.sleep ? { sleep: opts.sleep } : {}),
   });
   return { wiring, eventBus };
 }
@@ -460,5 +469,228 @@ describe('SessionWiring notifications forwarding', () => {
     eventBus.emit('g1', 'c1', { kind: 'result' });
     await Promise.resolve();
     expect(status.sent.length).toBe(0);
+  });
+});
+
+// The boot/lazy re-wire robustness surface (design §6): attach reports an AttachOutcome,
+// attachWithRetry adds a finite injected-delay retry with early-stop on ok/gone, and
+// ensureAttached gives each message its own fresh budget. `sleep` is injected as an
+// immediate-resolve stub so these run without ever waiting the real backoff.
+describe('SessionWiring attach outcome + finite retry (boot/lazy re-wire)', () => {
+  // A result-aware resolver yielding a scripted sequence of statuses; the LAST entry
+  // repeats once the script is exhausted. Records how many times it was called so a test
+  // asserts the exact attempt count. 'ok' resolves to `channel`.
+  function scriptedResolver(channel: MessageChannel, statuses: Array<'ok' | 'gone' | 'unavailable'>) {
+    const calls = { count: 0 };
+    const resolve = async (): Promise<ChannelResolution> => {
+      const status = statuses[Math.min(calls.count, statuses.length - 1)];
+      calls.count++;
+      if (status === 'ok') return { status: 'ok', channel };
+      if (status === 'gone') return { status: 'gone' };
+      return { status: 'unavailable' };
+    };
+    return { resolve, calls };
+  }
+  // An immediate-resolve sleep that records the requested delays (proving the backoff
+  // schedule without ever waiting).
+  function recordingSleep() {
+    const delays: number[] = [];
+    const sleep = async (ms: number): Promise<void> => {
+      delays.push(ms);
+    };
+    return { sleep, delays };
+  }
+
+  it('attach (single attempt) returns attached/gone/unavailable and wires only on ok', async () => {
+    const { channel } = fakeChannel();
+    const okWiring = makeWiring({ channel, resolveChannelResult: scriptedResolver(channel, ['ok']).resolve }).wiring;
+    expect(await okWiring.attach('g1', 'c1', 'claude')).toBe('attached');
+    expect(okWiring.isAttached('g1', 'c1')).toBe(true);
+
+    const goneWiring = makeWiring({ channel, resolveChannelResult: scriptedResolver(channel, ['gone']).resolve }).wiring;
+    expect(await goneWiring.attach('g1', 'c1', 'claude')).toBe('gone');
+    expect(goneWiring.isAttached('g1', 'c1')).toBe(false); // no renderer subscription registered
+
+    const unavailWiring = makeWiring({ channel, resolveChannelResult: scriptedResolver(channel, ['unavailable']).resolve }).wiring;
+    expect(await unavailWiring.attach('g1', 'c1', 'claude')).toBe('unavailable');
+    expect(unavailWiring.isAttached('g1', 'c1')).toBe(false);
+  });
+
+  it('attachWithRetry: succeeds on the first attempt (no delay)', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['ok']);
+    const { sleep, delays } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('attached');
+    expect(r.calls.count).toBe(1);
+    expect(delays).toEqual([]);
+  });
+
+  it('attachWithRetry: recovers on the 3rd attempt after 2 transient failures', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['unavailable', 'unavailable', 'ok']);
+    const { sleep, delays } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('attached');
+    expect(r.calls.count).toBe(3);
+    expect(delays).toEqual([300, 600]); // two gaps before the 3rd attempt
+    expect(wiring.isAttached('g1', 'c1')).toBe(true);
+  });
+
+  it('attachWithRetry: exhausts at exactly 5 attempts → unavailable (backoff 300/600/1200/2400)', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['unavailable']); // always transient
+    const { sleep, delays } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('unavailable');
+    expect(r.calls.count).toBe(5); // MAX_ATTACH_ATTEMPTS, no more
+    expect(delays).toEqual([300, 600, 1200, 2400]); // 4 gaps, no delay after the final attempt
+  });
+
+  it('attachWithRetry: gone stops immediately (no retry, no delay)', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['gone']);
+    const { sleep, delays } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('gone');
+    expect(r.calls.count).toBe(1);
+    expect(delays).toEqual([]);
+  });
+
+  it('attachWithRetry: a transient run stops the moment it turns gone', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['unavailable', 'gone']);
+    const { sleep, delays } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('gone');
+    expect(r.calls.count).toBe(2); // stopped at gone; did not spend the full budget
+    expect(delays).toEqual([300]); // one gap before the 2nd attempt, none after gone
+  });
+
+  it('per-stage budget is independent: a second attachWithRetry gets a fresh 5', async () => {
+    const { channel } = fakeChannel();
+    // 5 transient (first call exhausts), then ok (second call succeeds on its 1st attempt).
+    const r = scriptedResolver(channel, ['unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'ok']);
+    const { sleep } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('unavailable');
+    expect(r.calls.count).toBe(5);
+    // The next stage gets a brand-new budget and recovers on its first attempt.
+    expect(await wiring.attachWithRetry('g1', 'c1', 'claude')).toBe('attached');
+    expect(r.calls.count).toBe(6);
+  });
+
+  it('concurrent attachWithRetry calls share ONE in-flight retry (no double-attach)', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['ok']);
+    const { sleep } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    const [a, b] = await Promise.all([
+      wiring.attachWithRetry('g1', 'c1', 'claude'),
+      wiring.attachWithRetry('g1', 'c1', 'claude'),
+    ]);
+    expect(a).toBe('attached');
+    expect(b).toBe('attached');
+    expect(r.calls.count).toBe(1); // the guard collapsed both callers onto one resolve
+  });
+
+  it('ensureAttached: attaches when unwired, then no-ops (spends no budget) when already attached', async () => {
+    const { channel } = fakeChannel();
+    const r = scriptedResolver(channel, ['ok']);
+    const { sleep } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.ensureAttached('g1', 'c1', 'claude')).toBe('attached');
+    expect(r.calls.count).toBe(1);
+    // Already attached → no resolve, no retry.
+    expect(await wiring.ensureAttached('g1', 'c1', 'claude')).toBe('attached');
+    expect(r.calls.count).toBe(1);
+  });
+
+  it('ensureAttached: each call gets a fresh budget while still unattached (self-heal)', async () => {
+    const { channel } = fakeChannel();
+    // First ensureAttached exhausts (5 transient); second recovers (ok) — each ≤5.
+    const r = scriptedResolver(channel, ['unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'ok']);
+    const { sleep } = recordingSleep();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+    expect(await wiring.ensureAttached('g1', 'c1', 'claude')).toBe('unavailable');
+    expect(r.calls.count).toBe(5);
+    expect(await wiring.ensureAttached('g1', 'c1', 'claude')).toBe('attached');
+    expect(r.calls.count).toBe(6);
+  });
+
+  it('isAttached tracks attach then detach', async () => {
+    const { channel } = fakeChannel();
+    const { wiring } = makeWiring({ channel, resolveChannelResult: scriptedResolver(channel, ['ok']).resolve });
+    expect(wiring.isAttached('g1', 'c1')).toBe(false);
+    await wiring.attach('g1', 'c1', 'claude');
+    expect(wiring.isAttached('g1', 'c1')).toBe(true);
+    wiring.detach('g1', 'c1');
+    expect(wiring.isAttached('g1', 'c1')).toBe(false);
+  });
+
+  it('falls back to plain resolveChannel (null → unavailable) when no result-aware resolver is injected', async () => {
+    const { channel } = fakeChannel();
+    // resolveChannel returns null → wrapped as unavailable (never gone) — the safe default.
+    const { wiring } = makeWiring({ channel, resolveChannel: async () => null });
+    expect(await wiring.attach('g1', 'c1', 'claude')).toBe('unavailable');
+    expect(wiring.isAttached('g1', 'c1')).toBe(false);
+  });
+
+  // Fix ①: the attach critical section is serialized per channel key so a direct attach
+  // (interactionRouter) and a message's attachWithRetry cannot interleave their
+  // detach→subscribe→channels.set and orphan a dispatcher. Deterministic order: the
+  // Promise.all array is evaluated left-to-right, so the direct attach chains first and
+  // the retry's attempts chain after it.
+  it('serializes concurrent direct attach + attachWithRetry: one live subscription, no orphan, no self-deadlock', async () => {
+    const { channel, sent } = fakeChannel();
+    // Script: the direct attach sees 'ok'; the retry's 1st attempt sees 'unavailable' (so
+    // it sleeps + retries — exercising the no-self-deadlock path), its 2nd sees 'ok'.
+    const r = scriptedResolver(channel, ['ok', 'unavailable', 'ok']);
+    const { sleep } = recordingSleep();
+    const { wiring, eventBus } = makeWiring({ channel, resolveChannelResult: r.resolve, sleep });
+
+    const [direct, retried] = await Promise.all([
+      wiring.attach('g1', 'c1', 'claude'),
+      wiring.attachWithRetry('g1', 'c1', 'claude'),
+    ]);
+    expect(direct).toBe('attached');
+    expect(retried).toBe('attached'); // completed through a retry — no self-deadlock
+    expect(wiring.isAttached('g1', 'c1')).toBe(true);
+
+    // Exactly ONE dispatcher is live: emitting once renders once (no double render).
+    eventBus.emit('g1', 'c1', { kind: 'error', message: 'boom', retryable: false });
+    await Promise.resolve();
+    expect(sent.filter((m) => (m.content ?? '').includes('boom'))).toHaveLength(1);
+
+    // detach removes the single tracked subscription; no orphan keeps rendering.
+    const before = sent.length;
+    wiring.detach('g1', 'c1');
+    eventBus.emit('g1', 'c1', { kind: 'error', message: 'again', retryable: false });
+    await Promise.resolve();
+    expect(sent.length).toBe(before);
+  });
+
+  // Fix ②: detach-moved-after-ok ordering regressions.
+  it('re-attaching an already-attached channel (ok) still renders each event exactly once', async () => {
+    const { channel, sent } = fakeChannel();
+    const r = scriptedResolver(channel, ['ok', 'ok']);
+    const { wiring, eventBus } = makeWiring({ channel, resolveChannelResult: r.resolve });
+    await wiring.attach('g1', 'c1', 'claude');
+    await wiring.attach('g1', 'c1', 'claude'); // re-attach must tear down the prior subscription first
+    eventBus.emit('g1', 'c1', { kind: 'error', message: 'boom', retryable: false });
+    await Promise.resolve();
+    expect(sent.filter((m) => (m.content ?? '').includes('boom'))).toHaveLength(1);
+  });
+
+  it('a re-attach that returns unavailable preserves the live wiring (existing sink keeps rendering)', async () => {
+    const { channel, sent } = fakeChannel();
+    const r = scriptedResolver(channel, ['ok', 'unavailable']);
+    const { wiring, eventBus } = makeWiring({ channel, resolveChannelResult: r.resolve });
+    expect(await wiring.attach('g1', 'c1', 'claude')).toBe('attached');
+    expect(await wiring.attach('g1', 'c1', 'claude')).toBe('unavailable'); // transient re-attach
+    expect(wiring.isAttached('g1', 'c1')).toBe(true); // NOT torn down on a transient failure
+    eventBus.emit('g1', 'c1', { kind: 'error', message: 'still-here', retryable: false });
+    await Promise.resolve();
+    expect(sent.some((m) => (m.content ?? '').includes('still-here'))).toBe(true);
   });
 });
