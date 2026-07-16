@@ -681,6 +681,10 @@ export class InteractionRouter {
       await this.guarded(i, () => this.handleCreateFolderModal(i));
       return;
     }
+    if (i.customId === 'dir:manual') {
+      await this.guarded(i, () => this.handleManualPathModal(i));
+      return;
+    }
     await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
   }
 
@@ -1122,6 +1126,14 @@ export class InteractionRouter {
       return;
     }
 
+    // The 📝 manual-path button also opens a modal, so — like dir:create — showModal IS
+    // the ack and it must precede the generic defer below. Drive-gated + owner-bound.
+    if (i.customId === 'dir:manual') {
+      if (!this.authorize(i, 'drive')) return;
+      await this.guarded(i, () => this.openManualPathModal(i));
+      return;
+    }
+
     // The "Resume Session" button and the resume flow's own selects (resume.*) drive a
     // separate resume state machine. Deferred-update first (listResumable/resume can
     // exceed 3s), then routed to the flow.
@@ -1234,6 +1246,59 @@ export class InteractionRouter {
     // interaction, so we reply to it directly.
     const { embed, rows } = wizard.render();
     await safe(i.reply({ content: t('dir.create.done', { name }), embeds: [embed], components: rows, ephemeral: true }));
+  }
+
+  // ---- 📝 Manual path ----------------------------------------------------
+
+  // Open the manual absolute-path modal for the active wizard's folder step. Owner-bound:
+  // a bystander (or a stale button with no wizard) is acknowledged (deferUpdate) and
+  // ignored, so it never shows "did not respond". showModal is the ack for the owner's
+  // click — the modal-submit (handleManualPathModal) jumps the browser to the typed path.
+  private async openManualPathModal(i: ComponentInteraction): Promise<void> {
+    const wizard = i.guildId ? this.wizards.get(channelKey(i.guildId, i.channelId)) : undefined;
+    if (!wizard || wizard.ownerId !== i.user.id) {
+      await safe(i.deferUpdate());
+      return;
+    }
+    await i.showModal({
+      customId: 'dir:manual',
+      title: t('dir.manual.title'),
+      fields: [
+        {
+          customId: 'path',
+          label: t('dir.manual.label'),
+          placeholder: t('dir.manual.placeholder'),
+          required: true,
+        },
+      ],
+    });
+  }
+
+  // Handle the manual-path modal submit: validate the typed ABSOLUTE path, jump the
+  // wizard's browser to it (browserGoTo enforces exists + isDirectory + allowedRoots
+  // confinement — the SAME rule as click-navigation), then re-render the folder step so
+  // the driver confirms with ✅ Start. Never auto-starts. Owner-bound.
+  private async handleManualPathModal(i: ModalSubmitInteraction): Promise<void> {
+    if (!i.guildId) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    const wizard = this.wizards.get(channelKey(i.guildId, i.channelId));
+    if (!wizard || wizard.ownerId !== i.user.id) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    const input = i.getField('path').trim();
+    if (!input || !path.isAbsolute(input)) {
+      await safe(i.reply({ content: t('dir.manual.notabs'), ephemeral: true }));
+      return;
+    }
+    if (!wizard.browserGoTo(input)) {
+      await safe(i.reply({ content: t('dir.manual.invalid', { path: input }), ephemeral: true }));
+      return;
+    }
+    const { embed, rows } = wizard.render();
+    await safe(i.reply({ content: t('dir.manual.done', { path: wizard.browserCwd() }), embeds: [embed], components: rows, ephemeral: true }));
   }
 
   // ---- Resume Session flow -----------------------------------------------
