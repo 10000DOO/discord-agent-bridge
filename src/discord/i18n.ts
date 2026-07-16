@@ -126,6 +126,14 @@ const ko: Catalog = {
   'dir.create.invalid': '폴더 이름이 올바르지 않아요. `/`, `..`, 절대 경로는 쓸 수 없어요.',
   'dir.create.failed': '폴더를 만들지 못했어요: {error}',
   'dir.create.done': '폴더를 만들었어요: {name}',
+  // Manual absolute-path entry (📝): type a path instead of clicking down to it.
+  'dir.manual': '📝 경로 직접 입력',
+  'dir.manual.title': '경로 직접 입력',
+  'dir.manual.label': '절대 경로',
+  'dir.manual.placeholder': '예: /Volumes/SourceCode/MyProject',
+  'dir.manual.notabs': '절대 경로를 입력하세요 (예: `/Users/...` 또는 `/Volumes/...`).',
+  'dir.manual.invalid': '이동할 수 없는 경로예요: `{path}` (존재하지 않거나, 폴더가 아니거나, 허용 범위 밖).',
+  'dir.manual.done': '경로로 이동했어요: `{path}`\n`✅ 이 폴더로 시작`을 눌러 이 폴더에서 세션을 시작하세요.',
   // Folder-picker guidance (step 1 of /agent start). Shows the current path + how to
   // navigate; the actual PROJECT folder is chosen HERE (not in /config).
   'dir.guide':
@@ -281,6 +289,13 @@ const en: Catalog = {
   'dir.select': 'Go into a subfolder…',
   'dir.here': '✅ Start in this folder',
   'dir.current': 'Current location',
+  'dir.manual': '📝 Enter path manually',
+  'dir.manual.title': 'Enter path manually',
+  'dir.manual.label': 'Absolute path',
+  'dir.manual.placeholder': 'e.g. /Volumes/SourceCode/MyProject',
+  'dir.manual.notabs': 'Enter an absolute path (e.g. `/Users/...` or `/Volumes/...`).',
+  'dir.manual.invalid': 'Cannot go to `{path}` (does not exist, is not a folder, or is out of bounds).',
+  'dir.manual.done': 'Moved to `{path}`.\nPress `✅ Start in this folder` to start the session here.',
   'cmd.interrupt.button': '⏹️ Stop',
   'cmd.interrupt.done': 'Stopped the current task. You can keep the conversation going.',
   'cmd.interrupt.none': 'No running task to stop.',

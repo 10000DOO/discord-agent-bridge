@@ -148,6 +148,13 @@ export class ChannelWizard {
     return this.browser.cwd();
   }
 
+  // Jump the wizard's browser to an absolute path typed via the 📝 manual-path modal.
+  // Returns false when the path is invalid / out of bounds (same rule as browse nav),
+  // so the router can report it without changing the view.
+  browserGoTo(absPath: string): boolean {
+    return this.browser.goTo(absPath);
+  }
+
   // The collected selection so far (read-only view for tests / status).
   current(): Readonly<Selection> {
     return { ...this.selection };

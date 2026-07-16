@@ -103,6 +103,29 @@ describe('DirectoryBrowser', () => {
     const b = new DirectoryBrowser({ allowedRoots: [path.join(root, 'sub')], startPath: os.tmpdir() });
     expect(b.cwd()).toBe(path.join(root, 'sub'));
   });
+
+  it('goTo() jumps to a valid absolute path (deep, in one hop)', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    expect(b.goTo(path.join(root, 'sub', 'nested'))).toBe(true);
+    expect(b.cwd()).toBe(path.join(root, 'sub', 'nested'));
+  });
+
+  it('goTo() rejects a nonexistent path, a file, and an out-of-bounds path (no view change)', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [path.join(root, 'sub')], startPath: path.join(root, 'sub') });
+    expect(b.goTo(path.join(root, 'sub', 'does-not-exist'))).toBe(false);
+    expect(b.goTo(path.join(root, 'sub', 'file.txt'))).toBe(false);
+    expect(b.goTo(os.tmpdir())).toBe(false); // outside the allowed root
+    expect(b.cwd()).toBe(path.join(root, 'sub'));
+  });
+
+  it('render() offers the 📝 manual-path button (dir:manual)', () => {
+    const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const ids = b
+      .render()
+      .rows.flatMap((r) => r.components)
+      .map((c) => (c as { customId?: string }).customId);
+    expect(ids).toContain('dir:manual');
+  });
 });
 
 describe('DirectoryBrowser unbounded (Fix 1: reach the filesystem root and other volumes)', () => {
@@ -204,14 +227,18 @@ describe('DirectoryBrowser render (A4D-style folder picker)', () => {
   it('mirrors A4D folder-step buttons: Parent · Start · Resume · 📁 Create · Cancel in ONE row (≤5 rows)', () => {
     const b = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
     const { rows } = b.render();
-    // Two rows total (subfolder select + the five-button row) — well under Discord's 5.
+    // Three rows (subfolder select + the five-button row + the manual-path row) — the
+    // manual-path button needs its own row because the main button row is already at
+    // Discord's 5-button limit. Still well under Discord's 5-row-per-message cap.
     expect(rows.length).toBeLessThanOrEqual(5);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     // The subfolder select stays in its own row.
     expect(rows[0].components.every((c) => c.type === 'select')).toBe(true);
     // The button row carries exactly the five A4D-style buttons, in order.
     const buttonRow = rows[1].components;
     expect(buttonRow.every((c) => c.type === 'button')).toBe(true);
     expect(buttonRow.map((c) => c.customId)).toEqual(['dir:up', 'dir:here', 'dir:resume', 'dir:create', 'cancel']);
+    // The manual-path button is on its own third row.
+    expect(rows[2].components.map((c) => c.customId)).toEqual(['dir:manual']);
   });
 });

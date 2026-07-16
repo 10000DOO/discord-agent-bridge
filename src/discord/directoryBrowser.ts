@@ -22,6 +22,7 @@ import { t } from './i18n.js';
 //   dir:here    (button — select the current folder / Session Start)
 //   dir:resume  (button — start the resume-session flow for the current folder)
 //   dir:create  (button — open the create-folder modal in the current folder)
+//   dir:manual  (button — open the manual absolute-path modal; jumps the browser there)
 //   cancel      (button — cancel the wizard)
 
 // Discord select limits (A4D MAX_SELECT_OPTIONS / label length).
@@ -101,6 +102,18 @@ export class DirectoryBrowser {
     return true;
   }
 
+  // Jump directly to an absolute path typed via the 📝 manual-path option. No-ops
+  // (returns false) if the path does not exist, is not a directory, or would escape an
+  // allowed root — the SAME confinement rule as into()/up(). On success the current view
+  // moves there so ✅ Start selects it (the driver still confirms; no auto-start).
+  goTo(target: string): boolean {
+    const resolved = path.resolve(target);
+    if (!this.confine(resolved)) return false;
+    if (!isDirectory(resolved)) return false;
+    this.current = resolved;
+    return true;
+  }
+
   // Select the current folder as the session cwd. Returns its absolute path.
   select(): string {
     return this.current;
@@ -148,6 +161,12 @@ export class DirectoryBrowser {
           { type: 'button', customId: 'dir:create', label: t('dir.create'), style: 'secondary' },
           { type: 'button', customId: 'cancel', label: t('wizard.cancel'), style: 'secondary' },
         ],
+      },
+      {
+        // A separate row (the button row above is already at Discord's 5-button limit):
+        // type an absolute path instead of clicking down to it (also handy on mobile /
+        // for deep paths). Opens a modal; on submit the browser jumps there.
+        components: [{ type: 'button', customId: 'dir:manual', label: t('dir.manual'), style: 'secondary' }],
       },
     ];
     return { embed, rows };
