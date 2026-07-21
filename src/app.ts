@@ -26,6 +26,7 @@ import { CustomMode } from './modes/custom/index.js';
 import { customBackendLabel } from './modes/custom/shellEnv.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
+import { createMacFolderPanelOpener } from './discord/folderPanel.js';
 import { SessionWiring } from './discord/wiring.js';
 import { ChromiumProvisioner } from './discord/render/chromiumProvisioner.js';
 import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
@@ -288,6 +289,10 @@ export function createApp(deps: CreateAppDeps): App {
     // Names the wizard's 'custom' backend choice after the operator's actual dotfile
     // config (mirrors /mode backend's choice label — client.ts buildSlashCommands).
     customBackendLabel,
+    // Native host-side folder picker for the wizard's folder step (dir:panel) — macOS
+    // only, where the bot typically runs in the operator's GUI session and osascript
+    // can raise a real Finder open-panel. Other hosts simply don't render the button.
+    ...(process.platform === 'darwin' ? { pickFolder: createMacFolderPanelOpener() } : {}),
   });
 
   const discord = new DiscordClient({

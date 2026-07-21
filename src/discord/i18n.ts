@@ -134,6 +134,15 @@ const ko: Catalog = {
   'dir.manual.notabs': '절대 경로를 입력하세요 (예: `/Users/...` 또는 `/Volumes/...`).',
   'dir.manual.invalid': '이동할 수 없는 경로예요: `{path}` (존재하지 않거나, 폴더가 아니거나, 허용 범위 밖).',
   'dir.manual.done': '경로로 이동했어요: `{path}`\n`✅ 이 폴더로 시작`을 눌러 이 폴더에서 세션을 시작하세요.',
+  // Native host-side folder panel (🖥️): pick the folder in a real open-panel ON the
+  // host (macOS). Only useful when the operator is physically at the machine.
+  'dir.panel': '🖥️ Mac에서 폴더 선택',
+  'dir.panel.prompt': 'Discord 세션 프로젝트 폴더 선택',
+  'dir.panel.wait': '🖥️ Mac 화면에 폴더 선택 창을 열었어요. Mac에서 폴더를 선택하세요… (2분 내)',
+  'dir.panel.cancelled': '폴더 선택을 취소했어요.',
+  'dir.panel.timeout': '폴더 선택 창을 2분이 지나 닫았어요. Mac 앞에 있을 때 사용하세요.',
+  'dir.panel.busy': '이미 폴더 선택 창이 열려 있어요. Mac 화면을 확인하세요.',
+  'dir.panel.error': '폴더 선택 창을 열지 못했어요: {err}',
   // Folder-picker guidance (step 1 of /agent start). Shows the current path + how to
   // navigate; the actual PROJECT folder is chosen HERE (not in /config).
   'dir.guide':
@@ -304,6 +313,13 @@ const en: Catalog = {
   'dir.manual.notabs': 'Enter an absolute path (e.g. `/Users/...` or `/Volumes/...`).',
   'dir.manual.invalid': 'Cannot go to `{path}` (does not exist, is not a folder, or is out of bounds).',
   'dir.manual.done': 'Moved to `{path}`.\nPress `✅ Start in this folder` to start the session here.',
+  'dir.panel': '🖥️ Pick folder on Mac',
+  'dir.panel.prompt': 'Choose the project folder for the Discord session',
+  'dir.panel.wait': '🖥️ Opened a folder picker on the Mac. Pick a folder there… (within 2 min)',
+  'dir.panel.cancelled': 'Folder pick cancelled.',
+  'dir.panel.timeout': 'Closed the folder picker after 2 minutes. Use this when you are at the Mac.',
+  'dir.panel.busy': 'A folder picker is already open. Check the Mac screen.',
+  'dir.panel.error': 'Could not open the folder picker: {err}',
   'cmd.interrupt.button': '⏹️ Stop',
   'cmd.interrupt.done': 'Stopped the current task. You can keep the conversation going.',
   'cmd.interrupt.none': 'No running task to stop.',

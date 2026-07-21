@@ -14,6 +14,7 @@ import type { SessionWiring } from './wiring.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { ResumeWizard } from './wizard/resumeWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
+import type { FolderPanelOpener } from './folderPanel.js';
 import { parseCustomId } from './renderers/permissionButtons.js';
 import { parseInterruptId } from './renderers/interruptButton.js';
 import { parseUpdateId, buildUpdateDecidedRow } from './renderers/updateButton.js';
@@ -170,6 +171,11 @@ export interface InteractionRouterDeps {
   // build without it; app boot injects it via setAutoUpdater once the client exists.
   // Update-prompt button clicks (approve/dismiss) route here after the admin gate.
   autoUpdater?: AutoUpdater;
+  // Native host-side folder picker for the wizard's folder step (dir:panel). Wired by
+  // app boot only where a GUI picker exists (macOS — see folderPanel.ts); when absent
+  // the button is not rendered and dir:panel clicks are ignored, so non-GUI hosts see
+  // no dead button.
+  pickFolder?: FolderPanelOpener;
 }
 
 function channelKey(guildId: string, channelId: string): string {
@@ -192,6 +198,12 @@ export class InteractionRouter {
   // freshest list on every (rare) open.
   private modelAutocompleteCache: { choices: ModelChoice[]; fetchedAt: number } | null = null;
   private static readonly MODEL_AUTOCOMPLETE_CACHE_MS = 60_000;
+  // Channels with a native folder picker currently open (dir:panel) — one panel per
+  // channel; a second click is bounced instead of stacking dialogs on the host.
+  private readonly folderPanels = new Set<string>();
+  // The picker is only useful when the operator is AT the host, so an unattended
+  // dialog (e.g. tapped from mobile) is closed after this long.
+  private static readonly FOLDER_PANEL_TIMEOUT_MS = 120_000;
 
   constructor(deps: InteractionRouterDeps) {
     this.deps = deps;
@@ -411,6 +423,8 @@ export class InteractionRouter {
       ...(this.deps.browseRoots && this.deps.browseRoots.length > 0
         ? { allowedRoots: this.deps.browseRoots }
         : {}),
+      // Offer the 🖥️ native picker button only when a picker is actually wired.
+      nativePanel: this.deps.pickFolder !== undefined,
     });
 
     const wizard = new ChannelWizard({
@@ -1201,6 +1215,18 @@ export class InteractionRouter {
       return;
     }
 
+    // The 🖥️ native-panel button opens a folder picker ON THE HOST and waits for the
+    // pick (can far exceed 3s) — deferUpdate now, jump the browser after. Drive-gated
+    // + owner-bound. Handled before the generic wizard dispatch so the wizard state
+    // machine never sees dir:panel.
+    if (i.customId === 'dir:panel') {
+      if (!this.authorize(i, 'drive')) return;
+      if (!(await this.ackDeferUpdate(i))) return;
+      if (!i.guildId) return;
+      await this.guarded(i, () => this.handleFolderPanel(i));
+      return;
+    }
+
     // The "Resume Session" button and the resume flow's own selects (resume.*) drive a
     // separate resume state machine. Deferred-update first (listResumable/resume can
     // exceed 3s), then routed to the flow.
@@ -1366,6 +1392,53 @@ export class InteractionRouter {
     }
     const { embed, rows } = wizard.render();
     await safe(i.reply({ content: t('dir.manual.done', { path: wizard.browserCwd() }), embeds: [embed], components: rows, ephemeral: true }));
+  }
+
+  // ---- 🖥️ Native folder panel --------------------------------------------
+
+  // Open a native "choose folder" dialog ON THE HOST via deps.pickFolder and jump the
+  // wizard's browser to the pick — the SAME confinement rule as manual/click
+  // navigation, and never auto-starts. The picker is only useful when the operator is
+  // physically at the host, so the opener is given FOLDER_PANEL_TIMEOUT_MS to resolve
+  // (on expiry it closes the dialog and rejects with 'timeout' — worded to the user as
+  // a timeout, not a failure). One panel per channel; the interaction is already
+  // deferUpdate'd by the caller. Owner-bound.
+  private async handleFolderPanel(i: ComponentInteraction): Promise<void> {
+    const pickFolder = this.deps.pickFolder;
+    if (!pickFolder) return; // stale button from a host that no longer wires a picker
+    const key = channelKey(i.guildId as string, i.channelId);
+    const wizard = this.wizards.get(key);
+    if (!wizard || wizard.ownerId !== i.user.id) return; // owner-bound; ignore strays
+    if (this.folderPanels.has(key)) {
+      await safe(i.followUp({ content: t('dir.panel.busy'), ephemeral: true }));
+      return;
+    }
+    this.folderPanels.add(key);
+    await safe(i.followUp({ content: t('dir.panel.wait'), ephemeral: true }));
+    try {
+      const picked = await pickFolder(wizard.browserCwd(), t('dir.panel.prompt'), InteractionRouter.FOLDER_PANEL_TIMEOUT_MS);
+      if (picked === null) {
+        await safe(i.followUp({ content: t('dir.panel.cancelled'), ephemeral: true }));
+        return;
+      }
+      if (!wizard.browserGoTo(picked)) {
+        await safe(i.followUp({ content: t('dir.manual.invalid', { path: picked }), ephemeral: true }));
+        return;
+      }
+      const { embed, rows } = wizard.render();
+      await safe(i.editReply({ embeds: [embed], components: rows }));
+      await safe(i.followUp({ content: t('dir.manual.done', { path: wizard.browserCwd() }), ephemeral: true }));
+    } catch (err) {
+      const timedOut = err instanceof Error && err.message === 'timeout';
+      await safe(
+        i.followUp({
+          content: timedOut ? t('dir.panel.timeout') : t('dir.panel.error', { err: String(err) }),
+          ephemeral: true,
+        }),
+      );
+    } finally {
+      this.folderPanels.delete(key);
+    }
   }
 
   // ---- Resume Session flow -----------------------------------------------

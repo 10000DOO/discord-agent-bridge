@@ -345,6 +345,7 @@ function buildRouter(deps: {
   usageService?: UsageService;
   imageProvisioner?: ChromiumProvisioner;
   customBackendLabel?: () => string;
+  pickFolder?: (startDir: string, prompt: string, timeoutMs: number) => Promise<string | null>;
 }): InteractionRouter {
   // Default: Claude usage unavailable (API-key-only / no OAuth) so /agent stats shows the
   // login notice; a test can inject a usage snapshot to exercise the utilization lines.
@@ -382,6 +383,7 @@ function buildRouter(deps: {
     ...(deps.resolveChannel ? { resolveChannel: deps.resolveChannel } : {}),
     ...(deps.imageProvisioner ? { imageProvisioner: deps.imageProvisioner } : {}),
     ...(deps.customBackendLabel ? { customBackendLabel: deps.customBackendLabel } : {}),
+    ...(deps.pickFolder ? { pickFolder: deps.pickFolder } : {}),
   });
 }
 
@@ -532,6 +534,71 @@ describe('InteractionRouter slash commands', () => {
     const rows = (edited!.components ?? []) as { components: { type: string; customId: string }[] }[];
     const flat = rows.flatMap((r) => r.components);
     expect(flat.some((c) => c.type === 'select' && c.customId === 'backend')).toBe(true);
+  });
+
+  it('/agent start: dir:panel opens the host picker from the browsed cwd and jumps the browser to the pick', async () => {
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-panel-'));
+    try {
+      const { orchestrator } = fakeOrchestrator();
+      const { wiring } = fakeWiring();
+      const picks: { startDir: string; prompt: string; timeoutMs: number }[] = [];
+      const router = buildRouter({
+        orchestrator,
+        wiring,
+        pickFolder: async (startDir, prompt, timeoutMs) => {
+          picks.push({ startDir, prompt, timeoutMs });
+          return target;
+        },
+      });
+      const { interaction: start, replies: startReplies } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+      await router.handle(start);
+      // A wired picker renders the 🖥️ button on the folder step.
+      const startRows = (startReplies[0].components ?? []) as { components: { customId: string }[] }[];
+      expect(startRows.flatMap((r) => r.components).some((c) => c.customId === 'dir:panel')).toBe(true);
+
+      const { interaction: click, replies, acks } = component({ customId: 'dir:panel', user: { id: 'u1' } });
+      await router.handle(click);
+      // deferUpdate is the ack (the pick can far exceed the 3s window); the picker was
+      // opened from the wizard's browsed cwd with a bounded timeout.
+      expect(acks[0].kind).toBe('deferUpdate');
+      expect(picks).toHaveLength(1);
+      expect(picks[0].timeoutMs).toBeGreaterThan(0);
+      // The folder step was re-rendered at the picked path — ✅ Start now selects it.
+      const edited = replies.find((r) => r.embeds && (r.embeds as { description?: string }[])[0]?.description?.includes(target));
+      expect(edited).toBeTruthy();
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it('/agent start: a cancelled dir:panel pick leaves the browsed folder unchanged', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring, pickFolder: async () => null });
+    const { interaction: start } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+
+    const { interaction: click, replies } = component({ customId: 'dir:panel', user: { id: 'u1' } });
+    await router.handle(click);
+    // The cancel notice is a followUp; the wizard message itself is not re-rendered.
+    expect(replies.some((r) => typeof r.content === 'string' && r.content.includes('취소'))).toBe(true);
+    expect(replies.some((r) => r.embeds && (r.embeds as unknown[]).length > 0)).toBe(false);
+  });
+
+  it('/agent start: without a wired picker the dir:panel button is absent and a stray click is a no-op', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction: start, replies: startReplies } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(start);
+    const startRows = (startReplies[0].components ?? []) as { components: { customId: string }[] }[];
+    expect(startRows.flatMap((r) => r.components).some((c) => c.customId === 'dir:panel')).toBe(false);
+
+    // A stale dir:panel click (e.g. an old message) is acknowledged and ignored.
+    const { interaction: click, replies, acks } = component({ customId: 'dir:panel', user: { id: 'u1' } });
+    await router.handle(click);
+    expect(acks[0].kind).toBe('deferUpdate');
+    expect(replies).toHaveLength(0);
   });
 
   it('/agent start: the "custom" backend option is named after the resolved provider', async () => {

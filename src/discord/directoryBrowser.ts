@@ -23,6 +23,7 @@ import { t } from './i18n.js';
 //   dir:resume  (button — start the resume-session flow for the current folder)
 //   dir:create  (button — open the create-folder modal in the current folder)
 //   dir:manual  (button — open the manual absolute-path modal; jumps the browser there)
+//   dir:panel   (button — open a native folder picker on the host; jumps the browser there)
 //   cancel      (button — cancel the wizard)
 
 // Discord select limits (A4D MAX_SELECT_OPTIONS / label length).
@@ -38,17 +39,23 @@ export interface DirectoryBrowserOptions {
   // Where to start; must resolve inside an allowed root (bounded mode) or it is clamped
   // to the first root. Defaults to the first allowed root, or to home when unbounded.
   startPath?: string;
+  // Offer the 🖥️ native host-side folder picker button (dir:panel). The router sets
+  // this only when a picker implementation is wired (macOS host, §folderPanel.ts) —
+  // the browser stays pure and platform-agnostic; it just renders one more button.
+  nativePanel?: boolean;
 }
 
 export class DirectoryBrowser {
   // The confinement roots, or null when the browser is unbounded (browse anywhere up to
   // '/'). Kept separate from `current` so navigation checks pick the right rule.
   private readonly roots: string[] | null;
+  private readonly nativePanel: boolean;
   private current: string;
 
   constructor(options: DirectoryBrowserOptions = {}) {
     const bounded = Boolean(options.allowedRoots && options.allowedRoots.length > 0);
     this.roots = bounded ? options.allowedRoots!.map((r) => path.resolve(r)) : null;
+    this.nativePanel = options.nativePanel ?? false;
     const fallbackStart = this.roots ? this.roots[0] : os.homedir();
     const start = options.startPath ? path.resolve(options.startPath) : fallbackStart;
     this.current = this.confine(start) ? start : fallbackStart;
@@ -165,8 +172,15 @@ export class DirectoryBrowser {
       {
         // A separate row (the button row above is already at Discord's 5-button limit):
         // type an absolute path instead of clicking down to it (also handy on mobile /
-        // for deep paths). Opens a modal; on submit the browser jumps there.
-        components: [{ type: 'button', customId: 'dir:manual', label: t('dir.manual'), style: 'secondary' }],
+        // for deep paths). Opens a modal; on submit the browser jumps there. When a
+        // native host-side picker is wired (macOS), dir:panel joins it — pick the
+        // folder in a real Finder open-panel instead of typing.
+        components: [
+          { type: 'button', customId: 'dir:manual', label: t('dir.manual'), style: 'secondary' },
+          ...(this.nativePanel
+            ? [{ type: 'button' as const, customId: 'dir:panel', label: t('dir.panel'), style: 'secondary' as const }]
+            : []),
+        ],
       },
     ];
     return { embed, rows };
