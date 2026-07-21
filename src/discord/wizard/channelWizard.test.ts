@@ -296,6 +296,78 @@ describe('ChannelWizard state machine (button-advance, backend-aware)', () => {
     expect(await wizard.handle({ id: 'backend', value: 'codex' })).toBe('folder');
     expect(wizard.current().backend).toBe('claude'); // unchanged default
   });
+
+  it('wizard.back walks perm → effort → model → backend → folder', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizard(start);
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'backend.next' });
+    await wizard.handle({ id: 'model.next' });
+    await wizard.handle({ id: 'effort.next' });
+    expect(wizard.currentStep()).toBe('perm');
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('effort');
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('model');
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('backend');
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('folder');
+    // The first step has nothing before it — a stray back is a no-op.
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('folder');
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('wizard.back keeps committed selections, so re-advancing shows the previous pick pre-selected', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardNoProfiles(start);
+    await wizard.handle({ id: 'dir:here' });
+    // Commit codex, advance to model, then step back to the backend step.
+    await wizard.handle({ id: 'backend', value: 'codex' });
+    await wizard.handle({ id: 'backend.next' });
+    expect(wizard.currentStep()).toBe('model');
+    await wizard.handle({ id: 'wizard.back' });
+    expect(wizard.currentStep()).toBe('backend');
+    // The committed backend survived the back — codex renders pre-selected.
+    expect(wizard.current().backend).toBe('codex');
+    expect(selectOptions(wizard, 'backend').find((o) => o.value === 'codex')?.default).toBe(true);
+    // Re-advancing lands on codex's model catalog, as if back never happened.
+    await wizard.handle({ id: 'backend.next' });
+    expect(selectOptions(wizard, 'model').map((o) => o.value)).toEqual(CODEX_MODELS.map((m) => m.value));
+  });
+
+  it("wizard.back discards the current step's un-confirmed pending pick", async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardNoProfiles(start);
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'backend.next' });
+    // Touch the model dropdown (pending only), then back out and return.
+    await wizard.handle({ id: 'model', value: 'sonnet' });
+    await wizard.handle({ id: 'wizard.back' });
+    await wizard.handle({ id: 'backend.next' });
+    // The un-confirmed sonnet was dropped — the committed default is selected again.
+    expect(wizard.current().model).toBe('opus');
+    expect(selectOptions(wizard, 'model').find((o) => o.value === 'opus')?.default).toBe(true);
+  });
+
+  it('wizard.back from perm skips the effort step when the backend has none (mirrors the forward skip)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const wizard = new ChannelWizard({
+      guildId: 'g1',
+      channelId: 'c1',
+      ownerId: 'u1',
+      start,
+      defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: null },
+      backends: ['claude'],
+      modelsFor: () => CLAUDE_MODELS,
+      profiles: [],
+      permsFor: (b) => permissionChoicesFor(b),
+      effortsFor: () => [],
+      defaultEffortFor: () => '',
+      browser,
+    });
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'backend.next' });
+    expect(await wizard.handle({ id: 'model.next' })).toBe('perm'); // forward skip
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('model'); // backward skip
+  });
 });
 
 describe('ChannelWizard render (step guidance + labels + buttons)', () => {
@@ -340,6 +412,22 @@ describe('ChannelWizard render (step guidance + labels + buttons)', () => {
     // The cancel button is a short label, not a full sentence.
     const cancel = componentsOf(wizard.render().rows).find((c) => c.customId === 'cancel');
     expect(cancel?.label).toBe('취소');
+  });
+
+  it('every step after the folder carries a "⬅ 이전" back button; the folder step does not', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizard(start);
+    const backOn = () => componentsOf(wizard.render().rows).find((c) => c.customId === 'wizard.back');
+    // Folder is the first step — nothing to go back to.
+    expect(backOn()).toBeUndefined();
+    await wizard.handle({ id: 'dir:here' });
+    expect(backOn()?.label).toBe('⬅ 이전'); // backend
+    await wizard.handle({ id: 'backend.next' });
+    expect(backOn()?.label).toBe('⬅ 이전'); // model
+    await wizard.handle({ id: 'model.next' });
+    expect(backOn()?.label).toBe('⬅ 이전'); // effort
+    await wizard.handle({ id: 'effort.next' });
+    expect(backOn()?.label).toBe('⬅ 이전'); // perm (final)
   });
 
   it('the model + permission OPTION labels are the original ENGLISH (no Korean)', async () => {
