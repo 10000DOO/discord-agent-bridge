@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ToolThreadHandler } from './toolThread.js';
-import { TurnThreadHolder } from './turnThread.js';
+import { TurnThreadRegistry } from './turnThread.js';
 import type { AgentEvent } from '../../core/contracts.js';
 import type { MessageChannel, MessageThread, OutgoingMessage } from '../ports.js';
 
@@ -8,7 +8,7 @@ type ToolEvent = Extract<AgentEvent, { kind: 'tool_use' | 'tool_result' }>;
 const ev = (e: ToolEvent): ToolEvent => e;
 
 function setup() {
-  const threadPosts: OutgoingMessage[] = [];
+  const threadPosts: Array<OutgoingMessage & { threadName: string }> = [];
   const threadNames: string[] = [];
   let seq = 0;
   const channel: MessageChannel = {
@@ -21,16 +21,16 @@ function setup() {
       const thread: MessageThread = {
         id,
         async send(message) {
-          threadPosts.push(message);
+          threadPosts.push({ ...message, threadName: name });
           return { id: `tm${++seq}`, async edit() {} };
         },
       };
       return thread;
     },
   };
-  const holder = new TurnThreadHolder({ channel, name: '작업 내역' });
-  const h = new ToolThreadHandler({ thread: holder });
-  return { h, holder, threadPosts, threadNames };
+  const registry = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+  const h = new ToolThreadHandler({ registry });
+  return { h, registry, threadPosts, threadNames };
 }
 
 const flush = () => new Promise((r) => setImmediate(r));
@@ -47,7 +47,7 @@ describe('ToolThreadHandler', () => {
     expect(posts.some((c) => c.includes('output'))).toBe(true);
   });
 
-  it('reuses one shared thread across multiple tools in a turn', async () => {
+  it('reuses one shared thread across multiple main tools in a turn', async () => {
     const { h, threadNames } = setup();
     await h.handle(ev({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }));
     await h.handle(ev({ kind: 'tool_use', id: 't2', name: 'Grep', input: { pattern: 'x' } }));
@@ -96,5 +96,38 @@ describe('ToolThreadHandler', () => {
     await h.handle(ev({ kind: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls' } }));
     const posts = threadPosts.map((m) => m.content ?? '');
     expect(posts.some((c) => c.includes('stale'))).toBe(false);
+  });
+
+  it('routes spawn tools and nested parent tools to separate named threads', async () => {
+    const { h, threadNames, threadPosts } = setup();
+    await h.handle(ev({ kind: 'tool_use', id: 'main1', name: 'Bash', input: { command: 'ls' } }));
+    await h.handle(
+      ev({
+        kind: 'tool_use',
+        id: 'spawn1',
+        name: 'Task',
+        input: { subagent_type: 'developer', description: 'Fix bug' },
+      }),
+    );
+    await h.handle(
+      ev({
+        kind: 'tool_use',
+        id: 'nested1',
+        name: 'Read',
+        input: { file_path: '/ws/x' },
+        parentToolUseId: 'spawn1',
+      }),
+    );
+    await h.handle(
+      ev({ kind: 'tool_result', id: 'nested1', ok: true, content: 'nested-out', parentToolUseId: 'spawn1' }),
+    );
+    expect(threadNames).toEqual(['작업 내역', 'developer']);
+    // Nested tool posts go to the spawn thread, not main.
+    expect(
+      threadPosts.some((m) => m.threadName === 'developer' && (m.content ?? '').includes('nested-out')),
+    ).toBe(true);
+    expect(
+      threadPosts.some((m) => m.threadName === '작업 내역' && (m.content ?? '').includes('nested-out')),
+    ).toBe(false);
   });
 });

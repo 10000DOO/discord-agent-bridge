@@ -7,9 +7,11 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ModeContext, ModeSession, SessionPermMode, TurnInput } from '../../core/contracts.js';
+import { isClaudeRuntimeEffort } from '../../core/providerCatalog.js';
 import { makeCanUseTool } from './permissions.js';
 import { createMcpFileTool, ATTACH_FILE_TOOL_NAME, type SendFileCallback } from './mcpFileTool.js';
 import { resolvePlugins } from './plugins.js';
+import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../shared/turnFiles.js';
 
 // The signature of the SDK's query() — narrowed to what we call. Injectable so
 // tests can pass a fake that returns a scripted async iterable without touching
@@ -110,7 +112,7 @@ export class ClaudeSession implements ModeSession {
       // regardless of cwd/additionalDirectories/permissionMode. Appending the working
       // directory to the claude_code preset (empirically: 0/N honored without it,
       // N/N with it) makes relative writes land in ctx.cwd. Codex does not need this —
-      // it passes the dir to its CLI explicitly via `--cd` (codex/runner.ts).
+      // it passes the dir to its CLI explicitly via thread/start cwd (codex app-server).
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
@@ -306,10 +308,15 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
   }
 
   // assistant tool_use blocks → tool_use events (§5a). Text blocks arrive via
-  // stream_event deltas, so they are not re-emitted here.
+  // stream_event deltas, so they are not re-emitted here. parent_tool_use_id (when
+  // non-null) marks nested subagent tools so renderers can route them to the spawn's
+  // Discord thread.
   private mapAssistant(msg: SDKMessage & { type: 'assistant' }): void {
     const content = (msg.message as { content?: unknown }).content;
     if (!Array.isArray(content)) return;
+    const parent = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id;
+    const parentField =
+      typeof parent === 'string' && parent.length > 0 ? { parentToolUseId: parent } : {};
     for (const block of content as Array<Record<string, unknown>>) {
       if (block.type === 'tool_use') {
         this.ctx.emit({
@@ -317,16 +324,21 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
           id: String(block.id ?? ''),
           name: String(block.name ?? 'unknown'),
           input: block.input ?? {},
+          ...parentField,
         });
       }
     }
   }
 
   // user tool_result blocks → tool_result events (§5a). is_error flips ok=false;
-  // content is flattened to a string for the normalized event.
+  // content is flattened to a string for the normalized event. parent_tool_use_id
+  // is forwarded when present (same nesting signal as mapAssistant).
   private mapUser(msg: SDKMessage & { type: 'user' }): void {
     const content = (msg.message as { content?: unknown }).content;
     if (!Array.isArray(content)) return;
+    const parent = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id;
+    const parentField =
+      typeof parent === 'string' && parent.length > 0 ? { parentToolUseId: parent } : {};
     for (const block of content as Array<Record<string, unknown>>) {
       if (block.type !== 'tool_result') continue;
       this.ctx.emit({
@@ -334,6 +346,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
         id: String(block.tool_use_id ?? ''),
         ok: block.is_error !== true,
         content: flattenToolResult(block.content),
+        ...parentField,
       });
     }
   }
@@ -384,11 +397,14 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
   // Deliver a user turn: enqueue it and hand it to the prompt stream. A turn
   // pushed while the generator is parked wakes it; otherwise it buffers until the
   // generator pulls next (fixes A4D's drop-if-not-waiting race).
+  // Image attachments (turn.files) are sent as base64 vision blocks; non-images are
+  // mentioned in the text so the agent can Read them from disk.
   async send(turn: TurnInput): Promise<void> {
     if (this.closed) throw new Error('Claude session is closed.');
+    const content = buildClaudeUserContent(turn);
     const message: SDKUserMessage = {
       type: 'user',
-      message: { role: 'user', content: turn.text },
+      message: { role: 'user', content: content as SDKUserMessage['message']['content'] },
       parent_tool_use_id: null,
     };
     if (this.waiter) {
@@ -408,6 +424,22 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     if (this.closed) throw new Error('Claude session is closed.');
     await this.query.setModel(model);
     if (typeof model === 'string' && model.length > 0) this.activeModel = model;
+  }
+
+  // Change the reasoning effort on the LIVE query mid-session via applyFlagSettings (the
+  // SDK's flag layer). Takes effect on the next turn of this same session — no restart, no
+  // lost context. Only the runtime-settable levels {low,medium,high,xhigh} are accepted
+  // (the SDK's Settings.effortLevel domain): 'max' is start-only (options.effort) and any
+  // other value is rejected so an invalid choice surfaces as an error rather than a silent
+  // no-op. An empty/absent effort is a no-op (nothing to change).
+  async setEffort(effort?: string): Promise<void> {
+    if (this.closed) throw new Error('Claude session is closed.');
+    const level = (effort ?? '').trim();
+    if (level.length === 0) return;
+    if (!isClaudeRuntimeEffort(level)) {
+      throw new Error(`Unsupported runtime effort level for Claude: ${level}`);
+    }
+    await this.query.applyFlagSettings({ effortLevel: level });
   }
 
   // Abort the underlying query and wind down the prompt stream (§7.5 kill switch).
@@ -440,6 +472,26 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
       // prompt stream stays open for the next turn.
     }
   }
+}
+
+// Build Claude user content: plain string when no images; otherwise multimodal blocks.
+function buildClaudeUserContent(turn: TurnInput): string | Array<Record<string, unknown>> {
+  const classified = classifyTurnFiles(turn.files);
+  const images = classified.filter((f) => f.isImage);
+  const nonImages = classified.filter((f) => !f.isImage);
+  const text = appendNonImageHints(turn.text, nonImages);
+  if (images.length === 0) return text;
+  return [
+    { type: 'text', text: text.trim().length > 0 ? text : ' ' },
+    ...images.map((img) => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mime,
+        data: readImageBase64(img.path),
+      },
+    })),
+  ];
 }
 
 // Flatten a tool_result `content` (string, or an array of text blocks, or other)

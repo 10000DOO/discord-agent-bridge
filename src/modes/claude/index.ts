@@ -8,7 +8,7 @@ import type {
 } from '../../core/contracts.js';
 import { ClaudeSession, type QueryFn } from './session.js';
 import type { SendFileCallback } from './mcpFileTool.js';
-import { CLAUDE_PERMISSION_MODES } from '../../core/providerCatalog.js';
+import { CLAUDE_PERMISSION_MODES, claudeCatalog } from '../../core/providerCatalog.js';
 
 // The signature of the SDK's listSessions() — narrowed to what listResumable uses.
 // Injectable so tests pass a fake without touching the SDK or the filesystem (the
@@ -53,6 +53,10 @@ export class ClaudeMode implements AgentMode {
     // natively to the SDK's permissionMode (see session.ts toSdkPermissionMode).
     permissionModes: [...CLAUDE_PERMISSION_MODES],
   };
+
+  // Claude's model/permission/effort vocabulary for the Discord UI (§6). The wizard,
+  // /config and /effort read this instead of branching on the backend id.
+  readonly catalog = claudeCatalog;
 
   private readonly deps: ClaudeModeDeps;
 

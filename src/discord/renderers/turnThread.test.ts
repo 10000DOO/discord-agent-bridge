@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { TurnThreadHolder } from './turnThread.js';
+import {
+  TurnThreadHolder,
+  TurnThreadRegistry,
+  subagentThreadName,
+  isSubagentSpawnTool,
+  MAIN_THREAD_KEY,
+} from './turnThread.js';
 import type { MessageChannel, MessageThread } from '../ports.js';
 
 // A channel whose startThread counts calls and can be made to fail once, so the
@@ -7,12 +13,14 @@ import type { MessageChannel, MessageThread } from '../ports.js';
 function fakeChannel(opts: { failTimes?: number } = {}) {
   let creates = 0;
   let failsLeft = opts.failTimes ?? 0;
+  const names: string[] = [];
   const channel: MessageChannel = {
     async send() {
       throw new Error('unused');
     },
-    async startThread() {
+    async startThread(name) {
       creates += 1;
+      names.push(name);
       if (failsLeft > 0) {
         failsLeft -= 1;
         throw new Error('open failed');
@@ -26,7 +34,7 @@ function fakeChannel(opts: { failTimes?: number } = {}) {
       return thread;
     },
   };
-  return { channel, creates: () => creates };
+  return { channel, creates: () => creates, names };
 }
 
 describe('TurnThreadHolder', () => {
@@ -104,5 +112,116 @@ describe('TurnThreadHolder', () => {
     expect(holder.opened).toBe(true);
     await expect(holder.get()).resolves.toBe(liveThread);
     expect(creates).toBe(2); // no third startThread
+  });
+});
+
+describe('subagentThreadName / isSubagentSpawnTool', () => {
+  it('recognizes Task, Agent, spawn_subagent, spawnAgent case-sensitively', () => {
+    expect(isSubagentSpawnTool('Task')).toBe(true);
+    expect(isSubagentSpawnTool('Agent')).toBe(true);
+    expect(isSubagentSpawnTool('spawn_subagent')).toBe(true);
+    expect(isSubagentSpawnTool('spawnAgent')).toBe(true);
+    expect(isSubagentSpawnTool('task')).toBe(false);
+    expect(isSubagentSpawnTool('Bash')).toBe(false);
+  });
+
+  it('prefers subagent_type then subagentType then agentRole/nickname then description then name', () => {
+    expect(subagentThreadName('Task', { subagent_type: 'developer', description: 'x' })).toBe('developer');
+    expect(subagentThreadName('Task', { subagentType: 'reviewer' })).toBe('reviewer');
+    expect(subagentThreadName('spawnAgent', { agentRole: 'explorer' })).toBe('explorer');
+    expect(subagentThreadName('spawnAgent', { agentNickname: 'Scout' })).toBe('Scout');
+    expect(subagentThreadName('Task', { description: 'Fix the bug' })).toBe('Fix the bug');
+    expect(subagentThreadName('spawn_subagent', {})).toBe('spawn_subagent');
+  });
+});
+
+describe('TurnThreadRegistry', () => {
+  it('opens main + two named spawn threads (3 names)', async () => {
+    const { channel, names } = fakeChannel();
+    const reg = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+    await reg.getForToolUse({ kind: 'tool_use', id: 'm1', name: 'Bash', input: { command: 'ls' } });
+    await reg.getForToolUse({
+      kind: 'tool_use',
+      id: 's1',
+      name: 'Task',
+      input: { subagent_type: 'developer' },
+    });
+    await reg.getForToolUse({
+      kind: 'tool_use',
+      id: 's2',
+      name: 'spawn_subagent',
+      input: { subagent_type: 'architect' },
+    });
+    expect(names).toEqual(['작업 내역', 'developer', 'architect']);
+    expect(reg.hasOpened(MAIN_THREAD_KEY)).toBe(true);
+    expect(reg.hasOpened('s1')).toBe(true);
+    expect(reg.hasOpened('s2')).toBe(true);
+  });
+
+  it('routes nested parentToolUseId tools to the spawn thread', async () => {
+    const { channel, names, creates } = fakeChannel();
+    const reg = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+    await reg.getForToolUse({
+      kind: 'tool_use',
+      id: 'spawn1',
+      name: 'Task',
+      input: { subagent_type: 'developer' },
+    });
+    const nested = await reg.getForToolUse({
+      kind: 'tool_use',
+      id: 'n1',
+      name: 'Read',
+      input: { file_path: '/x' },
+      parentToolUseId: 'spawn1',
+    });
+    // Nested reuses the spawn holder — no third startThread.
+    expect(creates()).toBe(1);
+    expect(names).toEqual(['developer']);
+    expect(nested.id).toBe('t1');
+
+    // Result for nested resolves to the same open spawn thread (not buffered).
+    const resultThread = await reg.getForToolResult({
+      kind: 'tool_result',
+      id: 'n1',
+      ok: true,
+      content: 'ok',
+      parentToolUseId: 'spawn1',
+    });
+    expect(resultThread?.id).toBe('t1');
+  });
+
+  it('returns null from getForToolResult when the target thread is not opened yet', async () => {
+    const { channel } = fakeChannel();
+    const reg = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+    const early = await reg.getForToolResult({ kind: 'tool_result', id: 't1', ok: true, content: 'x' });
+    expect(early).toBeNull();
+  });
+
+  it('reset clears maps so the next turn opens fresh threads', async () => {
+    const { channel, creates, names } = fakeChannel();
+    const reg = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+    await reg.getForToolUse({ kind: 'tool_use', id: 'm1', name: 'Bash', input: {} });
+    await reg.getForToolUse({
+      kind: 'tool_use',
+      id: 's1',
+      name: 'Task',
+      input: { subagent_type: 'dev' },
+    });
+    expect(creates()).toBe(2);
+    reg.reset();
+    expect(reg.hasOpened(MAIN_THREAD_KEY)).toBe(false);
+    expect(reg.hasOpened('s1')).toBe(false);
+    await reg.getForToolUse({ kind: 'tool_use', id: 'm2', name: 'Bash', input: {} });
+    expect(creates()).toBe(3);
+    expect(names[names.length - 1]).toBe('작업 내역');
+  });
+
+  it('reuses one main thread for ordinary tools without parent', async () => {
+    const { channel, creates, names } = fakeChannel();
+    const reg = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+    await reg.getForToolUse({ kind: 'tool_use', id: 't1', name: 'Bash', input: {} });
+    await reg.getForToolUse({ kind: 'tool_use', id: 't2', name: 'Grep', input: {} });
+    expect(creates()).toBe(1);
+    expect(names).toEqual(['작업 내역']);
   });
 });

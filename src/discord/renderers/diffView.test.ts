@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DiffViewHandler } from './diffView.js';
-import { TurnThreadHolder } from './turnThread.js';
+import { TurnThreadRegistry } from './turnThread.js';
 import type { AgentEvent } from '../../core/contracts.js';
 import type { MessageChannel, MessageThread, OutgoingMessage } from '../ports.js';
 
@@ -28,9 +28,9 @@ function setup() {
       return thread;
     },
   };
-  const holder = new TurnThreadHolder({ channel, name: '작업 내역' });
-  const h = new DiffViewHandler({ thread: holder });
-  return { h, holder, threadPosts, threadNames };
+  const registry = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+  const h = new DiffViewHandler({ registry });
+  return { h, registry, threadPosts, threadNames };
 }
 
 const use = (e: ToolUse): ToolUse => e;
@@ -71,5 +71,49 @@ describe('DiffViewHandler', () => {
     await h.handleResult(result({ kind: 'tool_result', id: 't4', ok: false, content: 'error' }));
     expect(threadPosts).toHaveLength(0);
     expect(threadNames).toHaveLength(0);
+  });
+
+  it('posts a nested edit diff into the parent spawn thread', async () => {
+    const { h, registry, threadNames, threadPosts } = setup();
+    // Spawn first so the named thread exists with the right display name.
+    await registry.getForToolUse({
+      kind: 'tool_use',
+      id: 'spawn1',
+      name: 'Task',
+      input: { subagent_type: 'reviewer' },
+    });
+    h.noteToolUse(
+      use({
+        kind: 'tool_use',
+        id: 'e1',
+        name: 'Edit',
+        input: { file_path: '/ws/a.ts', old_string: 'x', new_string: 'y' },
+        parentToolUseId: 'spawn1',
+      }),
+    );
+    await h.handleResult(result({ kind: 'tool_result', id: 'e1', ok: true, content: 'ok', parentToolUseId: 'spawn1' }));
+    expect(threadNames).toEqual(['reviewer']);
+    expect(threadPosts[0].content).toContain('+ y');
+  });
+
+  it('renders Codex apply_patch changes[] as a unified diff', async () => {
+    const { h, threadPosts } = setup();
+    h.noteToolUse(
+      use({
+        kind: 'tool_use',
+        id: 'p1',
+        name: 'apply_patch',
+        input: {
+          changes: [{ path: 'src/a.ts', kind: { type: 'update' }, diff: '- old\n+ new' }],
+        },
+      }),
+    );
+    await h.handleResult(result({ kind: 'tool_result', id: 'p1', ok: true, content: 'ok' }));
+    expect(threadPosts).toHaveLength(1);
+    const body = threadPosts[0].content ?? '';
+    expect(body).toContain('```diff');
+    expect(body).toContain('--- src/a.ts');
+    expect(body).toContain('- old');
+    expect(body).toContain('+ new');
   });
 });

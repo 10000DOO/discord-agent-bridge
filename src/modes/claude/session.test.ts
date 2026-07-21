@@ -66,7 +66,7 @@ function makeCtx(opts: {
 // getContextUsage() calls and whether close() ran. `stallForever` makes the
 // stream never end (so the consume loop is still open when stop() aborts).
 function makeFakeQuery(messages: unknown[], opts: { stallForever?: boolean } = {}) {
-  const state = { closed: false, contextUsageCalls: 0, interruptCalls: 0 };
+  const state = { closed: false, contextUsageCalls: 0, interruptCalls: 0, flagSettingsCalls: [] as unknown[] };
   const query = {
     async *[Symbol.asyncIterator]() {
       for (const m of messages) yield m;
@@ -81,6 +81,9 @@ function makeFakeQuery(messages: unknown[], opts: { stallForever?: boolean } = {
     async interrupt() {
       state.interruptCalls++;
     },
+    async applyFlagSettings(settings: unknown) {
+      state.flagSettingsCalls.push(settings);
+    },
     async getContextUsage() {
       state.contextUsageCalls++;
       return { totalTokens: 1234, maxTokens: 200000, percentage: 0.617 };
@@ -93,7 +96,7 @@ function makeFakeQuery(messages: unknown[], opts: { stallForever?: boolean } = {
 function fakeQueryFn(messages: unknown[], opts: { stallForever?: boolean } = {}): {
   queryFn: QueryFn;
   captured: { options?: unknown };
-  state: { closed: boolean; contextUsageCalls: number; interruptCalls: number };
+  state: { closed: boolean; contextUsageCalls: number; interruptCalls: number; flagSettingsCalls: unknown[] };
 } {
   const { query, state } = makeFakeQuery(messages, opts);
   const captured: { options?: unknown } = {};
@@ -212,6 +215,73 @@ describe('ClaudeSession — SDK message mapping', () => {
     const ev = events.find((e) => e.kind === 'context_usage');
     expect(ev).toEqual({ kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617 });
     expect(ev).not.toHaveProperty('model');
+  });
+
+  it('forwards parent_tool_use_id as parentToolUseId on tool_use and tool_result', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-parent', model: 'claude-fable-5[1m]' },
+      {
+        type: 'assistant',
+        parent_tool_use_id: 'task-spawn-1',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu-nested', name: 'Read', input: { file_path: '/x' } }],
+        },
+      },
+      {
+        type: 'user',
+        parent_tool_use_id: 'task-spawn-1',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu-nested', content: 'body', is_error: false }],
+        },
+      },
+      { type: 'result', subtype: 'success', result: 'ok' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+
+    expect(events.filter((e) => e.kind === 'tool_use' || e.kind === 'tool_result')).toEqual([
+      {
+        kind: 'tool_use',
+        id: 'tu-nested',
+        name: 'Read',
+        input: { file_path: '/x' },
+        parentToolUseId: 'task-spawn-1',
+      },
+      {
+        kind: 'tool_result',
+        id: 'tu-nested',
+        ok: true,
+        content: 'body',
+        parentToolUseId: 'task-spawn-1',
+      },
+    ]);
+  });
+
+  it('omits parentToolUseId when parent_tool_use_id is null', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-null-parent', model: 'claude-fable-5[1m]' },
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu-main', name: 'Bash', input: { command: 'ls' } }],
+        },
+      },
+      { type: 'result', subtype: 'success', result: 'ok' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+    await waitFor(() => events.some((e) => e.kind === 'context_usage'));
+    await session.stop();
+
+    const tool = events.find((e) => e.kind === 'tool_use');
+    expect(tool).toEqual({ kind: 'tool_use', id: 'tu-main', name: 'Bash', input: { command: 'ls' } });
+    expect(tool).not.toHaveProperty('parentToolUseId');
   });
 
   it('captures sessionId from the init message', async () => {
@@ -577,6 +647,42 @@ describe('ClaudeSession — SDK message mapping', () => {
       message: { role: 'user', content: 'hello there' },
     });
     await session.stop();
+  });
+
+  it('setEffort() applies a runtime level via query.applyFlagSettings', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn, state } = fakeQueryFn([], { stallForever: true });
+    const session = new ClaudeSession(ctx, { queryFn });
+    await session.setEffort('high');
+    expect(state.flagSettingsCalls).toEqual([{ effortLevel: 'high' }]);
+    await session.stop();
+  });
+
+  it('setEffort() rejects a non-runtime level (max) and never calls applyFlagSettings', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn, state } = fakeQueryFn([], { stallForever: true });
+    const session = new ClaudeSession(ctx, { queryFn });
+    // 'max' is settable only at session start (options.effort), not via applyFlagSettings.
+    await expect(session.setEffort('max')).rejects.toThrow(/Unsupported runtime effort/);
+    expect(state.flagSettingsCalls).toEqual([]);
+    await session.stop();
+  });
+
+  it('setEffort() is a no-op for an empty value (nothing to change)', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn, state } = fakeQueryFn([], { stallForever: true });
+    const session = new ClaudeSession(ctx, { queryFn });
+    await expect(session.setEffort('')).resolves.toBeUndefined();
+    expect(state.flagSettingsCalls).toEqual([]);
+    await session.stop();
+  });
+
+  it('setEffort() throws once the session is closed', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn } = fakeQueryFn([], { stallForever: true });
+    const session = new ClaudeSession(ctx, { queryFn });
+    await session.stop();
+    await expect(session.setEffort('high')).rejects.toThrow(/closed/);
   });
 });
 

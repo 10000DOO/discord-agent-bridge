@@ -9,7 +9,7 @@ import { buildInterruptButton } from './interruptButton.js';
 import { ToolThreadHandler } from './toolThread.js';
 import { PermissionButtonsHandler } from './permissionButtons.js';
 import { DiffViewHandler } from './diffView.js';
-import { TurnThreadHolder } from './turnThread.js';
+import { TurnThreadRegistry } from './turnThread.js';
 import { TranscriptFeedHandler } from './transcriptFeed.js';
 import { MentionOnCompleteHandler } from './mentionOnComplete.js';
 import { buildResultLine } from './resultLine.js';
@@ -145,6 +145,9 @@ export interface DefaultRendererSetOptions {
   // render branch is on for this session (Chrome available + config enabled); absent →
   // all three final-text paths deliver raw text (existing behavior).
   renderImage?: ImageRenderer;
+  // Mode-specific usage panel title (e.g. "Claude 사용량" / "Grok 사용량" / "Codex 사용량").
+  // Passed through to buildUsageEmbed as extras.title.
+  usageTitle?: string;
 }
 
 // Wire the concrete handlers over one channel. Async handler work is fire-and-forget
@@ -175,12 +178,13 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
   // Ended-but-still-finalizing handlers from a previous turn: dispose() must cancel
   // these too, or an armed debounce timer could fire a late send/edit after detach (§6).
   const endedStreams = new Set<StreamEmbedHandler>();
-  // One shared work thread per turn: ToolThreadHandler and DiffViewHandler both post
-  // into it (lazily opened on the turn's first tool activity, reset at each turn end).
-  const turnThread = new TurnThreadHolder({ channel, name: t('thread.work') });
-  const toolThread = new ToolThreadHandler({ thread: turnThread });
+  // Per-turn thread registry: main work thread + one named thread per subagent spawn.
+  // ToolThreadHandler and DiffViewHandler both resolve threads through it (lazily
+  // opened on tool activity, reset at each turn end).
+  const turnThreads = new TurnThreadRegistry({ channel, mainName: t('thread.work') });
+  const toolThread = new ToolThreadHandler({ registry: turnThreads });
   const permission = new PermissionButtonsHandler({ channel });
-  const diff = new DiffViewHandler({ thread: turnThread });
+  const diff = new DiffViewHandler({ registry: turnThreads });
   const transcript = new TranscriptFeedHandler({ channel });
   const mention = new MentionOnCompleteHandler({ channel, ownerId });
   // Turn-local stats for the usage panel (design_hud_usage_panel.md §5.5): tool_use
@@ -268,11 +272,11 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       endedStreams.add(endedThinking);
       textStream = new StreamEmbedHandler(textStreamDeps());
       thinkingStream = new StreamEmbedHandler({ channel, kind: 'thinking', logger });
-      // Turn boundary for the shared tool-activity thread: drop the reference so the next
-      // turn opens a fresh work thread. In-flight fire-and-forget sends kept their own
-      // captured thread and complete safely; a turn with no tools never opened one (no-op).
+      // Turn boundary for tool-activity threads: drop all holders/maps so the next turn
+      // opens fresh threads. In-flight fire-and-forget sends kept their own captured
+      // thread and complete safely; a turn with no tools never opened one (no-op).
       // The handler's turn-local state (buffered result, id→name map) is cleared alongside.
-      turnThread.reset();
+      turnThreads.reset();
       toolThread.resetTurn();
       const finalized = endedText
         .finalize()
@@ -331,7 +335,12 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       tail = tail.catch(() => {}).then(async () => {
         const usage = (await options.getUsage?.()) ?? null;
         const meta = (await options.getSessionMeta?.()) ?? null;
-        const embed = buildUsageEmbed(usage, ctx, { meta, tools, agents });
+        const embed = buildUsageEmbed(usage, ctx, {
+          meta,
+          tools,
+          agents,
+          ...(options.usageTitle ? { title: options.usageTitle } : {}),
+        });
         if (embed) await channel.send({ embeds: [embed] });
       });
       swallow(tail);

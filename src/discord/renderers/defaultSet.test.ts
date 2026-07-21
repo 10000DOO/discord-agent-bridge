@@ -448,6 +448,37 @@ describe('default renderer set — shared per-turn work thread', () => {
     expect(threadNames).toHaveLength(1);
     expect(threadPosts(sent).some((m) => (m.content ?? '').includes('early-result'))).toBe(true);
   });
+
+  it('opens main + named spawn threads (main tools share main; Task opens its own)', async () => {
+    const { channel, threadNames } = fakeChannel();
+    const set = createDefaultRendererSet({ channel, ownerId: 'u1' });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } } as AgentEvent);
+    dispatcher.dispatch({
+      kind: 'tool_use',
+      id: 'task1',
+      name: 'Task',
+      input: { subagent_type: 'developer', description: 'Fix bug' },
+    } as AgentEvent);
+    dispatcher.dispatch({
+      kind: 'tool_use',
+      id: 'nested',
+      name: 'Read',
+      input: { file_path: '/x' },
+      parentToolUseId: 'task1',
+    } as AgentEvent);
+    dispatcher.dispatch({
+      kind: 'tool_use',
+      id: 'task2',
+      name: 'Agent',
+      input: { subagent_type: 'reviewer' },
+    } as AgentEvent);
+    await flush();
+    // main + developer + reviewer = 3 threads; nested reuses task1's thread.
+    expect(threadNames).toHaveLength(3);
+    expect(threadNames).toContain('developer');
+    expect(threadNames).toContain('reviewer');
+  });
 });
 
 describe('default renderer set — Codex answer ordering vs done-line (A1)', () => {
