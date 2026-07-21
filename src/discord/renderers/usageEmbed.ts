@@ -64,6 +64,9 @@ export interface UsageEmbedExtras {
   meta?: UsageSessionMeta | null;
   tools?: TurnToolStat[];
   agents?: SubagentRun[];
+  // Explicit panel title from the mode (Claude / Grok / Codex). When set, wins
+  // over the weekly-only Grok heuristic below.
+  title?: string;
 }
 
 // Utilization thresholds → embed color (A4D utilizationColor).
@@ -239,9 +242,21 @@ export function buildUsageEmbed(
   if (meta?.permMode) footerParts.push(t('usage.perm', { perm: t(`perm.${meta.permMode}`) }));
   if (ctxUsage?.model) footerParts.push(ctxUsage.model);
 
+  // Prefer an explicit title from the caller (mode-aware wiring). Fallback: weekly-only
+  // snapshot (sevenDay present, no fiveHour/opus/sonnet) → Grok title; else Claude.
+  // Claude snapshots always carry fiveHour when available; weekly-only Claude is rare.
+  const isGrokWeeklyOnly =
+    haveUsage &&
+    !!usage.sevenDay &&
+    !usage.fiveHour &&
+    !usage.sevenDayOpus &&
+    !usage.sevenDaySonnet;
+  const title =
+    extras?.title ?? t(isGrokWeeklyOnly ? 'usage.title.grok' : 'usage.title');
+
   const description = buildDescription(ctxUsage, meta, now);
   return {
-    title: t('usage.title'),
+    title,
     color: utilizationColor(maxUtil),
     ...(description ? { description } : {}),
     fields,

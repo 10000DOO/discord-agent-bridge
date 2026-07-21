@@ -18,6 +18,7 @@ import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
 import type { ConfigStore } from '../core/config.js';
 import { SessionNotifier, resolveNotifications } from './notifier.js';
+import { t } from './i18n.js';
 
 // The deferred 7a hookups, wired live (§7A/§6/§7.5). Per active channel this owns:
 //   - a RendererDispatcher subscribed to the eventBus (AgentEvents → Discord), with
@@ -59,6 +60,11 @@ export interface SessionWiringDeps {
   modeRegistry: ModeRegistry;
   channelRegistry: ChannelRegistry;
   usageService: UsageService;
+  // Optional Grok weekly-limit poller. When present, getUsageFor('grok-build')
+  // routes here; absent → unavailable (no-credentials). Claude path is unchanged.
+  grokUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
+  // Optional Codex rate-limit poller (account/rateLimits/read via app-server).
+  codexUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
   logger: Logger;
   // Per-server config source, read at attach() to resolve a guild's notifications
   // settings (enabled/channelId/events). Optional so tests that do not exercise
@@ -109,6 +115,8 @@ export class SessionWiring {
   private readonly modeRegistry: ModeRegistry;
   private readonly channelRegistry: ChannelRegistry;
   private readonly usageService: UsageService;
+  private readonly grokUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
+  private readonly codexUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
   private readonly logger: Logger;
   // Mutable so app boot can bind it to the live gateway AFTER the client is
   // constructed (the client depends on the routers which depend on this wiring —
@@ -130,6 +138,8 @@ export class SessionWiring {
     this.modeRegistry = deps.modeRegistry;
     this.channelRegistry = deps.channelRegistry;
     this.usageService = deps.usageService;
+    this.grokUsageService = deps.grokUsageService;
+    this.codexUsageService = deps.codexUsageService;
     this.logger = deps.logger;
     this.auditLog = deps.auditLog;
     this.configStore = deps.configStore;
@@ -308,6 +318,7 @@ export class SessionWiring {
       ...(renderImage ? { renderImage } : {}),
       getUsage: () => this.getUsageFor(mode),
       getSessionMeta: () => this.getSessionMetaFor(guildId, channelId),
+      usageTitle: usageTitleFor(mode),
       logger: this.logger,
     });
     // The dispatcher's permission renderer posts buttons via its own handler; we
@@ -409,12 +420,21 @@ export class SessionWiring {
     return meta;
   }
 
-  // Usage feed for the embed/notifier, read fresh per turn: Codex is structurally
-  // unavailable; Claude reads UsageService.getUsage() directly (its TTL cache coalesces
-  // rapid re-reads). getUsage() never throws by contract, so this needs no try/catch.
+  // Usage feed for the embed/notifier, read fresh per turn:
+  //   - capability usagePanel=false → unavailable
+  //   - codex → CodexUsageService (account/rateLimits/read)
+  //   - grok-build → GrokUsageService (weekly credits)
+  //   - claude / custom → Claude UsageService
+  // getUsage() never throws by contract, so this needs no try/catch.
   private getUsageFor(mode: string): Promise<UsageResult> {
     if (this.modeRegistry.has(mode) && !this.modeRegistry.get(mode).capabilities.usagePanel) {
       return Promise.resolve(codexUsageUnavailable());
+    }
+    if (mode === 'codex') {
+      return this.codexUsageService?.getUsage() ?? Promise.resolve(codexUsageUnavailable());
+    }
+    if (mode === 'grok-build') {
+      return this.grokUsageService?.getUsage() ?? Promise.resolve({ available: false, reason: 'no-credentials' });
     }
     return this.usageService.getUsage();
   }
@@ -440,4 +460,12 @@ export class SessionWiring {
       });
     });
   }
+}
+
+// Mode → usage panel title. Codex has no rate-limit feed but still posts a
+// context-% panel, so it needs its own title rather than falling through to Claude.
+function usageTitleFor(mode: string): string {
+  if (mode === 'grok-build') return t('usage.title.grok');
+  if (mode === 'codex') return t('usage.title.codex');
+  return t('usage.title');
 }

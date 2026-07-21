@@ -154,4 +154,45 @@ describe('buildUsageEmbed', () => {
     expect(field).toBeDefined();
     expect(field!.value.length).toBeLessThanOrEqual(1024);
   });
+
+  it('weekly-only snapshot uses Grok title, one weekly field, no 5h', () => {
+    const snapshot: UsageResult = {
+      fetchedAt: 1000,
+      sevenDay: { utilization: 3, resetsAt: '2026-07-21T00:00:00Z' },
+    };
+    const embed = buildUsageEmbed(snapshot, ctx);
+    expect(embed?.title).toBe('Grok 사용량');
+    const names = (embed?.fields ?? []).map((f) => f.name);
+    expect(names).toContain('🟢 주간');
+    expect(names).toContain('🟢 컨텍스트');
+    expect(names.some((n) => n.includes('5시간'))).toBe(false);
+    expect(names.some((n) => n.includes('Opus') || n.includes('Sonnet'))).toBe(false);
+  });
+
+  it('Claude snapshot (with fiveHour) keeps the Claude title', () => {
+    const snapshot: UsageResult = {
+      fetchedAt: 1000,
+      fiveHour: { utilization: 42 },
+      sevenDay: { utilization: 10 },
+    };
+    const embed = buildUsageEmbed(snapshot, null);
+    expect(embed?.title).toBe('Claude 사용량');
+  });
+
+  it('explicit title override wins over the weekly-only heuristic', () => {
+    const snapshot: UsageResult = {
+      fetchedAt: 1000,
+      sevenDay: { utilization: 3, resetsAt: '2026-07-21T00:00:00Z' },
+    };
+    const embed = buildUsageEmbed(snapshot, ctx, { title: 'Codex 사용량' });
+    expect(embed?.title).toBe('Codex 사용량');
+  });
+
+  it('context-only panel accepts an explicit Codex title', () => {
+    const embed = buildUsageEmbed(null, ctx, { title: 'Codex 사용량' });
+    expect(embed?.title).toBe('Codex 사용량');
+    const names = (embed?.fields ?? []).map((f) => f.name);
+    expect(names).toContain('🟢 컨텍스트');
+    expect(names.some((n) => n.includes('5시간'))).toBe(false);
+  });
 });

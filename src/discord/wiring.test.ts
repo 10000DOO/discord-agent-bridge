@@ -7,6 +7,7 @@ import { parseCustomId } from './renderers/permissionButtons.js';
 import type {
   AgentMode,
   Capabilities,
+  ModeCatalog,
   ModeContext,
   ModeSession,
   PermissionDecision,
@@ -35,7 +36,17 @@ const CLAUDE_CAPS: Capabilities = {
   permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
+// The wiring layer never reads a mode's catalog; an inert one satisfies AgentMode.
+const STUB_CATALOG: ModeCatalog = {
+  models: () => [],
+  permissionChoices: () => [],
+  effortChoices: () => [],
+  runtimeEffortChoices: () => [],
+  defaultEffort: () => undefined,
+};
+
 class StubMode implements AgentMode {
+  readonly catalog: ModeCatalog = STUB_CATALOG;
   constructor(readonly name: string, readonly capabilities: Capabilities) {}
   async start(_ctx: ModeContext): Promise<ModeSession> {
     return { sessionId: 's', async send() {}, async stop() {} };
@@ -65,6 +76,8 @@ function makeWiring(opts: {
   channel: MessageChannel;
   permissionTimeoutSec?: number;
   usage?: UsageResult;
+  // When set, grok-build turns route getUsage here instead of the Claude service.
+  grokUsage?: UsageResult;
   ownerId?: string;
   auditLog?: AuditLog;
   onAlwaysAllow?: (tool: string, ctx: { actorId: string; guildId: string; channelId: string }) => void;
@@ -81,7 +94,9 @@ function makeWiring(opts: {
   const eventBus = new EventBus();
   const modeRegistry = new ModeRegistry();
   modeRegistry.register(new StubMode('claude', CLAUDE_CAPS));
-  modeRegistry.register(new StubMode('codex', { ...CLAUDE_CAPS, usagePanel: false }));
+  // Codex has usagePanel (context % only) but no rate-limit feed — mirrors real CodexMode.
+  modeRegistry.register(new StubMode('codex', { ...CLAUDE_CAPS, usagePanel: true }));
+  modeRegistry.register(new StubMode('grok-build', CLAUDE_CAPS));
   const channelRegistry = {
     get: () => ({ ownerId: opts.ownerId ?? 'owner', ...(opts.binding ?? {}) }),
   } as unknown as ChannelRegistry;
@@ -89,6 +104,13 @@ function makeWiring(opts: {
     isAvailable: () => opts.usage !== undefined,
     getUsage: async () => opts.usage ?? { available: false as const, reason: 'no-credentials' as const },
   } as unknown as UsageService;
+  const grokUsageService =
+    opts.grokUsage !== undefined
+      ? {
+          isAvailable: () => true,
+          getUsage: async () => opts.grokUsage!,
+        }
+      : undefined;
   const configStore =
     opts.server !== undefined
       ? ({ loadServerConfig: () => opts.server } as unknown as ConfigStore)
@@ -98,6 +120,7 @@ function makeWiring(opts: {
     modeRegistry,
     channelRegistry,
     usageService,
+    ...(grokUsageService ? { grokUsageService } : {}),
     logger,
     resolveChannel: opts.resolveChannel ?? (async () => opts.channel),
     permissionTimeoutSec: opts.permissionTimeoutSec ?? 60,
@@ -378,6 +401,40 @@ describe('SessionWiring usage-panel session meta', () => {
     eventBus.emit('g1', 'c1', { kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 });
     const embed = await waitForUsageEmbed(sent);
     expect(embed?.description).toContain('git:(');
+  });
+
+  it('routes grok-build context_usage through grokUsageService (weekly-only panel title)', async () => {
+    const { channel, sent } = fakeChannel();
+    const { wiring, eventBus } = makeWiring({
+      channel,
+      // Claude service would render "Claude 사용량" if wrongly routed.
+      usage: { fetchedAt: 1, fiveHour: { utilization: 99 }, sevenDay: { utilization: 50 } },
+      grokUsage: { fetchedAt: 1, sevenDay: { utilization: 3, resetsAt: '2026-07-21T00:00:00Z' } },
+    });
+    await wiring.attach('g1', 'c1', 'grok-build');
+    eventBus.emit('g1', 'c1', { kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 });
+    const embed = await waitForUsageEmbed(sent);
+    expect(embed?.title).toBe('Grok 사용량');
+    const names = (embed?.fields ?? []).map((f) => f.name);
+    expect(names.some((n) => n.includes('주간'))).toBe(true);
+    expect(names.some((n) => n.includes('5시간'))).toBe(false);
+  });
+
+  it('codex panel title is Codex 사용량 and never shows Claude 5h limits', async () => {
+    const { channel, sent } = fakeChannel();
+    const { wiring, eventBus } = makeWiring({
+      channel,
+      // If getUsageFor wrongly falls through to Claude, fiveHour would appear.
+      usage: { fetchedAt: 1, fiveHour: { utilization: 99 }, sevenDay: { utilization: 50 } },
+    });
+    await wiring.attach('g1', 'c1', 'codex');
+    eventBus.emit('g1', 'c1', { kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 });
+    const embed = await waitForUsageEmbed(sent);
+    expect(embed?.title).toBe('Codex 사용량');
+    const names = (embed?.fields ?? []).map((f) => f.name);
+    expect(names.some((n) => n.includes('컨텍스트'))).toBe(true);
+    expect(names.some((n) => n.includes('5시간'))).toBe(false);
+    expect(names.some((n) => n.includes('주간'))).toBe(false);
   });
 });
 
