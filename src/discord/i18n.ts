@@ -162,6 +162,7 @@ const ko: Catalog = {
   'result.duration': '소요',
   // Stream embed
   'stream.responding': '응답 중…',
+  'stream.responded': '응답 완료',
   'stream.thinking': '생각 중…',
   'stream.thought': '{sec}초 동안 생각함',
   // Tool thread

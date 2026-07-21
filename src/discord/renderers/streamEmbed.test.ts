@@ -57,15 +57,20 @@ describe('StreamEmbedHandler (text)', () => {
     expect(h.edits.at(-1)?.msg.embeds?.[0].description).toBe('Hello world');
   });
 
-  it('finalize replaces the streaming embed with plain text content', async () => {
+  it('finalize collapses the live embed and re-posts the full answer at the bottom', async () => {
     const h = harness();
     const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer });
     s.push({ kind: 'text', text: 'answer', delta: true });
     await h.fire();
     await s.finalize();
-    const finalEdit = h.edits.at(-1);
-    expect(finalEdit?.msg.content).toBe('answer');
-    expect(finalEdit?.msg.embeds).toEqual([]); // embed cleared
+    // Live embed collapsed in place — title marker only, not the full answer body.
+    const collapseEdit = h.edits.at(-1);
+    expect(collapseEdit?.msg.embeds?.[0].title).toBe('응답 완료');
+    expect(collapseEdit?.msg.content).toBeUndefined();
+    // Full answer is a fresh send at the channel bottom.
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[0].embeds?.[0].title).toBe('응답 중…');
+    expect(h.sent[1].content).toBe('answer');
   });
 
   it('finalize with no prior flush sends plain content directly', async () => {
@@ -149,17 +154,21 @@ describe('StreamEmbedHandler — interrupt action button (option B)', () => {
     expect(h.sent[0].components?.[0].components).toEqual([stopButton]); // enabled on the live embed
   });
 
-  it('re-renders the button DISABLED on finalize so a stale click cannot fire', async () => {
+  it('re-renders the button DISABLED on the collapse edit so a stale click cannot fire', async () => {
     const h = harness();
     const s = new StreamEmbedHandler({ channel: h.channel, kind: 'text', setTimer: h.setTimer, clearTimer: h.clearTimer, actions: [stopButton] });
     s.push({ kind: 'text', text: 'answer', delta: true });
     await h.fire();
     await s.finalize();
-    const finalEdit = h.edits.at(-1);
-    expect(finalEdit?.msg.content).toBe('answer');
-    const button = finalEdit?.msg.components?.[0].components?.[0] as ButtonSpec;
+    // Disabled on the collapse edit of the live embed (not on the answer content send).
+    const collapseEdit = h.edits.at(-1);
+    expect(collapseEdit?.msg.embeds?.[0].title).toBe('응답 완료');
+    const button = collapseEdit?.msg.components?.[0].components?.[0] as ButtonSpec;
     expect(button.disabled).toBe(true);
     expect(button.customId).toBe('interrupt:g1:c1');
+    // Answer is a fresh plain send with no components.
+    expect(h.sent.at(-1)?.content).toBe('answer');
+    expect(h.sent.at(-1)?.components).toBeUndefined();
   });
 
   it('adds no components when finalize sends WITHOUT a prior flush (the button was never shown)', async () => {

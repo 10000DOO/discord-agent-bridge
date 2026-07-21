@@ -7,8 +7,12 @@ import { t } from '../i18n.js';
 
 // Live text/thinking embeds, debounced edit then finalize to chunked text (§6).
 // Ports A4D StreamHandler behavior: accumulate deltas into a buffer, edit a single
-// "Responding…"/"Thinking…" embed on a debounce, and on finalize replace it with
-// the plain chunked text (text) or a collapsed "Thought for Ns" embed (thinking).
+// "Responding…"/"Thinking…" embed on a debounce. On finalize:
+//   - text: collapse the live preview in place (stream marker only), then re-post
+//     the FULL answer as fresh messages at the channel bottom (contiguous).
+//   - thinking: collapse to a "Thought for Ns" embed.
+// Duplication with the earlier partial "Responding…" preview is intentional so the
+// complete answer sits contiguously below any work threads posted mid-stream.
 //
 // Injectable timer + clock so tests advance time deterministically without real
 // setTimeout. No discord.js: the sink is the MessageChannel port. One handler
@@ -32,8 +36,8 @@ export interface StreamEmbedDeps {
   logger?: Logger;
   // Optional action buttons rendered on the LIVE embed (the interrupt "stop" button,
   // option B). Only meaningful for the 'text' ("Responding…") embed; when set they ride
-  // every flush and are re-rendered DISABLED on finalize so a stale click cannot fire
-  // against a finished turn. Absent → the embed carries no components (existing behavior).
+  // every flush and are re-rendered DISABLED on the collapse edit at finalize so a
+  // stale click cannot fire against a finished turn. Absent → no components.
   actions?: ButtonSpec[];
   // Optional image renderer (tables/mermaid → PNG). Present ⇔ the render branch is on
   // for this session (Chrome available + config enabled). Absent → text-only delivery.
@@ -138,9 +142,9 @@ export class StreamEmbedHandler {
     return this.inflight;
   }
 
-  // Finalize the stream: cancel the timer, then for text replace the live embed
-  // with the plain chunked message(s); for thinking collapse to a "Thought for Ns"
-  // embed. Idempotent — a second call is a no-op.
+  // Finalize the stream: cancel the timer, then for text collapse the live preview
+  // and re-post the full answer at the bottom; for thinking collapse to a
+  // "Thought for Ns" embed. Idempotent — a second call is a no-op.
   async finalize(): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
@@ -160,19 +164,36 @@ export class StreamEmbedHandler {
       return;
     }
 
-    // Text: deliver the full answer in order via the shared helper. It reuses the live
-    // embed message as the first output (edited in place, interrupt button disabled) and
-    // — when an image renderer is wired — replaces GFM tables / ```mermaid``` fences with
-    // inline PNGs in place. Without a renderer this is byte-for-byte the old chunked-text
-    // behavior. The disabled interrupt row is preserved on the finalized first message.
-    const disabledComponents = this.actions
-      ? [{ components: this.actions.map((a) => ({ ...a, disabled: true })) }]
-      : undefined;
+    // Text: keep the live "Responding…" message as a collapsed stream marker (so the
+    // channel history still shows that a stream happened), then re-post the FULL answer
+    // as fresh contiguous messages at the channel bottom. No firstSink — every answer
+    // chunk is a new send, never an edit of the preview. When no prior flush ran
+    // (this.message null), only the fresh send path runs (same as before).
+    if (this.message) {
+      const collapsed = {
+        title: t('stream.responded'),
+        color: COLORS.streaming,
+        footer: this.footer(),
+      };
+      const disabledComponents = this.actions
+        ? [{ components: this.actions.map((a) => ({ ...a, disabled: true })) }]
+        : undefined;
+      try {
+        await this.message.edit({
+          embeds: [collapsed],
+          ...(disabledComponents ? { components: disabledComponents } : { components: [] }),
+        });
+      } catch (err) {
+        // Best-effort: a deleted channel / REST timeout must not block answer delivery.
+        this.logger?.debug('stream collapse edit failed (ignored)', {
+          kind: this.kind,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     await deliverAnswer(this.buffer, {
       channel: this.channel,
-      firstSink: this.message,
       ...(this.renderImage ? { renderImage: this.renderImage } : {}),
-      ...(disabledComponents ? { disabledComponents } : {}),
     });
     this.emitted = true;
   }
