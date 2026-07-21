@@ -12,6 +12,10 @@ import {
   CODEX_EFFORT_FALLBACK,
   codexConfigSource,
 } from '../modes/codex/configSource.js';
+import {
+  CODEX_SANDBOX_FALLBACK,
+  codexPermissionSource,
+} from '../modes/codex/permissionSource.js';
 
 // The ONE source of truth for the model + permission-mode option lists offered in
 // the Discord dropdowns (/config defaults and /agent start wizard). Both consumers
@@ -72,30 +76,22 @@ export function permissionModeChoices(backend: string): ModelChoice[] {
 
 // ---- Codex-NATIVE sandbox permission choices --------------------------------
 // Codex does NOT use Claude's permission-mode vocabulary; its own model is sandbox +
-// approval. The permission step therefore offers Codex's actual sandbox values so the
-// operator sees Codex terms, not Claude ones. modes/codex/policy resolveThreadPolicy
-// maps each to app-server approvalPolicy + sandbox. `danger-full-access` is the bypass.
-export const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
+// approval. Values are DYNAMIC from the installed `codex --help` (permissionSource);
+// CODEX_SANDBOX_MODES is the static fallback alias for external importers/tests.
+// modes/codex/policy resolveThreadPolicy maps each to app-server approvalPolicy + sandbox.
+export const CODEX_SANDBOX_MODES = CODEX_SANDBOX_FALLBACK;
 export type CodexSandboxMode = (typeof CODEX_SANDBOX_MODES)[number];
 
-// True when `value` is a Codex-native sandbox mode (vs a Claude PermMode). Lets the
-// runner and wizard tell the two vocabularies apart without a separate type channel.
-export function isCodexSandboxMode(value: string): value is CodexSandboxMode {
-  return (CODEX_SANDBOX_MODES as readonly string[]).includes(value);
+// True when `value` is a Codex-native sandbox mode (dynamic catalog or fallback).
+// Lets the runner and wizard tell the two vocabularies apart without a separate type channel.
+export function isCodexSandboxMode(value: string): boolean {
+  return codexPermissionSource.isKnownSandbox(value);
 }
 
-// Short English hint appended in parens to a Codex sandbox label. English only — these
-// are the selectable option labels, wanted verbatim.
-const CODEX_SANDBOX_HINTS: Record<CodexSandboxMode, string> = {
-  'read-only': 'read-only, ask to run',
-  'workspace-write': 'write in workspace',
-  'danger-full-access': 'no sandbox (⚠ dangerous)',
-};
-
 // The Codex sandbox permission option list as English {value,label}, e.g.
-// `workspace-write (write in workspace)`. Never localized.
+// `workspace-write (write in workspace)`. Never localized. Dynamic via permissionSource.
 export function codexSandboxChoices(): ModelChoice[] {
-  return CODEX_SANDBOX_MODES.map((m) => ({ value: m, label: `${m} (${CODEX_SANDBOX_HINTS[m]})` }));
+  return codexPermissionSource.sandboxChoices();
 }
 
 // The permission OPTION list for the wizard's permission step, keyed by backend: Codex
@@ -324,7 +320,7 @@ export const claudeCatalog: ModeCatalog = {
 // honors a model's supportedEffortLevels when non-empty; otherwise CODEX_EFFORT_LEVELS.
 export const codexCatalog: ModeCatalog = {
   models: (configured) => codexConfigSource.models(configured),
-  permissionChoices: () => codexSandboxChoices(),
+  permissionChoices: () => codexPermissionSource.sandboxChoices(),
   effortChoices: (levels) => effortChoicesFor('codex', levels),
   runtimeEffortChoices: (levels) => runtimeEffortChoicesFor('codex', levels),
   defaultEffort: () => codexConfigSource.defaultEffortFor(codexConfigSource.defaultModel()),

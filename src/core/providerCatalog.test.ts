@@ -236,6 +236,7 @@ describe('Codex-native sandbox permission choices (backend-specific)', () => {
       sandbox: 'danger-full-access',
     });
   });
+
 });
 
 describe('reasoning-effort choices (per-backend)', () => {

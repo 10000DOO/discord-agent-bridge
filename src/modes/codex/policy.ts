@@ -6,7 +6,9 @@ import type { PermMode } from '../../core/contracts.js';
 
 export interface ThreadPolicy {
   approvalPolicy: 'never' | 'on-request';
-  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  // Widened to string so a future CLI sandbox id discovered via permissionSource can pass
+  // through without being type-blocked (known modes still use the documented values).
+  sandbox: string;
 }
 
 export function resolveThreadPolicy(permMode: string): ThreadPolicy {
@@ -17,8 +19,10 @@ export function resolveThreadPolicy(permMode: string): ThreadPolicy {
       case 'danger-full-access':
         return { approvalPolicy: 'never', sandbox: 'danger-full-access' };
       case 'workspace-write':
-      default:
         return { approvalPolicy: 'on-request', sandbox: 'workspace-write' };
+      default:
+        // Unknown future sandbox string from dynamic CLI catalog — pass through on-request.
+        return { approvalPolicy: 'on-request', sandbox: permMode };
     }
   }
 

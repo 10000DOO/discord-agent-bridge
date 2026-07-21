@@ -5,7 +5,7 @@ import type {
   ModeSession,
   ResumableSession,
 } from '../../../core/contracts.js';
-import { grokCatalog, GROK_PERMISSION_MODES } from '../catalog.js';
+import { grokCatalog, grokPermissionModes } from '../catalog.js';
 import { GrokDiscovery } from '../discovery.js';
 import { resolveGrokHome } from '../configSource.js';
 import { GrokAcpSession, type CreateGrokAcpClient, type GrokAcpSessionDeps } from './acpSession.js';
@@ -53,8 +53,8 @@ export class GrokBuildMode implements AgentMode {
       fileAttach,
       fileDiff: true, // Edit/Write name + path→file_path normalization for DiffView
       usagePanel: true, // emits context_usage from the prompt response _meta (totalTokens vs configSource.contextWindow) + costUsd
-      // The two modes grok actually enforces (D4/R3).
-      permissionModes: [...GROK_PERMISSION_MODES],
+      // Dynamic from installed `grok --help` (permissionSource); fallback = full CLI list.
+      permissionModes: grokPermissionModes(),
     };
   }
 

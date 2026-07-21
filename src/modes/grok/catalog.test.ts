@@ -10,12 +10,12 @@ import {
   GROK_PERMISSION_MODES,
 } from './catalog.js';
 import { GrokConfigSource } from './configSource.js';
+import { GrokPermissionSource, GROK_PERMISSION_FALLBACK } from './permissionSource.js';
 
 // Model/effort values are now DYNAMIC (served from GrokConfigSource, WO-1). The module singleton
 // reads the real ~/.grok, so its exact lists are machine-dependent — assertions on models/effort
 // use a fixture-backed source injected through the createGrokCatalog factory for determinism.
-// Static bits (the honest permission menu, the guards' machine-independent cases) test the
-// production exports directly.
+// Permission modes are dynamic from CLI help (permissionSource); catalog tests inject runHelp.
 const FIXTURE_CACHE = readFileSync(
   fileURLToPath(new URL('./__fixtures__/models_cache.json', import.meta.url)),
   'utf8',
@@ -45,6 +45,11 @@ function fixtureSource(): GrokConfigSource {
   });
 }
 
+const FULL_HELP = `
+      --output-format [possible values: plain, json]
+      --permission-mode [possible values: default, acceptEdits, auto, dontAsk, bypassPermissions, plan]
+`;
+
 describe('grokCatalog', () => {
   it('serves the dynamic visible models (hidden excluded) with per-model effort attached', () => {
     const catalog = createGrokCatalog(fixtureSource());
@@ -54,11 +59,31 @@ describe('grokCatalog', () => {
     ]);
   });
 
-  it('offers exactly the two enforced permission modes with honest hint labels (D4)', () => {
-    const choices = grokCatalog.permissionChoices();
-    expect(choices.map((c) => c.value)).toEqual(['bypassPermissions', 'default']);
-    expect(choices[0]?.label).toBe('bypassPermissions (auto-approve all tools)');
-    expect(choices[1]?.label).toBe('default (prompts are cancelled — tools are skipped)');
+  it('offers the full CLI permission list with honest hint labels when help is injected', () => {
+    const perms = new GrokPermissionSource({ runHelp: () => FULL_HELP });
+    const choices = createGrokCatalog(fixtureSource(), perms).permissionChoices();
+    expect(choices.map((c) => c.value)).toEqual([
+      'default',
+      'acceptEdits',
+      'auto',
+      'dontAsk',
+      'bypassPermissions',
+      'plan',
+    ]);
+    expect(choices.find((c) => c.value === 'bypassPermissions')?.label).toBe(
+      'bypassPermissions (auto-approve all tools)',
+    );
+    expect(choices.find((c) => c.value === 'default')?.label).toBe(
+      'default (prompts are cancelled — tools are skipped)',
+    );
+  });
+
+  it('production grokCatalog includes at least the two enforced modes (dynamic or fallback)', () => {
+    const values = grokCatalog.permissionChoices().map((c) => c.value);
+    expect(values).toContain('bypassPermissions');
+    expect(values).toContain('default');
+    // Fallback / current CLI = full six; never fewer than the enforced pair.
+    expect(values.length).toBeGreaterThanOrEqual(2);
   });
 
   it('reflects only the chosen model: supported set verbatim, empty/undefined → [] (received-only)', () => {
@@ -101,7 +126,15 @@ describe('isGrokEffort', () => {
 });
 
 describe('GROK_PERMISSION_MODES', () => {
-  it('is exactly the two enforced modes (bypassPermissions, default)', () => {
-    expect([...GROK_PERMISSION_MODES]).toEqual(['bypassPermissions', 'default']);
+  it('is the full CLI fallback list (alias of GROK_PERMISSION_FALLBACK)', () => {
+    expect([...GROK_PERMISSION_MODES]).toEqual([...GROK_PERMISSION_FALLBACK]);
+    expect([...GROK_PERMISSION_MODES]).toEqual([
+      'default',
+      'acceptEdits',
+      'auto',
+      'dontAsk',
+      'bypassPermissions',
+      'plan',
+    ]);
   });
 });

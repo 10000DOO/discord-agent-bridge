@@ -75,8 +75,10 @@ describe('GrokBuildMode identity + capabilities', () => {
       fileAttach: false,
       fileDiff: true,
       usagePanel: true,
-      permissionModes: ['bypassPermissions', 'default'],
+      // Dynamic from grok --help (or full CLI fallback); always includes the enforced pair.
+      permissionModes: expect.arrayContaining(['bypassPermissions', 'default']),
     });
+    expect(mode.capabilities.permissionModes.length).toBeGreaterThanOrEqual(2);
     const withAttach = new GrokBuildMode({
       sendFileFor: () => async () => 'ok',
       attachGateway: {
