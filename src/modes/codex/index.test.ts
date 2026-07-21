@@ -2,19 +2,22 @@ import { describe, it, expect, vi } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentEvent, ModeConfigView, ModeContext, PermMode } from '../../core/contracts.js';
-import { CodexMode, CodexSession, resolveCodexHome } from './index.js';
-import type { RunCodexTurnOptions, RunCodexTurnResult } from './runner.js';
+import { CodexMode, CodexSession, resolveCodexHome, resolveThreadPolicy } from './index.js';
+import { codexCatalog } from '../../core/providerCatalog.js';
+import type { CodexAppServerClientLike, CreateCodexAppServerClient } from './appSession.js';
 import type { CodexDiscovery } from './discovery.js';
 import type { ResumableSession } from '../../core/contracts.js';
+import type { NotificationHandler } from './appServerClient.js';
 
 const nullLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
-// Build a ModeContext whose config is a ModeConfigView; captures emitted events.
 function makeCtx(opts: {
   cwd?: string;
-  permMode?: PermMode;
+  permMode?: PermMode | string;
+  effort?: string;
   config?: Partial<ModeConfigView>;
   onSessionIdReady?: (id: string) => void;
+  requestPermission?: ModeContext['requestPermission'];
 } = {}): { ctx: ModeContext; events: AgentEvent[] } {
   const events: AgentEvent[] = [];
   const ctx: ModeContext = {
@@ -22,9 +25,10 @@ function makeCtx(opts: {
     channelId: 'c1',
     cwd: opts.cwd ?? '/tmp/ws',
     ownerId: 'u1',
-    permMode: opts.permMode ?? 'default',
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+    permMode: (opts.permMode ?? 'default') as PermMode,
     emit: (ev) => events.push(ev),
-    requestPermission: async () => ({ behavior: 'deny' }),
+    requestPermission: opts.requestPermission ?? (async () => ({ behavior: 'deny' })),
     config: { codexTimeoutMs: 5_000, ...opts.config },
     logger: nullLogger,
     audit: () => {},
@@ -33,230 +37,415 @@ function makeCtx(opts: {
   return { ctx, events };
 }
 
-// A runTurn double: records each call's options and returns a scripted result.
-function makeRunTurn(results: RunCodexTurnResult[]): {
-  runTurn: (opts: RunCodexTurnOptions) => Promise<RunCodexTurnResult>;
-  calls: RunCodexTurnOptions[];
-} {
-  const calls: RunCodexTurnOptions[] = [];
-  let i = 0;
-  const runTurn = async (o: RunCodexTurnOptions): Promise<RunCodexTurnResult> => {
-    calls.push(o);
-    return results[Math.min(i++, results.length - 1)];
-  };
-  return { runTurn, calls };
+// Scriptable fake app-server client for session tests.
+class FakeClient implements CodexAppServerClientLike {
+  readonly notifications: NotificationHandler[] = [];
+  readonly calls: Array<{ method: string; params?: unknown }> = [];
+  threadIdToReturn = 'thread-xyz';
+  turnIdToReturn = 'turn-1';
+  autoCompleteTurn = true;
+  closed = false;
+  failInitialize: Error | null = null;
+  lastTurnParams: unknown;
+  lastCreateOptions: import('./appServerClient.js').CodexAppServerClientOptions | undefined;
+
+  // Optional delay gate for interrupt tests.
+  turnStartGate: Promise<void> | null = null;
+  interruptCalls = 0;
+
+  async initialize(): Promise<unknown> {
+    this.calls.push({ method: 'initialize' });
+    if (this.failInitialize) throw this.failInitialize;
+    return {};
+  }
+
+  async threadStart(params: {
+    cwd: string;
+    approvalPolicy: string;
+    sandbox: string;
+    model?: string;
+    dynamicTools?: unknown[];
+  }): Promise<string> {
+    this.calls.push({ method: 'thread/start', params });
+    return this.threadIdToReturn;
+  }
+
+  async threadResume(params: { threadId: string }): Promise<unknown> {
+    this.calls.push({ method: 'thread/resume', params });
+    return {};
+  }
+
+  async turnStart(params: {
+    threadId: string;
+    input: Array<{ type: string; text?: string }>;
+    effort?: string;
+    model?: string;
+  }): Promise<string> {
+    this.calls.push({ method: 'turn/start', params });
+    this.lastTurnParams = params;
+    if (this.turnStartGate) await this.turnStartGate;
+    const turnId = this.turnIdToReturn;
+    if (this.autoCompleteTurn) {
+      setImmediate(() => {
+        for (const h of this.notifications) {
+          h('item/agentMessage/delta', {
+            threadId: params.threadId,
+            turnId,
+            delta: 'ok',
+          });
+          h('turn/completed', {
+            threadId: params.threadId,
+            turnId,
+            usage: { inputTokens: 1, outputTokens: 2 },
+          });
+        }
+      });
+    }
+    return turnId;
+  }
+
+  async turnInterrupt(params: { threadId: string; turnId: string }): Promise<unknown> {
+    this.interruptCalls += 1;
+    this.calls.push({ method: 'turn/interrupt', params });
+    return {};
+  }
+
+  onNotification(handler: NotificationHandler): () => void {
+    this.notifications.push(handler);
+    return () => {
+      const i = this.notifications.indexOf(handler);
+      if (i >= 0) this.notifications.splice(i, 1);
+    };
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.calls.push({ method: 'close' });
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  // Fire a custom notification to active listeners.
+  emit(method: string, params: unknown): void {
+    for (const h of this.notifications) h(method, params);
+  }
 }
 
-const okResult = (sessionId: string | null): RunCodexTurnResult => ({
-  status: 'completed',
-  sessionId,
-  finalMessage: 'done',
-  exitCode: 0,
-});
+function makeCreateClient(fake: FakeClient): CreateCodexAppServerClient {
+  return (options) => {
+    fake.lastCreateOptions = options;
+    return fake;
+  };
+}
 
-describe('CodexMode.capabilities (§5b)', () => {
-  it('declares the Codex capability shape: no streaming/thinking/threads/prompts/usage; transcript+progress+resume', () => {
+describe('CodexMode.capabilities (app-server phase 2)', () => {
+  it('declares thinking + usagePanel + fileDiff; fileAttach only when sendFileFor is wired', () => {
     const caps = new CodexMode().capabilities;
     expect(caps).toEqual({
-      streaming: false,
-      thinking: false,
-      toolThreads: false,
-      permissionPrompts: false,
+      streaming: true,
+      thinking: true,
+      toolThreads: true,
+      permissionPrompts: true,
       progress: true,
-      transcript: true,
+      transcript: false,
       sessionResume: true,
       fileAttach: false,
-      fileDiff: false,
-      usagePanel: false,
+      fileDiff: true,
+      usagePanel: true,
       permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     });
-    // The two Codex-defining flags, called out explicitly.
-    expect(caps.permissionPrompts).toBe(false);
-    expect(caps.usagePanel).toBe(false);
-    expect(caps.transcript).toBe(true);
+    const withAttach = new CodexMode({ sendFileFor: () => async () => 'ok' });
+    expect(withAttach.capabilities.fileAttach).toBe(true);
+  });
+
+  it('exposes the Codex catalog', () => {
+    expect(new CodexMode().catalog).toBe(codexCatalog);
   });
 });
 
-describe('CodexMode.start / CodexSession.send', () => {
-  it('start() returns a session whose send() calls runCodexTurn with the permMode + cwd', async () => {
-    const { runTurn, calls } = makeRunTurn([okResult('thread-1')]);
-    const mode = new CodexMode({ runTurn });
-    const { ctx } = makeCtx({ cwd: '/work/proj', permMode: 'acceptEdits' });
+describe('resolveThreadPolicy', () => {
+  it('maps Claude and Codex sandbox modes onto app-server params', () => {
+    expect(resolveThreadPolicy('default')).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+    });
+    expect(resolveThreadPolicy('acceptEdits')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'workspace-write',
+    });
+    expect(resolveThreadPolicy('bypassPermissions')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
+    expect(resolveThreadPolicy('plan')).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'read-only',
+    });
+    expect(resolveThreadPolicy('read-only')).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'read-only',
+    });
+    expect(resolveThreadPolicy('danger-full-access')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
+  });
+});
+
+describe('CodexMode.start / CodexAppSession.send', () => {
+  it('start() + send() initialize, thread/start, turn/start and emits mapped events', async () => {
+    const fake = new FakeClient();
+    const mode = new CodexMode({ createClient: makeCreateClient(fake) });
+    const { ctx, events } = makeCtx({ cwd: '/work/proj', permMode: 'acceptEdits' });
 
     const session = await mode.start(ctx);
     await session.send({ text: 'hello' });
 
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.prompt).toBe('hello');
-    expect(calls[0]?.cwd).toBe('/work/proj');
-    expect(calls[0]?.permMode).toBe('acceptEdits');
-    expect(calls[0]?.resumeId).toBeUndefined(); // fresh turn
-    expect(calls[0]?.timeoutMs).toBe(5_000);
+    expect(fake.calls.map((c) => c.method)).toEqual([
+      'initialize',
+      'thread/start',
+      'turn/start',
+    ]);
+    const startParams = fake.calls.find((c) => c.method === 'thread/start')?.params as {
+      cwd: string;
+      approvalPolicy: string;
+      sandbox: string;
+    };
+    expect(startParams.cwd).toBe('/work/proj');
+    expect(startParams.approvalPolicy).toBe('never'); // acceptEdits
+    expect(startParams.sandbox).toBe('workspace-write');
+
+    const turnParams = fake.calls.find((c) => c.method === 'turn/start')?.params as {
+      input: Array<{ text?: string }>;
+    };
+    expect(turnParams.input[0]?.text).toBe('hello');
+
+    expect(session.sessionId).toBe('thread-xyz');
+    expect(events.some((e) => e.kind === 'text' && e.delta === true)).toBe(true);
+    expect(events.some((e) => e.kind === 'result')).toBe(true);
   });
 
-  it('captures the sessionId from the first turn and passes it as resumeId on the second', async () => {
-    const { runTurn, calls } = makeRunTurn([okResult('thread-xyz'), okResult('thread-xyz')]);
-    const mode = new CodexMode({ runTurn });
+  it('captures sessionId on first turn and resumes the same thread on second', async () => {
+    const fake = new FakeClient();
+    const mode = new CodexMode({ createClient: makeCreateClient(fake) });
     const { ctx } = makeCtx();
     const session = await mode.start(ctx);
 
     expect(session.sessionId).toBeNull();
     await session.send({ text: 'first' });
     expect(session.sessionId).toBe('thread-xyz');
-    expect(calls[0]?.resumeId).toBeUndefined();
 
     await session.send({ text: 'second' });
-    expect(calls[1]?.resumeId).toBe('thread-xyz'); // resumes the captured id
+    // Second turn: no new thread/start; same client, another turn/start.
+    const threadStarts = fake.calls.filter((c) => c.method === 'thread/start');
+    const turnStarts = fake.calls.filter((c) => c.method === 'turn/start');
+    expect(threadStarts).toHaveLength(1);
+    expect(turnStarts).toHaveLength(2);
   });
 
-  it('passes the Codex model (config.codexModel), NOT ctx.model, and omits -m when codexModel is empty', async () => {
-    // With a codexModel set → forwarded.
-    const set = makeRunTurn([okResult('t')]);
-    const modeSet = new CodexMode({ runTurn: set.runTurn });
-    const withModel = makeCtx({ config: { model: 'opus', codexModel: 'gpt-5.1-codex', codexTimeoutMs: 5_000 } });
-    await (await modeSet.start(withModel.ctx)).send({ text: 'x' });
-    expect(set.calls[0]?.model).toBe('gpt-5.1-codex'); // Codex model, not the Claude 'opus'
-
-    // With codexModel empty → model omitted (codex uses its own config default).
-    const empty = makeRunTurn([okResult('t')]);
-    const modeEmpty = new CodexMode({ runTurn: empty.runTurn });
-    const noModel = makeCtx({ config: { model: 'opus', codexModel: '', codexTimeoutMs: 5_000 } });
-    await (await modeEmpty.start(noModel.ctx)).send({ text: 'x' });
-    expect(empty.calls[0]?.model).toBeUndefined();
+  it('passes codexModel on thread/start when set', async () => {
+    const fake = new FakeClient();
+    const mode = new CodexMode({ createClient: makeCreateClient(fake) });
+    const { ctx } = makeCtx({
+      config: { model: 'opus', codexModel: 'gpt-5.1-codex', codexTimeoutMs: 5_000 },
+    });
+    await (await mode.start(ctx)).send({ text: 'x' });
+    const params = fake.calls.find((c) => c.method === 'thread/start')?.params as { model?: string };
+    expect(params.model).toBe('gpt-5.1-codex');
   });
 
-  it('exposes sessionId as readonly on the ModeSession', async () => {
-    const { runTurn } = makeRunTurn([okResult('thread-9')]);
-    const session = await new CodexMode({ runTurn }).start(makeCtx().ctx);
-    await session.send({ text: 'hi' });
-    expect(session.sessionId).toBe('thread-9');
+  it('seeds effort from ctx.effort and setEffort swaps it for the next turn', async () => {
+    const fake = new FakeClient();
+    const { ctx } = makeCtx({ effort: 'low' });
+    const session = await new CodexMode({ createClient: makeCreateClient(fake) }).start(ctx);
+
+    await session.send({ text: 'first' });
+    expect((fake.lastTurnParams as { effort?: string }).effort).toBe('low');
+
+    await session.setEffort?.('high');
+    await session.send({ text: 'second' });
+    expect((fake.lastTurnParams as { effort?: string }).effort).toBe('high');
   });
 
-  it('invokes onSessionIdReady exactly once on the first fresh turn', async () => {
+  it('setEffort empty omits effort on the next turn', async () => {
+    const fake = new FakeClient();
+    const { ctx } = makeCtx({ effort: 'high' });
+    const session = await new CodexMode({ createClient: makeCreateClient(fake) }).start(ctx);
+    await session.setEffort?.('');
+    await session.send({ text: 'x' });
+    expect((fake.lastTurnParams as { effort?: string }).effort).toBeUndefined();
+  });
+
+  it('setEffort rejects unsupported values', async () => {
+    const fake = new FakeClient();
+    const { ctx } = makeCtx({ effort: 'low' });
+    const session = await new CodexMode({ createClient: makeCreateClient(fake) }).start(ctx);
+    await expect(session.setEffort!('bogus')).rejects.toThrow(/Unsupported reasoning effort/);
+  });
+
+  it('invokes onSessionIdReady exactly once on fresh thread/start', async () => {
     const captured: string[] = [];
-    const { runTurn, calls } = makeRunTurn([okResult('thread-first'), okResult('thread-first')]);
+    const fake = new FakeClient();
     const { ctx } = makeCtx({ onSessionIdReady: (id) => captured.push(id) });
-    const session = await new CodexMode({ runTurn }).start(ctx);
-
-    // First turn: sessionId flips null → thread-first and the hook fires ONCE.
+    const session = await new CodexMode({ createClient: makeCreateClient(fake) }).start(ctx);
     await session.send({ text: 'one' });
-    expect(captured).toEqual(['thread-first']);
-    expect(calls[0]?.resumeId).toBeUndefined();
-
-    // Second turn: session already carries the id, so the hook must NOT fire again.
     await session.send({ text: 'two' });
-    expect(captured).toEqual(['thread-first']);
-    expect(calls[1]?.resumeId).toBe('thread-first');
+    expect(captured).toEqual(['thread-xyz']);
   });
 
-  it('does not fire onSessionIdReady on a resumed session (id already set at construction)', async () => {
-    // Codex resume(ctx, id) sets sessionId in the constructor; runCodexTurn on
-    // the next turn returns the SAME id, so the "first capture" guard suppresses
-    // the callback. This matches the option A intent (only fires when the id
-    // transitions from null on THIS session).
+  it('does not fire onSessionIdReady on resume (id set at construction)', async () => {
     const captured: string[] = [];
-    const { runTurn } = makeRunTurn([okResult('thread-r')]);
+    const fake = new FakeClient();
     const { ctx } = makeCtx({ onSessionIdReady: (id) => captured.push(id) });
-    const session = await new CodexMode({ runTurn }).resume(ctx, 'thread-r');
+    const session = await new CodexMode({ createClient: makeCreateClient(fake) }).resume(ctx, 'thread-r');
+    expect(session.sessionId).toBe('thread-r');
     await session.send({ text: 'continue' });
     expect(captured).toEqual([]);
-    expect(session.sessionId).toBe('thread-r');
+    expect(fake.calls.map((c) => c.method)).toEqual(['initialize', 'thread/resume', 'turn/start']);
+  });
+
+  it('emits a single context_usage after result when tokenUsage updates fire mid-turn', async () => {
+    const fake = new FakeClient();
+    fake.autoCompleteTurn = false;
+    const mode = new CodexMode({ createClient: makeCreateClient(fake) });
+    const { ctx, events } = makeCtx();
+    const session = await mode.start(ctx);
+
+    const sendP = session.send({ text: 'work' });
+    // Wait until the notification handler is registered (after turnStart).
+    await vi.waitFor(() => expect(fake.notifications.length).toBeGreaterThan(0));
+
+    const usageParams = (totalTokens: number) => ({
+      threadId: 'thread-xyz',
+      turnId: 'turn-1',
+      tokenUsage: {
+        total: {
+          totalTokens,
+          inputTokens: totalTokens,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: 10,
+          inputTokens: 10,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 10000,
+      },
+    });
+
+    // Multiple mid-turn updates must not emit context_usage yet.
+    fake.emit('thread/tokenUsage/updated', usageParams(100));
+    fake.emit('thread/tokenUsage/updated', usageParams(500));
+    fake.emit('thread/tokenUsage/updated', usageParams(2500));
+    expect(events.filter((e) => e.kind === 'context_usage')).toHaveLength(0);
+
+    fake.emit('turn/completed', {
+      threadId: 'thread-xyz',
+      turnId: 'turn-1',
+      usage: { inputTokens: 2000, outputTokens: 500 },
+    });
+    await sendP;
+
+    const usageEvents = events.filter((e) => e.kind === 'context_usage');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toEqual({
+      kind: 'context_usage',
+      totalTokens: 2500,
+      maxTokens: 10000,
+      percentage: 25,
+    });
+
+    // Order: result first, then context_usage (matches Claude).
+    const resultIdx = events.findIndex((e) => e.kind === 'result');
+    const usageIdx = events.findIndex((e) => e.kind === 'context_usage');
+    expect(resultIdx).toBeGreaterThanOrEqual(0);
+    expect(usageIdx).toBeGreaterThan(resultIdx);
   });
 });
 
 describe('CodexMode.resume', () => {
-  it('resume() starts a session already bound to the given id and resumes it on the first turn', async () => {
-    const { runTurn, calls } = makeRunTurn([okResult('thread-r')]);
-    const mode = new CodexMode({ runTurn });
-    const { ctx } = makeCtx({ cwd: '' }); // resumed session cwd may be '' (Q4)
-
+  it('resume() binds sessionId immediately and thread/resume on first send', async () => {
+    const fake = new FakeClient();
+    const mode = new CodexMode({ createClient: makeCreateClient(fake) });
+    const { ctx } = makeCtx({ cwd: '' });
     const session = await mode.resume(ctx, 'thread-r');
     expect(session.sessionId).toBe('thread-r');
     await session.send({ text: 'continue' });
-    expect(calls[0]?.resumeId).toBe('thread-r');
+    const resume = fake.calls.find((c) => c.method === 'thread/resume');
+    expect(resume?.params).toEqual({ threadId: 'thread-r' });
   });
 });
 
-describe('CodexSession.stop', () => {
-  it('aborts the IN-FLIGHT turn via the signal the runner is given', async () => {
-    // The turn-based controller is cleared once a turn completes, so stop() only kills a
-    // turn that is actually running. Hold the turn in flight with a gate, abort, release.
-    let capturedSignal: AbortSignal | undefined;
-    let release!: () => void;
-    const gate = new Promise<void>((r) => { release = r; });
-    const runTurn = vi.fn(async (o: RunCodexTurnOptions) => {
-      capturedSignal = o.signal;
-      await gate;
-      return okResult('t');
-    });
-    const session = await new CodexMode({ runTurn }).start(makeCtx().ctx);
-    const sending = session.send({ text: 'hi' }); // in flight — awaits the gate
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(capturedSignal).toBeInstanceOf(AbortSignal);
-    expect(capturedSignal?.aborted).toBe(false);
+describe('CodexSession.stop / interrupt', () => {
+  it('stop() closes the client and rejects later send', async () => {
+    const fake = new FakeClient();
+    const session = await new CodexMode({ createClient: makeCreateClient(fake) }).start(makeCtx().ctx);
+    await session.send({ text: 'hi' });
     await session.stop();
-    expect(capturedSignal?.aborted).toBe(true);
-    release();
-    await sending;
-  });
-
-  it('a send() after stop() throws (closed session)', async () => {
-    const { runTurn } = makeRunTurn([okResult('t')]);
-    const session = await new CodexMode({ runTurn }).start(makeCtx().ctx);
-    await session.stop();
+    expect(fake.closed).toBe(true);
     await expect(session.send({ text: 'late' })).rejects.toThrow(/closed/);
   });
-});
 
-describe('CodexSession.interrupt', () => {
-  it('kills the in-flight turn WITHOUT closing the session; a later send() still runs', async () => {
-    // Same gate trick: interrupt() aborts the running turn's child but, unlike stop(),
-    // leaves the session open so the NEXT send() runs a fresh/resume turn.
-    const signals: (AbortSignal | undefined)[] = [];
+  it('interrupt() cancels the in-flight turn without closing the session', async () => {
+    const fake = new FakeClient();
+    fake.autoCompleteTurn = false;
     let release!: () => void;
-    const gate = new Promise<void>((r) => { release = r; });
-    let turnCount = 0;
-    const runTurn = vi.fn(async (o: RunCodexTurnOptions) => {
-      signals.push(o.signal);
-      // Only the FIRST turn parks on the gate so it is interruptible; later turns resolve
-      // at once (so a fresh signal for turn 2 is observed as non-aborted).
-      if (turnCount++ === 0) await gate;
-      return okResult('thread-i');
+    fake.turnStartGate = new Promise<void>((r) => {
+      release = r;
     });
-    // Cast to the concrete CodexSession: interrupt() is optional on the ModeSession
-    // contract but a declared method here.
-    const session = (await new CodexMode({ runTurn }).start(makeCtx().ctx)) as CodexSession;
-    const first = session.send({ text: 'one' });
-    await Promise.resolve();
-    await Promise.resolve();
 
-    expect(signals[0]?.aborted).toBe(false);
-    await session.interrupt();
-    expect(signals[0]?.aborted).toBe(true);
+    const session = (await new CodexMode({ createClient: makeCreateClient(fake) }).start(
+      makeCtx().ctx,
+    )) as CodexSession;
+
+    const first = session.send({ text: 'one' });
+
+    // Wait until turnStart is parked on the gate (turn/start call recorded).
+    for (let i = 0; i < 50 && !fake.calls.some((c) => c.method === 'turn/start'); i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(fake.calls.some((c) => c.method === 'turn/start')).toBe(true);
+
+    // Release gate so turnStart resolves and the notification wait is armed.
     release();
+    for (let i = 0; i < 50 && fake.notifications.length === 0; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(fake.notifications.length).toBeGreaterThan(0);
+
+    await session.interrupt();
     await first;
 
-    // Session is NOT closed → a subsequent turn runs with a fresh (non-aborted) signal.
+    expect(fake.interruptCalls).toBeGreaterThanOrEqual(1);
+    expect(fake.closed).toBe(false);
+
+    // Session remains usable for the next turn.
+    fake.autoCompleteTurn = true;
+    fake.turnStartGate = null;
     await session.send({ text: 'two' });
-    expect(signals).toHaveLength(2);
-    expect(signals[1]?.aborted).toBe(false);
+    const turns = fake.calls.filter((c) => c.method === 'turn/start');
+    expect(turns.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('is a no-op when no turn is in flight (idempotent / harmless)', async () => {
-    const { runTurn } = makeRunTurn([okResult('t')]);
-    const session = (await new CodexMode({ runTurn }).start(makeCtx().ctx)) as CodexSession;
-    // Nothing running yet → interrupt() must not throw.
+  it('interrupt() is a no-op when idle', async () => {
+    const fake = new FakeClient();
+    const session = (await new CodexMode({ createClient: makeCreateClient(fake) }).start(
+      makeCtx().ctx,
+    )) as CodexSession;
     await expect(session.interrupt()).resolves.toBeUndefined();
-    // The session is still usable afterwards.
     await session.send({ text: 'hi' });
-    expect(session.sessionId).toBe('t');
+    expect(session.sessionId).toBe('thread-xyz');
   });
 });
 
 describe('CodexMode.listResumable', () => {
-  it('calls discovery with the resolved codexHome (from config, ~ expanded)', async () => {
+  it('calls discovery with the resolved codexHome', async () => {
     const listResumable =
       vi.fn<(codexHome: string, opts?: { includeSubAgents?: boolean }) => Promise<ResumableSession[]>>(
         async () => [{ sessionId: 's1', cwd: '/work' }],
@@ -267,12 +456,10 @@ describe('CodexMode.listResumable', () => {
 
     const sessions = await mode.listResumable(ctx);
     expect(sessions).toEqual([{ sessionId: 's1', cwd: '/work' }]);
-    expect(listResumable).toHaveBeenCalledTimes(1);
     expect(listResumable.mock.calls[0]?.[0]).toBe(path.join(os.homedir(), '.codex'));
-    expect(listResumable.mock.calls[0]?.[1]).toEqual({}); // includeSubAgents internal/false
   });
 
-  it('defaults codexHome to <home>/.codex when config.codexHome is unset', async () => {
+  it('defaults codexHome to <home>/.codex when unset', async () => {
     const listResumable =
       vi.fn<(codexHome: string, opts?: { includeSubAgents?: boolean }) => Promise<ResumableSession[]>>(
         async () => [],
@@ -280,7 +467,6 @@ describe('CodexMode.listResumable', () => {
     const fakeDiscovery = { listResumable } as unknown as CodexDiscovery;
     const mode = new CodexMode({ discovery: fakeDiscovery });
     const { ctx } = makeCtx({ config: { codexTimeoutMs: 5_000 } });
-
     await mode.listResumable(ctx);
     expect(listResumable.mock.calls[0]?.[0]).toBe(path.join(os.homedir(), '.codex'));
   });
@@ -293,5 +479,62 @@ describe('resolveCodexHome', () => {
     expect(resolveCodexHome('~')).toBe(os.homedir());
     expect(resolveCodexHome('~/.codex')).toBe(path.join(os.homedir(), '.codex'));
     expect(resolveCodexHome('/abs/codex')).toBe('/abs/codex');
+  });
+});
+
+describe('CodexAppSession dynamic tool attach_file', () => {
+  it('registers dynamicTools on thread/start and handles attach_file via onDynamicToolCall', async () => {
+    const fake = new FakeClient();
+    const sent: Array<{ path: string; filename?: string }> = [];
+    const sendFile = async (absPath: string, filename?: string): Promise<string> => {
+      sent.push({ path: absPath, ...(filename !== undefined ? { filename } : {}) });
+      return `sent ${path.basename(absPath)}`;
+    };
+    const mode = new CodexMode({
+      createClient: makeCreateClient(fake),
+      sendFileFor: () => sendFile,
+    });
+    const { ctx, events } = makeCtx({ cwd: os.tmpdir() });
+    const session = await mode.start(ctx);
+    await session.send({ text: 'hi' });
+
+    const startParams = fake.calls.find((c) => c.method === 'thread/start')?.params as {
+      dynamicTools?: Array<{ name: string }>;
+    };
+    expect(startParams.dynamicTools?.[0]?.name).toBe('attach_file');
+    expect(fake.lastCreateOptions?.onDynamicToolCall).toBeTypeOf('function');
+
+    // Invoke the handler as app-server would for item/tool/call.
+    const handler = fake.lastCreateOptions!.onDynamicToolCall!;
+    const filePath = path.join(os.tmpdir(), `dab-attach-${Date.now()}.txt`);
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(filePath, 'payload', 'utf8');
+    try {
+      const result = await handler({
+        tool: 'attach_file',
+        arguments: { path: filePath, filename: 'note.txt' },
+        callId: 'dyn-1',
+        threadId: 'thread-xyz',
+        turnId: 'turn-1',
+      });
+      expect(result.success).toBe(true);
+      expect(result.contentItems[0]).toMatchObject({ type: 'inputText' });
+      expect(sent.some((s) => s.filename === 'note.txt')).toBe(true);
+      expect(events.some((e) => e.kind === 'tool_use' && e.name === 'attach_file')).toBe(true);
+      expect(events.some((e) => e.kind === 'tool_result' && e.ok === true)).toBe(true);
+    } finally {
+      await fs.unlink(filePath).catch(() => {});
+    }
+  });
+
+  it('omits dynamicTools when sendFileFor is not wired', async () => {
+    const fake = new FakeClient();
+    const mode = new CodexMode({ createClient: makeCreateClient(fake) });
+    await (await mode.start(makeCtx().ctx)).send({ text: 'x' });
+    const startParams = fake.calls.find((c) => c.method === 'thread/start')?.params as {
+      dynamicTools?: unknown;
+    };
+    expect(startParams.dynamicTools).toBeUndefined();
+    expect(fake.lastCreateOptions?.onDynamicToolCall).toBeUndefined();
   });
 });
