@@ -253,6 +253,9 @@ export function createApp(deps: CreateAppDeps): App {
     // A server admin can drive a session by messaging even with an empty role config
     // (never locked out): the router reads this bit off the member's permissions.
     administratorBit: PermissionFlagsBits.Administrator,
+    // After a turn is accepted, arm the per-channel idle watchdog so ~3 min of
+    // silence posts a one-shot "still working / may have stalled" notice.
+    onTurnAccepted: (g, c) => wiring.armIdleWatchdog(g, c),
   });
   const interactionRouter = new InteractionRouter({
     authorizer,

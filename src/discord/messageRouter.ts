@@ -91,6 +91,10 @@ export interface MessageRouterDeps {
   // acting member's permissions.has(bit) to grant the admin tier to server admins.
   // App boot wires it from discord.js; defaults to the well-known value (1<<3).
   administratorBit?: bigint;
+  // Called after orchestrator.send accepts a turn (running or queued). App boot
+  // wires this to SessionWiring.armIdleWatchdog so a ~3 min idle notice can fire
+  // if the agent goes silent. Optional so existing tests need not supply it.
+  onTurnAccepted?: (guildId: string, channelId: string) => void;
 }
 
 // Reaction emoji lifecycle: ⏳ while the AI is preparing a response (added when the
@@ -113,6 +117,7 @@ export class MessageRouter {
   private readonly logger: Logger;
   private readonly fetchBytes: FetchBytes;
   private readonly administratorBit: bigint;
+  private readonly onTurnAccepted?: (guildId: string, channelId: string) => void;
 
   constructor(deps: MessageRouterDeps) {
     this.authorizer = deps.authorizer;
@@ -122,6 +127,7 @@ export class MessageRouter {
     this.logger = deps.logger;
     this.fetchBytes = deps.fetchBytes ?? defaultFetchBytes;
     this.administratorBit = deps.administratorBit ?? ADMINISTRATOR_BIT;
+    this.onTurnAccepted = deps.onTurnAccepted;
   }
 
   async handle(message: IncomingMessage): Promise<void> {
@@ -171,9 +177,10 @@ export class MessageRouter {
       return;
     }
 
-    // The turn was accepted (running now or queued behind one in flight): signal
-    // "the AI is preparing a response" with ⏳, then arm a one-shot listener to
-    // clear it when the channel's turn finishes.
+    // The turn was accepted (running now or queued behind one in flight): arm the
+    // idle watchdog (if wired), signal "the AI is preparing a response" with ⏳,
+    // then arm a one-shot listener to clear it when the channel's turn finishes.
+    this.onTurnAccepted?.(guildId, channelId);
     await safe(message.react(REACT_WORKING));
     this.armCompletionIndicator(guildId, channelId, message);
   }

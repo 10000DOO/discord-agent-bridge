@@ -269,6 +269,9 @@ const ko: Catalog = {
     '❌ 자동 업데이트 설치에 실패했어요. 수동으로 `npm i -g discord-agent-bridge@latest` 를 실행한 뒤 `discord-agent-bridge service restart` 로 재시작하세요 (권한이 필요할 수 있어요).',
   'update.dismissed': '이 버전 알림을 껐어요. 더 새 버전이 나오면 다시 알려드릴게요.',
   'update.denied': '자동 업데이트는 서버 관리자(Administrator) 또는 admin 티어만 결정할 수 있어요.',
+  // Idle watchdog: one channel notice after ~3 min with no AgentEvent activity on a turn.
+  'watchdog.idle':
+    '약 3분 동안 새 활동이 없습니다. 아직 긴 작업을 하는 중일 수도 있고, 멈췄을 수도 있습니다. 채널 위쪽·스레드를 확인해 보거나, 작업이 끝났는지 에이전트한테 물어보세요.',
 };
 
 const en: Catalog = {
@@ -327,6 +330,8 @@ const en: Catalog = {
     '❌ Auto-update failed to install. Run `npm i -g discord-agent-bridge@latest` manually, then `discord-agent-bridge service restart` (elevated permissions may be required).',
   'update.dismissed': 'Muted this version. I’ll notify you again when a newer one ships.',
   'update.denied': 'Only a server Administrator or the admin tier can decide auto-updates.',
+  'watchdog.idle':
+    'No new activity for about 3 minutes. It may still be working on a long task, or it may have stalled. Check above in the channel and any threads, or ask the agent whether the work finished.',
 };
 
 const catalogs: Record<Locale, Catalog> = { ko, en };

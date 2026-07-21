@@ -18,6 +18,7 @@ import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
 import type { ConfigStore } from '../core/config.js';
 import { SessionNotifier, resolveNotifications } from './notifier.js';
+import { IdleWatchdog } from './idleWatchdog.js';
 import { t } from './i18n.js';
 
 // The deferred 7a hookups, wired live (§7A/§6/§7.5). Per active channel this owns:
@@ -35,15 +36,19 @@ import { t } from './i18n.js';
 // a MessageChannel port via resolveChannelAdapter and everything else is port-level.
 
 // One channel's live wiring: its renderer subscription unsubscribe, its renderer
-// set (for dispose() on detach), its permission handler, the channel sink, and — when
-// per-guild notifications are enabled with a resolvable status channel — the notifier
-// subscription's unsubscribe (torn down alongside the renderer subscription on detach).
+// set (for dispose() on detach), its permission handler, the channel sink, the
+// turn idle watchdog (arms on turn accept, resets on AgentEvent activity), and —
+// when per-guild notifications are enabled with a resolvable status channel — the
+// notifier subscription's unsubscribe (torn down alongside the renderer subscription
+// on detach).
 interface ChannelWiring {
   unsubscribe: () => void;
   renderers: RendererSet;
   permission: PermissionButtonsHandler;
   channel: MessageChannel;
   mode: string;
+  idleWatchdog: IdleWatchdog;
+  unsubscribeIdle: () => void;
   unsubscribeNotifier?: () => void;
 }
 
@@ -328,6 +333,15 @@ export class SessionWiring {
     const dispatcher = new RendererDispatcher(set, capabilities);
     const unsubscribe = dispatcher.subscribe(this.eventBus, guildId, channelId);
 
+    // Turn idle watchdog: armed by the message router when a turn is accepted;
+    // any intermediate AgentEvent resets the timer; result/error stops it. After
+    // ~3 minutes with no activity it posts a one-shot channel notice.
+    const idleWatchdog = new IdleWatchdog({ channel, logger: this.logger });
+    const unsubscribeIdle = this.eventBus.on(guildId, channelId, (ev) => {
+      if (ev.kind === 'result' || ev.kind === 'error') idleWatchdog.stop();
+      else idleWatchdog.noteActivity();
+    });
+
     // When per-guild notifications are enabled and a status channel resolves, also
     // subscribe a notifier that forwards this session's key events (result/error;
     // tool_use if enabled) to that status channel as compact summary lines. Skipped
@@ -341,8 +355,16 @@ export class SessionWiring {
       permission,
       channel,
       mode,
+      idleWatchdog,
+      unsubscribeIdle,
       ...(unsubscribeNotifier ? { unsubscribeNotifier } : {}),
     });
+  }
+
+  // Arm the channel's idle watchdog for a newly accepted turn. No-op when the
+  // channel is not wired (session not attached yet / already detached).
+  armIdleWatchdog(guildId: string, channelId: string): void {
+    this.channels.get(channelKey(guildId, channelId))?.idleWatchdog.arm();
   }
 
   // Resolve the guild's notifications config + status channel and, when enabled with a
@@ -381,6 +403,10 @@ export class SessionWiring {
     const wiring = this.channels.get(key);
     if (!wiring) return;
     wiring.unsubscribe();
+    // Stop idle-watch bus listener + cancel any armed timer so a mid-turn detach
+    // never posts a late "no activity" notice into a torn-down channel.
+    wiring.unsubscribeIdle();
+    wiring.idleWatchdog.stop();
     // Tear down the notifier subscription too (if one was wired), so a stopped session
     // stops forwarding events to the status channel.
     wiring.unsubscribeNotifier?.();
