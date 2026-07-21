@@ -12,10 +12,15 @@ import { t } from '../i18n.js';
 // select's onChange only updates a PENDING value + re-renders (showing it selected); the
 // button then advances using the pending value, defaulting to the step's current value
 // if the dropdown was never touched. The folder step keeps its own "✅ 이 폴더로 시작"
-// button. Model/effort/permission OPTIONS are BACKEND-SPECIFIC (Claude vs Codex): the
-// wizard reads them from injected per-backend suppliers once the backend is chosen.
-// Transitions are driven by injected select/button inputs (no discord.js here) so 7b
-// can wire real interactions and tests can drive it directly.
+// button. Every step AFTER the folder also carries a "⬅ 이전" back button
+// ('wizard.back') that returns to the previous step with the committed selections
+// intact — so a wrong backend pick no longer forces a cancel + full restart. Going
+// back discards only the CURRENT step's un-confirmed pending pick; re-advancing shows
+// the previously committed values pre-selected. Model/effort/permission OPTIONS are
+// BACKEND-SPECIFIC (Claude vs Codex): the wizard reads them from injected per-backend
+// suppliers once the backend is chosen. Transitions are driven by injected
+// select/button inputs (no discord.js here) so 7b can wire real interactions and tests
+// can drive it directly.
 
 export type WizardStep = 'folder' | 'backend' | 'model' | 'effort' | 'perm' | 'confirm' | 'done' | 'cancelled';
 
@@ -85,9 +90,10 @@ export interface ChannelWizardOptions {
 }
 
 // A wizard select/button input. `id` is the component id ('backend', 'model',
-// 'effort', 'perm.mode', 'perm.profile', 'dir:into', 'dir:up', 'dir:here', and the
-// confirm buttons 'backend.next', 'model.next', 'effort.next', 'perm.start', 'cancel');
-// `value` is the selected option value (for selects) or empty (for buttons).
+// 'effort', 'perm.mode', 'perm.profile', 'dir:into', 'dir:up', 'dir:here', the
+// confirm buttons 'backend.next', 'model.next', 'effort.next', 'perm.start', plus
+// 'wizard.back' and 'cancel'); `value` is the selected option value (for selects) or
+// empty (for buttons).
 export interface WizardInput {
   id: string;
   value?: string;
@@ -167,6 +173,10 @@ export class ChannelWizard {
       this.step = 'cancelled';
       return this.step;
     }
+    if (input.id === 'wizard.back') {
+      this.stepBack();
+      return this.step;
+    }
     switch (this.step) {
       case 'folder':
         await this.handleFolder(input);
@@ -187,6 +197,32 @@ export class ChannelWizard {
         break; // done / cancelled: no further transitions
     }
     return this.step;
+  }
+
+  // Step back one step ('wizard.back'). Committed selections are kept — only the
+  // CURRENT step's un-confirmed pending pick is discarded — so re-advancing shows the
+  // previous choices pre-selected instead of resetting the flow. The perm step returns
+  // to effort only when the chosen backend actually has that step (mirrors the forward
+  // skip, §6). The folder step is the first — back is not rendered there and a stray
+  // input is a no-op, like every other unknown id.
+  private stepBack(): void {
+    this.pending = {};
+    switch (this.step) {
+      case 'backend':
+        this.step = 'folder';
+        break;
+      case 'model':
+        this.step = 'backend';
+        break;
+      case 'effort':
+        this.step = 'model';
+        break;
+      case 'perm':
+        this.step = this.hasEffortStep() ? 'effort' : 'model';
+        break;
+      default:
+        break; // folder / done / cancelled: nothing to go back to
+    }
   }
 
   private async handleFolder(input: WizardInput): Promise<void> {
@@ -388,7 +424,8 @@ export class ChannelWizard {
   }
 
   // A choice step: a single-select (pending-aware `default`) + a confirm button that
-  // advances, and a cancel button. The button — not the select — drives the transition.
+  // advances, a back button, and a cancel button. The buttons — not the select — drive
+  // the transitions.
   private choiceStep(
     titleKey: string,
     id: string,
@@ -398,7 +435,7 @@ export class ChannelWizard {
     const select: SelectSpec = { type: 'select', customId: id, placeholder: t(titleKey), options };
     return {
       embed: { title: t('wizard.title'), description: t(titleKey) },
-      rows: [{ components: [select] }, { components: [confirm, cancelButton()] }],
+      rows: [{ components: [select] }, { components: [confirm, backButton(), cancelButton()] }],
     };
   }
 
@@ -443,6 +480,7 @@ export class ChannelWizard {
     rows.push({
       components: [
         { type: 'button', customId: 'perm.start', label: t('wizard.start'), style: 'success' },
+        backButton(),
         cancelButton(),
       ],
     });
@@ -453,6 +491,12 @@ export class ChannelWizard {
 // The "다음" (Next) confirm button for a choice step, with the step-specific custom id.
 function nextButton(customId: string): ButtonSpec {
   return { type: 'button', customId, label: t('wizard.next'), style: 'primary' };
+}
+
+// The "⬅ 이전" (Back) button, shared by every step after the folder. One id — the
+// state machine knows which step it is leaving.
+function backButton(): ButtonSpec {
+  return { type: 'button', customId: 'wizard.back', label: t('wizard.back'), style: 'secondary' };
 }
 
 function cancelButton(): ButtonSpec {

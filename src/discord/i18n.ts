@@ -37,6 +37,7 @@ const ko: Catalog = {
   'wizard.cancelled': '세션 시작을 취소했어요.',
   'wizard.cancel': '취소',
   'wizard.next': '다음',
+  'wizard.back': '⬅ 이전',
   'wizard.start': '✅ 시작',
   'wizard.profile.advanced': '고급: 권한 모드 직접 선택',
   // /config panel (role tiers + defaults, clicked in Discord)
@@ -287,6 +288,7 @@ const en: Catalog = {
   'backend.custom': 'Custom',
   'wizard.title': 'Start session',
   'wizard.confirm': 'Start a {backend} session in `{cwd}`? (permission: {perm})',
+  'wizard.back': '⬅ Back',
   'perm.button.allow': 'Allow',
   'perm.button.always': 'Always allow',
   'perm.button.deny': 'Deny',
