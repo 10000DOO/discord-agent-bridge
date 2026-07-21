@@ -1,0 +1,52 @@
+{
+  "fetched_at": "2026-07-21T00:00:00.000000Z",
+  "client_version": "fixture",
+  "models": [
+    {
+      "slug": "gpt-5.5",
+      "display_name": "GPT-5.5",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" },
+        { "effort": "xhigh" }
+      ],
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-5.4",
+      "display_name": "GPT-5.4",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "minimal" },
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" },
+        { "effort": "xhigh" }
+      ],
+      "visibility": "hide"
+    },
+    {
+      "slug": "gpt-5.4-mini",
+      "display_name": "GPT-5.4 Mini",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" }
+      ],
+      "visibility": "hide"
+    },
+    {
+      "slug": "codex-list-alt",
+      "display_name": "Codex List Alt",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "high" },
+        { "effort": "xhigh" }
+      ],
+      "visibility": "list"
+    }
+  ]
+}

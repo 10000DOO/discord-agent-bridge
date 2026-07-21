@@ -26,6 +26,7 @@ import {
 } from './providerCatalog.js';
 import { permModeSchema } from './configSchema.js';
 import { resolveThreadPolicy } from '../modes/codex/policy.js';
+import { codexConfigSource } from '../modes/codex/configSource.js';
 
 // The provider catalog is the ONE source of the model + permission-mode option lists.
 // These tests MOCK the SDK's supportedModels() — no real SDK, no network.
@@ -173,29 +174,26 @@ describe('permission modes (SDK-synced, English, per-backend)', () => {
   });
 });
 
-describe('getCodexModels (researched convenience list, English)', () => {
-  it('returns the current researched list as English {value,label} (label=id) when nothing is configured', () => {
-    const choices = getCodexModels('');
-    expect(choices).toEqual([
-      { value: 'gpt-5.5', label: 'gpt-5.5' },
-      { value: 'gpt-5.4', label: 'gpt-5.4' },
-      { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-      { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
-    ]);
+describe('getCodexModels (delegates to codexConfigSource)', () => {
+  // getCodexModels is a thin wrapper over codexConfigSource.models — assert identity with
+  // the source so tests stay independent of whether ~/.codex/models_cache.json is present.
+  it('matches codexConfigSource.models for empty configured', () => {
+    expect(getCodexModels('')).toEqual(codexConfigSource.models(''));
+    expect(getCodexModels('').length).toBeGreaterThan(0);
   });
 
   it('offers a configured codexModel FIRST, de-duplicated', () => {
     const choices = getCodexModels('gpt-5.4');
-    expect(choices[0]).toEqual({ value: 'gpt-5.4', label: 'gpt-5.4' });
-    // No duplicate of the configured model further down the list.
+    expect(choices).toEqual(codexConfigSource.models('gpt-5.4'));
+    expect(choices[0]?.value).toBe('gpt-5.4');
     expect(choices.filter((c) => c.value === 'gpt-5.4')).toHaveLength(1);
-    expect(choices).toHaveLength(4);
   });
 
-  it('leads with a novel configured model (e.g. the operator config.toml model) without dropping the defaults', () => {
+  it('leads with a novel configured model without dropping the rest of the list', () => {
     const choices = getCodexModels('gpt-5.5-codex');
+    expect(choices).toEqual(codexConfigSource.models('gpt-5.5-codex'));
     expect(choices[0]?.value).toBe('gpt-5.5-codex');
-    expect(choices).toHaveLength(5);
+    expect(choices.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -254,8 +252,18 @@ describe('reasoning-effort choices (per-backend)', () => {
   it('effortChoicesFor narrows Claude to a model’s supportedEffortLevels when provided', () => {
     const narrowed = effortChoicesFor('claude', ['low', 'medium', 'high']);
     expect(narrowed.map((c) => c.value)).toEqual(['low', 'medium', 'high']);
-    // Codex ignores the Claude-only narrowing argument.
-    expect(effortChoicesFor('codex', ['low']).map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+  });
+
+  it('effortChoicesFor narrows Codex to supported when non-empty; empty/undefined → fallback', () => {
+    expect(effortChoicesFor('codex', ['low']).map((c) => c.value)).toEqual(['low']);
+    expect(effortChoicesFor('codex', ['low', 'medium', 'high', 'xhigh']).map((c) => c.value)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
+    expect(effortChoicesFor('codex').map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+    expect(effortChoicesFor('codex', []).map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
   });
 
   it('defaultEffortFor is high for Claude and medium for Codex', () => {
@@ -300,8 +308,13 @@ describe('runtime reasoning-effort choices (/effort — live session)', () => {
     ]);
     // Even if the model reports max, it is never offered at runtime.
     expect(runtimeEffortChoicesFor('claude', ['high', 'max']).map((c) => c.value)).toEqual(['high']);
-    // Codex ignores the Claude-only narrowing argument.
-    expect(runtimeEffortChoicesFor('codex', ['low']).map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+  });
+
+  it('runtimeEffortChoicesFor: Codex uses supported when non-empty; empty/undefined → fallback', () => {
+    expect(runtimeEffortChoicesFor('codex', ['low']).map((c) => c.value)).toEqual(['low']);
+    expect(runtimeEffortChoicesFor('codex', ['low', 'xhigh']).map((c) => c.value)).toEqual(['low', 'xhigh']);
+    expect(runtimeEffortChoicesFor('codex').map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+    expect(runtimeEffortChoicesFor('codex', []).map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
   });
 });
 
@@ -318,12 +331,16 @@ describe('built-in mode catalogs (assemble the existing per-backend functions)',
     expect(claudeCatalog.defaultEffort()).toBe('high');
   });
 
-  it('codexCatalog delegates to the Codex vocabulary functions (sandbox perms, codex efforts)', () => {
+  it('codexCatalog delegates to codexConfigSource + Codex vocabulary functions', () => {
     expect(codexCatalog.permissionChoices()).toEqual(codexSandboxChoices());
     expect(codexCatalog.effortChoices()).toEqual(effortChoicesFor('codex'));
+    expect(codexCatalog.effortChoices(['low', 'high'])).toEqual(effortChoicesFor('codex', ['low', 'high']));
     expect(codexCatalog.runtimeEffortChoices()).toEqual(runtimeEffortChoicesFor('codex'));
-    expect(codexCatalog.defaultEffort()).toBe('medium');
-    // models forwards the configured id so a set value leads the list.
+    expect(codexCatalog.runtimeEffortChoices(['medium'])).toEqual(runtimeEffortChoicesFor('codex', ['medium']));
+    expect(codexCatalog.defaultEffort()).toBe(
+      codexConfigSource.defaultEffortFor(codexConfigSource.defaultModel()),
+    );
+    // models forwards configured via codexConfigSource (same as getCodexModels wrapper).
     expect(codexCatalog.models('gpt-5.4')).toEqual(getCodexModels('gpt-5.4'));
     expect(codexCatalog.models()).toEqual(getCodexModels(''));
   });

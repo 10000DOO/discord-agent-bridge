@@ -1009,10 +1009,12 @@ export class InteractionRouter {
   // /effort's `value` option autocomplete: unlike /model (always Claude), the offered
   // levels depend on THIS channel's backend/model. Claude → the model's supportedEffortLevels
   // ∩ the runtime-settable set {low,medium,high,xhigh} (never 'max', which is start-only);
-  // Codex → CODEX_EFFORT_LEVELS. Reads the channel binding for backend/model; when there is
-  // no binding yet it falls back to the resolved backend default (the actual /effort then
-  // reports no-session). Claude reuses the 60s model cache so a typing burst pays for at most
-  // one SDK probe; Codex needs no probe. Discord caps results at 25; never rejects.
+  // Codex/Grok → catalog.runtimeEffortChoices(model.supportedEffortLevels) from modelsFor
+  // (local cache; empty supported → catalog fallback, e.g. full Codex list / Grok []).
+  // Reads the channel binding for backend/model; when there is no binding yet it falls back
+  // to the resolved backend default (the actual /effort then reports no-session). Claude
+  // reuses the 60s model cache so a typing burst pays for at most one SDK probe; other
+  // backends use modelsFor (mtime-gated file read). Discord caps results at 25; never rejects.
   async getEffortAutocomplete(
     guildId: string | null,
     channelId: string,
@@ -1025,14 +1027,23 @@ export class InteractionRouter {
     // return no suggestions rather than throwing (autocomplete must never reject).
     if (!this.deps.modeRegistry.has(backend)) return [];
     const catalog = this.deps.modeRegistry.get(backend).catalog;
-    // Only backends sharing Claude's live model catalog narrow the runtime levels by the
-    // current model's supportedEffortLevels — that alone needs the (cached) SDK probe, so
-    // other backends (e.g. Codex) skip it and take their catalog's full runtime list.
+    // Claude: SDK-probed model list (cached) ∩ runtime set. Non-Claude: modelsFor (or
+    // catalog.models fallback) → binding/default model → supportedEffortLevels, same shape
+    // as the wizard's effortsFor (R3).
     let supported: readonly string[] | undefined;
     if (catalog === claudeCatalog) {
       const model = binding?.model ?? resolved.claudeModel;
       const models = await this.claudeModelsForAutocomplete();
       supported = models.find((m) => m.value === model)?.supportedEffortLevels;
+    } else {
+      const models =
+        (await this.deps.modelsFor?.(backend)) ??
+        (await Promise.resolve(catalog.models(resolved.codexModel || undefined)));
+      const model =
+        binding?.model ||
+        (backend === 'codex' && resolved.codexModel ? resolved.codexModel : undefined) ||
+        models[0]?.value;
+      supported = model ? models.find((m) => m.value === model)?.supportedEffortLevels : undefined;
     }
     const choices = catalog.runtimeEffortChoices(supported);
     const q = query.trim().toLowerCase();

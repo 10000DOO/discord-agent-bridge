@@ -880,10 +880,12 @@ describe('InteractionRouter.getEffortAutocomplete — /effort value suggestions'
     ]);
   });
 
-  it('Codex: offers the full Codex effort levels (no SDK probe, ignores model narrowing)', async () => {
+  it('Codex: offers the full Codex effort levels when modelsFor does not advertise supportedEffortLevels', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     channelRegistry.set(binding(home, { mode: 'codex' }));
+    // Default buildRouter modelsFor lists gpt-5.5 without supportedEffortLevels → catalog
+    // fallback (CODEX_EFFORT_LEVELS). Mirrors a missing/empty cache entry (R4).
     const router = buildRouter({ orchestrator, wiring });
     expect((await router.getEffortAutocomplete('g1', 'c1', '')).map((c) => c.value)).toEqual([
       'minimal',
@@ -891,6 +893,34 @@ describe('InteractionRouter.getEffortAutocomplete — /effort value suggestions'
       'medium',
       'high',
       'xhigh',
+    ]);
+  });
+
+  it('Codex: narrows to modelsFor supportedEffortLevels when the bound model advertises them', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    channelRegistry.set(binding(home, { mode: 'codex', model: 'gpt-5.5' }));
+    const router = new InteractionRouter({
+      authorizer,
+      orchestrator,
+      channelRegistry,
+      configStore: store,
+      configResolver,
+      permissionResolver,
+      modeRegistry,
+      wiring,
+      usageService: {
+        isAvailable: () => false,
+        getUsage: async () => ({ available: false as const, reason: 'no-credentials' as const }),
+      } as unknown as UsageService,
+      logger,
+      modelsFor: async () => [
+        { value: 'gpt-5.5', label: 'GPT-5.5', supportedEffortLevels: ['low', 'high'] },
+      ],
+    });
+    expect((await router.getEffortAutocomplete('g1', 'c1', '')).map((c) => c.value)).toEqual([
+      'low',
+      'high',
     ]);
   });
 

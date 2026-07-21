@@ -8,6 +8,10 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Logger, ModeCatalog, ModelChoice, PermMode } from './contracts.js';
+import {
+  CODEX_EFFORT_FALLBACK,
+  codexConfigSource,
+} from '../modes/codex/configSource.js';
 
 // The ONE source of truth for the model + permission-mode option lists offered in
 // the Discord dropdowns (/config defaults and /agent start wizard). Both consumers
@@ -131,17 +135,17 @@ export function isClaudeRuntimeEffort(value: string): value is ClaudeRuntimeEffo
   return (CLAUDE_RUNTIME_EFFORT_LEVELS as readonly string[]).includes(value);
 }
 
-// Codex reasoning-effort values accepted by `-c model_reasoning_effort="…"` (verified
-// against developers.openai.com/codex/config-reference, 2026-07). The operator's own
-// config uses 'medium', which is the sensible default here too.
-export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+// Codex reasoning-effort canonical fallback (alias of CODEX_EFFORT_FALLBACK from
+// modes/codex/configSource). Used when a model has no supportedEffortLevels; isCodexEffort
+// additionally accepts any level advertised in ~/.codex/models_cache.json (R4/R5).
+export const CODEX_EFFORT_LEVELS = CODEX_EFFORT_FALLBACK;
 export type CodexEffortLevel = (typeof CODEX_EFFORT_LEVELS)[number];
 
-// True when `value` is a Codex reasoning-effort level `-c model_reasoning_effort` accepts.
-// Guards CodexSession.setEffort (mirrors isClaudeRuntimeEffort) so a /effort value typed
-// outside the autocomplete list can't be persisted and fail every subsequent `codex exec`.
+// True when `value` is a known Codex reasoning-effort level: any effort advertised in the
+// models_cache union OR a member of CODEX_EFFORT_LEVELS. Guards CodexSession.setEffort so a
+// /effort value typed outside the autocomplete list can't be persisted (R5).
 export function isCodexEffort(value: string): value is CodexEffortLevel {
-  return (CODEX_EFFORT_LEVELS as readonly string[]).includes(value);
+  return codexConfigSource.isKnownEffort(value);
 }
 
 // The default reasoning effort offered pre-selected in the wizard per backend. Claude's
@@ -150,34 +154,36 @@ export function defaultEffortFor(backend: string): string {
   return backend === 'codex' ? 'medium' : 'high';
 }
 
-// The reasoning-effort OPTION list for the wizard's effort step, keyed by backend and —
-// for Claude — narrowed to a model's supported levels when the SDK reports them. Labels
-// are the plain English level names. `supportedClaudeLevels`, when non-empty, replaces
-// the full Claude list (e.g. a model with only low/medium/high).
-export function effortChoicesFor(backend: string, supportedClaudeLevels?: readonly string[]): ModelChoice[] {
+// The reasoning-effort OPTION list for the wizard's effort step, keyed by backend and
+// narrowed to a model's supported levels when non-empty. Labels are the plain English
+// level names. For Codex, empty/undefined `supported` falls back to CODEX_EFFORT_LEVELS
+// (R4 — always selectable); for Claude, empty → full CLAUDE_EFFORT_LEVELS.
+export function effortChoicesFor(backend: string, supported?: readonly string[]): ModelChoice[] {
   if (backend === 'codex') {
-    return CODEX_EFFORT_LEVELS.map((e) => ({ value: e, label: e }));
+    const levels = supported && supported.length > 0 ? supported : CODEX_EFFORT_LEVELS;
+    return levels.map((e) => ({ value: e, label: e }));
   }
   const levels =
-    supportedClaudeLevels && supportedClaudeLevels.length > 0
-      ? supportedClaudeLevels
+    supported && supported.length > 0
+      ? supported
       : CLAUDE_EFFORT_LEVELS;
   return levels.map((e) => ({ value: e, label: e }));
 }
 
 // The reasoning-effort option list for the LIVE `/effort` command, keyed by backend.
 // Unlike effortChoicesFor (the wizard's start-time list, which for Claude includes
-// 'max'), this returns only levels that can be changed mid-session: Codex → the full
-// CODEX_EFFORT_LEVELS; Claude → the runtime-settable set {low,medium,high,xhigh},
-// further narrowed to the chosen model's supportedEffortLevels (∩) when the SDK reports
-// them. 'max' is never offered here because query.applyFlagSettings cannot set it.
-export function runtimeEffortChoicesFor(backend: string, supportedClaudeLevels?: readonly string[]): ModelChoice[] {
+// 'max'), this returns only levels that can be changed mid-session: Codex → supported
+// levels when non-empty, else CODEX_EFFORT_LEVELS; Claude → the runtime-settable set
+// {low,medium,high,xhigh}, further narrowed to the chosen model's supportedEffortLevels
+// (∩) when reported. 'max' is never offered here because query.applyFlagSettings cannot set it.
+export function runtimeEffortChoicesFor(backend: string, supported?: readonly string[]): ModelChoice[] {
   if (backend === 'codex') {
-    return CODEX_EFFORT_LEVELS.map((e) => ({ value: e, label: e }));
+    const levels = supported && supported.length > 0 ? supported : CODEX_EFFORT_LEVELS;
+    return levels.map((e) => ({ value: e, label: e }));
   }
   const levels =
-    supportedClaudeLevels && supportedClaudeLevels.length > 0
-      ? CLAUDE_RUNTIME_EFFORT_LEVELS.filter((l) => supportedClaudeLevels.includes(l))
+    supported && supported.length > 0
+      ? CLAUDE_RUNTIME_EFFORT_LEVELS.filter((l) => supported.includes(l))
       : CLAUDE_RUNTIME_EFFORT_LEVELS;
   return levels.map((e) => ({ value: e, label: e }));
 }
@@ -281,31 +287,15 @@ export async function getClaudeModels(deps: { queryFn?: QueryFn; logger?: Logger
   return inFlight;
 }
 
-// ---- Codex models — honest static default (NOT auto-fetched) -----------------
-// Codex has no model-list API and `codex exec -m` is FREE-FORM (any OpenAI model the
-// account can reach works), so this is a documented convenience list, not a dynamic
-// source. A configured non-empty codexModel is offered first (de-duplicated). English
-// ids. The list below reflects the models currently used with the OpenAI Codex CLI as
-// of 2026-07 (researched against developers.openai.com/codex/models): gpt-5.5 is the
-// current default for ChatGPT-authenticated sessions, gpt-5.4 the fallback, gpt-5.4-mini
-// for lighter tasks/subagents, and gpt-5.2-codex the Codex-specialized id kept for
-// API-key workflows.
-const CODEX_MODEL_DEFAULTS: readonly string[] = [
-  'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
-  'gpt-5.2-codex',
-];
+// ---- Codex models — dynamic via codexConfigSource (models_cache.json) --------
+// Served from ~/.codex/models_cache.json (visibility=list + configured first); when the
+// cache is missing/unreadable, falls back to CODEX_MODEL_FALLBACK (configSource). Thin
+// wrapper kept so existing call sites (and tests) keep importing getCodexModels.
 
-// The Codex model option list as English {value,label} (label = id). `configured`
-// is config.defaults.codexModel: when non-empty it leads the list.
+// The Codex model option list as English {value,label}. `configured` is
+// config.defaults.codexModel: when non-empty it leads the list (hide allowed).
 export function getCodexModels(configured = ''): ModelChoice[] {
-  const trimmed = configured.trim();
-  const ids =
-    trimmed.length === 0
-      ? [...CODEX_MODEL_DEFAULTS]
-      : [trimmed, ...CODEX_MODEL_DEFAULTS.filter((m) => m !== trimmed)];
-  return ids.map((id) => ({ value: id, label: id }));
+  return codexConfigSource.models(configured);
 }
 
 // ---- Built-in mode catalogs — ASSEMBLE the pieces above ----------------------
@@ -329,12 +319,13 @@ export const claudeCatalog: ModeCatalog = {
   defaultEffort: () => 'high',
 };
 
-// codexCatalog.models forwards `configured` (config.defaults.codexModel) so a set value
-// leads the documented static list; effort/permission use Codex's own vocabulary.
+// codexCatalog wires Codex vocabulary through codexConfigSource (models_cache.json) so
+// model list + per-model effort stay in sync with the CLI cache (R1/R4). effortChoices
+// honors a model's supportedEffortLevels when non-empty; otherwise CODEX_EFFORT_LEVELS.
 export const codexCatalog: ModeCatalog = {
-  models: (configured) => getCodexModels(configured),
+  models: (configured) => codexConfigSource.models(configured),
   permissionChoices: () => codexSandboxChoices(),
-  effortChoices: () => effortChoicesFor('codex'),
-  runtimeEffortChoices: () => runtimeEffortChoicesFor('codex'),
-  defaultEffort: () => 'medium',
+  effortChoices: (levels) => effortChoicesFor('codex', levels),
+  runtimeEffortChoices: (levels) => runtimeEffortChoicesFor('codex', levels),
+  defaultEffort: () => codexConfigSource.defaultEffortFor(codexConfigSource.defaultModel()),
 };
