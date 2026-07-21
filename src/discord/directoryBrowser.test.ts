@@ -126,6 +126,20 @@ describe('DirectoryBrowser', () => {
       .map((c) => (c as { customId?: string }).customId);
     expect(ids).toContain('dir:manual');
   });
+
+  it('render() offers the 🖥️ native-panel button (dir:panel) only when nativePanel is on', () => {
+    const flatIds = (b: DirectoryBrowser): (string | undefined)[] =>
+      b
+        .render()
+        .rows.flatMap((r) => r.components)
+        .map((c) => (c as { customId?: string }).customId);
+    // Default off: hosts without a wired picker (non-macOS) must not show a dead button.
+    expect(flatIds(new DirectoryBrowser({ allowedRoots: [root], startPath: root }))).not.toContain('dir:panel');
+    // On: the button joins the manual-path row (still within Discord's 5-button row cap).
+    const on = new DirectoryBrowser({ allowedRoots: [root], startPath: root, nativePanel: true });
+    expect(flatIds(on)).toContain('dir:panel');
+    expect(on.render().rows[2].components.map((c) => c.customId)).toEqual(['dir:manual', 'dir:panel']);
+  });
 });
 
 describe('DirectoryBrowser unbounded (Fix 1: reach the filesystem root and other volumes)', () => {
