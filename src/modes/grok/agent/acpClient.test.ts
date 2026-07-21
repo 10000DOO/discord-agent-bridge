@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { Logger } from '../../../core/contracts.js';
 import { GrokAcpClient, type AcpSpawnFn, type AcpSpawnedProcess, type AcpPermissionRequest, type AcpUpdate, type GrokAcpClientOptions } from './acpClient.js';
 
@@ -59,14 +61,15 @@ class FakeAcpChild extends EventEmitter {
 function makeClient(opts: Partial<GrokAcpClientOptions> = {}): {
   client: GrokAcpClient;
   child: FakeAcpChild;
-  captured: { command?: string; args?: readonly string[]; cwd?: string };
+  captured: { command?: string; args?: readonly string[]; cwd?: string; env?: NodeJS.ProcessEnv };
 } {
   const child = new FakeAcpChild();
-  const captured: { command?: string; args?: readonly string[]; cwd?: string } = {};
+  const captured: { command?: string; args?: readonly string[]; cwd?: string; env?: NodeJS.ProcessEnv } = {};
   const spawn: AcpSpawnFn = (command, args, options) => {
     captured.command = command;
     captured.args = args;
     captured.cwd = options.cwd;
+    captured.env = options.env;
     return child as unknown as AcpSpawnedProcess;
   };
   const client = new GrokAcpClient({ logger: makeLogger(), spawn, isGrokModel: () => true, ...opts });
@@ -82,8 +85,24 @@ function updateNotification(sessionUpdate: string, extra: Record<string, unknown
 describe('GrokAcpClient spawn', () => {
   it('places agent-wide options BEFORE the stdio subcommand', () => {
     const { captured } = makeClient({ model: 'grok-4.5', effort: 'high', bypassPermissions: true, isGrokModel: () => true });
-    expect(captured.command).toBe('grok');
+    // resolveCliCommand may return an absolute path when a real install is on PATH / well-known bins.
+    expect(captured.command === 'grok' || /(?:^|[/\\])grok(?:\.exe|\.cmd)?$/i.test(captured.command ?? '')).toBe(true);
     expect(captured.args).toEqual(['agent', '-m', 'grok-4.5', '--reasoning-effort', 'high', '--always-approve', 'stdio']);
+  });
+
+  it('uses a pre-resolved absolute grokCommand as-is', () => {
+    const { captured } = makeClient({ grokCommand: '/opt/custom/bin/grok', env: { PATH: '' } });
+    expect(captured.command).toBe('/opt/custom/bin/grok');
+  });
+
+  it('merges well-known bins into child PATH when env PATH is empty', () => {
+    const { captured } = makeClient({ env: { PATH: '', FOO: 'bar' } });
+    expect(captured.env?.FOO).toBe('bar');
+    expect(captured.env?.PATH).toBeDefined();
+    // acpClient uses os.homedir() for well-known dirs — assert a portable fragment.
+    const grokBin = path.join(os.homedir(), '.grok', 'bin');
+    expect(captured.env?.PATH?.split(path.delimiter)).toContain(grokBin);
+    expect(captured.env?.PATH?.split(path.delimiter)).toContain(path.join(os.homedir(), '.local', 'bin'));
   });
 
   it('omits -m when the model is not a grok model, and omits effort/always-approve when unset', () => {

@@ -131,6 +131,13 @@ describe('runServiceCommand — macOS (launchd)', () => {
     expect(script?.mode).toBe(0o755);
     expect(script?.content).toContain('nvm use default');
     expect(script?.content).toContain('export PATH="/opt/node/bin:$PATH"');
+    // Portable user-local CLI bins (grok etc.) — $HOME-relative, no machine path.
+    expect(script?.content).toContain('$HOME/.local/bin');
+    expect(script?.content).toContain('$HOME/.grok/bin');
+    expect(script?.content).toContain('/home/linuxbrew/.linuxbrew/bin');
+    expect(script?.content).toContain(
+      'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$PATH"',
+    );
     // Supervisor marker (§3.2): run.sh is only generated for launchd/systemd, so this
     // marks the process as "exit relaunches me" for the auto-updater's method-A restart.
     expect(script?.content).toContain('export DAB_SUPERVISED=1');

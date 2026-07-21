@@ -28,6 +28,8 @@ export function buildRunScript(d: ResolvedServiceDeps): string {
       'else',
       `  export PATH="${d.nodeDir}:$PATH"`,
       'fi',
+      // User-local CLI bins (grok, claude, cargo tools, Homebrew). $HOME-relative — portable.
+      'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$PATH"',
       // Mark this process as launched by a KeepAlive/Restart supervisor (launchd/systemd).
       // run.sh is ONLY generated for those, so the marker precisely means "exiting me
       // relaunches me" — the auto-updater reads it to pick method A (exit-only) restart

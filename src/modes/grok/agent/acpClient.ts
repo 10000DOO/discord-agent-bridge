@@ -1,6 +1,8 @@
 import { spawn as realSpawn } from 'node:child_process';
+import * as os from 'node:os';
 import type { Logger, PermissionDecision } from '../../../core/contracts.js';
 import { redactString } from '../../../core/logger.js';
+import { augmentPath, resolveCliCommand, wellKnownUserBinDirs } from '../../../core/resolveCli.js';
 import { isGrokModel as defaultIsGrokModel } from '../catalog.js';
 
 // The path-B ACP transport (WO-8): a BIDIRECTIONAL JSON-RPC 2.0 client over ONE long-lived
@@ -239,7 +241,19 @@ export class GrokAcpClient {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.mcpServers = options.mcpServers ?? [];
     const spawn = options.spawn ?? (realSpawn as unknown as AcpSpawnFn);
-    const grokCommand = options.grokCommand ?? 'grok';
+    // Resolve bare `grok` against PATH + portable well-known bins so launchd/systemd
+    // minimal PATH still finds a user-local install (absolute path → PATH irrelevant).
+    // Also prepend those bins onto the child env PATH so any nested tools grok spawns
+    // can find user-local CLIs even when the supervisor PATH is bare.
+    const baseEnv = options.env ?? process.env;
+    const grokCommand = resolveCliCommand(options.grokCommand ?? 'grok', { env: baseEnv });
+    const childEnv: NodeJS.ProcessEnv = {
+      ...baseEnv,
+      PATH: augmentPath(
+        baseEnv.PATH ?? baseEnv.Path,
+        wellKnownUserBinDirs({ homeDir: os.homedir(), platform: process.platform, env: baseEnv }),
+      ),
+    };
     const isKnownModel = options.isGrokModel ?? defaultIsGrokModel;
 
     // Agent-wide options go BEFORE the `stdio` subcommand (15-agent-mode.md:35). `-m` is added
@@ -252,7 +266,7 @@ export class GrokAcpClient {
 
     this.child = spawn(grokCommand, args, {
       ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-      ...(options.env !== undefined ? { env: options.env } : {}),
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
