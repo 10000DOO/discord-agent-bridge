@@ -1,0 +1,66 @@
+{
+  "fetched_at": "2026-07-20T02:53:06.407244Z",
+  "grok_version": "0.2.103",
+  "auth_method": "session",
+  "origin": "https://cli-chat-proxy.grok.com/v1/models",
+  "etag": "W/\"fixture\"",
+  "models": {
+    "grok-4.5": {
+      "info": {
+        "id": "grok-4.5",
+        "model": "grok-4.5",
+        "name": "Grok 4.5",
+        "description": "SpaceXAI's frontier model",
+        "context_window": 500000,
+        "hidden": false,
+        "reasoning_effort": "high",
+        "supports_reasoning_effort": true,
+        "reasoning_efforts": [
+          { "id": "high", "value": "high", "label": "High Effort", "description": "Highest quality", "default": true },
+          { "id": "medium", "value": "medium", "label": "Medium Effort", "description": "Balanced", "default": false },
+          { "id": "low", "value": "low", "label": "Low Effort", "description": "Quick", "default": false }
+        ]
+      },
+      "api_key": null,
+      "env_key": null,
+      "api_base_url": null
+    },
+    "grok-code-fast-1": {
+      "info": {
+        "id": "grok-code-fast-1",
+        "model": "grok-code-fast-1",
+        "name": "Grok Code Fast 1",
+        "description": "Fast coding model",
+        "context_window": 256000,
+        "hidden": false,
+        "reasoning_effort": "low",
+        "supports_reasoning_effort": true,
+        "reasoning_efforts": [
+          { "id": "low", "value": "low", "label": "Low Effort", "description": "Quick", "default": true },
+          { "id": "high", "value": "high", "label": "High Effort", "description": "Deep", "default": false }
+        ]
+      },
+      "api_key": null,
+      "env_key": null,
+      "api_base_url": null
+    },
+    "grok-4.5-preview": {
+      "info": {
+        "id": "grok-4.5-preview",
+        "model": "grok-4.5-preview",
+        "name": "Grok 4.5 Preview",
+        "description": "Internal preview — not user-selectable",
+        "context_window": 500000,
+        "hidden": true,
+        "reasoning_effort": "high",
+        "supports_reasoning_effort": true,
+        "reasoning_efforts": [
+          { "id": "high", "value": "high", "label": "High Effort", "description": "Highest quality", "default": true }
+        ]
+      },
+      "api_key": null,
+      "env_key": null,
+      "api_base_url": null
+    }
+  }
+}
