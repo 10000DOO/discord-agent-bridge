@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ModeContext } from '../../core/contracts.js';
 import type { QueryFn } from '../claude/session.js';
 import { CustomMode, type ListSessionsFn } from './index.js';
+import { claudeCatalog } from '../../core/providerCatalog.js';
 
 const nullLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -52,6 +53,8 @@ describe('CustomMode', () => {
     expect(mode.capabilities.sessionResume).toBe(true);
     expect(mode.capabilities.usagePanel).toBe(true);
     expect(mode.capabilities.permissionModes).toContain('bypassPermissions');
+    // Reuses the Claude SDK, so it shares Claude's UI vocabulary (§6).
+    expect(mode.catalog).toBe(claudeCatalog);
   });
 
   it('start() injects resolved env and prefers ANTHROPIC_MODEL over ctx.model', async () => {

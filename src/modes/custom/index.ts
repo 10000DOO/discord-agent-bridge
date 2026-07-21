@@ -8,7 +8,7 @@ import type {
 } from '../../core/contracts.js';
 import type { QueryFn } from '../claude/session.js';
 import type { SendFileCallback } from '../claude/mcpFileTool.js';
-import { CLAUDE_PERMISSION_MODES } from '../../core/providerCatalog.js';
+import { CLAUDE_PERMISSION_MODES, claudeCatalog } from '../../core/providerCatalog.js';
 import { resolveCustomEnv } from './shellEnv.js';
 import { CustomEnvSession } from './session.js';
 
@@ -46,6 +46,9 @@ export class CustomMode implements AgentMode {
     usagePanel: true,
     permissionModes: [...CLAUDE_PERMISSION_MODES],
   };
+
+  // The custom backend reuses the Claude SDK, so it shares Claude's UI vocabulary (§6).
+  readonly catalog = claudeCatalog;
 
   private readonly deps: CustomModeDeps;
 

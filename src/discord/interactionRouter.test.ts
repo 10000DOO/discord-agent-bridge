@@ -23,10 +23,12 @@ import type {
   AgentMode,
   Capabilities,
   Logger,
+  ModeCatalog,
   ModeContext,
   ModeSession,
   ResumableSession,
 } from '../core/contracts.js';
+import { claudeCatalog, codexCatalog } from '../core/providerCatalog.js';
 import type { ActiveChannelInfo, SessionOrchestrator } from '../core/sessionOrchestrator.js';
 import type { AutoUpdater, DecisionCtx } from '../update/autoUpdater.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
@@ -53,11 +55,16 @@ const CLAUDE_CAPS: Capabilities = {
 // scripts what listResumable returns (per-backend, for the resume-flow tests); when
 // undefined, listResumable is absent so the mode simply has no resumable list.
 class StubMode implements AgentMode {
+  // Carry the real per-backend catalog matching the impersonated name, mirroring app.ts
+  // wiring (claude/custom → claudeCatalog, codex → codexCatalog), so the router's wizard/
+  // /effort option lists resolve exactly as they would in production.
+  readonly catalog: ModeCatalog;
   constructor(
     readonly name: string,
     readonly capabilities: Capabilities,
     private readonly resumable?: ResumableSession[],
   ) {
+    this.catalog = name === 'codex' ? codexCatalog : claudeCatalog;
     if (this.resumable !== undefined) {
       this.listResumable = async (_ctx: ModeContext): Promise<ResumableSession[]> => this.resumable!;
     }
@@ -145,6 +152,7 @@ function fakeOrchestrator(active: ActiveChannelInfo[] = []) {
     stopAll: vi.fn(async () => {}),
     interrupt: vi.fn(async (_g: string, _c: string) => true),
     setModel: vi.fn(async (_g: string, _c: string, _m: string) => 'ok' as const),
+    setEffort: vi.fn(async (_g: string, _c: string, _e: string) => 'ok' as const),
     listActive: vi.fn((_guildId: string) => active),
     // A minimal read-only ModeContext for listResumable (cwd/config/logger only).
     buildListContext: vi.fn((_mode: string, cwd: string) => ({
@@ -658,6 +666,46 @@ describe('InteractionRouter slash commands', () => {
     expect(acks[0].payload?.ephemeral).toBe(true);
   });
 
+  it('/mode perm keeps the persisted effort on the binding across the REPLACE', async () => {
+    channelRegistry.set(binding(home, { model: 'opus', effort: 'high' }));
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction } = slash({ commandName: 'mode', subcommand: 'perm', getStringValue: 'plan' });
+    await router.handle(interaction);
+    // Prove the set() actually ran (binding() seeds permMode 'default'), so the effort/model
+    // assertions below are not trivially satisfied by a no-op early-return…
+    expect(channelRegistry.get('g1', 'c1')?.permMode).toBe('plan');
+    // …then that the REPLACE carried model AND effort forward across the perm-only change.
+    expect(channelRegistry.get('g1', 'c1')?.effort).toBe('high');
+    expect(channelRegistry.get('g1', 'c1')?.model).toBe('opus');
+  });
+
+  it('/mode backend to the SAME backend carries the model + effort forward', async () => {
+    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus', effort: 'high' }));
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'claude' });
+    await router.handle(interaction);
+    expect(calls.start).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'claude', model: 'opus', effort: 'high' }),
+    );
+  });
+
+  it('/mode backend to a DIFFERENT backend drops the (backend-specific) model + effort', async () => {
+    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus', effort: 'high' }));
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex' });
+    await router.handle(interaction);
+    const startArg = (calls.start.mock.calls[0] as unknown[] | undefined)?.[0] as Record<string, unknown>;
+    expect(startArg).toMatchObject({ mode: 'codex' });
+    expect(startArg).not.toHaveProperty('model');
+    expect(startArg).not.toHaveProperty('effort');
+  });
+
   it('/stop stops the channel session and detaches renderers', async () => {
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring, calls: wcalls } = fakeWiring();
@@ -676,6 +724,33 @@ describe('InteractionRouter slash commands', () => {
     await router.handle(interaction);
     expect(calls.setModel).toHaveBeenCalledWith('g1', 'c1', 'sonnet');
     expect(replies[0].content).toContain('sonnet');
+  });
+
+  it('/effort (TOP-LEVEL, no subcommand) switches the live session effort', async () => {
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({ commandName: 'effort', subcommand: null, getStringValue: 'high' });
+    await router.handle(interaction);
+    expect(calls.setEffort).toHaveBeenCalledWith('g1', 'c1', 'high');
+    expect(replies[0].content).toContain('high');
+  });
+
+  it('/effort maps each orchestrator outcome to the matching notice', async () => {
+    const { wiring } = fakeWiring();
+    const cases: { outcome: 'unsupported' | 'no-session' | 'error'; expect: string }[] = [
+      { outcome: 'unsupported', expect: '지원하지 않아요' },
+      { outcome: 'no-session', expect: '활성 세션이 없어요' },
+      { outcome: 'error', expect: '실패했어요' },
+    ];
+    for (const c of cases) {
+      const { orchestrator } = fakeOrchestrator();
+      (orchestrator as unknown as { setEffort: (...a: unknown[]) => Promise<string> }).setEffort = async () => c.outcome;
+      const router = buildRouter({ orchestrator, wiring });
+      const { interaction, replies } = slash({ commandName: 'effort', subcommand: null, getStringValue: 'high' });
+      await router.handle(interaction);
+      expect(replies[0].content).toContain(c.expect);
+    }
   });
 });
 
@@ -776,6 +851,80 @@ describe('InteractionRouter.getModelAutocomplete — /model value suggestions', 
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('InteractionRouter.getEffortAutocomplete — /effort value suggestions', () => {
+  it('Claude: narrows the model’s supportedEffortLevels to the runtime set, excluding max', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    // A Claude channel bound to 'opus'.
+    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus' }));
+    const router = new InteractionRouter({
+      authorizer,
+      orchestrator,
+      channelRegistry,
+      configStore: store,
+      configResolver,
+      permissionResolver,
+      modeRegistry,
+      wiring,
+      usageService: { isAvailable: () => false, getUsage: async () => ({ available: false as const, reason: 'no-credentials' as const }) } as unknown as UsageService,
+      logger,
+      // opus reports low/medium/max — the runtime set drops max and keeps only the ∩.
+      modelsFor: async () => [{ value: 'opus', label: 'opus', supportedEffortLevels: ['low', 'medium', 'max'] }],
+    });
+    expect(await router.getEffortAutocomplete('g1', 'c1', '')).toEqual([
+      { name: 'low', value: 'low' },
+      { name: 'medium', value: 'medium' },
+    ]);
+  });
+
+  it('Codex: offers the full Codex effort levels (no SDK probe, ignores model narrowing)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    channelRegistry.set(binding(home, { mode: 'codex' }));
+    const router = buildRouter({ orchestrator, wiring });
+    expect((await router.getEffortAutocomplete('g1', 'c1', '')).map((c) => c.value)).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
+  });
+
+  it('no binding (no session): falls back to the resolved backend’s runtime set', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    // No channelRegistry.set → resolved backend is the config default (claude); the default
+    // modelsFor reports no supportedEffortLevels, so the full runtime set is offered.
+    const router = buildRouter({ orchestrator, wiring });
+    expect((await router.getEffortAutocomplete('g1', 'c1', '')).map((c) => c.value)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
+  });
+
+  it('filters case-insensitively against the level name', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    expect(await router.getEffortAutocomplete('g1', 'c1', 'MED')).toEqual([{ name: 'medium', value: 'medium' }]);
+    // A substring can legitimately match several levels (e.g. 'hi' → high AND xhigh).
+    expect((await router.getEffortAutocomplete('g1', 'c1', 'HI')).map((c) => c.value)).toEqual(['high', 'xhigh']);
+    expect(await router.getEffortAutocomplete('g1', 'c1', 'zzz')).toEqual([]);
+  });
+
+  it('an unregistered bound backend yields no suggestions (never rejects)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    // A hand-edited binding referencing a backend no build registered.
+    channelRegistry.set(binding(home, { mode: 'future-backend' }));
+    const router = buildRouter({ orchestrator, wiring });
+    expect(await router.getEffortAutocomplete('g1', 'c1', '')).toEqual([]);
   });
 });
 

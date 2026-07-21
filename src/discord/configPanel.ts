@@ -1,7 +1,6 @@
-import type { PermMode } from '../core/contracts.js';
+import type { ModelChoice, PermMode } from '../core/contracts.js';
 import type { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type ServerConfig } from '../core/configSchema.js';
-import type { ModelChoice } from '../core/providerCatalog.js';
 import { resolveNotifications } from './notifier.js';
 import type { Locale } from './i18n.js';
 import type { ButtonSpec, ChannelSelectSpec, ComponentRow, EmbedSpec, RoleSelectSpec, SelectSpec } from './ports.js';
@@ -87,6 +86,10 @@ export interface ConfigPanelOptions {
   defaults: ConfigPanelDefaults;
   // Backends offered (from modeRegistry.list()).
   backends: string[];
+  // Whether a backend id is registered (the router wires it to modeRegistry.has). The
+  // autosave-backend guard delegates to this instead of a hardcoded id list, so a newly
+  // registered mode persists on defaults.mode without editing this panel (§5.4).
+  isKnownBackend: (backend: string) => boolean;
   // Models offered for the default-model select, as English {value,label} pairs from
   // the provider catalog (Claude = dynamic; Codex = documented default).
   models: ModelChoice[];
@@ -209,9 +212,9 @@ export class ConfigPanel {
   }
 
   private autosaveBackend(backend: string): ConfigPanelResult {
-    // Only known enum backends are stored on defaults.mode; a future backend id is
-    // ignored (same guard as the original Save path).
-    if (backend === 'claude' || backend === 'codex' || backend === 'custom') {
+    // Only a REGISTERED backend id is stored on defaults.mode; an unknown id is ignored
+    // (the ModeRegistry is the single validity gate — §5.4).
+    if (this.opts.isKnownBackend(backend)) {
       this.patchDefaults({ mode: backend });
     }
     return { kind: 'autosaved', notice: t('config.autosaved.backend', { backend }) };

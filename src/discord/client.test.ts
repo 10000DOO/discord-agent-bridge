@@ -183,6 +183,51 @@ describe('DiscordClient — /model autocomplete', () => {
   });
 });
 
+describe('DiscordClient — /effort autocomplete', () => {
+  function harness(
+    getEffortAutocomplete: (g: string | null, c: string, q: string) => Promise<{ name: string; value: string }[]>,
+  ) {
+    const handlers = new Map<string, (arg: unknown) => void>();
+    const client = {
+      once: (event: string, h: (arg: unknown) => void) => handlers.set(event, h),
+      on: (event: string, h: (arg: unknown) => void) => handlers.set(event, h),
+    } as unknown as Client;
+    const logger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+    new DiscordClient({
+      clientId: 'app-1',
+      logger,
+      messageRouter: {} as unknown as MessageRouter,
+      interactionRouter: { getEffortAutocomplete } as unknown as InteractionRouter,
+      backends: () => ['claude'],
+      onReady: async () => {},
+      client,
+    });
+    return handlers;
+  }
+
+  it('routes /effort value autocomplete through getEffortAutocomplete WITH the channel context', async () => {
+    const getEffortAutocomplete = vi.fn(async (_g: string | null, _c: string, q: string) => [
+      { name: `high (${q})`, value: 'high' },
+    ]);
+    const respond = vi.fn(async () => {});
+    const fire = harness(getEffortAutocomplete).get(Events.InteractionCreate);
+    fire!({
+      isAutocomplete: () => true,
+      commandName: 'effort',
+      guildId: 'g1',
+      channelId: 'c1',
+      options: { getFocused: () => 'hi' },
+      respond,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // guild + channel are threaded so the levels can be picked per the channel's backend/model.
+    expect(getEffortAutocomplete).toHaveBeenCalledWith('g1', 'c1', 'hi');
+    expect(respond).toHaveBeenCalledWith([{ name: 'high (hi)', value: 'high' }]);
+  });
+});
+
 // adaptInteraction maps a real discord.js Interaction onto the router's narrow shape.
 // discord.js is mocked here (fakes satisfy the type guards structurally), so these
 // assert the adapter contract — the real reply/defer wiring is validated by live use.

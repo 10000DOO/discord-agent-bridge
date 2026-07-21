@@ -1,5 +1,4 @@
-import type { ModeSession, SessionPermMode } from '../../core/contracts.js';
-import type { ModelChoice } from '../../core/providerCatalog.js';
+import type { ModelChoice, ModeSession, SessionPermMode } from '../../core/contracts.js';
 import type { ButtonSpec, ComponentRow, EmbedSpec, SelectSpec } from '../ports.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
 import { t } from '../i18n.js';
@@ -217,15 +216,23 @@ export class ChannelWizard {
   }
 
   // Model step: the select stores a pending model; 'model.next' commits it (or the
-  // current default) and advances to the reasoning-effort step.
+  // current default) and advances to the reasoning-effort step — unless the backend has
+  // no effort options (effortsFor returns []), in which case that step is skipped and we
+  // go straight to permissions (a backend without an effort concept, §6).
   private handleModel(input: WizardInput): void {
     if (input.id === 'model' && input.value) {
       this.pending.model = input.value;
     } else if (input.id === 'model.next') {
       this.selection.model = this.pending.model ?? this.selection.model;
       this.pending.model = undefined;
-      this.step = 'effort';
+      this.step = this.hasEffortStep() ? 'effort' : 'perm';
     }
+  }
+
+  // Whether the chosen backend/model offers any reasoning-effort options. When empty the
+  // wizard omits the effort step entirely (grok-style backends with no effort concept).
+  private hasEffortStep(): boolean {
+    return this.opts.effortsFor(this.selection.backend, this.selection.model).length > 0;
   }
 
   // Reasoning-effort step: the select stores a pending effort; 'effort.next' commits it

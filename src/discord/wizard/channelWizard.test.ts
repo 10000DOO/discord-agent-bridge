@@ -4,13 +4,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { ChannelWizard, type StartFn, type StartParams, type StartResult } from './channelWizard.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
-import type { ModeSession } from '../../core/contracts.js';
+import type { ModelChoice, ModeSession } from '../../core/contracts.js';
 import {
   permissionChoicesFor,
   effortChoicesFor,
   defaultEffortFor,
   codexSandboxChoices,
-  type ModelChoice,
 } from '../../core/providerCatalog.js';
 
 let root: string;
@@ -157,6 +156,34 @@ describe('ChannelWizard state machine (button-advance, backend-aware)', () => {
     expect(start).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'claude', model: 'opus', effort: 'high', permMode: 'default', profile: null }),
     );
+  });
+
+  it('skips the effort step when the backend offers no effort options (§6)', async () => {
+    // A backend whose catalog has no reasoning-effort concept: effortsFor returns [].
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const wizard = new ChannelWizard({
+      guildId: 'g1',
+      channelId: 'c1',
+      ownerId: 'u1',
+      start,
+      defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: null },
+      backends: ['claude'],
+      modelsFor: () => CLAUDE_MODELS,
+      profiles: [],
+      permsFor: (b) => permissionChoicesFor(b),
+      effortsFor: () => [],
+      defaultEffortFor: () => '',
+      browser,
+    });
+    expect(await wizard.handle({ id: 'dir:here' })).toBe('backend');
+    expect(await wizard.handle({ id: 'backend.next' })).toBe('model');
+    // model.next jumps straight to perm — the effort step is omitted.
+    expect(await wizard.handle({ id: 'model.next' })).toBe('perm');
+    expect(await wizard.handle({ id: 'perm.start' })).toBe('done');
+    expect(start).toHaveBeenCalledOnce();
+    // No effort was collected, so start receives an empty effort (backend uses its own).
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ mode: 'claude', effort: '' }));
   });
 
   it('a select-change updates PENDING state (shown selected) without advancing the step', async () => {

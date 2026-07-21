@@ -4,8 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { ConfigPanel, isConfigPanelId, type ConfigPanelDefaults } from './configPanel.js';
 import { ConfigStore } from '../core/config.js';
-import type { PermMode } from '../core/contracts.js';
-import { effortChoicesFor, permissionModeChoices, type ModelChoice } from '../core/providerCatalog.js';
+import type { ModelChoice, PermMode } from '../core/contracts.js';
+import { effortChoicesFor, permissionModeChoices } from '../core/providerCatalog.js';
 
 // The /config panel is transport-agnostic (no discord.js): it takes plain inputs
 // (role-select `values`, string-select `value`, Save) and persists to a temp-dir
@@ -36,6 +36,7 @@ function makePanel(overrides: Partial<ConfigPanelDefaults> = {}): ConfigPanel {
     configStore: store,
     defaults: { ...DEFAULTS, ...overrides },
     backends: ['claude', 'codex'],
+    isKnownBackend: (b) => ['claude', 'codex', 'custom'].includes(b),
     // English {value,label} pairs from the provider catalog, exactly as the router
     // supplies them.
     models: [
@@ -183,6 +184,7 @@ describe('ConfigPanel render', () => {
       configStore: store,
       defaults: { ...DEFAULTS, backend: 'codex' },
       backends: ['claude', 'codex'],
+      isKnownBackend: (b) => ['claude', 'codex', 'custom'].includes(b),
       models: [{ value: 'gpt-5.1-codex', label: 'gpt-5.1-codex' }],
       efforts: effortChoicesFor('codex'),
       permModes: permissionModeChoices('codex'),

@@ -13,15 +13,17 @@ import { PermissionResolver } from './core/permissionResolver.js';
 import { Authorizer } from './core/auth.js';
 import { AuditLog } from './core/auditLog.js';
 import { UsageService } from './core/usageService.js';
+import { CodexUsageService } from './modes/codex/usageService.js';
 import { ModeRegistry } from './core/modeRegistry.js';
 import { SessionOrchestrator } from './core/sessionOrchestrator.js';
 import { createLogger } from './core/logger.js';
 import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
-import { CodexMode } from './modes/codex/index.js';
+import { CodexMode, resolveCodexHome } from './modes/codex/index.js';
+import { GrokBuildMode } from './modes/grok/agent/index.js';
+import { GrokUsageService } from './modes/grok/usageService.js';
 import { CustomMode } from './modes/custom/index.js';
 import { customBackendLabel } from './modes/custom/shellEnv.js';
-import { getClaudeModels, getCodexModels } from './core/providerCatalog.js';
 import { MessageRouter } from './discord/messageRouter.js';
 import { InteractionRouter } from './discord/interactionRouter.js';
 import { SessionWiring } from './discord/wiring.js';
@@ -31,6 +33,7 @@ import { autoProvisionGuild } from './discord/guildChannels.js';
 import { resolveNotifications } from './discord/notifier.js';
 import { buildUpdatePrompt } from './discord/renderers/updateButton.js';
 import type { MessageChannel } from './discord/ports.js';
+import { createAttachGateway } from './discord/attachGateway.js';
 import { setLocale, t, type Locale } from './discord/i18n.js';
 import { readVersion } from './version.js';
 import { AutoUpdater, type UpdateMeta } from './update/autoUpdater.js';
@@ -135,6 +138,22 @@ export function createApp(deps: CreateAppDeps): App {
     cacheSec: config.usage.cacheSec,
     ...(deps.fetchFn ? { fetchFn: deps.fetchFn } : {}),
   });
+  // Grok Build weekly-limit poller (separate endpoint/auth from Claude OAuth).
+  const grokUsageService = new GrokUsageService({
+    logger,
+    cacheSec: config.usage.cacheSec,
+    ...(deps.fetchFn ? { fetchFn: deps.fetchFn } : {}),
+  });
+  // Codex rate limits via short-lived app-server account/rateLimits/read.
+  // Expand `~` in codexHome — passing literal "~/.codex" as CODEX_HOME makes app-server exit 1.
+  const codexUsageService = new CodexUsageService({
+    logger,
+    cacheSec: config.usage.cacheSec,
+    ...(config.defaults.codexCliCommand !== undefined
+      ? { codexCommand: config.defaults.codexCliCommand }
+      : {}),
+    codexHome: resolveCodexHome(config.defaults.codexHome),
+  });
   const modeRegistry = new ModeRegistry();
 
   // ---- Discord session wiring (renderers + permission buttons + sendFile) ----
@@ -147,6 +166,8 @@ export function createApp(deps: CreateAppDeps): App {
     modeRegistry,
     channelRegistry,
     usageService,
+    grokUsageService,
+    codexUsageService,
     logger,
     auditLog,
     // Read the guild's notifications config at attach() to forward key session events
@@ -177,6 +198,9 @@ export function createApp(deps: CreateAppDeps): App {
     requestPermission: wiring.requestPermission,
   });
 
+  // Loopback attach gateway for subprocess backends (Grok MCP attach_file). One per app.
+  const attachGateway = createAttachGateway();
+
   // ---- Register the backends (§4/§10). Registering a mode automatically surfaces
   // it as a `/mode backend` choice and in the channel wizard (both read
   // modeRegistry.list()). ----
@@ -186,15 +210,35 @@ export function createApp(deps: CreateAppDeps): App {
   modeRegistry.register(
     new ClaudeMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
   );
-  // Codex: no transport-specific deps (fileAttach:false → no sendFile); the runner
-  // and ~/.codex discovery are wired inside the mode. Its capabilities disable the
-  // Discord renderers Codex doesn't support (§5b/§6).
-  modeRegistry.register(new CodexMode());
+  // Codex: long-lived `codex app-server` + phase 2 thinking/usage/fileDiff; dynamicTools
+  // attach_file when sendFileFor is wired.
+  modeRegistry.register(
+    new CodexMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
+  );
+  // Grok Build: long-lived `grok agent stdio` ACP session. fileAttach via subprocess MCP
+  // → AttachGateway. Persisted ids `grok` / `grok-agent` migrate to `grok-build` on load.
+  modeRegistry.register(
+    new GrokBuildMode({
+      sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
+      attachGateway,
+    }),
+  );
   // Custom: reuses the Claude SDK but injects env vars extracted from the operator's
   // shell aliases (kimi / claude). Wired like Claude for attach_file delivery.
   modeRegistry.register(
     new CustomMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
   );
+
+  // A defaults.mode that no registered backend matches would fail at every use site (a
+  // session start throws; the wizard never offers it). Warn ONCE at boot — right after
+  // registration — so an operator's config typo / stale id is visible, but NEVER throw:
+  // a bad default must not brick boot (§5.4). The value stays as-is (no auto-correction).
+  if (!modeRegistry.has(config.defaults.mode)) {
+    logger.warn('config defaults.mode is not a registered backend', {
+      mode: config.defaults.mode,
+      registered: modeRegistry.list(),
+    });
+  }
 
   // ---- Discord client (§2/§4). onReady resumes persisted sessions AND re-attaches a
   // RendererDispatcher per resumed channel so a restart restores the live UX (§9). ----
@@ -234,17 +278,13 @@ export function createApp(deps: CreateAppDeps): App {
     // ctx.model, Codex → config.codexModel). Absent/untouched keeps the resolved
     // config default (Codex: empty codexModel lets `codex` use its own config.toml).
     browseRoots: config.favorites,
-    // Per-backend model options from the central provider catalog (§ providerCatalog).
-    // Codex: a documented static default list (Codex has no model-list API; -m is
-    // free-form), with config.defaults.codexModel offered first when set. Claude:
-    // the SDK's supportedModels(), probed live on EVERY /config or /agent start open
-    // (no cross-invocation cache) so a model added or removed on the account is
-    // reflected immediately. A short in-tick de-dupe still shares one probe across
-    // concurrent callers. On failure/timeout falls back to the alias list.
-    modelsFor: async (backend: string) =>
-      backend === 'codex'
-        ? getCodexModels(config.defaults.codexModel)
-        : await getClaudeModels({ logger }),
+    // Per-backend model options come from the backend's OWN catalog (§6), so this no
+    // longer branches on the backend id — a new mode contributes its list by carrying a
+    // catalog, not by editing here. Codex: a documented static list (Codex has no model
+    // API; -m is free-form) with config.defaults.codexModel offered first when set. Claude:
+    // the SDK's supportedModels(), probed live on EVERY open (no cross-invocation cache)
+    // with a short in-tick de-dupe, falling back to the alias list on failure/timeout.
+    modelsFor: async (backend: string) => modeRegistry.get(backend).catalog.models(config.defaults.codexModel),
     // Names the wizard's 'custom' backend choice after the operator's actual dotfile
     // config (mirrors /mode backend's choice label — client.ts buildSlashCommands).
     customBackendLabel,
@@ -394,6 +434,11 @@ export function createApp(deps: CreateAppDeps): App {
       // Release the warm image-render browser (if one was launched) before tearing down the
       // gateway, so a graceful shutdown frees Chromium instead of relying on the idle timer.
       await wiring.closeImageRenderer();
+      try {
+        await attachGateway.close();
+      } catch (err) {
+        logger.warn('failed to close attach gateway', { err: String(err) });
+      }
       await discord.destroy();
     },
   };

@@ -87,6 +87,7 @@ const INTENTS = [
 const BACKEND_LABELS: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  'grok-build': 'Grok Build',
 };
 
 // Build the slash commands. `backends` is the list of REGISTERED backend ids
@@ -149,6 +150,18 @@ export function buildSlashCommands(
       o.setName('value').setDescription('Model to switch to').setRequired(true).setAutocomplete(true),
     );
 
+  // /effort <value>: switch the reasoning effort for this session, applied live (no
+  // restart). Mirrors /model. `value` is autocomplete-driven (client.ts InteractionCreate
+  // handler → InteractionRouter.getEffortAutocomplete): the offered levels depend on the
+  // channel's backend/model (Claude runtime levels ∩ the model's supported set; Codex's
+  // own levels), NOT a static addChoices() list.
+  const effort = new SlashCommandBuilder()
+    .setName('effort')
+    .setDescription('Switch the reasoning effort for this session (applied live)')
+    .addStringOption((o) =>
+      o.setName('value').setDescription('Reasoning effort to switch to').setRequired(true).setAutocomplete(true),
+    );
+
   const stop = new SlashCommandBuilder()
     .setName('stop')
     .setDescription('Stop this channel’s session');
@@ -173,7 +186,7 @@ export function buildSlashCommands(
     .setDescription('Create the agent control channel and sessions category')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), model.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
+  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
 }
 
 // ---------------------------------------------------------------------------
@@ -614,17 +627,25 @@ export class DiscordClient {
     }
   }
 
-  // Answer a slash command's autocomplete request. Only /model's `value` option wires
-  // one today; any other autocomplete-enabled option would need a branch here too.
-  // Never throws into the InteractionCreate handler: a respond() failure (e.g. the
-  // interaction already expired past Discord's ~3s autocomplete window, which has no
-  // defer/extend mechanism — unlike a slash command's deferReply) is logged at warn,
-  // not debug, so a live miss is visible at the app's default log level.
+  // Answer a slash command's autocomplete request. /model's `value` wires one (Claude
+  // catalog); /effort's `value` wires another that needs the channel context (guild +
+  // channel) to pick backend/model-appropriate levels. Any other autocomplete-enabled
+  // option would need a branch here too. Never throws into the InteractionCreate handler:
+  // a respond() failure (e.g. the interaction already expired past Discord's ~3s
+  // autocomplete window, which has no defer/extend mechanism — unlike a slash command's
+  // deferReply) is logged at warn, not debug, so a live miss is visible at the app's
+  // default log level.
   private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
     const choices =
       interaction.commandName === 'model'
         ? await this.interactionRouter.getModelAutocomplete(interaction.options.getFocused())
-        : [];
+        : interaction.commandName === 'effort'
+          ? await this.interactionRouter.getEffortAutocomplete(
+              interaction.guildId,
+              interaction.channelId ?? '',
+              interaction.options.getFocused(),
+            )
+          : [];
     try {
       await interaction.respond(choices);
     } catch (err) {

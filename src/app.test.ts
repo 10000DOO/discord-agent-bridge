@@ -105,27 +105,53 @@ describe('createApp — composition root', () => {
     expect(app.discord).toBeDefined();
   });
 
-  it('registers the Claude, Codex, and Custom modes in the mode registry', () => {
+  it('registers the Claude, Codex, Grok Build, and Custom modes in the mode registry', () => {
     const fc = fakeClient();
     const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     expect(app.modeRegistry.has('claude')).toBe(true);
     expect(app.modeRegistry.get('claude').name).toBe('claude');
     expect(app.modeRegistry.has('codex')).toBe(true);
     expect(app.modeRegistry.get('codex').name).toBe('codex');
+    expect(app.modeRegistry.has('grok-build')).toBe(true);
+    expect(app.modeRegistry.get('grok-build').name).toBe('grok-build');
+    expect(app.modeRegistry.has('grok')).toBe(false);
+    expect(app.modeRegistry.has('grok-agent')).toBe(false);
     expect(app.modeRegistry.has('custom')).toBe(true);
     expect(app.modeRegistry.get('custom').name).toBe('custom');
     // All registered → offered as /mode backend choices and in the wizard.
-    expect(app.modeRegistry.list().sort()).toEqual(['claude', 'codex', 'custom']);
+    expect(app.modeRegistry.list().sort()).toEqual(['claude', 'codex', 'custom', 'grok-build']);
   });
 
-  it('exposes Codex capabilities (no permission prompts, no usage panel, transcript UX)', () => {
+  it('every registered mode exposes a catalog (per-backend UI vocabulary, §6)', () => {
+    const fc = fakeClient();
+    const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
+    for (const name of app.modeRegistry.list()) {
+      expect(app.modeRegistry.get(name).catalog).toBeDefined();
+    }
+    // Claude/custom share the Claude vocabulary; Codex uses its own sandbox permission terms.
+    expect(app.modeRegistry.get('claude').catalog.permissionChoices().map((c) => c.value)).toContain('bypassPermissions');
+    expect(app.modeRegistry.get('codex').catalog.permissionChoices().map((c) => c.value)).toEqual([
+      'read-only',
+      'workspace-write',
+      'danger-full-access',
+    ]);
+  });
+
+  it('exposes Codex app-server phase-2 capabilities (streaming + tools + thinking + usage + attach)', () => {
     const fc = fakeClient();
     const app = createApp({ config: makeConfig(), configStore: store, client: fc.client, fetchFn: noNetworkFetch });
     const caps = app.modeRegistry.get('codex').capabilities;
-    expect(caps.permissionPrompts).toBe(false);
-    expect(caps.usagePanel).toBe(false);
-    expect(caps.transcript).toBe(true);
-    expect(caps.streaming).toBe(false);
+    expect(caps.permissionPrompts).toBe(true);
+    expect(caps.toolThreads).toBe(true);
+    expect(caps.thinking).toBe(true);
+    expect(caps.usagePanel).toBe(true);
+    expect(caps.fileDiff).toBe(true);
+    expect(caps.fileAttach).toBe(true); // sendFileFor wired in createApp
+    expect(caps.transcript).toBe(false);
+    expect(caps.streaming).toBe(true);
+    const grokCaps = app.modeRegistry.get('grok-build').capabilities;
+    expect(grokCaps.fileAttach).toBe(true);
+    expect(grokCaps.fileDiff).toBe(true);
   });
 
   it('wires orchestrator.requestPermission to the wiring layer (denies when unwired)', async () => {
@@ -153,6 +179,36 @@ describe('createApp — composition root', () => {
     const spy = vi.spyOn(app.orchestrator, 'resumeAll');
     await fc.fireReady();
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns at boot when config.defaults.mode is not a registered backend (§5.4)', () => {
+    const fc = fakeClient();
+    const warnings: { message: string; meta: unknown[] }[] = [];
+    const logger: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (message: string, ...meta: unknown[]) => warnings.push({ message, meta }),
+      error: () => {},
+    };
+    const config = makeConfig({ defaults: { ...CONFIG_DEFAULTS.defaults, mode: 'gemini' } });
+    createApp({ config, configStore: store, client: fc.client, fetchFn: noNetworkFetch, logger });
+    const hit = warnings.find((w) => w.message.includes('defaults.mode is not a registered backend'));
+    expect(hit).toBeDefined();
+    expect(hit?.meta[0]).toMatchObject({ mode: 'gemini' });
+  });
+
+  it('does not warn about defaults.mode for a registered backend', () => {
+    const fc = fakeClient();
+    const warnings: string[] = [];
+    const logger: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (message: string) => warnings.push(message),
+      error: () => {},
+    };
+    const config = makeConfig({ defaults: { ...CONFIG_DEFAULTS.defaults, mode: 'codex' } });
+    createApp({ config, configStore: store, client: fc.client, fetchFn: noNetworkFetch, logger });
+    expect(warnings.some((m) => m.includes('defaults.mode is not a registered backend'))).toBe(false);
   });
 });
 

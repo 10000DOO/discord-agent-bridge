@@ -13,6 +13,7 @@ import { makeCanUseTool } from '../modes/claude/permissions.js';
 import type {
   AgentMode,
   Capabilities,
+  ModeCatalog,
   ModeContext,
   ModeSession,
   PermissionDecision,
@@ -41,9 +42,19 @@ const CLAUDE_CAPS: Capabilities = {
   permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
+// This test never reads a mode's catalog; an inert one satisfies AgentMode.
+const STUB_CATALOG: ModeCatalog = {
+  models: () => [],
+  permissionChoices: () => [],
+  effortChoices: () => [],
+  runtimeEffortChoices: () => [],
+  defaultEffort: () => undefined,
+};
+
 class StubMode implements AgentMode {
   readonly name = 'claude';
   readonly capabilities = CLAUDE_CAPS;
+  readonly catalog: ModeCatalog = STUB_CATALOG;
   async start(_ctx: ModeContext): Promise<ModeSession> {
     return { sessionId: 's', async send() {}, async stop() {} };
   }

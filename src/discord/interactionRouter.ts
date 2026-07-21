@@ -1,13 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Logger, ModeSession, PermMode, ResumableSession } from '../core/contracts.js';
-import {
-  defaultEffortFor,
-  effortChoicesFor,
-  permissionChoicesFor,
-  permissionModeLabel,
-  type ModelChoice,
-} from '../core/providerCatalog.js';
+import type { Logger, ModelChoice, ModeSession, PermMode, ResumableSession } from '../core/contracts.js';
+import { claudeCatalog, permissionModeLabel } from '../core/providerCatalog.js';
 import type { Authorizer, AuthAction } from '../core/auth.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { ConfigStore } from '../core/config.js';
@@ -52,6 +46,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   'mode.backend': 'drive',
   'mode.perm': 'drive',
   model: 'drive',
+  effort: 'drive',
   stop: 'drive',
   'stop-all': 'admin',
 };
@@ -312,6 +307,9 @@ export class InteractionRouter {
         case 'model':
           await this.switchModel(i);
           break;
+        case 'effort':
+          await this.switchEffort(i);
+          break;
         case 'stop':
           await this.stop(i);
           break;
@@ -390,20 +388,20 @@ export class InteractionRouter {
     }
     const modelsFor = (b: string): ModelChoice[] =>
       modelsByBackend[b] ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
-    // Permission options per backend: Claude PermMode list vs Codex sandbox terms.
-    const permsFor = (b: string): ModelChoice[] => permissionChoicesFor(b);
-    // Reasoning-effort options per backend, narrowed for Claude to the chosen model's
-    // SDK-reported supportedEffortLevels when present.
+    // Permission + effort options come from each backend's OWN catalog (§6) — no branch on
+    // the backend id. Claude narrows effort by the chosen model's SDK-reported
+    // supportedEffortLevels; other backends' catalogs ignore that hint.
+    const permsFor = (b: string): ModelChoice[] => this.deps.modeRegistry.get(b).catalog.permissionChoices();
     const effortsFor = (b: string, model: string): ModelChoice[] => {
       const supported = modelsFor(b).find((m) => m.value === model)?.supportedEffortLevels;
-      return effortChoicesFor(b, supported);
+      return this.deps.modeRegistry.get(b).catalog.effortChoices(supported);
     };
     // The wizard's pre-selected reasoning effort per backend. Prefers the guild's
-    // server-saved default (from /config) when present; falls back to the provider
-    // catalog's per-backend default (Claude 'high', Codex 'medium').
+    // server-saved default (a NAMED config field, claudeEffort/codexEffort — §8, left as-is)
+    // when present; falls back to the backend catalog's default effort.
     const defaultEffortForBackend = (b: string): string => {
       const saved = b === 'codex' ? resolved.codexEffort : resolved.claudeEffort;
-      return saved ?? defaultEffortFor(b);
+      return saved ?? this.deps.modeRegistry.get(b).catalog.defaultEffort() ?? '';
     };
 
     // Unbounded folder browsing by default (browse anywhere up to '/'), unless the
@@ -422,11 +420,11 @@ export class InteractionRouter {
       start: (params) => this.startSession(params),
       defaults: {
         backend,
-        // Backend-aware initial model: applyBackend only resets on a backend CHANGE,
-        // so a codex default backend must not leak the Claude default into `codex -m`.
-        // getCodexModels offers config.defaults.codexModel first, so [0] is the
-        // configured Codex default when one is set.
-        model: backend === 'codex' ? (modelsFor('codex')[0]?.value ?? resolved.claudeModel) : resolved.claudeModel,
+        // Initial model = the backend's OWN catalog's first entry (mirrors applyBackend,
+        // which resets to it on a backend CHANGE), so a non-Claude default backend never
+        // leaks the Claude default. Codex's catalog leads with config.defaults.codexModel
+        // when set; the alias fallback covers a boot without the models dep wired.
+        model: modelsFor(backend)[0]?.value ?? resolved.claudeModel,
         permMode: resolved.permissionMode,
         profile: resolved.permissionProfile,
       },
@@ -474,17 +472,16 @@ export class InteractionRouter {
     const backends = this.deps.modeRegistry.list();
     const models = (await this.deps.modelsFor?.(resolved.mode)) ?? [{ value: resolved.claudeModel, label: resolved.claudeModel }];
     const permModes = this.permModeChoicesFor(resolved.mode);
-    // Reasoning-effort options + prefilled default for the CURRENT backend. Claude's
-    // list is narrowed by the selected model's supportedEffortLevels when the SDK
-    // reports them; Codex ignores the narrowing hint.
-    const supportedClaudeLevels =
-      resolved.mode === 'codex'
-        ? undefined
-        : models.find((m) => m.value === resolved.claudeModel)?.supportedEffortLevels;
-    const efforts = effortChoicesFor(resolved.mode, supportedClaudeLevels);
-    const resolvedEffort =
-      resolved.mode === 'codex' ? resolved.codexEffort : resolved.claudeEffort;
-    const currentEffort = resolvedEffort ?? defaultEffortFor(resolved.mode);
+    // Reasoning-effort options + prefilled default for the CURRENT backend, from that
+    // backend's catalog (§6). Claude narrows by the selected model's supportedEffortLevels;
+    // other backends' catalogs ignore the hint, so it is passed unconditionally. The
+    // resolved effort VALUE is a NAMED config field (claudeEffort/codexEffort — §8, left
+    // as-is); its fallback is the catalog's default.
+    const catalog = this.deps.modeRegistry.get(resolved.mode).catalog;
+    const supportedClaudeLevels = models.find((m) => m.value === resolved.claudeModel)?.supportedEffortLevels;
+    const efforts = catalog.effortChoices(supportedClaudeLevels);
+    const resolvedEffort = resolved.mode === 'codex' ? resolved.codexEffort : resolved.claudeEffort;
+    const currentEffort = resolvedEffort ?? catalog.defaultEffort() ?? '';
 
     // Current effective role tiers = server override when present, else global.
     const panel = new ConfigPanel({
@@ -507,6 +504,7 @@ export class InteractionRouter {
         locale: server?.locale ?? global.locale,
       },
       backends,
+      isKnownBackend: (b) => this.deps.modeRegistry.has(b),
       models,
       efforts,
       permModes,
@@ -898,7 +896,7 @@ export class InteractionRouter {
     }
     // Switching the backend starts a fresh context (§9 step 3): stop the current
     // session, then start a new one on the same cwd/owner/permMode and re-wire.
-    const { cwd, ownerId, permMode, profile, model, mode: prevMode } = binding;
+    const { cwd, ownerId, permMode, profile, model, effort, mode: prevMode } = binding;
 
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
@@ -910,9 +908,10 @@ export class InteractionRouter {
       ownerId,
       permMode,
       profile,
-      // Carry the model only when restarting on the SAME backend; model ids are
-      // backend-specific, so a cross-backend switch discards it (config default).
+      // Carry the model/effort only when restarting on the SAME backend; both are
+      // backend-specific, so a cross-backend switch discards them (config default).
       ...(backend === prevMode && model !== undefined ? { model } : {}),
+      ...(backend === prevMode && effort !== undefined ? { effort } : {}),
     });
     // Confirmation closes the ephemeral deferred reply (only the actor sees it). The
     // fresh-context warning (§9 step 3) is PUBLIC so the whole channel sees the context
@@ -947,8 +946,9 @@ export class InteractionRouter {
       ownerId: binding.ownerId,
       permMode: resolved.permMode,
       profile: resolved.profile,
-      // set() REPLACES the binding — carry the wizard-chosen model or it is dropped.
+      // set() REPLACES the binding — carry the wizard-chosen model/effort or they are dropped.
       ...(binding.model !== undefined ? { model: binding.model } : {}),
+      ...(binding.effort !== undefined ? { effort: binding.effort } : {}),
       ...(binding.projectAuth ? { projectAuth: binding.projectAuth } : {}),
     });
     await i.editReply({ content: t('cmd.perm.switched', { perm: resolved.profile ?? resolved.permMode }) });
@@ -972,6 +972,25 @@ export class InteractionRouter {
     await i.editReply({ content: t(key, { model: value }) });
   }
 
+  // /effort <value>: change the reasoning effort on the live session (no restart, context
+  // kept). The orchestrator applies it and persists it; here we map the status to a notice.
+  // Mirrors switchModel().
+  private async switchEffort(i: SlashInteraction): Promise<void> {
+    const guildId = i.guildId as string;
+    const value = i.getString('value');
+    if (!value) return;
+    const outcome = await this.deps.orchestrator.setEffort(guildId, i.channelId, value);
+    const key =
+      outcome === 'ok'
+        ? 'cmd.effort.switched'
+        : outcome === 'unsupported'
+          ? 'cmd.effort.unsupported'
+          : outcome === 'no-session'
+            ? 'router.noSession'
+            : 'cmd.effort.failed';
+    await i.editReply({ content: t(key, { effort: value }) });
+  }
+
   // /model's `value` option autocomplete: live suggestions from the Claude model
   // catalog (providerCatalog.getClaudeModels — never a static id list), filtered by
   // the user's partial input against either the model id or its display label.
@@ -985,6 +1004,43 @@ export class InteractionRouter {
         ? models
         : models.filter((m) => m.value.toLowerCase().includes(q) || m.label.toLowerCase().includes(q));
     return matches.slice(0, 25).map((m) => ({ name: m.label, value: m.value }));
+  }
+
+  // /effort's `value` option autocomplete: unlike /model (always Claude), the offered
+  // levels depend on THIS channel's backend/model. Claude → the model's supportedEffortLevels
+  // ∩ the runtime-settable set {low,medium,high,xhigh} (never 'max', which is start-only);
+  // Codex → CODEX_EFFORT_LEVELS. Reads the channel binding for backend/model; when there is
+  // no binding yet it falls back to the resolved backend default (the actual /effort then
+  // reports no-session). Claude reuses the 60s model cache so a typing burst pays for at most
+  // one SDK probe; Codex needs no probe. Discord caps results at 25; never rejects.
+  async getEffortAutocomplete(
+    guildId: string | null,
+    channelId: string,
+    query: string,
+  ): Promise<{ name: string; value: string }[]> {
+    const binding = guildId ? this.deps.channelRegistry.get(guildId, channelId) : undefined;
+    const resolved = this.deps.configResolver.resolve(guildId ?? '', channelId);
+    const backend = binding?.mode ?? resolved.mode;
+    // An unregistered backend (e.g. a hand-edited config/binding) has no live vocabulary;
+    // return no suggestions rather than throwing (autocomplete must never reject).
+    if (!this.deps.modeRegistry.has(backend)) return [];
+    const catalog = this.deps.modeRegistry.get(backend).catalog;
+    // Only backends sharing Claude's live model catalog narrow the runtime levels by the
+    // current model's supportedEffortLevels — that alone needs the (cached) SDK probe, so
+    // other backends (e.g. Codex) skip it and take their catalog's full runtime list.
+    let supported: readonly string[] | undefined;
+    if (catalog === claudeCatalog) {
+      const model = binding?.model ?? resolved.claudeModel;
+      const models = await this.claudeModelsForAutocomplete();
+      supported = models.find((m) => m.value === model)?.supportedEffortLevels;
+    }
+    const choices = catalog.runtimeEffortChoices(supported);
+    const q = query.trim().toLowerCase();
+    const matches =
+      q.length === 0
+        ? choices
+        : choices.filter((c) => c.value.toLowerCase().includes(q) || c.label.toLowerCase().includes(q));
+    return matches.slice(0, 25).map((c) => ({ name: c.label, value: c.value }));
   }
 
   // The Claude model list, cached for MODEL_AUTOCOMPLETE_CACHE_MS. Discord's autocomplete
