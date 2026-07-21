@@ -98,6 +98,21 @@ describe('buildSlashCommands — /config', () => {
   });
 });
 
+describe('buildSlashCommands — /clear', () => {
+  it('registers /clear as a TOP-LEVEL command (no options)', () => {
+    const commands = buildSlashCommands(['claude']);
+    const clear = commands.find((c) => c.name === 'clear') as unknown as {
+      name: string;
+      description?: string;
+      options?: unknown[];
+    };
+    expect(clear).toBeTruthy();
+    expect(clear.description).toMatch(/clear|fresh|context/i);
+    // No subcommands/options — just restart-in-place with current settings.
+    expect(clear.options ?? []).toEqual([]);
+  });
+});
+
 // The ChannelDelete gateway subscription (root fix for the Unknown Channel 10003
 // crash): the client must forward a deleted GUILD channel's ids to onChannelDelete and
 // ignore deleted DM channels (which host no session).

@@ -783,6 +783,59 @@ describe('InteractionRouter slash commands', () => {
     expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
   });
 
+  it('/clear with a binding stops + restarts the same mode/cwd/settings in place', async () => {
+    channelRegistry.set(
+      binding(home, {
+        mode: 'claude',
+        ownerId: 'owner',
+        permMode: 'acceptEdits',
+        profile: null,
+        model: 'opus',
+        effort: 'high',
+      }),
+    );
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, acks, replies } = slash({ commandName: 'clear' });
+    await router.handle(interaction);
+    expect(calls.stop).toHaveBeenCalledWith('g1', 'c1');
+    expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
+    expect(calls.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: 'g1',
+        channelId: 'c1',
+        mode: 'claude',
+        cwd: home,
+        ownerId: 'owner',
+        permMode: 'acceptEdits',
+        model: 'opus',
+        effort: 'high',
+      }),
+    );
+    expect(wcalls.attach).toHaveBeenCalledWith('g1', 'c1', 'claude');
+    // Ephemeral confirmation (editReply) + public channel notice (non-ephemeral followUp).
+    expect(replies.some((r) => r.content?.includes('대화 컨텍스트를 비웠'))).toBe(true);
+    const publicNotice = acks.find((a) => a.kind === 'followUp');
+    expect(publicNotice?.payload?.content).toContain('이전 맥락은 이어지지 않습니다');
+    expect(publicNotice?.payload?.ephemeral).toBe(false);
+  });
+
+  it('/clear with NO binding is rejected (no stop/start)', async () => {
+    // No channelRegistry.set → no binding.
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, acks, replies } = slash({ commandName: 'clear' });
+    await router.handle(interaction);
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
+    expect(replies[0].content).toContain('활성 세션이 없어요');
+  });
+
   it('/model (TOP-LEVEL, no subcommand) switches the live session model', async () => {
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring } = fakeWiring();

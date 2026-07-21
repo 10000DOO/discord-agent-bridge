@@ -49,6 +49,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   model: 'drive',
   effort: 'drive',
   stop: 'drive',
+  clear: 'drive',
   'stop-all': 'admin',
 };
 
@@ -94,7 +95,7 @@ interface BaseInteraction extends Replier {
 
 export interface SlashInteraction extends BaseInteraction {
   kind: 'slash';
-  commandName: string; // 'agent' | 'mode' | 'stop' | 'stop-all'
+  commandName: string; // 'agent' | 'mode' | 'stop' | 'clear' | 'stop-all'
   subcommand: string | null; // e.g. 'start' | 'resume' | 'close' | 'backend' | 'perm'
   getString: (name: string) => string | null;
 }
@@ -324,6 +325,9 @@ export class InteractionRouter {
           break;
         case 'stop':
           await this.stop(i);
+          break;
+        case 'clear':
+          await this.clearContext(i);
           break;
         case 'stop-all':
           await this.stopAll(i);
@@ -1095,6 +1099,37 @@ export class InteractionRouter {
     await this.deps.orchestrator.stop(guildId, i.channelId);
     this.deps.wiring.detach(guildId, i.channelId);
     await i.editReply({ content: t('cmd.stop.done') });
+  }
+
+  // /clear: wipe conversation context by restarting the session IN PLACE with the same
+  // mode/cwd/owner/perm/profile/model/effort (backend-neutral). Mirrors switchBackend's
+  // same-channel restart but keeps every setting — does not delete the Discord channel.
+  private async clearContext(i: SlashInteraction): Promise<void> {
+    const guildId = i.guildId as string;
+    const binding = this.deps.channelRegistry.get(guildId, i.channelId);
+    if (!binding) {
+      await i.editReply({ content: t('router.noSession') });
+      return;
+    }
+    const { cwd, ownerId, permMode, profile, model, effort, mode } = binding;
+
+    await this.deps.orchestrator.stop(guildId, i.channelId);
+    this.deps.wiring.detach(guildId, i.channelId);
+    await this.startInChannel({
+      guildId,
+      channelId: i.channelId,
+      mode,
+      cwd,
+      ownerId,
+      permMode,
+      profile,
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+    });
+    // Ephemeral confirmation for the actor; public channel notice so everyone sees the
+    // context reset (same pattern as /mode backend's fresh-context followUp).
+    await i.editReply({ content: t('cmd.clear.done') });
+    await safe(i.followUp({ content: t('cmd.clear.public'), ephemeral: false }));
   }
 
   private async stopAll(i: SlashInteraction): Promise<void> {

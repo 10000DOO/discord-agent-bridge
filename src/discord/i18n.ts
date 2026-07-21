@@ -241,6 +241,9 @@ const ko: Catalog = {
   'cmd.close.done': '세션을 종료하고 보관했어요.',
   'cmd.stop.done': '세션을 중지했어요.',
   'cmd.stopAll.done': '모든 세션을 중지했어요 ({count}개).',
+  // /clear: restart session in place (same folder/settings); conversation context wiped.
+  'cmd.clear.done': '대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했습니다.',
+  'cmd.clear.public': '🧹 이 채널 대화 컨텍스트를 비웠어요. 이전 맥락은 이어지지 않습니다.',
   // Interrupt (⏹️ stop button): cancels the current turn only; the session/context stay.
   'cmd.interrupt.button': '⏹️ 중단',
   'cmd.interrupt.done': '현재 작업을 중단했어요. 이어서 대화할 수 있어요.',
@@ -329,6 +332,8 @@ const en: Catalog = {
   'cmd.interrupt.button': '⏹️ Stop',
   'cmd.interrupt.done': 'Stopped the current task. You can keep the conversation going.',
   'cmd.interrupt.none': 'No running task to stop.',
+  'cmd.clear.done': 'Cleared conversation context. Started a fresh session with the same folder and settings.',
+  'cmd.clear.public': "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
   'cmd.model.switched': 'Switched this session’s model to {model} (applies from the next turn; conversation kept).',
   'cmd.model.unsupported': 'This backend does not support switching the model mid-session (Claude only).',
   'cmd.model.failed': 'Failed to switch the model. Check the terminal logs.',

@@ -166,6 +166,12 @@ export function buildSlashCommands(
     .setName('stop')
     .setDescription('Stop this channel’s session');
 
+  // /clear: restart the session in place with the same folder/settings so conversation
+  // context is wiped for every backend (Claude/Codex/Grok/custom) — not model-side text.
+  const clear = new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Clear conversation context (fresh session, same folder/settings)');
+
   const stopAll = new SlashCommandBuilder()
     .setName('stop-all')
     .setDescription('Stop every active session (admin)');
@@ -186,7 +192,7 @@ export function buildSlashCommands(
     .setDescription('Create the agent control channel and sessions category')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
+  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), clear.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
 }
 
 // ---------------------------------------------------------------------------
