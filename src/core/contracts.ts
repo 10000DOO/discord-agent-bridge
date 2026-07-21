@@ -23,7 +23,7 @@ export interface Capabilities {
 // drift: if the SDK adds/removes a mode on upgrade, PermMode changes with it and the
 // providerCatalog `satisfies` guards surface it. Passed straight to the Claude SDK
 // `permissionMode`; Codex maps the subset it supports onto its own approval-policy +
-// sandbox flags (see modes/codex/runner.ts permModeArgs). As of the installed SDK:
+// sandbox flags (see modes/codex/policy.ts resolveThreadPolicy). As of the installed SDK:
 //   'default'           Claude: interactive canUseTool Allow/Deny buttons
 //   'acceptEdits'       Claude: auto-approve file edits
 //   'bypassPermissions' Claude: auto-approve all  (⚠ dangerous)
@@ -35,13 +35,13 @@ export type PermMode = PermissionMode;
 // Codex's OWN permission vocabulary is sandbox-based, not Claude's PermMode names. The
 // `/agent start` wizard's Codex permission step offers these `-s`/--sandbox values
 // directly (see core/providerCatalog CODEX_SANDBOX_MODES); the codex runner maps each
-// to sandbox + approval flags (modes/codex/runner permModeArgs). Kept as its own type so
+// to sandbox + approval flags (modes/codex/policy resolveThreadPolicy). Kept as its own type so
 // the Claude PermMode path is untouched.
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
 // The permission value carried on a SESSION (binding/context/start): either a Claude
-// PermMode or a Codex sandbox mode. Only the runner that receives it (Claude SDK vs
-// codex spawn) interprets it — the carrier fields stay backend-agnostic. Config
+// PermMode or a Codex sandbox mode. Only the mode that receives it (Claude SDK vs
+// Codex app-server) interprets it — the carrier fields stay backend-agnostic. Config
 // DEFAULTS remain PermMode-only (the /config panel is Claude's vocabulary).
 export type SessionPermMode = PermMode | CodexSandboxMode;
 
@@ -49,8 +49,11 @@ export type SessionPermMode = PermMode | CodexSandboxMode;
 export type AgentEvent =
   | { kind: 'text'; text: string; delta: boolean } // delta=true → streaming chunk
   | { kind: 'thinking'; text: string; delta: boolean }
-  | { kind: 'tool_use'; id: string; name: string; input: unknown }
-  | { kind: 'tool_result'; id: string; ok: boolean; content: string }
+  // parentToolUseId: when set, this event belongs to a subagent whose spawn
+  // tool_use id is the parent (Claude parent_tool_use_id / Grok parentToolId).
+  // Absent → main work thread. Optional so backends without parent meta stay valid.
+  | { kind: 'tool_use'; id: string; name: string; input: unknown; parentToolUseId?: string }
+  | { kind: 'tool_result'; id: string; ok: boolean; content: string; parentToolUseId?: string }
   | { kind: 'permission_request'; id: string; toolName: string; input: unknown } // resolved via ctx.requestPermission
   | { kind: 'progress'; label: string; detail?: string } // Codex operation-progress
   | {
@@ -131,6 +134,11 @@ export interface ModeSession {
   // Switch the model on the LIVE session, mid-conversation, without a restart. Optional:
   // only backends whose transport supports it (Claude) implement it; callers duck-type.
   setModel?(model?: string): Promise<void>;
+  // Switch the reasoning effort on the LIVE session, mid-conversation, without a restart
+  // (Claude: query.applyFlagSettings({ effortLevel }); Codex: the next turn/start effort
+  // param). Optional so existing modes/test doubles stay valid; callers duck-type.
+  // Takes effect on the next turn of the same session.
+  setEffort?(effort?: string): Promise<void>;
   // Modes that support permissionPrompts call ctx.requestPermission; Discord resolves it.
 }
 
@@ -142,10 +150,39 @@ export interface ResumableSession {
   updatedAt?: string;
 }
 
+// A single dropdown option offered to the Discord UI: `value` is what we persist/pass to
+// the backend, `label` is the English text shown in the menu. `supportedEffortLevels`,
+// present only on Claude model choices when the SDK reports them, lets the reasoning-
+// effort step narrow to what the chosen model accepts. Lives here (not providerCatalog)
+// so ModeCatalog can reference it without contracts back-referencing an implementation
+// module — the layer direction stays modes/providerCatalog → contracts.
+export interface ModelChoice {
+  value: string;
+  label: string;
+  supportedEffortLevels?: string[];
+}
+
+// The per-backend "vocabulary" a mode contributes to the Discord UI (wizard, /config,
+// /effort): its model list, permission options, and reasoning-effort options. Each mode
+// OWNS its own catalog so core/Discord never branch on the backend id to pick a list
+// (§6). `models` may be async (Claude probes the SDK live). An empty effortChoices() →
+// the wizard skips the effort step; an empty runtimeEffortChoices() → no /effort for that
+// backend. `defaultEffort()` is the wizard's pre-selected effort (undefined → none).
+export interface ModeCatalog {
+  models(configured?: string): ModelChoice[] | Promise<ModelChoice[]>;
+  permissionChoices(): ModelChoice[];
+  effortChoices(supportedModelLevels?: readonly string[]): ModelChoice[];
+  runtimeEffortChoices(supportedModelLevels?: readonly string[]): ModelChoice[];
+  defaultEffort(): string | undefined;
+}
+
 // ---- The mode plugin: the ONE thing a new backend implements ----
 export interface AgentMode {
   readonly name: string; // 'claude' | 'codex' | 'gemini' | …
   readonly capabilities: Capabilities;
+  // The backend's model/permission/effort vocabulary for the Discord UI (§6). Required so
+  // callers never need a `?? default` fallback branch — every real backend has one.
+  readonly catalog: ModeCatalog;
   start(ctx: ModeContext): Promise<ModeSession>; // begin a fresh session
   resume(ctx: ModeContext, sessionId: string): Promise<ModeSession>; // rebind existing
   listResumable?(ctx: ModeContext): Promise<ResumableSession[]>; // for resume UX

@@ -77,6 +77,27 @@ describe('ConfigStore', () => {
     expect(loaded.autoUpdate).toEqual({ enabled: true });
   });
 
+  it('loads any defaults.mode string (registry is the validity gate, §5)', () => {
+    const store = new ConfigStore(dir);
+    // A backend id not in the old enum must load unchanged: the ModeRegistry — not the
+    // schema — decides validity at use sites, and existing "claude"/"codex"/"custom"
+    // files stay value-compatible (no version bump). Use a non-migrated fake id so this
+    // stays independent of the grok → grok-build alias rewrite.
+    store.save(makeConfig({ defaults: { ...makeConfig().defaults, mode: 'future-backend' } }));
+    expect(store.load().defaults.mode).toBe('future-backend');
+    // A legacy enum value still round-trips.
+    store.save(makeConfig({ defaults: { ...makeConfig().defaults, mode: 'codex' } }));
+    expect(store.load().defaults.mode).toBe('codex');
+  });
+
+  it('migrates retired grok / grok-agent defaults.mode to grok-build on load', () => {
+    const store = new ConfigStore(dir);
+    store.save(makeConfig({ defaults: { ...makeConfig().defaults, mode: 'grok' } }));
+    expect(store.load().defaults.mode).toBe('grok-build');
+    store.save(makeConfig({ defaults: { ...makeConfig().defaults, mode: 'grok-agent' } }));
+    expect(store.load().defaults.mode).toBe('grok-build');
+  });
+
   it('preserves an explicit autoUpdate.enabled=false (backward-compatible)', () => {
     const store = new ConfigStore(dir);
     fs.mkdirSync(dir, { recursive: true });
@@ -184,6 +205,23 @@ describe('ConfigStore', () => {
     store.saveServerConfig(server);
     expect(store.loadServerConfig('g1')).toEqual(server);
     expect(store.loadServerConfig('missing')).toBeNull();
+  });
+
+  it('migrates retired grok / grok-agent server defaults.mode to grok-build on load', () => {
+    const store = new ConfigStore(dir);
+    store.saveServerConfig({
+      version: 1,
+      guildId: 'g1',
+      defaults: { mode: 'grok' },
+    });
+    expect(store.loadServerConfig('g1')?.defaults?.mode).toBe('grok-build');
+
+    store.saveServerConfig({
+      version: 1,
+      guildId: 'g1',
+      defaults: { mode: 'grok-agent' },
+    });
+    expect(store.loadServerConfig('g1')?.defaults?.mode).toBe('grok-build');
   });
 
   const permTest = process.platform === 'win32' ? it.skip : it;

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { normalizeModeId } from '../config.js';
 import { appStateSchema, emptyState, STATE_VERSION, type AppState, type AutoUpdateState } from './schema.js';
 
 // Versioned JSON state store. Loads state.json, runs ordered migrations up to the
@@ -68,6 +69,7 @@ export class StateStore {
   }
 
   // Load state.json → migrate → zod-validate. When absent, return fresh v2 state.
+  // Retired Grok backend ids on channel bindings (`grok`, `grok-agent`) → `grok-build`.
   load(): AppState {
     if (!fs.existsSync(this.statePath)) {
       return emptyState();
@@ -77,7 +79,11 @@ export class StateStore {
       throw new Error(`Invalid state file at ${this.statePath}: expected a JSON object.`);
     }
     const migrated = migrate(raw as Record<string, unknown>);
-    return appStateSchema.parse(migrated);
+    const state = appStateSchema.parse(migrated);
+    for (const binding of Object.values(state.channels)) {
+      binding.mode = normalizeModeId(binding.mode);
+    }
+    return state;
   }
 
   // Validate, normalize to current version, then write atomically (tmp + rename).

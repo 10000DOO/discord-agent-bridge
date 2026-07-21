@@ -2,7 +2,7 @@
 // Every OS touchpoint — running launchctl/systemctl/schtasks, writing files, reading
 // the home dir / node paths — is injectable so the installers are unit-testable with
 // no real service manager and no real filesystem writes (mirrors the DI style of
-// setup/wizard.ts and modes/codex/runner.ts).
+// setup/wizard.ts and modes/codex).
 
 // launchd Label / plist basename (reverse-DNS is the launchd convention).
 export const SERVICE_LABEL = 'com.discord-agent-bridge';

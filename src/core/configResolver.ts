@@ -15,7 +15,9 @@ import type { ChannelRegistry, ChannelBinding } from './channelRegistry.js';
 
 // Typed, fully-resolved view of the layerable settings (§8.1).
 export interface ResolvedConfig {
-  mode: 'claude' | 'codex' | 'custom';
+  // Backend id (a registered mode.name). Plain string, not a fixed union — see
+  // ChannelBinding.mode; the ModeRegistry validates it at use sites (§5).
+  mode: string;
   claudeModel: string;
   codexModel: string;
   // Global/server defaults are Claude PermMode; a level-3 project BINDING may carry a

@@ -22,6 +22,9 @@ const SENSITIVE_KEYS = new Set([
   'credentials',
   'anthropic_auth_token',
   'anthropic_api_key',
+  'xai_api_key',
+  'grok_api_key',
+  'grok_code_xai_api_key',
 ]);
 
 // Value-shape patterns for secrets that may appear inside free-form strings.
@@ -33,11 +36,16 @@ const VALUE_PATTERNS: RegExp[] = [
   /\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,40}\b/g,
   // Anthropic / OAuth style bearer tokens (sk-..., sk-ant-..., long opaque tokens).
   /\bsk-[A-Za-z0-9-]{16,}\b/g,
+  // xAI / Grok API keys (xai-<opaque>).
+  /\bxai-[A-Za-z0-9_-]{16,}\b/g,
   // "Authorization: Bearer <token>" / "Bearer <token>" (allow multiple spaces).
   /(?<=Bearer\s{1,4})[A-Za-z0-9._-]{8,}/gi,
 ];
 
-function redactString(input: string): string {
+// Scrub the value-shape secret patterns (Discord/OAuth/xAI tokens, Bearer) out of a plain
+// string. Exported so non-logger call sites that surface raw external output to users (e.g. a
+// grok stderr tail forwarded to Discord) can apply the same redaction the logger uses (R10).
+export function redactString(input: string): string {
   let out = input;
   for (const pattern of VALUE_PATTERNS) {
     out = out.replace(pattern, PLACEHOLDER);

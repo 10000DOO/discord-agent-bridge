@@ -17,6 +17,12 @@ export type { AppConfig, ServerConfig } from './configSchema.js';
 // explicit ctor arg > env DAB_HOME > ~/.discord-agent-bridge/.
 const DEFAULT_DIR_NAME = '.discord-agent-bridge';
 
+// Retired Grok backend ids → sole remaining backend (path A removed; path B renamed).
+export function normalizeModeId(mode: string): string {
+  if (mode === 'grok' || mode === 'grok-agent') return 'grok-build';
+  return mode;
+}
+
 function defaultBaseDir(): string {
   const fromEnv = process.env.DAB_HOME;
   if (fromEnv && fromEnv.length > 0) return fromEnv;
@@ -89,6 +95,7 @@ export class ConfigStore {
   }
 
   // Load config.json, applying DEFAULTS for missing fields, then zod-validate.
+  // Retired Grok backend ids (`grok`, `grok-agent`) are rewritten to `grok-build`.
   load(): AppConfig {
     if (!fs.existsSync(this.configPath)) {
       throw new Error(
@@ -99,7 +106,9 @@ export class ConfigStore {
     if (typeof raw !== 'object' || raw === null) {
       throw new Error(`Invalid config file at ${this.configPath}: expected a JSON object.`);
     }
-    return configSchema.parse(applyDefaults(raw as Record<string, unknown>));
+    const config = configSchema.parse(applyDefaults(raw as Record<string, unknown>));
+    config.defaults.mode = normalizeModeId(config.defaults.mode);
+    return config;
   }
 
   // Validate then write config.json atomically (tmp + rename); 0600 on non-Windows.
@@ -142,12 +151,17 @@ export class ConfigStore {
   // treated as NO override — return null so the caller falls through to global —
   // with a loud warning. This runs at request time inside authorize()/resolve(),
   // so a broken server file must never throw and take down a live request.
+  // Retired Grok backend ids on defaults.mode (`grok`, `grok-agent`) → `grok-build`.
   loadServerConfig(guildId: string): ServerConfig | null {
     const filePath = this.serverConfigPath(guildId);
     if (!fs.existsSync(filePath)) return null;
     try {
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
-      return serverConfigSchema.parse(raw);
+      const server = serverConfigSchema.parse(raw);
+      if (server.defaults?.mode !== undefined) {
+        server.defaults.mode = normalizeModeId(server.defaults.mode);
+      }
+      return server;
     } catch (err) {
       console.warn(`[config] ignoring corrupt server config ${filePath}; falling back to global: ${String(err)}`);
       return null;

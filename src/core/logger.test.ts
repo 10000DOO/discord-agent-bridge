@@ -41,6 +41,27 @@ describe('redact()', () => {
     expect(redact(`key ${skKey} here`)).not.toContain(skKey);
   });
 
+  it('redacts grok/xAI API key object keys (incl. env alias)', () => {
+    const out = redact({
+      xai_api_key: 'a'.repeat(20),
+      grok_api_key: 'b'.repeat(20),
+      grok_code_xai_api_key: 'c'.repeat(20),
+      model: 'grok-4',
+    }) as Record<string, unknown>;
+    expect(out.xai_api_key).toBe('[REDACTED]');
+    expect(out.grok_api_key).toBe('[REDACTED]');
+    expect(out.grok_code_xai_api_key).toBe('[REDACTED]');
+    expect(out.model).toBe('grok-4');
+  });
+
+  it('scrubs xAI (xai-) key-shaped strings in free text', () => {
+    // Synthetic, zero-entropy value matching the xai- key SHAPE (>=16 tail chars).
+    const key = 'xai-ABCDEF0123456789xyz';
+    const out = redact(`using ${key} for grok`) as string;
+    expect(out).not.toContain(key);
+    expect(out).toContain('[REDACTED]');
+  });
+
   it('does NOT over-redact a benign dotted string that only resembles a token', () => {
     // Short segments (8 . 3 . 10) fall well below the Discord-token shape
     // (23-28 . 6-7 . 27-40), so a file-hash-like value must survive intact.
@@ -73,6 +94,17 @@ describe('createLogger()', () => {
     // Synthetic sentinel under the sensitive 'token' key (redacted by key).
     const secret = 'S'.repeat(40);
     logger.info('bot login', { discord: { token: secret } });
+    const joined = lines.map((l) => l.line).join('\n');
+    expect(joined).not.toContain(secret);
+    expect(joined).toContain('[REDACTED]');
+  });
+
+  it('redacts a grok_code_xai_api_key value in a logged meta object', () => {
+    const { lines, sink } = captureSink();
+    const logger = createLogger('test', { level: 'info', sink });
+    // Synthetic sentinel under the sensitive 'grok_code_xai_api_key' key.
+    const secret = 'G'.repeat(40);
+    logger.info('grok start', { env: { grok_code_xai_api_key: secret } });
     const joined = lines.map((l) => l.line).join('\n');
     expect(joined).not.toContain(secret);
     expect(joined).toContain('[REDACTED]');

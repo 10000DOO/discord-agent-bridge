@@ -17,10 +17,21 @@ import type {
   AgentEvent,
   AgentMode,
   Capabilities,
+  ModeCatalog,
   ModeContext,
   ModeSession,
   TurnInput,
 } from './contracts.js';
+
+// The orchestrator is backend-agnostic and never reads a mode's catalog (that is the
+// Discord UI's concern), so the mock just needs an inert one to satisfy AgentMode.
+const STUB_CATALOG: ModeCatalog = {
+  models: () => [],
+  permissionChoices: () => [],
+  effortChoices: () => [],
+  runtimeEffortChoices: () => [],
+  defaultEffort: () => undefined,
+};
 
 const CLAUDE_CAPS: Capabilities = {
   streaming: true,
@@ -81,6 +92,7 @@ class MockSession implements ModeSession {
 // exercised.
 class MockMode implements AgentMode {
   readonly capabilities: Capabilities = CLAUDE_CAPS;
+  readonly catalog: ModeCatalog = STUB_CATALOG;
   readonly startedCtx: ModeContext[] = [];
   readonly resumedCtx: ModeContext[] = [];
   readonly resumedIds: string[] = [];
@@ -690,5 +702,82 @@ describe('SessionOrchestrator', () => {
     // Audited.
     const audit = readAudit(h.dir);
     expect(audit.some((e) => e.outcome === 'model switched to sonnet' && e.status === 'ok')).toBe(true);
+  });
+
+  it('start persists the wizard-chosen effort onto the binding and threads it onto ctx', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', effort: 'low' });
+    // Threaded onto the started ctx…
+    expect(h.mode.startedCtx[0]?.effort).toBe('low');
+    // …and persisted (source of truth for resume-on-boot).
+    expect(h.channelRegistry.get('g1', 'c1')?.effort).toBe('low');
+    expect(new StateStore(h.dir).load().channels['g1:c1']).toMatchObject({ effort: 'low' });
+  });
+
+  it('setEffort: no active session → "no-session"', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+
+    expect(await h.orchestrator.setEffort('g1', 'c1', 'high')).toBe('no-session');
+  });
+
+  it('setEffort: a session without setEffort support → "unsupported", binding unchanged', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', effort: 'low' });
+
+    // MockSession does not implement the optional setEffort, so it is not supported.
+    expect(await h.orchestrator.setEffort('g1', 'c1', 'high')).toBe('unsupported');
+    expect(h.channelRegistry.get('g1', 'c1')?.effort).toBe('low');
+  });
+
+  it('setEffort: a session whose setEffort throws → "error", binding unchanged', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', effort: 'low' });
+
+    const session = h.mode.lastSession as unknown as { setEffort?: (e?: string) => Promise<void> };
+    session.setEffort = async () => {
+      throw new Error('applyFlagSettings boom');
+    };
+
+    expect(await h.orchestrator.setEffort('g1', 'c1', 'high')).toBe('error');
+    // A failed live change must NOT persist the new value.
+    expect(h.channelRegistry.get('g1', 'c1')?.effort).toBe('low');
+  });
+
+  it('setEffort: applies to the live session and persists the new effort on the binding', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    await h.orchestrator.start({ guildId: 'g1', channelId: 'c1', mode: 'claude', cwd: h.workspace, ownerId: 'u1', model: 'opus', effort: 'low' });
+
+    // Give the live session a setEffort that records what it was asked to switch to.
+    const seen: (string | undefined)[] = [];
+    const session = h.mode.lastSession as unknown as { setEffort?: (e?: string) => Promise<void> };
+    session.setEffort = async (e) => {
+      seen.push(e);
+    };
+
+    expect(await h.orchestrator.setEffort('g1', 'c1', 'high')).toBe('ok');
+    // Applied to the live session…
+    expect(seen).toEqual(['high']);
+    // …and persisted, without dropping the sibling model, so a later resume reuses both.
+    expect(h.channelRegistry.get('g1', 'c1')?.effort).toBe('high');
+    expect(h.channelRegistry.get('g1', 'c1')?.model).toBe('opus');
+    // Audited.
+    const audit = readAudit(h.dir);
+    expect(audit.some((e) => e.outcome === 'effort switched to high' && e.status === 'ok')).toBe(true);
+  });
+
+  it('resume-on-boot threads the persisted binding effort onto the resumed ctx', async () => {
+    const h = harness();
+    cleanup.push(h.dir, h.workspace);
+    h.channelRegistry.set({ guildId: 'g1', channelId: 'c1', mode: 'claude', sessionId: 'sess-c1', cwd: h.workspace, ownerId: 'u1', permMode: 'default', profile: null, effort: 'xhigh' });
+
+    await h.orchestrator.resumeAll();
+
+    expect(h.mode.resumedCtx).toHaveLength(1);
+    expect(h.mode.resumedCtx[0]?.effort).toBe('xhigh');
   });
 });

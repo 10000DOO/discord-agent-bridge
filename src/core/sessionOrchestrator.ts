@@ -167,13 +167,14 @@ export class SessionOrchestrator {
     this.channelRegistry.set({
       guildId,
       channelId,
-      mode: mode as 'claude' | 'codex' | 'custom',
+      mode,
       sessionId: session.sessionId,
       cwd,
       ownerId,
       permMode: perm.permMode,
       profile: perm.profile,
       ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.effort !== undefined ? { effort: params.effort } : {}),
       ...(existing?.projectAuth !== undefined ? { projectAuth: existing.projectAuth } : {}),
     });
     this.active.set(channelKey(guildId, channelId), {
@@ -235,13 +236,14 @@ export class SessionOrchestrator {
     this.channelRegistry.set({
       guildId,
       channelId,
-      mode: mode as 'claude' | 'codex' | 'custom',
+      mode,
       sessionId: session.sessionId ?? sessionId,
       cwd,
       ownerId,
       permMode: perm.permMode,
       profile: perm.profile,
       ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.effort !== undefined ? { effort: params.effort } : {}),
       ...(existing?.projectAuth !== undefined ? { projectAuth: existing.projectAuth } : {}),
     });
     this.active.set(channelKey(guildId, channelId), {
@@ -305,6 +307,7 @@ export class SessionOrchestrator {
         permMode: binding.permMode,
         ...(binding.profile !== null ? { profile: binding.profile } : {}),
         ...(binding.model !== undefined ? { model: binding.model } : {}),
+        ...(binding.effort !== undefined ? { effort: binding.effort } : {}),
       };
       try {
         if (binding.sessionId !== null) {
@@ -405,6 +408,8 @@ export class SessionOrchestrator {
         permMode: binding.permMode,
         profile: binding.profile,
         model,
+        // set() REPLACES the binding — carry the persisted effort or it is dropped.
+        ...(binding.effort !== undefined ? { effort: binding.effort } : {}),
         ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
       });
     }
@@ -422,6 +427,64 @@ export class SessionOrchestrator {
       status: 'ok',
     });
     this.logger.info('model switched', { guildId, channelId, model });
+    return 'ok';
+  }
+
+  // Switch the reasoning effort on a channel's LIVE session and persist the choice to the
+  // binding (so a later resume reuses it). Only a session exposing setEffort supports this;
+  // others return 'unsupported'. Returns a status the Discord layer maps to a user-facing
+  // notice. The session and its context are kept — no restart. Mirrors setModel().
+  async setEffort(
+    guildId: string,
+    channelId: string,
+    effort: string,
+  ): Promise<'ok' | 'no-session' | 'unsupported' | 'error'> {
+    const key = channelKey(guildId, channelId);
+    const channel = this.active.get(key);
+    if (!channel) return 'no-session';
+
+    const session = channel.session;
+    if (typeof session.setEffort !== 'function') return 'unsupported';
+
+    try {
+      await session.setEffort(effort);
+    } catch (err) {
+      this.logger.error('setEffort failed', { guildId, channelId, effort, err: String(err) });
+      return 'error';
+    }
+
+    // Persist the new effort onto the binding so resume-on-boot / reactivation keeps it.
+    const binding = this.channelRegistry.get(guildId, channelId);
+    if (binding && !binding.archived) {
+      this.channelRegistry.set({
+        guildId,
+        channelId,
+        mode: binding.mode,
+        sessionId: binding.sessionId,
+        cwd: binding.cwd,
+        ownerId: binding.ownerId,
+        permMode: binding.permMode,
+        profile: binding.profile,
+        effort,
+        // set() REPLACES the binding — carry the persisted model or it is dropped.
+        ...(binding.model !== undefined ? { model: binding.model } : {}),
+        ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
+      });
+    }
+
+    this.auditLog.record({
+      actorId: channel.ownerId,
+      roleTier: 'execute',
+      guildId,
+      channelId,
+      action: 'turn',
+      mode: channel.mode,
+      permMode: channel.permMode,
+      cwd: channel.cwd,
+      outcome: `effort switched to ${effort}`,
+      status: 'ok',
+    });
+    this.logger.info('effort switched', { guildId, channelId, effort });
     return 'ok';
   }
 
@@ -544,6 +607,7 @@ export class SessionOrchestrator {
           permMode,
           allowedTools: perm.allowedTools,
           ...(binding.model !== undefined ? { model: binding.model } : {}),
+          ...(binding.effort !== undefined ? { effort: binding.effort } : {}),
         });
         // A binding with no backend sessionId cannot be resumed against a
         // specific id. Skip it here — the next user turn will hit send()'s
@@ -720,10 +784,11 @@ export class SessionOrchestrator {
           permMode: binding.permMode,
           profile: binding.profile,
           ...(binding.projectAuth !== undefined ? { projectAuth: binding.projectAuth } : {}),
-          // Carry the persisted model forward — set() REPLACES the binding, so
-          // omitting it here would silently drop the wizard's model the moment
+          // Carry the persisted model/effort forward — set() REPLACES the binding, so
+          // omitting them here would silently drop the wizard's model/effort the moment
           // the backend sessionId arrives.
           ...(binding.model !== undefined ? { model: binding.model } : {}),
+          ...(binding.effort !== undefined ? { effort: binding.effort } : {}),
         });
         this.logger.info('registry updated with backend sessionId', {
           guildId,

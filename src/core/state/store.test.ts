@@ -123,6 +123,47 @@ describe('StateStore', () => {
     expect(loaded.channels['c1']).toBeUndefined();
   });
 
+  it('parses an unregistered mode string without rejecting the whole record (§5.3)', () => {
+    const store = new StateStore(dir);
+    // A binding written by a build that registered an extra backend. With mode as z.string()
+    // a single unknown value no longer fails appStateSchema.parse and wipes EVERY binding —
+    // both load, and resumeAll() later skips only the unregistered one. Use a non-migrated
+    // fake id so this stays independent of the grok → grok-build alias rewrite.
+    fs.writeFileSync(
+      store.statePath,
+      JSON.stringify({
+        version: STATE_VERSION,
+        channels: { 'g1:c1': binding({ mode: 'future-backend' }), 'g1:c2': binding() },
+        scheduledCommands: [],
+      }),
+      'utf-8',
+    );
+    const loaded = store.load();
+    expect(loaded.channels['g1:c1']?.mode).toBe('future-backend');
+    expect(loaded.channels['g1:c2']?.mode).toBe('claude');
+  });
+
+  it('migrates retired grok / grok-agent channel modes to grok-build on load', () => {
+    const store = new StateStore(dir);
+    fs.writeFileSync(
+      store.statePath,
+      JSON.stringify({
+        version: STATE_VERSION,
+        channels: {
+          'g1:c1': binding({ mode: 'grok' }),
+          'g1:c2': binding({ mode: 'grok-agent' }),
+          'g1:c3': binding({ mode: 'claude' }),
+        },
+        scheduledCommands: [],
+      }),
+      'utf-8',
+    );
+    const loaded = store.load();
+    expect(loaded.channels['g1:c1']?.mode).toBe('grok-build');
+    expect(loaded.channels['g1:c2']?.mode).toBe('grok-build');
+    expect(loaded.channels['g1:c3']?.mode).toBe('claude');
+  });
+
   it('rejects malformed state (bad permissionMode)', () => {
     const store = new StateStore(dir);
     fs.writeFileSync(

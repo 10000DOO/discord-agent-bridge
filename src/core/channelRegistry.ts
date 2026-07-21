@@ -19,7 +19,10 @@ export interface ProjectAuth {
 export interface ChannelBinding {
   guildId: string;
   channelId: string;
-  mode: 'claude' | 'codex' | 'custom';
+  // Backend id (a registered mode.name). Plain string, not a fixed union: the
+  // ModeRegistry is the single validity gate at use sites (§5), so a new backend needs
+  // no edit here.
+  mode: string;
   sessionId: string | null;
   cwd: string;
   ownerId: string;
@@ -31,6 +34,10 @@ export interface ChannelBinding {
   // is 'codex'); persisted so reactivation/resume restores the same choice. Absent =
   // the resolved config default.
   model?: string;
+  // Reasoning effort chosen in the wizard or via /effort (a Claude level, or a Codex level
+  // when mode is 'codex'); persisted so reactivation/resume restores the same choice.
+  // Absent = each backend's own default.
+  effort?: string;
   projectAuth?: ProjectAuth;
   archived: boolean;
   createdAt: string;
@@ -61,6 +68,7 @@ function fromState(guildId: string, channelId: string, s: ChannelBindingState): 
     permMode: s.permissionMode,
     profile: s.permissionProfile,
     ...(s.model !== undefined ? { model: s.model } : {}),
+    ...(s.effort !== undefined ? { effort: s.effort } : {}),
     projectAuth: s.projectAuth,
     archived: s.archived,
     createdAt: s.createdAt,
@@ -78,6 +86,7 @@ function toState(b: ChannelBinding): ChannelBindingState {
     permissionMode: b.permMode,
     permissionProfile: b.profile,
     ...(b.model !== undefined ? { model: b.model } : {}),
+    ...(b.effort !== undefined ? { effort: b.effort } : {}),
     ...(b.projectAuth ? { projectAuth: b.projectAuth } : {}),
     createdAt: b.createdAt,
     updatedAt: b.updatedAt,

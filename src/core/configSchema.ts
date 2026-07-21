@@ -40,7 +40,10 @@ export const configSchema = z.object({
     dmPolicy: dmPolicySchema,
   }),
   defaults: z.object({
-    mode: z.enum(['claude', 'codex', 'custom']),
+    // Backend id. z.string() (not a fixed enum) so a newly registered mode's id loads
+    // without a schema edit — the ModeRegistry is the single validity gate at use sites
+    // (§5). Existing "claude"/"codex"/"custom" values pass unchanged (value-compatible).
+    mode: z.string(),
     claudeModel: z.string(),
     codexModel: z.string(),
     permissionMode: permModeSchema,
@@ -117,7 +120,8 @@ export const serverConfigSchema = z.object({
     .optional(),
   defaults: z
     .object({
-      mode: z.enum(['claude', 'codex', 'custom']),
+      // z.string() (not a fixed enum) — see the global defaults.mode note above.
+      mode: z.string(),
       claudeModel: z.string(),
       codexModel: z.string(),
       permissionMode: permModeSchema,

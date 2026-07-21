@@ -9,17 +9,23 @@ import {
   codexSandboxChoices,
   isCodexSandboxMode,
   effortChoicesFor,
+  runtimeEffortChoicesFor,
+  isClaudeRuntimeEffort,
+  isCodexEffort,
   defaultEffortFor,
   CLAUDE_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   CLAUDE_EFFORT_LEVELS,
+  CLAUDE_RUNTIME_EFFORT_LEVELS,
   CODEX_EFFORT_LEVELS,
   CODEX_SANDBOX_MODES,
   CLAUDE_MODEL_FALLBACK,
+  claudeCatalog,
+  codexCatalog,
   type QueryFn,
 } from './providerCatalog.js';
 import { permModeSchema } from './configSchema.js';
-import { permModeArgs } from '../modes/codex/runner.js';
+import { resolveThreadPolicy } from '../modes/codex/policy.js';
 
 // The provider catalog is the ONE source of the model + permission-mode option lists.
 // These tests MOCK the SDK's supportedModels() — no real SDK, no network.
@@ -158,11 +164,11 @@ describe('permission modes (SDK-synced, English, per-backend)', () => {
     }
   });
 
-  it('permModeArgs stays valid for every Codex permission mode', () => {
+  it('resolveThreadPolicy stays valid for every Codex permission mode', () => {
     for (const mode of CODEX_PERMISSION_MODES) {
-      const args = permModeArgs(mode);
-      expect(Array.isArray(args)).toBe(true);
-      expect(args.length).toBeGreaterThan(0);
+      const policy = resolveThreadPolicy(mode);
+      expect(policy.approvalPolicy).toMatch(/^(never|on-request)$/);
+      expect(policy.sandbox).toMatch(/^(read-only|workspace-write|danger-full-access)$/);
     }
   });
 });
@@ -218,15 +224,19 @@ describe('Codex-native sandbox permission choices (backend-specific)', () => {
     expect(permissionChoicesFor('claude').map((c) => c.value)).toEqual([...CLAUDE_PERMISSION_MODES]);
   });
 
-  it('permModeArgs maps each Codex sandbox choice to the right -s / approval flags', () => {
-    expect(permModeArgs('read-only')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'read-only']);
-    expect(permModeArgs('workspace-write')).toEqual(['-c', 'approval_policy="on-request"', '-s', 'workspace-write']);
-    // danger-full-access → the single codex bypass flag (no -s/-c/-a).
-    expect(permModeArgs('danger-full-access')).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
-    for (const m of CODEX_SANDBOX_MODES) {
-      expect(permModeArgs(m)).not.toContain('-a');
-      expect(permModeArgs(m)).not.toContain('--ask-for-approval');
-    }
+  it('resolveThreadPolicy maps each Codex sandbox choice to app-server params', () => {
+    expect(resolveThreadPolicy('read-only')).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'read-only',
+    });
+    expect(resolveThreadPolicy('workspace-write')).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+    });
+    expect(resolveThreadPolicy('danger-full-access')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
   });
 });
 
@@ -251,5 +261,70 @@ describe('reasoning-effort choices (per-backend)', () => {
   it('defaultEffortFor is high for Claude and medium for Codex', () => {
     expect(defaultEffortFor('claude')).toBe('high');
     expect(defaultEffortFor('codex')).toBe('medium');
+  });
+});
+
+describe('runtime reasoning-effort choices (/effort — live session)', () => {
+  it('the Claude runtime set is {low,medium,high,xhigh} — max excluded (start-only)', () => {
+    expect([...CLAUDE_RUNTIME_EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect((CLAUDE_RUNTIME_EFFORT_LEVELS as readonly string[]).includes('max')).toBe(false);
+  });
+
+  it('isClaudeRuntimeEffort accepts the four runtime levels and rejects max/garbage', () => {
+    expect(isClaudeRuntimeEffort('low')).toBe(true);
+    expect(isClaudeRuntimeEffort('xhigh')).toBe(true);
+    expect(isClaudeRuntimeEffort('max')).toBe(false);
+    expect(isClaudeRuntimeEffort('')).toBe(false);
+    expect(isClaudeRuntimeEffort('turbo')).toBe(false);
+  });
+
+  it('isCodexEffort accepts the Codex levels (incl. minimal) and rejects garbage', () => {
+    expect(isCodexEffort('minimal')).toBe(true);
+    expect(isCodexEffort('xhigh')).toBe(true);
+    expect(isCodexEffort('')).toBe(false);
+    expect(isCodexEffort('bogus')).toBe(false);
+    // 'minimal' is Codex-only — not a Claude runtime level.
+    expect(isClaudeRuntimeEffort('minimal')).toBe(false);
+  });
+
+  it('runtimeEffortChoicesFor: Codex offers its full list; Claude offers the runtime set', () => {
+    expect(runtimeEffortChoicesFor('codex').map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+    expect(runtimeEffortChoicesFor('claude').map((c) => c.value)).toEqual([...CLAUDE_RUNTIME_EFFORT_LEVELS]);
+  });
+
+  it('runtimeEffortChoicesFor: Claude ∩ the model’s supportedEffortLevels, always excluding max', () => {
+    // A model that reports low/medium/max → the ∩ with {low,medium,high,xhigh} drops max.
+    expect(runtimeEffortChoicesFor('claude', ['low', 'medium', 'max']).map((c) => c.value)).toEqual([
+      'low',
+      'medium',
+    ]);
+    // Even if the model reports max, it is never offered at runtime.
+    expect(runtimeEffortChoicesFor('claude', ['high', 'max']).map((c) => c.value)).toEqual(['high']);
+    // Codex ignores the Claude-only narrowing argument.
+    expect(runtimeEffortChoicesFor('codex', ['low']).map((c) => c.value)).toEqual([...CODEX_EFFORT_LEVELS]);
+  });
+});
+
+describe('built-in mode catalogs (assemble the existing per-backend functions)', () => {
+  // The catalog constants must be pure re-wirings of the functions above — no new
+  // vocabulary — so the SDK `satisfies` drift guards on the underlying constants keep
+  // protecting the lists. (claudeCatalog.models is NOT called here: it delegates to
+  // getClaudeModels(), which would spawn the real SDK; that path is covered above.)
+  it('claudeCatalog delegates to the Claude vocabulary functions', () => {
+    expect(claudeCatalog.permissionChoices()).toEqual(permissionModeChoices('claude'));
+    expect(claudeCatalog.effortChoices()).toEqual(effortChoicesFor('claude'));
+    expect(claudeCatalog.effortChoices(['low', 'medium'])).toEqual(effortChoicesFor('claude', ['low', 'medium']));
+    expect(claudeCatalog.runtimeEffortChoices(['low', 'max'])).toEqual(runtimeEffortChoicesFor('claude', ['low', 'max']));
+    expect(claudeCatalog.defaultEffort()).toBe('high');
+  });
+
+  it('codexCatalog delegates to the Codex vocabulary functions (sandbox perms, codex efforts)', () => {
+    expect(codexCatalog.permissionChoices()).toEqual(codexSandboxChoices());
+    expect(codexCatalog.effortChoices()).toEqual(effortChoicesFor('codex'));
+    expect(codexCatalog.runtimeEffortChoices()).toEqual(runtimeEffortChoicesFor('codex'));
+    expect(codexCatalog.defaultEffort()).toBe('medium');
+    // models forwards the configured id so a set value leads the list.
+    expect(codexCatalog.models('gpt-5.4')).toEqual(getCodexModels('gpt-5.4'));
+    expect(codexCatalog.models()).toEqual(getCodexModels(''));
   });
 });

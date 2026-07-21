@@ -25,7 +25,12 @@ export const STATE_VERSION = 2;
 
 export const channelBindingSchema = z.object({
   guildId: z.string(),
-  mode: z.enum(['claude', 'codex', 'custom']),
+  // Backend id. z.string() (not a fixed enum) so a binding written by a build that
+  // registered an extra mode still parses here — a single unknown value no longer makes
+  // appStateSchema.parse reject the WHOLE channels record (which would lose every
+  // binding). resumeAll() then skips only the unregistered binding via its per-binding
+  // modeRegistry.get() guard (§5.3). Existing "claude"/"codex"/"custom" pass unchanged.
+  mode: z.string(),
   sessionId: z.string().nullable(),
   cwd: z.string(),
   ownerId: z.string(),
@@ -34,6 +39,10 @@ export const channelBindingSchema = z.object({
   // Wizard-chosen model (Claude id/alias or Codex id). Optional so older state.json
   // files without it still validate.
   model: z.string().optional(),
+  // Reasoning effort chosen in the wizard or via /effort (Claude level or Codex level).
+  // Optional so older state.json files without it still validate; restored on resume so a
+  // saved effort survives restarts.
+  effort: z.string().optional(),
   projectAuth: z
     .object({
       allowedRoleIds: z.array(z.string()),

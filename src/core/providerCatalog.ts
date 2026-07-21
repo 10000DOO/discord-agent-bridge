@@ -7,7 +7,7 @@ import {
   type Query,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { Logger, PermMode } from './contracts.js';
+import type { Logger, ModeCatalog, ModelChoice, PermMode } from './contracts.js';
 
 // The ONE source of truth for the model + permission-mode option lists offered in
 // the Discord dropdowns (/config defaults and /agent start wizard). Both consumers
@@ -15,15 +15,8 @@ import type { Logger, PermMode } from './contracts.js';
 // drift. Labels are the ORIGINAL ENGLISH names/identifiers — no Korean translation
 // of the selectable option values (surrounding guidance text stays localized).
 
-// A single dropdown option: `value` is what we persist/pass to the backend, `label`
-// is the English text shown in the menu. `supportedEffortLevels`, present only on
-// Claude model choices when the SDK reports them (ModelInfo.supportedEffortLevels),
-// lets the reasoning-effort step narrow its options to what the chosen model accepts.
-export interface ModelChoice {
-  value: string;
-  label: string;
-  supportedEffortLevels?: string[];
-}
+// ModelChoice (the dropdown option shape) now lives in contracts.ts so ModeCatalog can
+// reference it without a layer-inverting import; the functions below still return it.
 
 // ---- Claude permission modes — TIED to the installed SDK's PermissionMode type ----
 // `satisfies readonly PermissionMode[]` binds this list to the SDK: if a future SDK
@@ -40,7 +33,7 @@ export const CLAUDE_PERMISSION_MODES = [
 ] as const satisfies readonly PermissionMode[];
 
 // Codex permission modes = ONLY the subset that maps to codex approval/sandbox flags
-// (see modes/codex/runner.ts permModeArgs). Codex has no mapping for 'dontAsk'/'auto',
+// (see modes/codex/policy.ts resolveThreadPolicy). Codex has no mapping for 'dontAsk'/'auto',
 // so they are deliberately excluded from the Codex list (honest per-backend limits).
 export const CODEX_PERMISSION_MODES = [
   'default',
@@ -75,10 +68,9 @@ export function permissionModeChoices(backend: string): ModelChoice[] {
 
 // ---- Codex-NATIVE sandbox permission choices --------------------------------
 // Codex does NOT use Claude's permission-mode vocabulary; its own model is sandbox +
-// approval. The permission step therefore offers Codex's actual `-s`/--sandbox values
-// (verified against `codex exec`) so the operator sees Codex terms, not Claude ones.
-// The runner (modes/codex/runner.ts permModeArgs) maps each to `-s <mode>` plus a
-// sensible `-c approval_policy=…`. `danger-full-access` is the codex bypass equivalent.
+// approval. The permission step therefore offers Codex's actual sandbox values so the
+// operator sees Codex terms, not Claude ones. modes/codex/policy resolveThreadPolicy
+// maps each to app-server approvalPolicy + sandbox. `danger-full-access` is the bypass.
 export const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
 export type CodexSandboxMode = (typeof CODEX_SANDBOX_MODES)[number];
 
@@ -120,11 +112,37 @@ export const CLAUDE_EFFORT_LEVELS = [
   'max',
 ] as const satisfies readonly EffortLevel[];
 
+// Claude effort levels settable at RUNTIME on a live session via
+// query.applyFlagSettings({ effortLevel }). This is the SDK's Settings.effortLevel
+// domain, which EXCLUDES 'max' — 'max' is only settable at session start via
+// options.effort, not mid-session. Drives the /effort autocomplete for a Claude channel
+// and guards the Claude session's setEffort (see modes/claude/session.ts).
+export const CLAUDE_RUNTIME_EFFORT_LEVELS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+] as const satisfies readonly EffortLevel[];
+export type ClaudeRuntimeEffort = (typeof CLAUDE_RUNTIME_EFFORT_LEVELS)[number];
+
+// True when `value` is a Claude effort level settable at runtime (the applyFlagSettings
+// domain — 'max' excluded). Narrows the string so it can be passed to the SDK.
+export function isClaudeRuntimeEffort(value: string): value is ClaudeRuntimeEffort {
+  return (CLAUDE_RUNTIME_EFFORT_LEVELS as readonly string[]).includes(value);
+}
+
 // Codex reasoning-effort values accepted by `-c model_reasoning_effort="…"` (verified
 // against developers.openai.com/codex/config-reference, 2026-07). The operator's own
 // config uses 'medium', which is the sensible default here too.
 export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 export type CodexEffortLevel = (typeof CODEX_EFFORT_LEVELS)[number];
+
+// True when `value` is a Codex reasoning-effort level `-c model_reasoning_effort` accepts.
+// Guards CodexSession.setEffort (mirrors isClaudeRuntimeEffort) so a /effort value typed
+// outside the autocomplete list can't be persisted and fail every subsequent `codex exec`.
+export function isCodexEffort(value: string): value is CodexEffortLevel {
+  return (CODEX_EFFORT_LEVELS as readonly string[]).includes(value);
+}
 
 // The default reasoning effort offered pre-selected in the wizard per backend. Claude's
 // SDK default is 'high'; Codex's practical default (and the operator's config) is 'medium'.
@@ -144,6 +162,23 @@ export function effortChoicesFor(backend: string, supportedClaudeLevels?: readon
     supportedClaudeLevels && supportedClaudeLevels.length > 0
       ? supportedClaudeLevels
       : CLAUDE_EFFORT_LEVELS;
+  return levels.map((e) => ({ value: e, label: e }));
+}
+
+// The reasoning-effort option list for the LIVE `/effort` command, keyed by backend.
+// Unlike effortChoicesFor (the wizard's start-time list, which for Claude includes
+// 'max'), this returns only levels that can be changed mid-session: Codex → the full
+// CODEX_EFFORT_LEVELS; Claude → the runtime-settable set {low,medium,high,xhigh},
+// further narrowed to the chosen model's supportedEffortLevels (∩) when the SDK reports
+// them. 'max' is never offered here because query.applyFlagSettings cannot set it.
+export function runtimeEffortChoicesFor(backend: string, supportedClaudeLevels?: readonly string[]): ModelChoice[] {
+  if (backend === 'codex') {
+    return CODEX_EFFORT_LEVELS.map((e) => ({ value: e, label: e }));
+  }
+  const levels =
+    supportedClaudeLevels && supportedClaudeLevels.length > 0
+      ? CLAUDE_RUNTIME_EFFORT_LEVELS.filter((l) => supportedClaudeLevels.includes(l))
+      : CLAUDE_RUNTIME_EFFORT_LEVELS;
   return levels.map((e) => ({ value: e, label: e }));
 }
 
@@ -272,3 +307,34 @@ export function getCodexModels(configured = ''): ModelChoice[] {
       : [trimmed, ...CODEX_MODEL_DEFAULTS.filter((m) => m !== trimmed)];
   return ids.map((id) => ({ value: id, label: id }));
 }
+
+// ---- Built-in mode catalogs — ASSEMBLE the pieces above ----------------------
+// Each catalog just wires the existing per-backend functions into the ModeCatalog seam
+// (§6.2). The SDK drift guards are UNCHANGED: they live on the `satisfies`-bound
+// CLAUDE_PERMISSION_MODES / CLAUDE_EFFORT_LEVELS / CLAUDE_RUNTIME_EFFORT_LEVELS constants
+// that these functions read, so a future SDK change still fails to compile. A mode assigns
+// its catalog by reference (ClaudeMode/CustomMode → claudeCatalog, CodexMode → codexCatalog),
+// and call sites reach the vocabulary via modeRegistry.get(backend).catalog rather than
+// branching on the backend id.
+//
+// claudeCatalog.models ignores `configured` (Claude probes the SDK's live list) and calls
+// getClaudeModels() without a logger: the probe already falls back to the alias list on
+// any failure, so the only loss is a warn line — an accepted minimal-surface tradeoff so
+// the catalog stays a module const (no logger to thread through the ModeCatalog seam).
+export const claudeCatalog: ModeCatalog = {
+  models: () => getClaudeModels(),
+  permissionChoices: () => permissionModeChoices('claude'),
+  effortChoices: (levels) => effortChoicesFor('claude', levels),
+  runtimeEffortChoices: (levels) => runtimeEffortChoicesFor('claude', levels),
+  defaultEffort: () => 'high',
+};
+
+// codexCatalog.models forwards `configured` (config.defaults.codexModel) so a set value
+// leads the documented static list; effort/permission use Codex's own vocabulary.
+export const codexCatalog: ModeCatalog = {
+  models: (configured) => getCodexModels(configured),
+  permissionChoices: () => codexSandboxChoices(),
+  effortChoices: () => effortChoicesFor('codex'),
+  runtimeEffortChoices: () => runtimeEffortChoicesFor('codex'),
+  defaultEffort: () => 'medium',
+};
