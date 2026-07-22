@@ -103,6 +103,11 @@ export interface ChannelWizardOptions {
   // + starting, so an unavailable-backend preset never reaches start() — which would create
   // an orphan session channel before orchestrator.start throws. Absent → no availability guard.
   backendAvailable?: (backend: string) => boolean;
+  // Present → reconfigure (backend switch) mode: the folder/preset/backend steps are skipped
+  // and the wizard starts at the model step. backend/cwd/permMode/profile carry over from the
+  // existing session binding; model/effort are pre-selected (seeded from the new backend's
+  // defaults when absent).
+  entry?: { backend: string; cwd: string; permMode: SessionPermMode; profile: string | null; model?: string; effort?: string };
 }
 
 // A wizard select/button input. `id` is the component id ('backend', 'model',
@@ -131,6 +136,14 @@ export class ChannelWizard {
   private readonly opts: ChannelWizardOptions;
   private readonly browser: DirectoryBrowser;
   private step: WizardStep = 'folder';
+  // The wizard's first step: 'folder' for /agent start, 'model' for reconfigure. Back
+  // navigation and the back-button visibility key off this so the first step never renders
+  // a back button and a stray wizard.back there is a no-op.
+  private readonly firstStep: WizardStep;
+  // 'start' = /agent start (folder → … → done, creates a channel). 'reconfigure' = backend
+  // switch popup (model → effort → perm → done, same-channel restart). Selects the i18n keys
+  // and lets the router branch the done handling.
+  private readonly kind: 'start' | 'reconfigure';
   private readonly selection: Selection;
   // Saved presets shown in the preset step (snapshot at build time; shrinks on delete).
   private presets: Preset[];
@@ -160,18 +173,45 @@ export class ChannelWizard {
     this.browser = options.browser;
     this.ownerId = options.ownerId;
     this.presets = options.presets ?? [];
-    this.selection = {
-      cwd: null,
-      backend: options.defaults.backend,
-      model: options.defaults.model,
-      effort: options.defaultEffortFor(options.defaults.backend),
-      permMode: options.defaults.permMode,
-      profile: options.defaults.profile,
-    };
+    const entry = options.entry;
+    if (entry) {
+      // Reconfigure (backend switch): skip folder/preset/backend, start at the model step.
+      // backend/cwd/permMode/profile carry over from the existing binding; model/effort are
+      // seeded from the caller or the new backend's defaults (§3-3 D5).
+      this.kind = 'reconfigure';
+      this.firstStep = 'model';
+      this.step = 'model';
+      this.selection = {
+        cwd: entry.cwd,
+        backend: entry.backend,
+        model: entry.model ?? options.modelsFor(entry.backend)[0]?.value ?? options.defaults.model,
+        effort: entry.effort ?? options.defaultEffortFor(entry.backend),
+        permMode: entry.permMode,
+        profile: entry.profile,
+      };
+    } else {
+      this.kind = 'start';
+      this.firstStep = 'folder';
+      this.step = 'folder';
+      this.selection = {
+        cwd: null,
+        backend: options.defaults.backend,
+        model: options.defaults.model,
+        effort: options.defaultEffortFor(options.defaults.backend),
+        permMode: options.defaults.permMode,
+        profile: options.defaults.profile,
+      };
+    }
   }
 
   currentStep(): WizardStep {
     return this.step;
+  }
+
+  // True when this wizard was opened as the backend-switch popup (reconfigure entry). The
+  // router branches its done handling on this (same-channel restart vs. new channel).
+  isReconfigure(): boolean {
+    return this.kind === 'reconfigure';
   }
 
   // The folder currently in view in the wizard's browser. Used by the router's
@@ -237,6 +277,9 @@ export class ChannelWizard {
   // skip, §6). The folder step is the first — back is not rendered there and a stray
   // input is a no-op, like every other unknown id.
   private stepBack(): void {
+    // The first step has nothing to go back to (folder for /agent start, model for
+    // reconfigure). Guarding here also covers the folder-first case unchanged.
+    if (this.step === this.firstStep) return;
     this.pending = {};
     switch (this.step) {
       case 'preset':
@@ -450,6 +493,27 @@ export class ChannelWizard {
     return this.fromPreset;
   }
 
+  // The embed title: the reconfigure popup names the target backend; /agent start uses the
+  // generic wizard title.
+  private title(): string {
+    return this.kind === 'reconfigure'
+      ? t('wizard.recfg.title', { backend: this.selection.backend })
+      : t('wizard.title');
+  }
+
+  // The guidance i18n key for a choice step, swapping in the reconfigure variant
+  // (wizard.recfg.step.*) when this is a backend-switch popup.
+  private stepLabelKey(step: 'model' | 'effort' | 'perm'): string {
+    return this.kind === 'reconfigure' ? `wizard.recfg.step.${step}` : `wizard.step.${step}`;
+  }
+
+  // The back button, rendered only when the current step is NOT the wizard's first step
+  // (folder for /agent start, model for reconfigure) — the first step has nothing to go back
+  // to. Spread into a button row.
+  private backRow(): ButtonSpec[] {
+    return this.step === this.firstStep ? [] : [backButton()];
+  }
+
   // Render the current step as a plain component spec (embed + rows). 7b maps it onto
   // a discord.js reply/update. Pure data — the tests assert on it directly.
   render(): { embed: EmbedSpec; rows: ComponentRow[] } {
@@ -477,7 +541,7 @@ export class ChannelWizard {
       case 'model':
         // English labels from the catalog (model id / SDK displayName), not localized.
         return this.choiceStep(
-          'wizard.step.model',
+          this.stepLabelKey('model'),
           'model',
           this.opts.modelsFor(this.selection.backend).map((m) => ({
             label: m.label,
@@ -488,7 +552,7 @@ export class ChannelWizard {
         );
       case 'effort':
         return this.choiceStep(
-          'wizard.step.effort',
+          this.stepLabelKey('effort'),
           'effort',
           this.opts.effortsFor(this.selection.backend, this.selection.model).map((e) => ({
             label: e.label,
@@ -506,7 +570,7 @@ export class ChannelWizard {
       case 'done':
         return {
           embed: {
-            title: t('wizard.title'),
+            title: this.title(),
             description: t('wizard.started', {
               backend: this.selection.backend,
               cwd: this.selection.cwd ?? '',
@@ -515,7 +579,7 @@ export class ChannelWizard {
           rows: [],
         };
       case 'cancelled':
-        return { embed: { title: t('wizard.title'), description: t('wizard.cancelled') }, rows: [] };
+        return { embed: { title: this.title(), description: t('wizard.cancelled') }, rows: [] };
     }
   }
 
@@ -542,7 +606,7 @@ export class ChannelWizard {
       components: [
         { type: 'button', customId: 'preset.direct', label: t('preset.direct'), style: 'primary' },
         { type: 'button', customId: 'preset.delete', label: t('preset.delete.button'), style: 'secondary' },
-        backButton(),
+        ...this.backRow(),
         cancelButton(),
       ],
     });
@@ -553,7 +617,7 @@ export class ChannelWizard {
       ? `${baseDescription}\n${t('preset.backend.unavailable', { backend: this.presetUnavailable })}`
       : baseDescription;
     return {
-      embed: { title: t('wizard.title'), description },
+      embed: { title: this.title(), description },
       rows,
     };
   }
@@ -569,8 +633,8 @@ export class ChannelWizard {
   ): { embed: EmbedSpec; rows: ComponentRow[] } {
     const select: SelectSpec = { type: 'select', customId: id, placeholder: t(titleKey), options };
     return {
-      embed: { title: t('wizard.title'), description: t(titleKey) },
-      rows: [{ components: [select] }, { components: [confirm, backButton(), cancelButton()] }],
+      embed: { title: this.title(), description: t(titleKey) },
+      rows: [{ components: [select] }, { components: [confirm, ...this.backRow(), cancelButton()] }],
     };
   }
 
@@ -614,12 +678,12 @@ export class ChannelWizard {
     rows.push({ components: [modeSelect] });
     rows.push({
       components: [
-        { type: 'button', customId: 'perm.start', label: t('wizard.start'), style: 'success' },
-        backButton(),
+        { type: 'button', customId: 'perm.start', label: t(this.kind === 'reconfigure' ? 'wizard.recfg.start' : 'wizard.start'), style: 'success' },
+        ...this.backRow(),
         cancelButton(),
       ],
     });
-    return { embed: { title: t('wizard.title'), description: t('wizard.step.perm') }, rows };
+    return { embed: { title: this.title(), description: t(this.stepLabelKey('perm')) }, rows };
   }
 }
 

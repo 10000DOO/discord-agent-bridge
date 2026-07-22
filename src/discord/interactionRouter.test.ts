@@ -671,26 +671,41 @@ describe('InteractionRouter slash commands', () => {
     expect(calls.start).not.toHaveBeenCalled();
   });
 
-  it('/mode backend switches backend with the fresh-context warning', async () => {
-    channelRegistry.set(binding(home));
+  it('/mode backend to a DIFFERENT backend opens the reconfigure popup WITHOUT tearing down the session (R1/R4)', async () => {
+    channelRegistry.set(binding(home)); // a running claude session
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring, calls: wcalls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction, acks } = slash({
+    const { interaction, replies, acks } = slash({
       commandName: 'mode',
       subcommand: 'backend',
       getStringValue: 'codex',
     });
     await router.handle(interaction);
-    expect(calls.stop).toHaveBeenCalledWith('g1', 'c1');
-    expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
-    expect(calls.start).toHaveBeenCalledOnce();
-    expect(wcalls.attach).toHaveBeenCalledWith('g1', 'c1', 'codex');
-    // The public fresh-context warning is a NON-ephemeral followUp (deferred reply is
-    // ephemeral); the confirmation edits the deferred reply.
-    const freshFollowUp = acks.find((a) => a.kind === 'followUp');
-    expect(freshFollowUp?.payload?.content).toContain('새 대화로 시작');
-    expect(freshFollowUp?.payload?.ephemeral).toBe(false);
+    // The switch is only PROPOSED — nothing is stopped/detached/started until confirm (R1/R4).
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    // The popup (embed + component rows) rides the deferred ephemeral reply.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
+    const popup = replies.find((r) => (r.embeds?.length ?? 0) > 0 && (r.components?.length ?? 0) > 0);
+    expect(popup).toBeTruthy();
+    // It opens at the MODEL step (folder/preset/backend skipped): model select + model.next,
+    // no backend/folder components and no back button on the first step.
+    const flat = ((popup!.components ?? []) as { components: { type: string; customId: string }[] }[]).flatMap((r) => r.components);
+    expect(flat.some((c) => c.type === 'select' && c.customId === 'model')).toBe(true);
+    expect(flat.some((c) => c.customId === 'model.next')).toBe(true);
+    expect(flat.some((c) => c.customId === 'backend')).toBe(false);
+    expect(flat.some((c) => c.customId === 'dir:into')).toBe(false);
+    expect(flat.some((c) => c.customId === 'wizard.back')).toBe(false);
+    // The embed carries the reconfigure title + step-1/3 guidance for the target backend.
+    const embed = (popup!.embeds as { title?: string; description?: string }[])[0];
+    expect(embed.title).toContain('codex');
+    expect(embed.description).toContain('1/3');
+    // A reconfigure wizard is now registered for this channel.
+    const wizard = (router as unknown as { wizards: Map<string, { isReconfigure(): boolean }> }).wizards.get('g1:c1');
+    expect(wizard?.isReconfigure()).toBe(true);
   });
 
   it('/mode backend to an UNREGISTERED backend: ephemeral notice, session NOT stopped', async () => {
@@ -761,17 +776,62 @@ describe('InteractionRouter slash commands', () => {
     );
   });
 
-  it('/mode backend to a DIFFERENT backend drops the (backend-specific) model + effort', async () => {
-    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus', effort: 'high' }));
+  it('/mode backend reconfigure popup: confirming restarts IN PLACE with the picked model/effort/perm + fresh-context (R3/D6)', async () => {
+    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus', effort: 'high', ownerId: 'owner' }));
     const { orchestrator, calls } = fakeOrchestrator();
-    const { wiring } = fakeWiring();
+    const { wiring, calls: wcalls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex' });
-    await router.handle(interaction);
-    const startArg = (calls.start.mock.calls[0] as unknown[] | undefined)?.[0] as Record<string, unknown>;
-    expect(startArg).toMatchObject({ mode: 'codex' });
-    expect(startArg).not.toHaveProperty('model');
-    expect(startArg).not.toHaveProperty('effort');
+    // Open the popup — still nothing stopped.
+    const { interaction: open } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex', user: { id: 'u1' } });
+    await router.handle(open);
+    expect(calls.stop).not.toHaveBeenCalled();
+    // Pick a codex model / effort / sandbox mode, then confirm (perm.start).
+    await router.handle(component({ customId: 'model', value: 'gpt-5.4', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'model.next', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'effort', value: 'high', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'effort.next', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'perm.mode', value: 'workspace-write', user: { id: 'u1' } }).interaction);
+    const { interaction: confirm, replies, acks } = component({ customId: 'perm.start', user: { id: 'u1' } });
+    await router.handle(confirm);
+    // The confirm — and ONLY the confirm — tears down + restarts in the SAME channel (R3).
+    expect(calls.stop).toHaveBeenCalledWith('g1', 'c1');
+    expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
+    expect(calls.start).toHaveBeenCalledOnce();
+    // The restarted session inherits the EXISTING binding's owner ('owner'), not the actor
+    // who drove the popup ('u1') — R7 (owner carries over across the switch).
+    expect(calls.start).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: 'g1', channelId: 'c1', mode: 'codex', cwd: home, ownerId: 'owner', model: 'gpt-5.4', effort: 'high', permMode: 'workspace-write' }),
+    );
+    expect(wcalls.attach).toHaveBeenCalledWith('g1', 'c1', 'codex');
+    // The public fresh-context warning is a NON-ephemeral followUp; the confirmation edits
+    // the popup message (ephemeral).
+    const fresh = acks.find((a) => a.kind === 'followUp');
+    expect(fresh?.payload?.content).toContain('새 대화로 시작');
+    expect(fresh?.payload?.ephemeral).toBe(false);
+    expect(replies.some((r) => r.content?.includes('codex'))).toBe(true);
+    // D6: an in-place restart — NO new session-channel link and NO "save as preset" button.
+    const flatAll = replies.flatMap((r) => ((r.components ?? []) as { components: { customId: string }[] }[]).flatMap((row) => row.components));
+    expect(flatAll.some((c) => c.customId === 'preset.save')).toBe(false);
+  });
+
+  it('/mode backend reconfigure popup: cancelling keeps the running session untouched (R4)', async () => {
+    channelRegistry.set(binding(home)); // claude session s1
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction: open } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex', user: { id: 'u1' } });
+    await router.handle(open);
+    const { interaction: cancel, replies } = component({ customId: 'cancel', user: { id: 'u1' } });
+    await router.handle(cancel);
+    // No teardown, no restart — the existing session + binding survive intact.
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    const still = channelRegistry.get('g1', 'c1');
+    expect(still?.mode).toBe('claude');
+    expect(still?.sessionId).toBe('s1');
+    // The cancel notice (wizard.cancelled) is rendered.
+    expect(replies.some((r) => (r.embeds as { description?: string }[] | undefined)?.[0]?.description?.includes('취소'))).toBe(true);
   });
 
   it('/stop stops the channel session and detaches renderers', async () => {

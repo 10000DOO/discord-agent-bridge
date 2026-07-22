@@ -40,6 +40,12 @@ const ko: Catalog = {
   'wizard.back': '⬅ 이전',
   'wizard.start': '✅ 시작',
   'wizard.profile.advanced': '고급: 권한 모드 직접 선택',
+  // Reconfigure wizard (백엔드 전환 시: 모델 → 추론수준 → 권한 → 전환)
+  'wizard.recfg.title': '에이전트 전환 — {backend}',
+  'wizard.recfg.step.model': '1/3단계 · 모델을 선택하고 "다음"을 누르세요.',
+  'wizard.recfg.step.effort': '2/3단계 · 추론 수준을 선택하고 "다음"을 누르세요.',
+  'wizard.recfg.step.perm': '3/3단계 · 권한을 선택하고 "✅ 전환"을 누르세요.',
+  'wizard.recfg.start': '✅ 전환',
   // /config panel (role tiers + defaults, clicked in Discord)
   'config.title': '역할·기본값 설정',
   'config.intro':
@@ -306,6 +312,11 @@ const en: Catalog = {
   'wizard.title': 'Start session',
   'wizard.confirm': 'Start a {backend} session in `{cwd}`? (permission: {perm})',
   'wizard.back': '⬅ Back',
+  'wizard.recfg.title': 'Switch agent — {backend}',
+  'wizard.recfg.step.model': 'Step 1/3 · Pick a model and press "Next".',
+  'wizard.recfg.step.effort': 'Step 2/3 · Pick a reasoning level and press "Next".',
+  'wizard.recfg.step.perm': 'Step 3/3 · Pick permissions and press "✅ Switch".',
+  'wizard.recfg.start': '✅ Switch',
   'perm.button.allow': 'Allow',
   'perm.button.always': 'Always allow',
   'perm.button.deny': 'Deny',

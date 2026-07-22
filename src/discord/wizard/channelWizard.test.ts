@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { ChannelWizard, type StartFn, type StartParams, type StartResult } from './channelWizard.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
-import type { ModelChoice, ModeSession } from '../../core/contracts.js';
+import type { ModelChoice, ModeSession, SessionPermMode } from '../../core/contracts.js';
 import type { Preset } from '../../core/configSchema.js';
 import {
   permissionChoicesFor,
@@ -109,6 +109,31 @@ function makeWizardWithPresets(start: StartFn, presets: Preset[] = PRESETS, onDe
     summarizePreset: (p) => `${p.backend}/${p.model ?? '-'}`,
     ...(onDeletePreset ? { onDeletePreset } : {}),
     ...(backendAvailable ? { backendAvailable } : {}),
+  });
+}
+
+// A reconfigure (backend-switch popup) wizard: `entry` skips folder/preset/backend and
+// opens at the model step, carrying the existing session's cwd/perm over. Mirrors what the
+// router injects on a cross-backend /mode backend.
+function makeReconfigureWizard(
+  start: StartFn,
+  entry: { backend: string; cwd: string; permMode: SessionPermMode; profile: string | null; model?: string; effort?: string },
+) {
+  const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+  return new ChannelWizard({
+    guildId: 'g1',
+    channelId: 'c1',
+    ownerId: 'u1',
+    start,
+    defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: null },
+    backends: ['claude', 'codex'],
+    modelsFor: (b) => (b === 'codex' ? CODEX_MODELS : CLAUDE_MODELS),
+    profiles: ['읽기전용', '수정허용'],
+    permsFor: (b) => permissionChoicesFor(b),
+    effortsFor: (b, model) => effortChoicesFor(b, CLAUDE_MODELS.find((m) => m.value === model)?.supportedEffortLevels),
+    defaultEffortFor,
+    browser,
+    entry,
   });
 }
 
@@ -667,6 +692,74 @@ describe('ChannelWizard render (step guidance + labels + buttons)', () => {
     await wizard.handle({ id: 'dir:here' });
     const custom = selectOptions(wizard, 'backend').find((o) => o.value === 'custom');
     expect(custom?.label).toBe('Custom');
+  });
+});
+
+describe('ChannelWizard reconfigure (backend-switch popup, entry mode)', () => {
+  // A cross-backend switch: existing claude session → codex. perm carries over; model/effort
+  // are omitted so the wizard seeds them from the NEW backend's defaults.
+  const codexEntry = { backend: 'codex', cwd: path.join('/tmp', 'proj'), permMode: 'workspace-write' as SessionPermMode, profile: '수정허용' };
+
+  it('opens at the model step, skipping folder/preset/backend', () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeReconfigureWizard(start, codexEntry);
+    expect(wizard.currentStep()).toBe('model');
+    // The model select is present; the folder/backend steps are gone.
+    const ids = flat(wizard.render().rows).map((c) => c.customId);
+    expect(ids).toContain('model');
+    expect(ids).not.toContain('backend');
+    expect(ids).not.toContain('dir:into');
+  });
+
+  it('renders no back button on the first (model) step, but shows one once past it', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeReconfigureWizard(start, codexEntry);
+    // model is the first step — nothing to go back to.
+    expect(flat(wizard.render().rows).some((c) => c.customId === 'wizard.back')).toBe(false);
+    expect(await wizard.handle({ id: 'model.next' })).toBe('effort');
+    // The effort step (past the first) carries the ⬅ back button.
+    expect(flat(wizard.render().rows).some((c) => c.customId === 'wizard.back')).toBe(true);
+  });
+
+  it('model.next → effort.next → perm.start calls the injected start ONCE and ends on done', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeReconfigureWizard(start, codexEntry);
+    expect(await wizard.handle({ id: 'model.next' })).toBe('effort');
+    expect(await wizard.handle({ id: 'effort.next' })).toBe('perm');
+    expect(await wizard.handle({ id: 'perm.start' })).toBe('done');
+    expect(start).toHaveBeenCalledOnce();
+    // The restart targets the SAME cwd on the NEW backend.
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ mode: 'codex', cwd: path.join('/tmp', 'proj') }));
+  });
+
+  it('seeds model/effort from the NEW backend and perm from the entry (no model/effort given)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeReconfigureWizard(start, codexEntry);
+    const seeded = wizard.current();
+    expect(seeded.model).toBe(CODEX_MODELS[0].value); // modelsFor('codex')[0]
+    expect(seeded.effort).toBe(defaultEffortFor('codex')); // defaultEffortFor(backend)
+    expect(seeded.permMode).toBe('workspace-write'); // carried from entry
+    expect(seeded.profile).toBe('수정허용'); // carried from entry
+    // The perm step renders the carried-over permission pre-selected.
+    await wizard.handle({ id: 'model.next' });
+    await wizard.handle({ id: 'effort.next' });
+    expect(wizard.currentStep()).toBe('perm');
+    expect(selectOptions(wizard, 'perm.mode').find((o) => o.value === 'workspace-write')?.default).toBe(true);
+    expect(selectOptions(wizard, 'perm.profile').find((o) => o.value === '수정허용')?.default).toBe(true);
+  });
+
+  it('honors an entry model/effort override instead of the backend default seed', () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeReconfigureWizard(start, { ...codexEntry, model: 'gpt-5.4', effort: 'high' });
+    const seeded = wizard.current();
+    expect(seeded.model).toBe('gpt-5.4');
+    expect(seeded.effort).toBe('high');
+  });
+
+  it('isReconfigure() is true for an entry wizard and false for a normal one', () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    expect(makeReconfigureWizard(start, codexEntry).isReconfigure()).toBe(true);
+    expect(makeWizard(start).isReconfigure()).toBe(false);
   });
 });
 
