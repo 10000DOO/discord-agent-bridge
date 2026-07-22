@@ -212,8 +212,16 @@ export function toMessageOptions(msg: OutgoingMessage): MessageCreateOptions {
   if (msg.files && msg.files.length > 0) {
     options.files = msg.files.map((f) => new AttachmentBuilder(f.path, f.name ? { name: f.name } : {}));
   }
-  if (msg.mentionUserIds && msg.mentionUserIds.length > 0) {
-    options.allowedMentions = { users: msg.mentionUserIds };
+  const users = msg.mentionUserIds ?? [];
+  const roles = msg.mentionRoleIds ?? [];
+  const here = msg.mentionHere === true;
+  if (users.length > 0 || roles.length > 0 || here) {
+    const allowed: NonNullable<MessageCreateOptions['allowedMentions']> = {};
+    if (users.length > 0) allowed.users = users;
+    if (roles.length > 0) allowed.roles = roles;
+    // discord.js requires the "everyone" parse type to permit @here (and @everyone).
+    if (here) allowed.parse = ['everyone'];
+    options.allowedMentions = allowed;
   } else if (msg.content !== undefined) {
     // No explicit pings requested → suppress accidental @mentions from content.
     options.allowedMentions = { parse: [] };

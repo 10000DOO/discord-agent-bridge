@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Events, PermissionFlagsBits, type Client, type Interaction } from 'discord.js';
-import { adaptInteraction, buildSlashCommands, DiscordClient } from './client.js';
+import { adaptInteraction, buildSlashCommands, DiscordClient, toMessageOptions } from './client.js';
 import type { Logger } from '../core/contracts.js';
 import type { MessageRouter } from './messageRouter.js';
 import type { InteractionRouter } from './interactionRouter.js';
@@ -110,6 +110,41 @@ describe('buildSlashCommands — /clear', () => {
     expect(clear.description).toMatch(/clear|fresh|context/i);
     // No subcommands/options — just restart-in-place with current settings.
     expect(clear.options ?? []).toEqual([]);
+  });
+});
+
+// The OutgoingMessage → discord.js allowedMentions mapping. The update prompt now pings
+// admin roles (or @here) on the control channel, so roles/here must render into
+// allowedMentions while the existing "no explicit ping → suppress" default holds.
+describe('toMessageOptions — allowedMentions', () => {
+  it('maps mentionUserIds onto allowedMentions.users', () => {
+    const opts = toMessageOptions({ content: 'hi', mentionUserIds: ['u1', 'u2'] });
+    expect(opts.allowedMentions).toEqual({ users: ['u1', 'u2'] });
+  });
+
+  it('maps mentionRoleIds onto allowedMentions.roles', () => {
+    const opts = toMessageOptions({ content: '<@&r1>', mentionRoleIds: ['r1'] });
+    expect(opts.allowedMentions).toEqual({ roles: ['r1'] });
+  });
+
+  it('maps mentionHere onto the "everyone" parse type (required for @here to ping)', () => {
+    const opts = toMessageOptions({ content: '@here', mentionHere: true });
+    expect(opts.allowedMentions).toEqual({ parse: ['everyone'] });
+  });
+
+  it('combines users, roles, and @here in one allowedMentions', () => {
+    const opts = toMessageOptions({ content: 'x', mentionUserIds: ['u1'], mentionRoleIds: ['r1'], mentionHere: true });
+    expect(opts.allowedMentions).toEqual({ users: ['u1'], roles: ['r1'], parse: ['everyone'] });
+  });
+
+  it('suppresses accidental @mentions when content is present but no ping is requested', () => {
+    const opts = toMessageOptions({ content: 'plain @everyone in text' });
+    expect(opts.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it('leaves allowedMentions unset for an embed-only message with no content and no pings', () => {
+    const opts = toMessageOptions({ embeds: [{ title: 't' }] });
+    expect(opts.allowedMentions).toBeUndefined();
   });
 });
 
