@@ -46,6 +46,7 @@ const ko: Catalog = {
   'wizard.recfg.step.effort': '2/3단계 · 추론 수준을 선택하고 "다음"을 누르세요.',
   'wizard.recfg.step.perm': '3/3단계 · 권한을 선택하고 "✅ 전환"을 누르세요.',
   'wizard.recfg.start': '✅ 전환',
+  'wizard.recfg.cancelled': '에이전트 전환을 취소했어요.',
   // /config panel (role tiers + defaults, clicked in Discord)
   'config.title': '역할·기본값 설정',
   'config.intro':
@@ -213,7 +214,7 @@ const ko: Catalog = {
   // The core returns a ShareErrorCode; the edge localizes it via t('doc.error.'+code).
   'doc.shared': '문서를 스레드에 공유했어요: `{path}`',
   'doc.error.notFound': '파일을 찾을 수 없어요: `{path}`',
-  'doc.error.escape': '세션 폴더 밖 경로는 공유할 수 없어요.',
+  'doc.error.escape': '경로를 공유할 수 없어요.',
   'doc.error.tooLarge': '파일이 너무 커요 (최대 {max}).',
   'doc.error.notMarkdown': '마크다운(.md)만 공유할 수 있어요.',
   'doc.error.notFile': '파일이 아니에요(디렉터리/바이너리): `{path}`',
@@ -325,6 +326,7 @@ const en: Catalog = {
   'wizard.recfg.step.effort': 'Step 2/3 · Pick a reasoning level and press "Next".',
   'wizard.recfg.step.perm': 'Step 3/3 · Pick permissions and press "✅ Switch".',
   'wizard.recfg.start': '✅ Switch',
+  'wizard.recfg.cancelled': 'Agent switch cancelled.',
   'perm.button.allow': 'Allow',
   'perm.button.always': 'Always allow',
   'perm.button.deny': 'Deny',
@@ -369,7 +371,7 @@ const en: Catalog = {
   'cmd.clear.public': "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
   'doc.shared': 'Shared the document into a thread: `{path}`',
   'doc.error.notFound': 'File not found: `{path}`',
-  'doc.error.escape': 'Paths outside the session folder cannot be shared.',
+  'doc.error.escape': 'The path cannot be shared.',
   'doc.error.tooLarge': 'The file is too large (max {max}).',
   'doc.error.notMarkdown': 'Only markdown (.md) files can be shared.',
   'doc.error.notFile': 'Not a file (directory/binary): `{path}`',

@@ -232,6 +232,9 @@ export class InteractionRouter {
   // The picker is only useful when the operator is AT the host, so an unattended
   // dialog (e.g. tapped from mobile) is closed after this long.
   private static readonly FOLDER_PANEL_TIMEOUT_MS = 120_000;
+  // Per-channel wizard component serialization: concurrent button/select clicks on the
+  // same channel must not interleave handle+editReply (race → stuck UI / dropped step).
+  private readonly wizardQueues = new Map<string, Promise<void>>();
 
   constructor(deps: InteractionRouterDeps) {
     this.deps = deps;
@@ -1278,10 +1281,11 @@ export class InteractionRouter {
     await safe(i.followUp({ content: t('cmd.clear.public'), ephemeral: false }));
   }
 
-  // /doc <path>: post a markdown file from the session workspace into a document thread
-  // (the original `.md` attachment + its body). Mirrors clearContext's binding gate; the
-  // confinement, read, and thread post are the shared shareDocumentFor funnel (→ the
-  // documentShare core). No autocomplete by design (avoids a per-keystroke fs listing).
+  // /doc <path>: post a markdown file into a document thread (original `.md` attachment +
+  // body). Absolute paths or paths relative to the session cwd are allowed; existence,
+  // extension, size, and binary checks still apply. Mirrors clearContext's binding gate;
+  // read + thread post go through shareDocumentFor (→ documentShare core). No autocomplete
+  // by design (avoids a per-keystroke fs listing).
   private async shareDoc(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string;
     const binding = this.deps.channelRegistry.get(guildId, i.channelId);
@@ -1473,66 +1477,97 @@ export class InteractionRouter {
     // which can exceed 3s — deferUpdate now, do the work after.
     if (!(await this.ackDeferUpdate(i))) return;
     if (!i.guildId) return;
-    await this.guarded(i, async () => {
-      const wizard = this.wizards.get(channelKey(i.guildId as string, i.channelId));
-      // Enforce wizard ownership: a component from anyone other than the driver who
-      // opened the wizard is acknowledged but ignored, so a bystander's stray select
-      // cannot corrupt another driver's flow (§7.1).
-      if (!wizard || wizard.ownerId !== i.user.id) return;
-      const input: WizardInput = { id: i.customId, ...(i.value !== undefined ? { value: i.value } : {}) };
-      const step = await wizard.handle(input);
-      if (step === 'done' || step === 'cancelled') {
-        this.wizards.delete(channelKey(i.guildId as string, i.channelId));
-      }
-      // On a successful confirm the session was bound to a freshly created channel;
-      // link it back to the driver (A4D-style "session started in <#newChannel>").
-      if (step === 'done') {
-        // A reconfigure (backend switch) popup restarts IN PLACE — no new channel and no
-        // preset draft. Report the switch + the PUBLIC fresh-context warning (mirrors the
-        // same-backend switchBackend path) and stop before the new-channel/preset logic (D6).
-        if (wizard.isReconfigure()) {
-          const backend = wizard.current().backend;
-          await safe(i.editReply({ content: t('cmd.mode.switched', { backend }), embeds: [], components: [] }));
-          await safe(i.followUp({ content: t('cmd.mode.freshContext', { backend }), ephemeral: false }));
-          return;
+    const wKey = channelKey(i.guildId, i.channelId);
+    // Serialize handle+editReply per channel so concurrent clicks cannot race the
+    // state machine / re-render (stuck "Next" when two edits interleave).
+    await this.enqueueWizard(wKey, () =>
+      this.guarded(i, async () => {
+        const wizard = this.wizards.get(wKey);
+        // Enforce wizard ownership: a component from anyone other than the driver who
+        // opened the wizard is acknowledged but ignored, so a bystander's stray select
+        // cannot corrupt another driver's flow (§7.1).
+        if (!wizard || wizard.ownerId !== i.user.id) return;
+        const input: WizardInput = { id: i.customId, ...(i.value !== undefined ? { value: i.value } : {}) };
+        const step = await wizard.handle(input);
+        if (step === 'done' || step === 'cancelled') {
+          this.wizards.delete(wKey);
         }
-        const newChannelId = wizard.sessionChannelId();
-        if (newChannelId) {
-          const key = channelKey(i.guildId as string, i.channelId);
-          // Offer "💾 save as preset" ONLY for a NORMAL launch. A preset-launched wizard
-          // records no draft and shows no button — you don't re-save what you launched
-          // from. Capturing from current() at done (not at start) means each normal
-          // completion records exactly what it just launched (no stale draft carries over).
-          const fromPreset = wizard.launchedFromPreset();
-          if (!fromPreset) {
-            const s = wizard.current();
-            this.presetDrafts.set(key, {
-              backend: s.backend,
-              model: s.model,
-              effort: s.effort,
-              permMode: s.permMode,
-              profile: s.profile,
-            });
+        // On a successful confirm the session was bound to a freshly created channel;
+        // link it back to the driver (A4D-style "session started in <#newChannel>").
+        if (step === 'done') {
+          // A reconfigure (backend switch) popup restarts IN PLACE — no new channel and no
+          // preset draft. Report the switch + the PUBLIC fresh-context warning (mirrors the
+          // same-backend switchBackend path) and stop before the new-channel/preset logic (D6).
+          if (wizard.isReconfigure()) {
+            const backend = wizard.current().backend;
+            await this.editWizardReply(i, { content: t('cmd.mode.switched', { backend }), embeds: [], components: [] });
+            await safe(i.followUp({ content: t('cmd.mode.freshContext', { backend }), ephemeral: false }));
+            return;
           }
-          await safe(
-            i.editReply({
+          const newChannelId = wizard.sessionChannelId();
+          if (newChannelId) {
+            // Offer "💾 save as preset" ONLY for a NORMAL launch. A preset-launched wizard
+            // records no draft and shows no button — you don't re-save what you launched
+            // from. Capturing from current() at done (not at start) means each normal
+            // completion records exactly what it just launched (no stale draft carries over).
+            const fromPreset = wizard.launchedFromPreset();
+            if (!fromPreset) {
+              const s = wizard.current();
+              this.presetDrafts.set(wKey, {
+                backend: s.backend,
+                model: s.model,
+                effort: s.effort,
+                permMode: s.permMode,
+                profile: s.profile,
+              });
+            }
+            await this.editWizardReply(i, {
               content: t('cmd.start.channelCreated', { channel: `<#${newChannelId}>` }),
               embeds: [],
               components: fromPreset
                 ? []
                 : [{ components: [{ type: 'button', customId: 'preset.save', label: t('preset.save.button'), style: 'secondary' }] }],
-            }),
-          );
+            });
+          }
+          return;
         }
-        return;
-      }
-      // Every non-terminal transition re-renders the CURRENT step (folder → backend →
-      // model → perm → confirm) and edits it into the wizard's message, so each step's
-      // picker actually appears. A cancel renders the terminal notice with no rows. The
-      // component was deferUpdate'd above, so editReply updates that same message.
-      const { embed, rows } = wizard.render();
-      await safe(i.editReply({ embeds: [embed], components: rows }));
+        // Every non-terminal transition re-renders the CURRENT step (folder → backend →
+        // model → perm → confirm) and edits it into the wizard's message, so each step's
+        // picker actually appears. A cancel renders the terminal notice with no rows. The
+        // component was deferUpdate'd above, so editReply updates that same message.
+        // Failures are logged + retried once (not swallowed by silent safe()).
+        const { embed, rows } = wizard.render();
+        await this.editWizardReply(i, { embeds: [embed], components: rows });
+      }),
+    );
+  }
+
+  // Chain a wizard handler onto the per-channel promise queue so concurrent component
+  // interactions on the same channel never interleave. Errors from prior work are
+  // swallowed for chain continuity (each job has its own guarded try/catch).
+  private enqueueWizard(key: string, job: () => Promise<void>): Promise<void> {
+    const prev = this.wizardQueues.get(key) ?? Promise.resolve();
+    const next = prev.then(job, job);
+    this.wizardQueues.set(key, next);
+    // Drop the map entry once this job finishes if nothing newer chained after it.
+    void next.finally(() => {
+      if (this.wizardQueues.get(key) === next) this.wizardQueues.delete(key);
     });
+    return next;
+  }
+
+  // editReply for a wizard re-render: log failures (never silent) and retry once.
+  private async editWizardReply(i: ComponentInteraction, payload: AckPayload): Promise<void> {
+    try {
+      await i.editReply(payload);
+    } catch (err) {
+      this.logError('wizard editReply failed; retrying once', err);
+      try {
+        await i.editReply(payload);
+      } catch (err2) {
+        this.logError('wizard editReply retry failed', err2);
+      }
+    }
   }
 
   // ---- 📁 Create folder --------------------------------------------------
@@ -1841,13 +1876,14 @@ export class InteractionRouter {
   // Open the "save as preset" name modal for the captured draft. showModal IS the ack, so
   // this runs BEFORE any defer (routed like dir:create). With no draft (nothing was just
   // launched here) there is nothing to save — reply with an ephemeral notice instead.
+  // Retries showModal once after a short delay (transient ConnectTimeout → Unknown interaction).
   private async openPresetSaveModal(i: ComponentInteraction): Promise<void> {
     const draft = i.guildId ? this.presetDrafts.get(channelKey(i.guildId, i.channelId)) : undefined;
     if (!draft) {
       await safe(i.reply({ content: t('preset.save.none'), ephemeral: true }));
       return;
     }
-    await i.showModal({
+    const modal: ModalSpec = {
       customId: 'preset.name',
       title: t('preset.save.title'),
       fields: [
@@ -1858,38 +1894,56 @@ export class InteractionRouter {
           required: true,
         },
       ],
-    });
+    };
+    try {
+      await i.showModal(modal);
+    } catch (err) {
+      this.logError('preset save showModal failed; retrying once', err);
+      await new Promise((r) => setTimeout(r, 200));
+      await i.showModal(modal); // rethrow on second failure → guarded surfaces the error
+    }
   }
 
-  // Persist the captured draft as a named preset. Validates the name (non-empty after
-  // trim, ≤100 chars — the name doubles as the Discord select value, ≤100). No cwd is
-  // stored (§D1). Clears the draft so a re-open does not double-save.
+  // Persist the captured draft as a named preset. Ack first with deferReply (3s rule +
+  // network headroom), then validate / save / editReply. Draft is kept on persist failure
+  // (so the user can retry); deleted only after a successful addServerPreset.
   private async savePresetFromModal(i: ModalSubmitInteraction): Promise<void> {
+    if (!(await this.ackDefer(i, { ephemeral: true }))) return;
     if (!i.guildId) {
-      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      await safe(i.editReply({ content: t('cmd.error.generic'), ephemeral: true }));
       return;
     }
     const key = channelKey(i.guildId, i.channelId);
     const draft = this.presetDrafts.get(key);
     if (!draft) {
-      await safe(i.reply({ content: t('preset.save.none'), ephemeral: true }));
+      await safe(i.editReply({ content: t('preset.save.none'), ephemeral: true }));
       return;
     }
     const name = i.getField('name').trim();
     if (name.length === 0 || name.length > 100) {
-      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      await safe(i.editReply({ content: t('cmd.error.generic'), ephemeral: true }));
       return;
     }
-    this.deps.configStore.addServerPreset(i.guildId, {
-      name,
-      backend: draft.backend,
-      ...(draft.model !== undefined ? { model: draft.model } : {}),
-      ...(draft.effort !== undefined ? { effort: draft.effort } : {}),
-      ...(draft.permMode !== undefined ? { permMode: draft.permMode } : {}),
-      ...(draft.profile !== undefined ? { profile: draft.profile } : {}),
-    });
+    try {
+      this.deps.configStore.addServerPreset(i.guildId, {
+        name,
+        backend: draft.backend,
+        ...(draft.model !== undefined ? { model: draft.model } : {}),
+        ...(draft.effort !== undefined ? { effort: draft.effort } : {}),
+        ...(draft.permMode !== undefined ? { permMode: draft.permMode } : {}),
+        ...(draft.profile !== undefined ? { profile: draft.profile } : {}),
+      });
+    } catch (err) {
+      // Persist failed — keep draft so a retry can still save.
+      this.logError('preset save failed', err);
+      await safe(i.editReply({ content: t('cmd.error', { error: String(err) }), ephemeral: true }));
+      return;
+    }
+    // Config is source of truth: drop draft after successful persist so a retry cannot
+    // double-save; editReply failure still leaves the preset saved.
     this.presetDrafts.delete(key);
-    await safe(i.reply({ content: t('preset.saved', { name }), ephemeral: true }));
+    this.deps.logger.info('preset saved', { guildId: i.guildId, name });
+    await safe(i.editReply({ content: t('preset.saved', { name }), ephemeral: true }));
   }
 
   // deferUpdate the component interaction (the first ack, keeping its message). Returns

@@ -172,9 +172,9 @@ export function buildSlashCommands(
     .setName('clear')
     .setDescription('Clear conversation context (fresh session, same folder/settings)');
 
-  // /doc <path>: share a markdown file from the session workspace into a document thread
-  // (original .md attachment + body). NO autocomplete — deliberately omitted to avoid a
-  // per-keystroke filesystem listing cost; the operator types the path.
+  // /doc <path>: share a markdown file into a document thread (original .md attachment +
+  // body). Path may be absolute or relative to the session folder. NO autocomplete —
+  // deliberately omitted to avoid a per-keystroke filesystem listing cost.
   const doc = new SlashCommandBuilder()
     .setName('doc')
     // Hardcoded English, like the sibling commands (/clear etc.). Slash descriptions register
@@ -182,7 +182,7 @@ export function buildSlashCommands(
     // English on a `ko` host.
     .setDescription('Share a markdown document into a thread')
     .addStringOption((o) =>
-      o.setName('path').setDescription('Path to the markdown file (relative to the session folder)').setRequired(true),
+      o.setName('path').setDescription('Path to the markdown file (absolute, or relative to the session folder)').setRequired(true),
     );
 
   const stopAll = new SlashCommandBuilder()

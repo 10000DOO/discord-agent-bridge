@@ -1,16 +1,14 @@
-// Share a markdown document from the session workspace into a Discord thread:
-// open a document thread, attach the original `.md`, and post the file's own text
-// (never an AI re-summary) as the body. The single core the /doc slash command and
-// the per-backend `share_document` tools all funnel through (via SessionWiring).
+// Share a markdown document into a Discord thread: open a document thread, attach
+// the original `.md`, and post the file's own text (never an AI re-summary) as the
+// body. The single core the /doc slash command and the per-backend `share_document`
+// tools all funnel through (via SessionWiring).
 //
 // Deliberate boundaries (see docs/document-share-and-viewer.md §3):
 //
-//  1. Path-confined. Every requested path is realpath-resolved and must stay inside
-//     the session workspace root. The confinement pattern is REPLICATED from
-//     modes/claude/mcpFileTool.ts (attachFileConfined/realpathOrResolve/isWithin) —
-//     one of four intentional import-free copies; it is NOT extracted into a shared
-//     util (D4). Symlink escapes are caught by realpath + path.relative, not a string
-//     prefix check.
+//  1. Path resolution. Absolute paths resolve as-is; relative paths resolve against
+//     the session cwd. Existence, regular-file, extension allowlist, size, and binary
+//     (NUL) checks still apply. Paths outside the session folder ARE allowed for
+//     share (unlike attach_file, which keeps its own confinement in mcpFileTool.ts).
 //  2. deliverAnswer reuse via a thin adapter. The body is posted through the shared
 //     deliverAnswer path so tables/mermaid render exactly as elsewhere. deliverAnswer
 //     wants a MessageChannel (send + startThread) but a thread only sends, so we wrap
@@ -34,6 +32,7 @@ export type BodyMode = 'full' | 'preview' | 'attachment_only';
 
 // A per-cause rejection code. The core returns the code only; the edge (slash / tool)
 // localizes it via t('doc.error.'+code) so the core stays i18n-free.
+// `escape` is retained for i18n/backward-compat mapping but is no longer produced.
 export type ShareErrorCode = 'notFound' | 'escape' | 'tooLarge' | 'notMarkdown' | 'notFile';
 
 export interface DocumentShareOptions {
@@ -47,7 +46,7 @@ export interface ShareResult {
   ok: boolean;
   // The created thread's name (`📄 <basename>`, truncated) — present on success.
   threadName?: string;
-  // The shared file's path relative to the workspace root — present on success.
+  // Display path: relative to cwd when under cwd, otherwise absolute — present on success.
   path?: string;
   // The rejection cause — present on failure.
   code?: ShareErrorCode;
@@ -73,12 +72,12 @@ const PREVIEW_NOTICE = '\n\n… (preview truncated — full document attached ab
 export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
   const { options } = req;
 
-  // (a) Confinement — realpath the workspace root and the candidate, reject anything
-  // that escapes it. Mirrors attachFileConfined (mcpFileTool.ts). Runs BEFORE any
-  // thread is opened so a rejected path never creates a thread.
+  // (a) Resolve the requested path. Absolute → resolve as-is; relative → against cwd.
+  // Runs BEFORE any thread is opened so a rejected path never creates a thread.
   const root = realpathOrResolve(req.cwd);
-  const resolved = realpathOrResolve(path.resolve(root, req.path));
-  if (!isWithin(root, resolved)) return { ok: false, code: 'escape' };
+  const resolved = path.isAbsolute(req.path)
+    ? realpathOrResolve(req.path)
+    : realpathOrResolve(path.resolve(req.cwd, req.path));
 
   // (b) Existence + must be a regular file. Rejecting every non-regular file (not just
   // directories) mirrors fileDownload.ts and avoids a readFileSync hang on a FIFO/socket.
@@ -112,7 +111,8 @@ export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
   if (content.includes(NUL)) return { ok: false, code: 'notFile' };
 
   const basename = path.basename(resolved);
-  const relPath = path.relative(root, resolved);
+  // Display path: relative when under the session cwd, absolute otherwise.
+  const displayPath = isWithin(root, resolved) ? path.relative(root, resolved) : resolved;
 
   // (f + g) Open the document thread. startThread does NOT truncate — the caller owns
   // the THREAD_NAME_LIMIT cap (format.ts).
@@ -121,7 +121,7 @@ export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
 
   // (h) First message: a short meta line + the original .md as an attachment (always
   // present — the plugin input contract, R7). discord.js reads the file from `path`.
-  const meta = `\`${relPath}\` · ${(stat.size / 1024).toFixed(1)} KiB`;
+  const meta = `\`${displayPath}\` · ${(stat.size / 1024).toFixed(1)} KiB`;
   await thread.send({ content: meta, files: [{ path: resolved, name: basename }] });
 
   // (i) Body per bodyMode. attachment_only posts nothing further; preview clips to
@@ -136,7 +136,7 @@ export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
   }
 
   // (j)
-  return { ok: true, threadName, path: relPath };
+  return { ok: true, threadName, path: displayPath };
 }
 
 // Wrap a send-only MessageThread as a MessageChannel so deliverAnswer can post the
@@ -152,10 +152,10 @@ export function threadAsChannel(thread: MessageThread): MessageChannel {
   };
 }
 
-// --- Path confinement (replicated from mcpFileTool.ts; DO NOT consolidate — D4) ---
+// --- Path helpers (realpath pattern mirrored from mcpFileTool.ts; DO NOT consolidate — D4) ---
 
 // Realpath a path, falling back to the realpath of its deepest existing ancestor
-// joined with the non-existent tail — so confinement holds for paths that do not
+// joined with the non-existent tail — so resolution holds for paths that do not
 // exist yet while still resolving symlinks in the part that does.
 function realpathOrResolve(target: string): string {
   const abs = path.resolve(target);
@@ -176,7 +176,8 @@ function realpathOrResolve(target: string): string {
 }
 
 // True when `child` is the same as, or nested under, `root`. Uses path.relative so it
-// is not fooled by shared string prefixes (e.g. /ws vs /ws-evil).
+// is not fooled by shared string prefixes (e.g. /ws vs /ws-evil). Used only to decide
+// relative vs absolute display path on success.
 function isWithin(root: string, child: string): boolean {
   const rel = path.relative(root, child);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));

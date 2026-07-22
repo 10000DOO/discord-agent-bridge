@@ -136,9 +136,9 @@ export class ChannelWizard {
   private readonly opts: ChannelWizardOptions;
   private readonly browser: DirectoryBrowser;
   private step: WizardStep = 'folder';
-  // The wizard's first step: 'folder' for /agent start, 'model' for reconfigure. Back
-  // navigation and the back-button visibility key off this so the first step never renders
-  // a back button and a stray wizard.back there is a no-op.
+  // The wizard's first step: 'folder' for /agent start, 'model' for reconfigure.
+  // /agent start: no back on first step (noop). reconfigure: back on first step cancels
+  // the backend-switch popup so the driver can abort without Cancel.
   private readonly firstStep: WizardStep;
   // 'start' = /agent start (folder → … → done, creates a channel). 'reconfigure' = backend
   // switch popup (model → effort → perm → done, same-channel restart). Selects the i18n keys
@@ -274,12 +274,12 @@ export class ChannelWizard {
   // CURRENT step's un-confirmed pending pick is discarded — so re-advancing shows the
   // previous choices pre-selected instead of resetting the flow. The perm step returns
   // to effort only when the chosen backend actually has that step (mirrors the forward
-  // skip, §6). The folder step is the first — back is not rendered there and a stray
-  // input is a no-op, like every other unknown id.
+  // skip, §6). On the first step: start is a no-op; reconfigure cancels the popup.
   private stepBack(): void {
-    // The first step has nothing to go back to (folder for /agent start, model for
-    // reconfigure). Guarding here also covers the folder-first case unchanged.
-    if (this.step === this.firstStep) return;
+    if (this.step === this.firstStep) {
+      if (this.kind === 'reconfigure') this.step = 'cancelled';
+      return;
+    }
     this.pending = {};
     switch (this.step) {
       case 'preset':
@@ -507,11 +507,11 @@ export class ChannelWizard {
     return this.kind === 'reconfigure' ? `wizard.recfg.step.${step}` : `wizard.step.${step}`;
   }
 
-  // The back button, rendered only when the current step is NOT the wizard's first step
-  // (folder for /agent start, model for reconfigure) — the first step has nothing to go back
-  // to. Spread into a button row.
+  // The back button. /agent start: hidden on the first (folder) step. reconfigure: always
+  // shown (on the first step it cancels the backend-switch popup). Spread into a button row.
   private backRow(): ButtonSpec[] {
-    return this.step === this.firstStep ? [] : [backButton()];
+    if (this.step === this.firstStep && this.kind === 'start') return [];
+    return [backButton()];
   }
 
   // Render the current step as a plain component spec (embed + rows). 7b maps it onto
@@ -579,7 +579,13 @@ export class ChannelWizard {
           rows: [],
         };
       case 'cancelled':
-        return { embed: { title: this.title(), description: t('wizard.cancelled') }, rows: [] };
+        return {
+          embed: {
+            title: this.title(),
+            description: t(this.kind === 'reconfigure' ? 'wizard.recfg.cancelled' : 'wizard.cancelled'),
+          },
+          rows: [],
+        };
     }
   }
 
@@ -624,17 +630,24 @@ export class ChannelWizard {
 
   // A choice step: a single-select (pending-aware `default`) + a confirm button that
   // advances, a back button, and a cancel button. The buttons — not the select — drive
-  // the transitions.
+  // the transitions. Options are capped at Discord's 25-limit; the currently selected
+  // value is force-included when it would be sliced off. Empty options → select omitted.
   private choiceStep(
     titleKey: string,
     id: string,
     options: SelectSpec['options'],
     confirm: ButtonSpec,
   ): { embed: EmbedSpec; rows: ComponentRow[] } {
-    const select: SelectSpec = { type: 'select', customId: id, placeholder: t(titleKey), options };
+    const capped = capSelectOptions(options);
+    const rows: ComponentRow[] = [];
+    if (capped.length > 0) {
+      const select: SelectSpec = { type: 'select', customId: id, placeholder: t(titleKey), options: capped };
+      rows.push({ components: [select] });
+    }
+    rows.push({ components: [confirm, ...this.backRow(), cancelButton()] });
     return {
       embed: { title: this.title(), description: t(titleKey) },
-      rows: [{ components: [select] }, { components: [confirm, ...this.backRow(), cancelButton()] }],
+      rows,
     };
   }
 
@@ -652,30 +665,37 @@ export class ChannelWizard {
       : null;
     if (this.opts.profiles.length > 0) {
       const selectedProfile = pendingProfile ?? this.selection.profile;
-      const profileSelect: SelectSpec = {
-        type: 'select',
-        customId: 'perm.profile',
-        placeholder: t('wizard.step.perm'),
-        options: [
-          ...this.opts.profiles.map((p) => ({ label: p, value: p, default: p === selectedProfile })),
-          { label: t('wizard.profile.advanced'), value: '__raw__' },
-        ],
-      };
-      rows.push({ components: [profileSelect] });
+      const profileOpts = capSelectOptions([
+        ...this.opts.profiles.map((p) => ({ label: p, value: p, default: p === selectedProfile })),
+        { label: t('wizard.profile.advanced'), value: '__raw__' },
+      ]);
+      if (profileOpts.length > 0) {
+        const profileSelect: SelectSpec = {
+          type: 'select',
+          customId: 'perm.profile',
+          placeholder: t('wizard.step.perm'),
+          options: profileOpts,
+        };
+        rows.push({ components: [profileSelect] });
+      }
     }
     const selectedMode = pendingMode ?? this.selection.permMode;
-    const modeSelect: SelectSpec = {
-      type: 'select',
-      customId: 'perm.mode',
-      placeholder: t('wizard.profile.advanced'),
-      // English identifiers + a short English hint from the catalog, per backend.
-      options: this.opts.permsFor(this.selection.backend).map((m) => ({
+    const modeOpts = capSelectOptions(
+      this.opts.permsFor(this.selection.backend).map((m) => ({
         label: m.label,
         value: m.value,
         default: m.value === selectedMode,
       })),
-    };
-    rows.push({ components: [modeSelect] });
+    );
+    if (modeOpts.length > 0) {
+      const modeSelect: SelectSpec = {
+        type: 'select',
+        customId: 'perm.mode',
+        placeholder: t('wizard.profile.advanced'),
+        options: modeOpts,
+      };
+      rows.push({ components: [modeSelect] });
+    }
     rows.push({
       components: [
         { type: 'button', customId: 'perm.start', label: t(this.kind === 'reconfigure' ? 'wizard.recfg.start' : 'wizard.start'), style: 'success' },
@@ -700,4 +720,23 @@ function backButton(): ButtonSpec {
 
 function cancelButton(): ButtonSpec {
   return { type: 'button', customId: 'cancel', label: t('wizard.cancel'), style: 'secondary' };
+}
+
+// Discord select limits: ≤25 options, label/value ≤100 chars. Cap the list and ensure
+// the currently-selected option is kept even when it would fall past the slice.
+function capSelectOptions(options: SelectSpec['options']): SelectSpec['options'] {
+  const clamp = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n));
+  const trimmed = options.map((o) => ({
+    ...o,
+    label: clamp(o.label, 100),
+    value: clamp(o.value, 100),
+    ...(o.description !== undefined ? { description: clamp(o.description, 100) } : {}),
+  }));
+  if (trimmed.length <= 25) return trimmed;
+  const selected = trimmed.find((o) => o.default);
+  let capped = trimmed.slice(0, 25);
+  if (selected && !capped.some((o) => o.value === selected.value)) {
+    capped = [selected, ...capped.slice(0, 24)];
+  }
+  return capped;
 }

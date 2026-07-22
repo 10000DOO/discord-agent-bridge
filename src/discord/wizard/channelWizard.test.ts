@@ -711,14 +711,23 @@ describe('ChannelWizard reconfigure (backend-switch popup, entry mode)', () => {
     expect(ids).not.toContain('dir:into');
   });
 
-  it('renders no back button on the first (model) step, but shows one once past it', async () => {
+  it('renders the back button on the first (model) step; back cancels reconfigure', async () => {
     const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     const wizard = makeReconfigureWizard(start, codexEntry);
-    // model is the first step — nothing to go back to.
-    expect(flat(wizard.render().rows).some((c) => c.customId === 'wizard.back')).toBe(false);
-    expect(await wizard.handle({ id: 'model.next' })).toBe('effort');
-    // The effort step (past the first) carries the ⬅ back button.
+    // reconfigure first step still shows ⬅ back (cancels the popup).
     expect(flat(wizard.render().rows).some((c) => c.customId === 'wizard.back')).toBe(true);
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('cancelled');
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('shows back on later reconfigure steps and walks model ← effort ← perm', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeReconfigureWizard(start, codexEntry);
+    expect(await wizard.handle({ id: 'model.next' })).toBe('effort');
+    expect(flat(wizard.render().rows).some((c) => c.customId === 'wizard.back')).toBe(true);
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('model');
+    // On first step again, back cancels rather than no-op.
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('cancelled');
   });
 
   it('model.next → effort.next → perm.start calls the injected start ONCE and ends on done', async () => {
@@ -760,6 +769,36 @@ describe('ChannelWizard reconfigure (backend-switch popup, entry mode)', () => {
     const start = vi.fn(async (_p: StartParams) => fakeStartResult());
     expect(makeReconfigureWizard(start, codexEntry).isReconfigure()).toBe(true);
     expect(makeWizard(start).isReconfigure()).toBe(false);
+  });
+
+  it('caps select options at 25 and keeps the selected value when it would be sliced off', () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const many: ModelChoice[] = Array.from({ length: 30 }, (_, i) => ({
+      value: `m${i}`,
+      label: `Model ${i}`,
+    }));
+    // Seed selection to the last model (index 29), which is past the natural 0..24 slice.
+    const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+    const wizard = new ChannelWizard({
+      guildId: 'g1',
+      channelId: 'c1',
+      ownerId: 'u1',
+      start,
+      defaults: { backend: 'claude', model: 'm29', permMode: 'default', profile: null },
+      backends: ['claude'],
+      modelsFor: () => many,
+      profiles: [],
+      permsFor: (b) => permissionChoicesFor(b),
+      effortsFor: (b) => effortChoicesFor(b),
+      defaultEffortFor,
+      browser,
+      entry: { backend: 'claude', cwd: path.join(root, 'project'), permMode: 'default', profile: null, model: 'm29' },
+    });
+    const opts = selectOptions(wizard, 'model');
+    expect(opts.length).toBe(25);
+    expect(opts.some((o) => o.value === 'm29' && o.default)).toBe(true);
+    // Labels stay within Discord's 100-char limit.
+    for (const o of opts) expect(o.label.length).toBeLessThanOrEqual(100);
   });
 });
 

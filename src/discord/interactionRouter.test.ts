@@ -695,13 +695,13 @@ describe('InteractionRouter slash commands', () => {
     const popup = replies.find((r) => (r.embeds?.length ?? 0) > 0 && (r.components?.length ?? 0) > 0);
     expect(popup).toBeTruthy();
     // It opens at the MODEL step (folder/preset/backend skipped): model select + model.next,
-    // no backend/folder components and no back button on the first step.
+    // no backend/folder components; reconfigure first step DOES show back (cancels popup).
     const flat = ((popup!.components ?? []) as { components: { type: string; customId: string }[] }[]).flatMap((r) => r.components);
     expect(flat.some((c) => c.type === 'select' && c.customId === 'model')).toBe(true);
     expect(flat.some((c) => c.customId === 'model.next')).toBe(true);
     expect(flat.some((c) => c.customId === 'backend')).toBe(false);
     expect(flat.some((c) => c.customId === 'dir:into')).toBe(false);
-    expect(flat.some((c) => c.customId === 'wizard.back')).toBe(false);
+    expect(flat.some((c) => c.customId === 'wizard.back')).toBe(true);
     // The embed carries the reconfigure title + step-1/3 guidance for the target backend.
     const embed = (popup!.embeds as { title?: string; description?: string }[])[0];
     expect(embed.title).toContain('codex');
@@ -921,11 +921,11 @@ describe('InteractionRouter slash commands', () => {
     channelRegistry.set(binding(home));
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
-    const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => ({ ok: false, code: 'escape' }));
+    const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => ({ ok: false, code: 'notFound' }));
     const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
-    const { interaction, replies } = slash({ commandName: 'doc', getStringValue: '../../etc/passwd' });
+    const { interaction, replies } = slash({ commandName: 'doc', getStringValue: 'missing.md' });
     await router.handle(interaction);
-    expect(replies[0].content).toContain('세션 폴더 밖');
+    expect(replies[0].content).toContain('찾을 수 없어요');
   });
 
   it('/doc treats an uncoded {ok:false} as router.noSession (channel unwired backstop)', async () => {

@@ -70,26 +70,54 @@ describe('shareDocument', () => {
     fs.rmSync(outside, { recursive: true, force: true });
   });
 
-  it('rejects a path escaping the workspace with ../ (no thread opened)', async () => {
+  it('allows a relative path that escapes the workspace with ../ when the target is valid markdown', async () => {
     fs.writeFileSync(path.join(outside, 'secret.md'), 'top secret');
+    const { channel, starts, sends } = fakeChannel();
+    const relEscape = path.join('..', path.basename(outside), 'secret.md');
+    const res = await shareDocument({
+      channel,
+      cwd,
+      path: relEscape,
+      options: opts({ bodyMode: 'attachment_only' }),
+    });
+    expect(res.ok).toBe(true);
+    // Outside cwd → result.path is absolute (realpath-resolved).
+    expect(res.path).toBe(path.join(outside, 'secret.md'));
+    expect(starts()).toBe(1);
+    expect(sends[0].files?.[0]).toMatchObject({ name: 'secret.md', path: path.join(outside, 'secret.md') });
+  });
+
+  it('allows an absolute path outside the session folder when the target is valid markdown', async () => {
+    fs.writeFileSync(path.join(outside, 'abs.md'), 'outside absolute');
+    const absPath = path.join(outside, 'abs.md');
+    const { channel, starts, sends } = fakeChannel();
+    const res = await shareDocument({
+      channel,
+      cwd,
+      path: absPath,
+      options: opts({ bodyMode: 'attachment_only' }),
+    });
+    expect(res.ok).toBe(true);
+    expect(res.path).toBe(absPath);
+    expect(starts()).toBe(1);
+    expect(sends[0].content).toContain(absPath);
+    expect(sends[0].files?.[0]).toMatchObject({ name: 'abs.md', path: absPath });
+  });
+
+  it('allows a symlink inside cwd that points outside (realpath) when the target is valid markdown', async () => {
+    fs.writeFileSync(path.join(outside, 'target.md'), 'outside body');
+    fs.symlinkSync(path.join(outside, 'target.md'), path.join(cwd, 'link.md'));
     const { channel, starts } = fakeChannel();
     const res = await shareDocument({
       channel,
       cwd,
-      path: path.join('..', path.basename(outside), 'secret.md'),
-      options: opts(),
+      path: 'link.md',
+      options: opts({ bodyMode: 'attachment_only' }),
     });
-    expect(res).toEqual({ ok: false, code: 'escape' });
-    expect(starts()).toBe(0);
-  });
-
-  it('rejects a symlink that escapes the workspace (realpath, not string prefix)', async () => {
-    fs.writeFileSync(path.join(outside, 'target.md'), 'outside body');
-    fs.symlinkSync(path.join(outside, 'target.md'), path.join(cwd, 'link.md'));
-    const { channel, starts } = fakeChannel();
-    const res = await shareDocument({ channel, cwd, path: 'link.md', options: opts() });
-    expect(res).toEqual({ ok: false, code: 'escape' });
-    expect(starts()).toBe(0);
+    expect(res.ok).toBe(true);
+    // realpath lands outside cwd → absolute display path.
+    expect(res.path).toBe(path.join(outside, 'target.md'));
+    expect(starts()).toBe(1);
   });
 
   it('returns notFound for a missing file (no thread opened)', async () => {
