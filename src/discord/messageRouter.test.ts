@@ -92,6 +92,7 @@ function makeDeps(opts: {
   sendThrows?: Error;
   fetchBytes?: (url: string) => Promise<Uint8Array>;
   eventBus?: EventBus;
+  ensureRenderers?: (guildId: string, channelId: string, mode: string) => Promise<void>;
 }) {
   const sent: { guildId: string; channelId: string; turn: TurnInput }[] = [];
   const channelRegistry = {
@@ -114,6 +115,7 @@ function makeDeps(opts: {
     logger,
     fetchBytes: opts.fetchBytes ?? (async () => new Uint8Array([1, 2, 3])),
     ...(opts.eventBus ? { eventBus: opts.eventBus } : {}),
+    ...(opts.ensureRenderers ? { ensureRenderers: opts.ensureRenderers } : {}),
   });
   return { router, orchestrator, sent };
 }
@@ -322,6 +324,67 @@ describe('MessageRouter', () => {
     await expect(router.handle(message)).resolves.toBeUndefined();
     expect(replies).toHaveLength(1);
     expect(replies[0]).toContain('escapes the workspace');
+  });
+
+  it('a send throw removes the optimistic ⏳ (no stale working indicator)', async () => {
+    // ⏳ is added before send (fix ④); when send rejects, the router must clear it so a
+    // failed turn does not leave a permanent "preparing" indicator on the message.
+    const { router } = makeDeps({ binding: binding(ws), sendThrows: new Error('no session') });
+    const { message, reactions, removed } = fakeMessage();
+    await expect(router.handle(message)).resolves.toBeUndefined();
+    expect(reactions).toEqual(['⏳']); // optimistically added before ensureRenderers/send
+    expect(removed).toEqual(['⏳']); // removed on the send throw
+  });
+});
+
+// Lazy renderer re-wire (design §6.0): the router calls ensureRenderers just BEFORE the
+// turn is sent so a resumed session that lost its output sink regains it before send
+// produces output. It is best-effort — a failure is logged and the turn still proceeds.
+describe('MessageRouter ensureRenderers (lazy re-wire before send)', () => {
+  it('calls ensureRenderers BEFORE orchestrator.send (subscription stands ahead of the turn)', async () => {
+    const ensureRenderers = vi.fn(async () => {});
+    const { router, orchestrator } = makeDeps({ binding: binding(ws), ensureRenderers });
+    const { message } = fakeMessage();
+    await router.handle(message);
+    expect(ensureRenderers).toHaveBeenCalledWith('g1', 'c1', 'claude');
+    expect(orchestrator.send).toHaveBeenCalledTimes(1);
+    // vi records a global invocation order; ensureRenderers must precede send.
+    expect(ensureRenderers.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(orchestrator.send).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('adds the ⏳ working reaction BEFORE ensureRenderers (instant feedback during the re-wire)', async () => {
+    const ensureRenderers = vi.fn(async () => {});
+    const { router } = makeDeps({ binding: binding(ws), ensureRenderers });
+    const { message } = fakeMessage();
+    const react = vi.fn(async () => {});
+    message.react = react;
+    await router.handle(message);
+    expect(react).toHaveBeenCalledWith('⏳');
+    expect(ensureRenderers).toHaveBeenCalledTimes(1);
+    // The ⏳ reaction is dispatched before ensureRenderers begins its (possibly slow) retry,
+    // so the user sees "preparing" instantly even while a re-wire is in flight.
+    expect(react.mock.invocationCallOrder[0]).toBeLessThan(ensureRenderers.mock.invocationCallOrder[0]);
+  });
+
+  it('is best-effort: an ensureRenderers rejection still lets the turn proceed', async () => {
+    const ensureRenderers = vi.fn(async () => {
+      throw new Error('resolve blip');
+    });
+    const { router, orchestrator, sent } = makeDeps({ binding: binding(ws), ensureRenderers });
+    const { message, reactions } = fakeMessage();
+    await expect(router.handle(message)).resolves.toBeUndefined();
+    expect(orchestrator.send).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+    expect(reactions).toEqual(['⏳']); // turn accepted despite the ensureRenderers failure
+  });
+
+  it('without ensureRenderers wired, the turn still sends (existing behavior preserved)', async () => {
+    const { router, orchestrator } = makeDeps({ binding: binding(ws) });
+    const { message } = fakeMessage();
+    await router.handle(message);
+    expect(orchestrator.send).toHaveBeenCalledTimes(1);
   });
 });
 

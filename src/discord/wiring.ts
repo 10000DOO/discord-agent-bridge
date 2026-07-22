@@ -14,8 +14,8 @@ import { chromeAvailable } from './render/chrome.js';
 import type { ChromiumProvisioner } from './render/chromiumProvisioner.js';
 import type { UsageSessionMeta } from './renderers/usageEmbed.js';
 import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
-import { ChannelAdapter, resolveChannelAdapter } from './client.js';
-import type { MessageChannel } from './ports.js';
+import { ChannelAdapter, resolveChannelAdapter, resolveChannelResult } from './client.js';
+import type { ChannelResolution, MessageChannel } from './ports.js';
 import { shareDocument, type DocumentShareOptions, type ShareResult } from './documentShare.js';
 import type { ConfigStore } from '../core/config.js';
 import { SessionNotifier, resolveNotifications } from './notifier.js';
@@ -87,6 +87,16 @@ export interface SessionWiringDeps {
   // Resolve a channelId to a sink. Defaults to resolveChannelAdapter over the live
   // client; injectable so tests supply a fake channel without a gateway.
   resolveChannel?: (channelId: string) => Promise<MessageChannel | null>;
+  // Resolve a channelId to a ChannelResolution (ok/gone/unavailable) so attach can tell
+  // a transient failure from a permanent one. When absent, attach falls back to wrapping
+  // resolveChannel as ok|unavailable — a safe default that NEVER reports 'gone', so a
+  // wiring built without a result-aware resolver can never trigger a stale-binding
+  // cleanup (design §11 backward-compat). App boot binds this to the live client via
+  // SessionWiring.resolveResultOverClient.
+  resolveChannelResult?: (channelId: string) => Promise<ChannelResolution>;
+  // Delay between attach retries; injectable so tests resolve instantly instead of
+  // waiting the real backoff. Defaults to a real setTimeout-backed sleep.
+  sleep?: (ms: number) => Promise<void>;
   // Permission-request timeout in seconds (config limits.permissionTimeoutSec).
   // 0 or negative → no timer, the prompt waits indefinitely for a button click.
   permissionTimeoutSec: number;
@@ -100,6 +110,24 @@ export interface SessionWiringDeps {
 
 function channelKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
+}
+
+// The outcome of an attach: 'attached' = renderers wired; 'gone' = the channel is
+// permanently missing (Discord 10003 → the boot loop hard-cleans the stale binding);
+// 'unavailable' = a transient failure the caller may retry later.
+export type AttachOutcome = 'attached' | 'gone' | 'unavailable';
+
+// Retry budget for attachWithRetry, applied PER stage (boot and message each get their
+// own 5, design §6.0): at most MAX_ATTACH_ATTEMPTS attempts, with exponential-backoff
+// delays between them (base 300ms, ×2, capped at 2.4s → 4 gaps for 5 attempts). Only an
+// 'unavailable' outcome waits and retries; 'attached'/'gone' stop early. Delays are
+// injected (SessionWiringDeps.sleep) so tests never actually wait.
+const MAX_ATTACH_ATTEMPTS = 5;
+const ATTACH_RETRY_DELAYS_MS = [300, 600, 1200, 2400];
+
+// Default inter-retry delay: a real setTimeout. Tests inject an immediate-resolve sleep.
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Current git branch of a session cwd — the same probe claude-hud runs
@@ -128,6 +156,10 @@ export class SessionWiring {
   // constructed (the client depends on the routers which depend on this wiring —
   // resolveChannel is only used at attach()/sendFile time, i.e. after login).
   private resolveChannel: (channelId: string) => Promise<MessageChannel | null>;
+  // Mutable (bound after the client exists, like resolveChannel) result-aware resolver
+  // that preserves the transient/permanent distinction; see setResolveChannelResult.
+  private resolveChannelResult: (channelId: string) => Promise<ChannelResolution>;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly permissionTimeoutMs: number;
   private readonly auditLog?: AuditLog;
   private readonly configStore?: ConfigStore;
@@ -135,6 +167,16 @@ export class SessionWiring {
   private readonly onAlwaysAllow?: (toolName: string, ctx: AlwaysAllowContext) => void;
 
   private readonly channels = new Map<string, ChannelWiring>();
+  // Per-channel-key in-flight attachWithRetry promise, so concurrent WHOLE retry
+  // sequences (a boot retry racing a message's ensureAttached) are merged into ONE
+  // (message-burst dedup, design §6.0).
+  private readonly attachInFlight = new Map<string, Promise<AttachOutcome>>();
+  // Per-channel-key serialization of the single-attempt critical section (attachOnce).
+  // EVERY attach entry point — interactionRouter's direct attach and each
+  // runAttachWithRetry attempt — chains through here so two attaches for the same channel
+  // never interleave their detach→subscribe→channels.set (which would orphan the earlier
+  // dispatcher's unsubscribe → EventBus leak + double render, design §11).
+  private readonly attachOnceInFlight = new Map<string, Promise<AttachOutcome>>();
   // Lazily-created image renderer (tables/mermaid → PNG). Built on first use so the
   // heavy puppeteer module only loads when rendering is actually enabled + available.
   private imageRenderer: ImageRenderer | null = null;
@@ -151,6 +193,12 @@ export class SessionWiring {
     this.configStore = deps.configStore;
     this.imageProvisioner = deps.imageProvisioner;
     this.resolveChannel = deps.resolveChannel ?? (() => Promise.resolve(null));
+    // Result-aware resolver: injected one wins; otherwise fall back to wrapping the
+    // plain resolveChannel as ok|unavailable (read lazily so a later setResolveChannel
+    // is honored, and 'gone' is never produced by the fallback — design §11).
+    this.resolveChannelResult =
+      deps.resolveChannelResult ?? ((channelId) => this.wrapResolveChannel(channelId));
+    this.sleep = deps.sleep ?? defaultSleep;
     // 0 sentinel means "no timer" (infinite wait); withTimeout skips the setTimeout
     // path so a slow-to-respond operator is not auto-denied.
     this.permissionTimeoutMs = deps.permissionTimeoutSec > 0 ? deps.permissionTimeoutSec * 1000 : 0;
@@ -163,10 +211,32 @@ export class SessionWiring {
       resolveChannelAdapter(client, channelId) as Promise<ChannelAdapter | null>;
   }
 
+  // Build the live result-aware resolver over a real gateway client (used by app boot),
+  // symmetric with resolveOverClient. Preserves the transient/permanent distinction the
+  // boot re-wire loop needs to decide retry-vs-cleanup.
+  static resolveResultOverClient(client: Client): (channelId: string) => Promise<ChannelResolution> {
+    return (channelId: string): Promise<ChannelResolution> => resolveChannelResult(client, channelId);
+  }
+
   // Bind (or rebind) the channel resolver. App boot calls this once the gateway
   // client exists to point the wiring at the live client's channel lookup.
   setResolveChannel(resolveChannel: (channelId: string) => Promise<MessageChannel | null>): void {
     this.resolveChannel = resolveChannel;
+  }
+
+  // Bind (or rebind) the result-aware channel resolver. App boot calls this once the
+  // gateway client exists, alongside setResolveChannel.
+  setResolveChannelResult(resolveChannelResult: (channelId: string) => Promise<ChannelResolution>): void {
+    this.resolveChannelResult = resolveChannelResult;
+  }
+
+  // Fallback wrapper: adapt a plain resolveChannel (null-or-channel) into a
+  // ChannelResolution as ok|unavailable. NEVER returns 'gone', so a wiring built without
+  // a result-aware resolver can never trigger a stale-binding cleanup — the conservative
+  // default (design §11 backward-compat).
+  private async wrapResolveChannel(channelId: string): Promise<ChannelResolution> {
+    const channel = await this.resolveChannel(channelId);
+    return channel ? { status: 'ok', channel } : { status: 'unavailable' };
   }
 
   // The orchestrator's requestPermission hook (§7.5): post the buttons on the bound
@@ -255,9 +325,6 @@ export class SessionWiring {
     }
   }
 
-  // Attach renderers + permission handler for a channel that just started/resumed.
-  // Idempotent: re-attaching first tears down any prior subscription so a resume
-  // after a restart does not double-render.
   // Resolve the image renderer for a session, or null when the render branch is off
   // (config disabled or no Chrome). Lazily constructs the puppeteer-backed renderer on
   // first use (dynamic import so puppeteer never loads at boot / when disabled). Never
@@ -296,15 +363,45 @@ export class SessionWiring {
     }
   }
 
-  async attach(guildId: string, channelId: string, mode: string): Promise<void> {
+  // Attach renderers + permission handler for a channel that just started/resumed. A
+  // SINGLE attempt, SERIALIZED per channel key: the critical section (attachOnce) chains
+  // after any in-flight attach for the same channel so their detach→subscribe→channels.set
+  // never interleave. The lock spans ONLY attachOnce — retry sleeps happen OUTSIDE it (in
+  // runAttachWithRetry), so a retry can never self-deadlock waiting on a lock it holds.
+  // On failure reports the kind ('gone' vs 'unavailable') instead of silently giving up.
+  attach(guildId: string, channelId: string, mode: string): Promise<AttachOutcome> {
     const key = channelKey(guildId, channelId);
-    this.detach(guildId, channelId);
+    const prev = this.attachOnceInFlight.get(key) ?? Promise.resolve<AttachOutcome>('unavailable');
+    // Chain after the predecessor, swallowing its outcome/error so one attach never
+    // rejects the next; run attachOnce only once the predecessor's critical section ends.
+    const next = prev.catch(() => undefined).then(() => this.attachOnce(guildId, channelId, mode));
+    const tracked = next.finally(() => {
+      // Clear the slot only if it is still ours (a later attach may have chained on).
+      if (this.attachOnceInFlight.get(key) === tracked) this.attachOnceInFlight.delete(key);
+    });
+    this.attachOnceInFlight.set(key, tracked);
+    return next;
+  }
 
-    const channel = await this.resolveChannel(channelId);
-    if (!channel) {
-      this.logger.warn('cannot wire renderers: channel unresolved', { guildId, channelId });
-      return;
+  // The attach critical section (a single attempt). MUST run only via attach() so it is
+  // serialized per channel key. Resolves the sink; on success tears down any prior
+  // subscription then wires renderers + notifier; on a transient/permanent failure leaves
+  // any existing wiring intact and reports the kind.
+  private async attachOnce(guildId: string, channelId: string, mode: string): Promise<AttachOutcome> {
+    const key = channelKey(guildId, channelId);
+
+    const resolution = await this.resolveChannelResult(channelId);
+    if (resolution.status !== 'ok') {
+      // A failed resolve does NOT tear down any existing wiring: a transient blip must not
+      // drop a live sink. Report the outcome so the caller retries ('unavailable') or
+      // hard-cleans a stale binding ('gone').
+      this.logger.warn('cannot wire renderers: channel unresolved', { guildId, channelId, status: resolution.status });
+      return resolution.status;
     }
+    const channel = resolution.channel;
+    // Idempotent: tear down any prior subscription before re-wiring so a resume after a
+    // restart does not double-render.
+    this.detach(guildId, channelId);
     const binding = this.channelRegistry.get(guildId, channelId);
     const ownerId = binding?.ownerId ?? '';
     const capabilities = this.modeRegistry.get(mode).capabilities;
@@ -360,6 +457,49 @@ export class SessionWiring {
       unsubscribeIdle,
       ...(unsubscribeNotifier ? { unsubscribeNotifier } : {}),
     });
+    return 'attached';
+  }
+
+  // Attach with a finite, injected-delay retry (design §6/§6.1): wraps a single attach,
+  // stopping early on 'attached' or 'gone' (retrying a deleted channel is pointless) and
+  // retrying ONLY 'unavailable', up to MAX_ATTACH_ATTEMPTS with ATTACH_RETRY_DELAYS_MS
+  // backoff between attempts. Boot and message(lazy) paths share this. A per-channel-key
+  // in-flight guard makes concurrent callers share ONE retry sequence so a boot retry and
+  // a message's ensureAttached cannot double-attach and orphan each other's subscription.
+  attachWithRetry(guildId: string, channelId: string, mode: string): Promise<AttachOutcome> {
+    const key = channelKey(guildId, channelId);
+    const existing = this.attachInFlight.get(key);
+    if (existing) return existing;
+    const run = this.runAttachWithRetry(guildId, channelId, mode).finally(() => {
+      this.attachInFlight.delete(key);
+    });
+    this.attachInFlight.set(key, run);
+    return run;
+  }
+
+  private async runAttachWithRetry(guildId: string, channelId: string, mode: string): Promise<AttachOutcome> {
+    let outcome: AttachOutcome = 'unavailable';
+    for (let attempt = 0; attempt < MAX_ATTACH_ATTEMPTS; attempt++) {
+      outcome = await this.attach(guildId, channelId, mode);
+      if (outcome !== 'unavailable') return outcome; // 'attached'/'gone' → stop early
+      // Delay before the next attempt; indices 0..3 are the 4 gaps between 5 attempts,
+      // so no delay follows the final attempt.
+      if (attempt < ATTACH_RETRY_DELAYS_MS.length) await this.sleep(ATTACH_RETRY_DELAYS_MS[attempt]);
+    }
+    return outcome; // exhausted: 'unavailable' — binding preserved, caller may retry later
+  }
+
+  // Ensure a channel's renderers are attached before a turn runs (message lazy path).
+  // Already attached → 'attached' no-op (spends no retry budget). Otherwise delegate to
+  // attachWithRetry, giving EACH message its own fresh ≤5 budget (design §6.0 self-heal).
+  ensureAttached(guildId: string, channelId: string, mode: string): Promise<AttachOutcome> {
+    if (this.isAttached(guildId, channelId)) return Promise.resolve('attached');
+    return this.attachWithRetry(guildId, channelId, mode);
+  }
+
+  // True when this channel currently has a live renderer wiring.
+  isAttached(guildId: string, channelId: string): boolean {
+    return this.channels.has(channelKey(guildId, channelId));
   }
 
   // Arm the channel's idle watchdog for a newly accepted turn. No-op when the

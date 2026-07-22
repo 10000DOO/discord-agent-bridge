@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { Events, PermissionFlagsBits, type Client, type Interaction } from 'discord.js';
-import { adaptInteraction, buildSlashCommands, DiscordClient, toMessageOptions } from './client.js';
+import { DiscordAPIError, Events, PermissionFlagsBits, type Client, type Interaction } from 'discord.js';
+import {
+  adaptInteraction,
+  buildSlashCommands,
+  DiscordClient,
+  resolveChannelAdapter,
+  resolveChannelResult,
+  toMessageOptions,
+} from './client.js';
 import type { Logger } from '../core/contracts.js';
 import type { MessageRouter } from './messageRouter.js';
 import type { InteractionRouter } from './interactionRouter.js';
@@ -490,6 +497,77 @@ describe('DiscordClient auto-provision on ready / guild-join', () => {
     await fc.fireGuildCreate('fresh-invite');
     expect(calls).toContainEqual({ guildId: 'existing-1', isNewGuild: false });
     expect(calls).toContainEqual({ guildId: 'fresh-invite', isNewGuild: true });
+  });
+});
+
+// resolveChannelResult is the classification foundation (design §5.2): it maps a raw
+// channels.fetch outcome onto ok/gone/unavailable so the wiring re-wire loop can tell a
+// permanent deletion (10003) from a transient fault. discord.js error types stay in
+// client.ts, so these tests construct real DiscordAPIError instances.
+describe('resolveChannelResult — transient vs permanent classification', () => {
+  function clientWithFetch(fetch: (id: string) => Promise<unknown>): Client {
+    return { channels: { fetch } } as unknown as Client;
+  }
+  function djsError(code: number): DiscordAPIError {
+    // (rawError, code, status, method, url, bodyData) — only `code` is read downstream.
+    return new DiscordAPIError({ code, message: `code ${code}` }, code, code === 10003 ? 404 : 403, 'GET', 'https://x', {
+      files: [],
+      body: {},
+    });
+  }
+  const sendableChannel = { id: 'c1', send: async () => ({ id: 'm1' }) };
+
+  it('(a) a sendable channel → ok with a live sink', async () => {
+    const res = await resolveChannelResult(clientWithFetch(async () => sendableChannel), 'c1');
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') return;
+    expect(typeof res.channel.send).toBe('function');
+  });
+
+  it('(b) a 10003 Unknown Channel throw → gone (the single permanent signal)', async () => {
+    const res = await resolveChannelResult(clientWithFetch(async () => { throw djsError(10003); }), 'c1');
+    expect(res.status).toBe('gone');
+  });
+
+  it('(c) a 50001 Missing Access throw → unavailable (transient; never cleaned up)', async () => {
+    const res = await resolveChannelResult(clientWithFetch(async () => { throw djsError(50001); }), 'c1');
+    expect(res.status).toBe('unavailable');
+  });
+
+  it('(d) a generic Error (ConnectTimeout / fetch failed) → unavailable', async () => {
+    const res = await resolveChannelResult(clientWithFetch(async () => { throw new Error('fetch failed'); }), 'c1');
+    expect(res.status).toBe('unavailable');
+  });
+
+  it('(e) null / a non-sendable channel (no exception) → unavailable (conservative)', async () => {
+    const nullRes = await resolveChannelResult(clientWithFetch(async () => null), 'c1');
+    expect(nullRes.status).toBe('unavailable');
+    // A category/voice channel has no send() → not sendable → unavailable, not gone.
+    const notSendable = await resolveChannelResult(clientWithFetch(async () => ({ id: 'cat' })), 'c1');
+    expect(notSendable.status).toBe('unavailable');
+  });
+});
+
+// resolveChannelAdapter is now a thin wrapper over resolveChannelResult; the null-or-channel
+// contract every legacy caller (notifier/status/sendFile/resolveChannel port) relies on must
+// be preserved: ok → a channel, everything else → null.
+describe('resolveChannelAdapter — thin-wrapper regression (null-or-channel preserved)', () => {
+  function clientWithFetch(fetch: (id: string) => Promise<unknown>): Client {
+    return { channels: { fetch } } as unknown as Client;
+  }
+  function djsError(code: number): DiscordAPIError {
+    return new DiscordAPIError({ code, message: `code ${code}` }, code, 404, 'GET', 'https://x', { files: [], body: {} });
+  }
+
+  it('ok → a channel; gone / transient / null all → null', async () => {
+    const ok = await resolveChannelAdapter(clientWithFetch(async () => ({ id: 'c1', send: async () => ({ id: 'm' }) })), 'c1');
+    expect(ok).not.toBeNull();
+    const gone = await resolveChannelAdapter(clientWithFetch(async () => { throw djsError(10003); }), 'c1');
+    expect(gone).toBeNull();
+    const transient = await resolveChannelAdapter(clientWithFetch(async () => { throw new Error('boom'); }), 'c1');
+    expect(transient).toBeNull();
+    const missing = await resolveChannelAdapter(clientWithFetch(async () => null), 'c1');
+    expect(missing).toBeNull();
   });
 });
 

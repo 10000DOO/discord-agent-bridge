@@ -95,6 +95,12 @@ export interface MessageRouterDeps {
   // wires this to SessionWiring.armIdleWatchdog so a ~3 min idle notice can fire
   // if the agent goes silent. Optional so existing tests need not supply it.
   onTurnAccepted?: (guildId: string, channelId: string) => void;
+  // Best-effort renderer (re)attach, called just BEFORE orchestrator.send so a resumed
+  // session that lost its output sink (e.g. a boot attach that failed transiently) gets
+  // it back before the turn produces output (lazy re-wire, design §6.0). A narrow
+  // callback (same DI style as fetchBytes) — app boot wires it to wiring.ensureAttached,
+  // not the whole wiring object. Optional; a rejection is logged and the turn proceeds.
+  ensureRenderers?: (guildId: string, channelId: string, mode: string) => Promise<void>;
 }
 
 // Reaction emoji lifecycle: ⏳ while the AI is preparing a response (added when the
@@ -118,6 +124,7 @@ export class MessageRouter {
   private readonly fetchBytes: FetchBytes;
   private readonly administratorBit: bigint;
   private readonly onTurnAccepted?: (guildId: string, channelId: string) => void;
+  private readonly ensureRenderers?: (guildId: string, channelId: string, mode: string) => Promise<void>;
 
   constructor(deps: MessageRouterDeps) {
     this.authorizer = deps.authorizer;
@@ -128,6 +135,7 @@ export class MessageRouter {
     this.fetchBytes = deps.fetchBytes ?? defaultFetchBytes;
     this.administratorBit = deps.administratorBit ?? ADMINISTRATOR_BIT;
     this.onTurnAccepted = deps.onTurnAccepted;
+    this.ensureRenderers = deps.ensureRenderers;
   }
 
   async handle(message: IncomingMessage): Promise<void> {
@@ -169,19 +177,40 @@ export class MessageRouter {
 
     const turn: TurnInput = { text: message.content, ...(files && files.length > 0 ? { files } : {}) };
 
+    // Signal "the AI is preparing a response" with ⏳ IMMEDIATELY — before the (possibly
+    // multi-second) renderer re-wire — so the user gets instant read/working feedback even
+    // while ensureRenderers retries. It is a plain Discord reaction, independent of the
+    // EventBus subscription, so adding it ahead of ensureRenderers/send is safe (the
+    // subscription still stands up before send produces any event). Added exactly once; the
+    // completion indicator (armed after send) later swaps it to ✅/❌.
+    await safe(message.react(REACT_WORKING));
+
+    // Best-effort lazy re-wire (design §6.0): ensure this channel's renderers are attached
+    // BEFORE the turn runs, so a resumed session whose boot attach failed transiently
+    // regains its output sink before send produces output. A failure is logged and the
+    // turn still proceeds (a missing sink must not block accepting the message).
+    if (this.ensureRenderers) {
+      try {
+        await this.ensureRenderers(guildId, channelId, binding.mode);
+      } catch (err) {
+        this.logger.warn('ensureRenderers failed; proceeding with turn', { guildId, channelId, err: String(err) });
+      }
+    }
+
     try {
       await this.orchestrator.send(guildId, channelId, turn);
     } catch (err) {
-      // The orchestrator throws on no-session or a confinement violation; surface it.
+      // The orchestrator throws on no-session or a confinement violation. Clear the ⏳ we
+      // optimistically added so no stale indicator lingers, then surface the error.
+      if (message.removeReaction) await safe(message.removeReaction(REACT_WORKING));
       await safe(message.reply(t('cmd.error', { error: String(err) })));
       return;
     }
 
-    // The turn was accepted (running now or queued behind one in flight): arm the
-    // idle watchdog (if wired), signal "the AI is preparing a response" with ⏳,
-    // then arm a one-shot listener to clear it when the channel's turn finishes.
+    // The turn was accepted (running now or queued behind one in flight): arm the idle
+    // watchdog (if wired). The ⏳ is already on the message (added before send). Do NOT
+    // react again here. Then arm a one-shot listener to clear it when the turn finishes.
     this.onTurnAccepted?.(guildId, channelId);
-    await safe(message.react(REACT_WORKING));
     this.armCompletionIndicator(guildId, channelId, message);
   }
 

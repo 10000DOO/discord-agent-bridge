@@ -6,6 +6,7 @@ import {
   ChannelSelectMenuBuilder,
   ChannelType,
   Client,
+  DiscordAPIError,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
@@ -13,6 +14,7 @@ import {
   ModalBuilder,
   PermissionFlagsBits,
   REST,
+  RESTJSONErrorCodes,
   RoleSelectMenuBuilder,
   Routes,
   SlashCommandBuilder,
@@ -39,6 +41,7 @@ import type { GuildChannelProvisioner, ProvisionedChannel } from './guildChannel
 import { t } from './i18n.js';
 import type {
   ButtonSpec,
+  ChannelResolution,
   ChannelSelectSpec,
   ComponentRow,
   EditableMessage,
@@ -399,17 +402,46 @@ function isSendable(channel: TextBasedChannel | null): channel is SendableChanne
   return channel !== null && 'send' in channel && typeof channel.send === 'function';
 }
 
-// Resolve a channel id to a ChannelAdapter, or null if it is missing/not sendable.
-// Used by the wiring layer to obtain the sink for a session's renderers.
+// Resolve a channel id to a ChannelResolution, distinguishing a permanently-missing
+// channel ('gone', Discord 10003) from a transient failure ('unavailable'). Unlike the
+// old `.catch(() => null)` this does NOT swallow the failure kind — the wiring layer's
+// re-wire loop needs it to decide retry-vs-hard-cleanup. discord.js error types stay
+// confined to this file.
+export async function resolveChannelResult(
+  client: Client,
+  channelId: string,
+): Promise<ChannelResolution> {
+  try {
+    const channel = await client.channels.fetch(channelId); // do NOT swallow the exception
+    if (channel && isSendable(channel as TextBasedChannel)) {
+      return { status: 'ok', channel: new ChannelAdapter(channel as SendableChannels) };
+    }
+    // null / not sendable, no exception: treat as transient (conservative) so an unready
+    // cache is never mistaken for a deletion — nothing is cleaned up on 'unavailable'.
+    return { status: 'unavailable' };
+  } catch (err) {
+    if (isPermanentChannelError(err)) return { status: 'gone' };
+    return { status: 'unavailable' };
+  }
+}
+
+// The ONLY signal treated as permanent: "the channel does not exist" (10003). Every
+// other error — 50001 Missing Access, ConnectTimeout, fetch failed, HTTP 5xx/429 — is a
+// transient DiscordAPIError-or-network failure, so a live channel is never cleaned up on
+// a momentary fault (design §11: 10003 is the single unambiguous permanent signal).
+function isPermanentChannelError(err: unknown): boolean {
+  return err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownChannel;
+}
+
+// Resolve a channel id to a ChannelAdapter, or null if it is missing/not sendable. A
+// thin wrapper over resolveChannelResult so notifier/status/sendFile and the resolveChannel
+// port keep the null-or-channel contract unchanged (behavior 100% preserved).
 export async function resolveChannelAdapter(
   client: Client,
   channelId: string,
 ): Promise<ChannelAdapter | null> {
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (channel && isSendable(channel as TextBasedChannel)) {
-    return new ChannelAdapter(channel as SendableChannels);
-  }
-  return null;
+  const res = await resolveChannelResult(client, channelId);
+  return res.status === 'ok' ? (res.channel as ChannelAdapter) : null;
 }
 
 // A discord.js Guild adapted onto the GuildChannelProvisioner port — the single place
