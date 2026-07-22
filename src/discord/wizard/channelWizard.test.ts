@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { ChannelWizard, type StartFn, type StartParams, type StartResult } from './channelWizard.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
 import type { ModelChoice, ModeSession } from '../../core/contracts.js';
+import type { Preset } from '../../core/configSchema.js';
 import {
   permissionChoicesFor,
   effortChoicesFor,
@@ -79,7 +80,39 @@ function makeWizardNoProfiles(start: StartFn) {
   });
 }
 
-function flat(rows: { components: { type: string; customId: string; label?: string; options?: { value: string; label: string; default?: boolean }[] }[] }[]) {
+// Saved presets injected into the wizard's preset step. 'codex-fast' is a RAW preset
+// (profile:null); 'claude-min' carries only a backend (model/effort/perm/profile absent),
+// exercising the catalog/default seed fallbacks.
+const PRESETS: Preset[] = [
+  { name: 'codex-fast', backend: 'codex', model: 'gpt-5.4', effort: 'minimal', permMode: 'workspace-write', profile: null },
+  { name: 'claude-min', backend: 'claude' },
+];
+
+// A wizard WITH a preset step (folder → preset → backend). The guild default profile is a
+// non-null named profile ('safe'), so a raw preset (profile:null) must NOT fall back to it.
+function makeWizardWithPresets(start: StartFn, presets: Preset[] = PRESETS, onDeletePreset?: (name: string) => Preset[], backendAvailable?: (backend: string) => boolean) {
+  const browser = new DirectoryBrowser({ allowedRoots: [root], startPath: root });
+  return new ChannelWizard({
+    guildId: 'g1',
+    channelId: 'c1',
+    ownerId: 'u1',
+    start,
+    defaults: { backend: 'claude', model: 'opus', permMode: 'default', profile: 'safe' },
+    backends: ['claude', 'codex'],
+    modelsFor: (b) => (b === 'codex' ? CODEX_MODELS : CLAUDE_MODELS),
+    profiles: [],
+    permsFor: (b) => permissionChoicesFor(b),
+    effortsFor: (b, model) => effortChoicesFor(b, CLAUDE_MODELS.find((m) => m.value === model)?.supportedEffortLevels),
+    defaultEffortFor,
+    browser,
+    presets,
+    summarizePreset: (p) => `${p.backend}/${p.model ?? '-'}`,
+    ...(onDeletePreset ? { onDeletePreset } : {}),
+    ...(backendAvailable ? { backendAvailable } : {}),
+  });
+}
+
+function flat(rows: { components: { type: string; customId: string; label?: string; options?: { value: string; label: string; default?: boolean; description?: string }[] }[] }[]) {
   return rows.flatMap((r) => r.components);
 }
 function selectOptions(wizard: ChannelWizard, customId: string) {
@@ -279,6 +312,151 @@ describe('ChannelWizard state machine (button-advance, backend-aware)', () => {
     expect(wizard.sessionChannelId()).toBeNull(); // not started yet
     await wizard.handle({ id: 'perm.start' });
     expect(wizard.sessionChannelId()).toBe('new-session-channel');
+  });
+
+  it('confirming the folder advances to the preset step when presets were injected', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardWithPresets(start);
+    expect(wizard.currentStep()).toBe('folder');
+    expect(await wizard.handle({ id: 'dir:here' })).toBe('preset');
+    // The preset step renders the picker (preset.pick select + direct/delete buttons).
+    const ids = flat(wizard.render().rows).map((c) => c.customId);
+    expect(ids).toEqual(expect.arrayContaining(['preset.pick', 'preset.direct', 'preset.delete']));
+    expect(selectOptions(wizard, 'preset.pick').map((o) => o.value)).toEqual(['codex-fast', 'claude-min']);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('confirming the folder skips straight to the backend step when there are NO presets (R6)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardNoProfiles(start);
+    expect(await wizard.handle({ id: 'dir:here' })).toBe('backend');
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('picking a preset seeds the selection and starts immediately (raw profile:null preserved)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardWithPresets(start);
+    await wizard.handle({ id: 'dir:into', value: 'project' });
+    await wizard.handle({ id: 'dir:here' }); // → preset step
+    expect(await wizard.handle({ id: 'preset.pick', value: 'codex-fast' })).toBe('done');
+    expect(start).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'codex',
+        cwd: path.join(root, 'project'),
+        model: 'gpt-5.4',
+        effort: 'minimal',
+        permMode: 'workspace-write',
+        // A raw preset (profile:null) must NOT fall back to the guild default profile 'safe'.
+        profile: null,
+      }),
+    );
+    expect(wizard.launchedFromPreset()).toBe(true);
+    expect(wizard.sessionChannelId()).toBe('new-session-channel');
+  });
+
+  it('a preset with only a backend seeds model/effort from the catalog and profile from the default', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardWithPresets(start);
+    await wizard.handle({ id: 'dir:here' });
+    await wizard.handle({ id: 'preset.pick', value: 'claude-min' });
+    expect(start).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'claude',
+        model: 'opus', // modelsFor('claude')[0]
+        effort: 'high', // defaultEffortFor('claude')
+        permMode: 'default', // defaults.permMode
+        // profile is UNDEFINED on the preset → falls back to the guild default 'safe'.
+        profile: 'safe',
+      }),
+    );
+  });
+
+  it('“set up manually” on the preset step advances to the backend step (no start)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardWithPresets(start);
+    await wizard.handle({ id: 'dir:here' });
+    expect(await wizard.handle({ id: 'preset.direct' })).toBe('backend');
+    expect(start).not.toHaveBeenCalled();
+    expect(wizard.launchedFromPreset()).toBe(false);
+  });
+
+  it('delete mode: toggling then picking removes the preset via onDeletePreset and re-renders the list', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const remaining: Preset[] = [{ name: 'claude-min', backend: 'claude' }];
+    const onDeletePreset = vi.fn((_name: string) => remaining);
+    const wizard = makeWizardWithPresets(start, PRESETS, onDeletePreset);
+    await wizard.handle({ id: 'dir:here' });
+    // Toggle delete mode — stays on the preset step, placeholder switches to the delete prompt.
+    expect(await wizard.handle({ id: 'preset.delete' })).toBe('preset');
+    // Picking now REMOVES (not launches) — stays on the preset step, no start.
+    expect(await wizard.handle({ id: 'preset.pick', value: 'codex-fast' })).toBe('preset');
+    expect(onDeletePreset).toHaveBeenCalledWith('codex-fast');
+    expect(start).not.toHaveBeenCalled();
+    // The re-rendered picker shows the refreshed list from onDeletePreset.
+    expect(selectOptions(wizard, 'preset.pick').map((o) => o.value)).toEqual(['claude-min']);
+  });
+
+  it('picking a preset whose backend is unavailable blocks the start and shows a notice (must-fix)', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    // 'codex-fast' has backend 'codex'; report it unavailable (CLI removed / mode unregistered).
+    const backendAvailable = vi.fn((b: string) => b !== 'codex');
+    const wizard = makeWizardWithPresets(start, PRESETS, undefined, backendAvailable);
+    await wizard.handle({ id: 'dir:here' }); // → preset step
+    // The pick is blocked: no start, no fromPreset, and the step stays on 'preset'.
+    expect(await wizard.handle({ id: 'preset.pick', value: 'codex-fast' })).toBe('preset');
+    expect(start).not.toHaveBeenCalled();
+    expect(wizard.launchedFromPreset()).toBe(false);
+    // The re-rendered preset step surfaces the unavailable backend in its description.
+    expect(wizard.render().embed.description ?? '').toContain('codex');
+    // An available preset still starts (and the stale notice does not block it).
+    expect(await wizard.handle({ id: 'preset.pick', value: 'claude-min' })).toBe('done');
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it('re-entering the preset step via wizard.back → dir:here clears a stale unavailable-backend notice', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const backendAvailable = vi.fn((b: string) => b !== 'codex');
+    const wizard = makeWizardWithPresets(start, PRESETS, undefined, backendAvailable);
+    await wizard.handle({ id: 'dir:here' }); // → preset step
+    // Pick an unavailable-backend preset: the notice is set and rendered.
+    await wizard.handle({ id: 'preset.pick', value: 'codex-fast' });
+    expect(wizard.render().embed.description ?? '').toContain('codex');
+    // Back to the folder, then re-confirm the folder to return to the preset step — this
+    // path never touches handlePreset, so the notice must be cleared by dir:here.
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('folder');
+    expect(await wizard.handle({ id: 'dir:here' })).toBe('preset');
+    // The stale notice is gone — a fresh visit starts clean (the base guidance is the only
+    // description text now, and it carries no backend name).
+    expect(wizard.render().embed.description ?? '').not.toContain('codex');
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('deleting the last preset leaves the preset step with the buttons but no dropdown', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const single: Preset[] = [{ name: 'only', backend: 'claude' }];
+    const onDeletePreset = vi.fn((_name: string) => [] as Preset[]);
+    const wizard = makeWizardWithPresets(start, single, onDeletePreset);
+    await wizard.handle({ id: 'dir:here' }); // → preset step
+    await wizard.handle({ id: 'preset.delete' }); // enter delete mode
+    expect(await wizard.handle({ id: 'preset.pick', value: 'only' })).toBe('preset');
+    expect(onDeletePreset).toHaveBeenCalledWith('only');
+    const ids = flat(wizard.render().rows).map((c) => c.customId);
+    // The dropdown is gone once the list is empty; only the action buttons remain.
+    expect(ids).not.toContain('preset.pick');
+    expect(ids).toEqual(expect.arrayContaining(['preset.direct', 'preset.delete']));
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('wizard.back walks backend → preset → folder when a preset step exists', async () => {
+    const start = vi.fn(async (_p: StartParams) => fakeStartResult());
+    const wizard = makeWizardWithPresets(start);
+    await wizard.handle({ id: 'dir:here' }); // → preset
+    await wizard.handle({ id: 'preset.direct' }); // → backend
+    expect(wizard.currentStep()).toBe('backend');
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('preset');
+    expect(await wizard.handle({ id: 'wizard.back' })).toBe('folder');
   });
 
   it('cancel from any step ends the flow without starting', async () => {

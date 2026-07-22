@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { ConfigStore } from './config.js';
-import { CONFIG_VERSION, type AppConfig } from './configSchema.js';
+import { CONFIG_VERSION, presetSchema, serverConfigSchema, type AppConfig } from './configSchema.js';
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -35,6 +35,38 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ...overrides,
   };
 }
+
+describe('presetSchema', () => {
+  it('parses with only the required name/backend', () => {
+    expect(presetSchema.parse({ name: 'p1', backend: 'claude' })).toEqual({ name: 'p1', backend: 'claude' });
+  });
+
+  it('accepts a Codex sandbox permMode via loose z.string() (a strict enum would reject it)', () => {
+    const p = presetSchema.parse({ name: 'p1', backend: 'codex', permMode: 'workspace-write' });
+    expect(p.permMode).toBe('workspace-write');
+  });
+
+  it('accepts an explicit null profile (raw mode) and optional model/effort', () => {
+    const p = presetSchema.parse({ name: 'p1', backend: 'claude', model: 'opus', effort: 'high', profile: null });
+    expect(p).toEqual({ name: 'p1', backend: 'claude', model: 'opus', effort: 'high', profile: null });
+  });
+});
+
+describe('serverConfigSchema.presets', () => {
+  it('preserves presets through parse (a z.object() would otherwise strip an undeclared key)', () => {
+    const parsed = serverConfigSchema.parse({
+      version: CONFIG_VERSION,
+      guildId: 'g1',
+      presets: [{ name: 'p1', backend: 'claude', model: 'opus' }],
+    });
+    expect(parsed.presets).toEqual([{ name: 'p1', backend: 'claude', model: 'opus' }]);
+  });
+
+  it('leaves presets undefined when absent', () => {
+    const parsed = serverConfigSchema.parse({ version: CONFIG_VERSION, guildId: 'g1' });
+    expect(parsed.presets).toBeUndefined();
+  });
+});
 
 describe('ConfigStore', () => {
   let dir: string;
@@ -242,5 +274,66 @@ describe('ConfigStore', () => {
     expect(store.load().autoAllowClaudeTools.filter((t) => t === 'Bash')).toHaveLength(1);
     // Existing tools are preserved.
     expect(store.load().autoAllowClaudeTools).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep', 'Bash']));
+  });
+
+  it('addServerPreset appends a preset and preserves existing top-level server fields', () => {
+    const store = new ConfigStore(dir);
+    store.saveServerConfig({
+      version: CONFIG_VERSION,
+      guildId: 'g1',
+      auth: { adminRoleIds: ['a1'] },
+      defaults: { mode: 'codex' },
+      locale: 'en',
+    });
+    store.addServerPreset('g1', { name: 'p1', backend: 'claude', model: 'opus' });
+    const loaded = store.loadServerConfig('g1');
+    expect(loaded?.presets).toEqual([{ name: 'p1', backend: 'claude', model: 'opus' }]);
+    // Unrelated top-level fields survive the patch.
+    expect(loaded?.auth?.adminRoleIds).toEqual(['a1']);
+    expect(loaded?.defaults?.mode).toBe('codex');
+    expect(loaded?.locale).toBe('en');
+  });
+
+  it('addServerPreset overwrites a same-name preset (name is the unique key)', () => {
+    const store = new ConfigStore(dir);
+    store.addServerPreset('g1', { name: 'p1', backend: 'claude', model: 'opus' });
+    store.addServerPreset('g1', { name: 'p1', backend: 'codex', model: 'gpt-5.5' });
+    const presets = store.loadServerConfig('g1')?.presets ?? [];
+    expect(presets).toHaveLength(1);
+    expect(presets[0]).toEqual({ name: 'p1', backend: 'codex', model: 'gpt-5.5' });
+  });
+
+  it('addServerPreset works when no server config exists yet (creates the file)', () => {
+    const store = new ConfigStore(dir);
+    store.addServerPreset('gNew', { name: 'p1', backend: 'claude' });
+    expect(store.loadServerConfig('gNew')?.presets).toEqual([{ name: 'p1', backend: 'claude' }]);
+  });
+
+  it('removeServerPreset returns true and removes; false for an unknown name or guild', () => {
+    const store = new ConfigStore(dir);
+    store.addServerPreset('g1', { name: 'p1', backend: 'claude' });
+    store.addServerPreset('g1', { name: 'p2', backend: 'codex' });
+    expect(store.removeServerPreset('g1', 'p1')).toBe(true);
+    expect(store.loadServerConfig('g1')?.presets?.map((p) => p.name)).toEqual(['p2']);
+    expect(store.removeServerPreset('g1', 'nope')).toBe(false);
+    expect(store.removeServerPreset('gMissing', 'p1')).toBe(false);
+  });
+
+  it('presets survive an unrelated saveServerConfig round-trip (not stripped by z.object)', () => {
+    const store = new ConfigStore(dir);
+    store.addServerPreset('g1', {
+      name: 'p1',
+      backend: 'claude',
+      model: 'opus',
+      effort: 'high',
+      permMode: 'plan',
+      profile: null,
+    });
+    // A subsequent unrelated save (mirrors /config patchDefaults) must not drop presets.
+    const existing = store.loadServerConfig('g1')!;
+    store.saveServerConfig({ ...existing, locale: 'en' });
+    expect(store.loadServerConfig('g1')?.presets).toEqual([
+      { name: 'p1', backend: 'claude', model: 'opus', effort: 'high', permMode: 'plan', profile: null },
+    ]);
   });
 });

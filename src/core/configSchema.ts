@@ -106,6 +106,24 @@ export const configSchema = z.object({
 
 export type AppConfig = z.infer<typeof configSchema>;
 
+// A saved session preset (per-guild). A named backend/model/effort/permission combo
+// that `/agent start` can launch after only a folder pick. Loose z.string() (not fixed
+// enums), mirroring defaults.mode / profileSchema — the ModeRegistry / each runner is
+// the validity gate at use sites; this also absorbs Codex sandbox permMode values a
+// strict enum would reject. `name` is the per-guild unique key AND the Discord select
+// value (≤100 chars), so saving under an existing name overwrites. No cwd: the folder
+// is picked fresh at every start (presets stay folder-independent and reusable).
+export const presetSchema = z.object({
+  name: z.string(),
+  backend: z.string(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  permMode: z.string().optional(),
+  profile: z.string().nullable().optional(),
+});
+
+export type Preset = z.infer<typeof presetSchema>;
+
 // ---- per-server servers/<guildId>.json (§8.1) — all overrides optional ----
 export const serverConfigSchema = z.object({
   version: z.number(),
@@ -145,6 +163,10 @@ export const serverConfigSchema = z.object({
   locale: z.string().optional(),
   auditChannelId: z.string().nullable().optional(),
   favorites: z.array(z.string()).optional(),
+  // Session presets (per-guild). A z.object() STRIPS keys it does not declare on parse,
+  // so this MUST be declared here — otherwise saveServerConfig (→ serverConfigSchema.parse)
+  // would drop it on every /config round-trip. Optional: existing server files load unchanged.
+  presets: z.array(presetSchema).optional(),
   // A4D-style channel structure created by /init and persisted here so it can be
   // reused (idempotent re-init) and so /agent start knows where to put new session
   // channels. Absent until /init runs. controlChannelId is where the session-start UI
