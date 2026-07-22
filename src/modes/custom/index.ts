@@ -7,7 +7,7 @@ import type {
   ResumableSession,
 } from '../../core/contracts.js';
 import type { QueryFn } from '../claude/session.js';
-import type { SendFileCallback } from '../claude/mcpFileTool.js';
+import type { SendFileCallback, ShareDocumentCallback } from '../claude/mcpFileTool.js';
 import { CLAUDE_PERMISSION_MODES, claudeCatalog } from '../../core/providerCatalog.js';
 import { resolveCustomEnv } from './shellEnv.js';
 import { CustomEnvSession } from './session.js';
@@ -23,6 +23,9 @@ export interface CustomModeDeps {
   queryFn?: QueryFn;
   // Wired by the Discord layer: factory that returns the per-channel attach_file sink.
   sendFileFor?: (guildId: string, channelId: string) => SendFileCallback;
+  // Sibling factory: returns the per-channel share_document sink (path-only markdown →
+  // Discord thread). Same in-process MCP plumbing as Claude via createMcpFileTool.
+  shareDocumentFor?: (guildId: string, channelId: string) => ShareDocumentCallback;
   listSessionsFn?: ListSessionsFn;
 }
 
@@ -91,9 +94,11 @@ export class CustomMode implements AgentMode {
 
   private sessionDeps(ctx: ModeContext) {
     const sendFile = this.deps.sendFileFor?.(ctx.guildId, ctx.channelId);
+    const shareDocument = this.deps.shareDocumentFor?.(ctx.guildId, ctx.channelId);
     return {
       ...(this.deps.queryFn !== undefined ? { queryFn: this.deps.queryFn } : {}),
       ...(sendFile !== undefined ? { sendFile } : {}),
+      ...(shareDocument !== undefined ? { shareDocument } : {}),
     };
   }
 

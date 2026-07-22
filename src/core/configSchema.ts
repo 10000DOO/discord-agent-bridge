@@ -84,6 +84,18 @@ export const configSchema = z.object({
       enabled: z.boolean(),
     })
     .optional(),
+  // Document sharing (markdown → thread + attachment). GLOBAL only — host resource/policy
+  // like `render` (no per-server override). Optional with a default so existing config.json
+  // files load unchanged. Read idiom at use sites: cfg.documentShare?.field ?? DEFAULT.
+  documentShare: z
+    .object({
+      maxBytes: z.number().int().positive(),
+      bodyMode: z.enum(['full', 'preview', 'attachment_only']),
+      previewMaxChars: z.number().int().positive(),
+      extensions: z.array(z.string()),
+    })
+    .partial()
+    .optional(),
   // Chromium provisioning decision (host-wide). 'undecided' → the /init prompt may offer
   // the install button; 'declined' → never re-prompt (only /config can re-enable);
   // 'accepted' → the operator opted in. The installed state itself is NOT stored here —
@@ -248,6 +260,12 @@ export const CONFIG_DEFAULTS = {
   },
   render: {
     enabled: true,
+  },
+  documentShare: {
+    maxBytes: 524288,
+    bodyMode: 'preview' as const,
+    previewMaxChars: 8000,
+    extensions: ['.md', '.markdown'],
   },
   chromium: {
     decision: 'undecided' as const,

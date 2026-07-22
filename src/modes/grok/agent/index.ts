@@ -9,7 +9,7 @@ import { grokCatalog, grokPermissionModes } from '../catalog.js';
 import { GrokDiscovery } from '../discovery.js';
 import { resolveGrokHome } from '../configSource.js';
 import { GrokAcpSession, type CreateGrokAcpClient, type GrokAcpSessionDeps } from './acpSession.js';
-import type { SendFileCallback } from '../../claude/mcpFileTool.js';
+import type { SendFileCallback, ShareDocumentCallback } from '../../claude/mcpFileTool.js';
 import type { AttachGateway } from '../../../discord/attachGateway.js';
 
 // The sole Grok backend: a long-lived `grok agent stdio` ACP conversation (formerly path B /
@@ -26,6 +26,10 @@ export interface GrokBuildModeDeps {
   // Wired by the Discord layer for subprocess attach_file MCP (requires attachGateway).
   sendFileFor?: (guildId: string, channelId: string) => SendFileCallback;
   attachGateway?: AttachGateway;
+  // Sibling factory to sendFileFor for the subprocess share_document MCP tool (path-only
+  // markdown → Discord thread over the loopback gateway; same funnel as the /doc slash).
+  // Bound per session, same as sendFileFor; also requires attachGateway.
+  shareDocumentFor?: (guildId: string, channelId: string) => ShareDocumentCallback;
 }
 
 export class GrokBuildMode implements AgentMode {
@@ -74,10 +78,12 @@ export class GrokBuildMode implements AgentMode {
 
   private sessionDeps(ctx: ModeContext): GrokAcpSessionDeps {
     const sendFile = this.deps.sendFileFor?.(ctx.guildId, ctx.channelId);
+    const shareDocument = this.deps.shareDocumentFor?.(ctx.guildId, ctx.channelId);
     return {
       ...(this.deps.createClient !== undefined ? { createClient: this.deps.createClient } : {}),
       ...(sendFile !== undefined ? { sendFile } : {}),
       ...(this.deps.attachGateway !== undefined ? { attachGateway: this.deps.attachGateway } : {}),
+      ...(shareDocument !== undefined ? { shareDocument } : {}),
     };
   }
 

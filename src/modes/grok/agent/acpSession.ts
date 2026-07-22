@@ -19,7 +19,7 @@ import {
   type GrokAcpClientOptions,
 } from './acpClient.js';
 import { grokConfigSource } from '../configSource.js';
-import type { SendFileCallback } from '../../claude/mcpFileTool.js';
+import type { SendFileCallback, ShareDocumentCallback } from '../../claude/mcpFileTool.js';
 import type { AttachGateway } from '../../../discord/attachGateway.js';
 import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../../shared/turnFiles.js';
 
@@ -57,6 +57,10 @@ export interface GrokAcpSessionDeps {
   // When both sendFile and attachGateway are set, register attach_file MCP for this session.
   sendFile?: SendFileCallback;
   attachGateway?: AttachGateway;
+  // Sibling sink to sendFile: when set (alongside attachGateway), the same loopback MCP
+  // server also exposes share_document, which posts a workspace markdown into a Discord
+  // thread for THIS channel. Bound per session by the Discord layer (shareDocumentFor).
+  shareDocument?: ShareDocumentCallback;
 }
 
 export class GrokAcpSession implements ModeSession {
@@ -71,6 +75,7 @@ export class GrokAcpSession implements ModeSession {
   private readonly createClient: CreateGrokAcpClient;
   private readonly sendFile: SendFileCallback | undefined;
   private readonly attachGateway: AttachGateway | undefined;
+  private readonly shareDocument: ShareDocumentCallback | undefined;
 
   // The live client, or null when none is spawned (before the first send, or after an interrupt /
   // a dead-child drop). resumeId is the id a re-init resumes: seeded from a resume, then set to the
@@ -104,6 +109,7 @@ export class GrokAcpSession implements ModeSession {
     this.createClient = deps.createClient ?? ((options) => new GrokAcpClient(options));
     this.sendFile = deps.sendFile;
     this.attachGateway = deps.attachGateway;
+    this.shareDocument = deps.shareDocument;
     if (deps.resumeId !== undefined) {
       // A resume knows its id upfront (like ClaudeSession/GrokSession) so onSessionIdReady is NOT
       // fired — the id is already persisted by the caller that chose to resume it.
@@ -202,9 +208,14 @@ export class GrokAcpSession implements ModeSession {
     // Fresh token per client spawn so a re-init after interrupt still has a live registration.
     this.unregisterAttach();
     const token = crypto.randomBytes(24).toString('hex');
+    // Register the share_document sink on the SAME token/registration as attach_file when the
+    // Discord layer wired one, so the loopback /share endpoint is authenticated identically and
+    // is available (mirrors the fileAttach gating) exactly when both this callback and the
+    // gateway are present. Absent → the gateway refuses /share for this token.
     this.attachGateway.register(token, {
       workspaceRoot: this.cwd,
       sendFile: this.sendFile,
+      ...(this.shareDocument ? { shareDocument: this.shareDocument } : {}),
     });
     this.attachToken = token;
     const scriptPath = resolveAttachMcpScript();

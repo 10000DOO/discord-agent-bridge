@@ -13,7 +13,7 @@ import {
   type CreateCodexAppServerClient,
 } from './appSession.js';
 import { resolveCodexHome } from './resolveHome.js';
-import type { SendFileCallback } from '../claude/mcpFileTool.js';
+import type { SendFileCallback, ShareDocumentCallback } from '../claude/mcpFileTool.js';
 
 // Codex backend via long-lived `codex app-server` (JSON-RPC). Mode name stays `codex`.
 // Phase 2: thinking + usagePanel + fileDiff; fileAttach only when sendFileFor is wired.
@@ -23,6 +23,9 @@ export interface CodexModeDeps {
   createClient?: CreateCodexAppServerClient;
   // Wired by the Discord layer: per-channel attach_file sink (dynamic tool).
   sendFileFor?: (guildId: string, channelId: string) => SendFileCallback;
+  // Sibling factory to sendFileFor for the share_document dynamic tool (path-only markdown →
+  // Discord thread; same funnel as the /doc slash). Bound per session, same as sendFileFor.
+  shareDocumentFor?: (guildId: string, channelId: string) => ShareDocumentCallback;
 }
 
 export class CodexMode implements AgentMode {
@@ -68,9 +71,11 @@ export class CodexMode implements AgentMode {
 
   private sessionDeps(ctx: ModeContext): CodexAppSessionDeps {
     const sendFile = this.deps.sendFileFor?.(ctx.guildId, ctx.channelId);
+    const shareDocument = this.deps.shareDocumentFor?.(ctx.guildId, ctx.channelId);
     return {
       ...(this.deps.createClient !== undefined ? { createClient: this.deps.createClient } : {}),
       ...(sendFile !== undefined ? { sendFile } : {}),
+      ...(shareDocument !== undefined ? { shareDocument } : {}),
     };
   }
 

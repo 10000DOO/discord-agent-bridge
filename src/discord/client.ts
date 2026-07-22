@@ -172,6 +172,19 @@ export function buildSlashCommands(
     .setName('clear')
     .setDescription('Clear conversation context (fresh session, same folder/settings)');
 
+  // /doc <path>: share a markdown file from the session workspace into a document thread
+  // (original .md attachment + body). NO autocomplete — deliberately omitted to avoid a
+  // per-keystroke filesystem listing cost; the operator types the path.
+  const doc = new SlashCommandBuilder()
+    .setName('doc')
+    // Hardcoded English, like the sibling commands (/clear etc.). Slash descriptions register
+    // globally once, so a localized description here would render Korean while the rest stay
+    // English on a `ko` host.
+    .setDescription('Share a markdown document into a thread')
+    .addStringOption((o) =>
+      o.setName('path').setDescription('Path to the markdown file (relative to the session folder)').setRequired(true),
+    );
+
   const stopAll = new SlashCommandBuilder()
     .setName('stop-all')
     .setDescription('Stop every active session (admin)');
@@ -192,7 +205,7 @@ export function buildSlashCommands(
     .setDescription('Create the agent control channel and sessions category')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), clear.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
+  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), clear.toJSON(), doc.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
 }
 
 // ---------------------------------------------------------------------------

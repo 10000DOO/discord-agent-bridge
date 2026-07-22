@@ -209,6 +209,14 @@ const ko: Catalog = {
   'file.escape': '워크스페이스를 벗어난 경로는 다운로드할 수 없습니다.',
   'file.notFound': '파일을 찾을 수 없습니다.',
   'file.notFile': '파일이 아닙니다.',
+  // Document share (/doc + share_document tool): post a markdown file into a thread.
+  // The core returns a ShareErrorCode; the edge localizes it via t('doc.error.'+code).
+  'doc.shared': '문서를 스레드에 공유했어요: `{path}`',
+  'doc.error.notFound': '파일을 찾을 수 없어요: `{path}`',
+  'doc.error.escape': '세션 폴더 밖 경로는 공유할 수 없어요.',
+  'doc.error.tooLarge': '파일이 너무 커요 (최대 {max}).',
+  'doc.error.notMarkdown': '마크다운(.md)만 공유할 수 있어요.',
+  'doc.error.notFile': '파일이 아니에요(디렉터리/바이너리): `{path}`',
   // Transcript feed (Codex)
   'transcript.working': '작업 중…',
   // Router notices (7b)
@@ -359,6 +367,12 @@ const en: Catalog = {
   'cmd.interrupt.none': 'No running task to stop.',
   'cmd.clear.done': 'Cleared conversation context. Started a fresh session with the same folder and settings.',
   'cmd.clear.public': "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
+  'doc.shared': 'Shared the document into a thread: `{path}`',
+  'doc.error.notFound': 'File not found: `{path}`',
+  'doc.error.escape': 'Paths outside the session folder cannot be shared.',
+  'doc.error.tooLarge': 'The file is too large (max {max}).',
+  'doc.error.notMarkdown': 'Only markdown (.md) files can be shared.',
+  'doc.error.notFile': 'Not a file (directory/binary): `{path}`',
   'cmd.model.switched': 'Switched this session’s model to {model} (applies from the next turn; conversation kept).',
   'cmd.model.unsupported': 'This backend does not support switching the model mid-session (Claude only).',
   'cmd.model.failed': 'Failed to switch the model. Check the terminal logs.',
