@@ -93,7 +93,7 @@ describe('GrokUsageService', () => {
     expect(snap.fetchedAt).toBe(clock);
 
     expect(fetchFn).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(BILLING_URL);
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);

@@ -54,3 +54,4 @@ Thumbs.db
 
 # Local docs (design + progress) — kept out of the repo
 docs/
+.serena

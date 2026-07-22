@@ -8,6 +8,7 @@ import {
   CONFIG_VERSION,
   type AppConfig,
   type ServerConfig,
+  type Preset,
 } from './configSchema.js';
 
 export type { AppConfig, ServerConfig } from './configSchema.js';
@@ -172,6 +173,37 @@ export class ConfigStore {
     const validated = serverConfigSchema.parse(config);
     this.ensureDir(path.dirname(this.serverConfigPath(validated.guildId)));
     this.writeSecure(this.serverConfigPath(validated.guildId), validated);
+  }
+
+  // Per-guild session-preset helpers (load → patch → save), mirroring the top-level
+  // field preservation ConfigPanel.patchDefaults relies on: spread the existing server
+  // config so auth/defaults/locale/etc. survive. `name` is the unique key, so a same-name
+  // preset overwrites the old one.
+  addServerPreset(guildId: string, preset: Preset): void {
+    const existing = this.loadServerConfig(guildId);
+    const others = (existing?.presets ?? []).filter((p) => p.name !== preset.name);
+    const next: ServerConfig = {
+      ...(existing ?? {}),
+      version: existing?.version ?? CONFIG_VERSION,
+      guildId,
+      presets: [...others, preset],
+    };
+    this.saveServerConfig(next);
+  }
+
+  // Remove a preset by name. Returns false (no write) when the name is absent.
+  removeServerPreset(guildId: string, name: string): boolean {
+    const existing = this.loadServerConfig(guildId);
+    const presets = existing?.presets ?? [];
+    if (!presets.some((p) => p.name === name)) return false;
+    const next: ServerConfig = {
+      ...(existing ?? {}),
+      version: existing?.version ?? CONFIG_VERSION,
+      guildId,
+      presets: presets.filter((p) => p.name !== name),
+    };
+    this.saveServerConfig(next);
+    return true;
   }
 
   private ensureDir(dir: string): void {

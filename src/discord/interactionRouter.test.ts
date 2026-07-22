@@ -9,6 +9,7 @@ import {
   type SlashInteraction,
 } from './interactionRouter.js';
 import type { MessageChannel, ModalSpec } from './ports.js';
+import { setLocale } from './i18n.js';
 import type { GuildChannelProvisioner } from './guildChannels.js';
 import { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type AppConfig } from '../core/configSchema.js';
@@ -670,26 +671,41 @@ describe('InteractionRouter slash commands', () => {
     expect(calls.start).not.toHaveBeenCalled();
   });
 
-  it('/mode backend switches backend with the fresh-context warning', async () => {
-    channelRegistry.set(binding(home));
+  it('/mode backend to a DIFFERENT backend opens the reconfigure popup WITHOUT tearing down the session (R1/R4)', async () => {
+    channelRegistry.set(binding(home)); // a running claude session
     const { orchestrator, calls } = fakeOrchestrator();
     const { wiring, calls: wcalls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction, acks } = slash({
+    const { interaction, replies, acks } = slash({
       commandName: 'mode',
       subcommand: 'backend',
       getStringValue: 'codex',
     });
     await router.handle(interaction);
-    expect(calls.stop).toHaveBeenCalledWith('g1', 'c1');
-    expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
-    expect(calls.start).toHaveBeenCalledOnce();
-    expect(wcalls.attach).toHaveBeenCalledWith('g1', 'c1', 'codex');
-    // The public fresh-context warning is a NON-ephemeral followUp (deferred reply is
-    // ephemeral); the confirmation edits the deferred reply.
-    const freshFollowUp = acks.find((a) => a.kind === 'followUp');
-    expect(freshFollowUp?.payload?.content).toContain('새 대화로 시작');
-    expect(freshFollowUp?.payload?.ephemeral).toBe(false);
+    // The switch is only PROPOSED — nothing is stopped/detached/started until confirm (R1/R4).
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    // The popup (embed + component rows) rides the deferred ephemeral reply.
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
+    const popup = replies.find((r) => (r.embeds?.length ?? 0) > 0 && (r.components?.length ?? 0) > 0);
+    expect(popup).toBeTruthy();
+    // It opens at the MODEL step (folder/preset/backend skipped): model select + model.next,
+    // no backend/folder components and no back button on the first step.
+    const flat = ((popup!.components ?? []) as { components: { type: string; customId: string }[] }[]).flatMap((r) => r.components);
+    expect(flat.some((c) => c.type === 'select' && c.customId === 'model')).toBe(true);
+    expect(flat.some((c) => c.customId === 'model.next')).toBe(true);
+    expect(flat.some((c) => c.customId === 'backend')).toBe(false);
+    expect(flat.some((c) => c.customId === 'dir:into')).toBe(false);
+    expect(flat.some((c) => c.customId === 'wizard.back')).toBe(false);
+    // The embed carries the reconfigure title + step-1/3 guidance for the target backend.
+    const embed = (popup!.embeds as { title?: string; description?: string }[])[0];
+    expect(embed.title).toContain('codex');
+    expect(embed.description).toContain('1/3');
+    // A reconfigure wizard is now registered for this channel.
+    const wizard = (router as unknown as { wizards: Map<string, { isReconfigure(): boolean }> }).wizards.get('g1:c1');
+    expect(wizard?.isReconfigure()).toBe(true);
   });
 
   it('/mode backend to an UNREGISTERED backend: ephemeral notice, session NOT stopped', async () => {
@@ -760,17 +776,62 @@ describe('InteractionRouter slash commands', () => {
     );
   });
 
-  it('/mode backend to a DIFFERENT backend drops the (backend-specific) model + effort', async () => {
-    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus', effort: 'high' }));
+  it('/mode backend reconfigure popup: confirming restarts IN PLACE with the picked model/effort/perm + fresh-context (R3/D6)', async () => {
+    channelRegistry.set(binding(home, { mode: 'claude', model: 'opus', effort: 'high', ownerId: 'owner' }));
     const { orchestrator, calls } = fakeOrchestrator();
-    const { wiring } = fakeWiring();
+    const { wiring, calls: wcalls } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring });
-    const { interaction } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex' });
-    await router.handle(interaction);
-    const startArg = (calls.start.mock.calls[0] as unknown[] | undefined)?.[0] as Record<string, unknown>;
-    expect(startArg).toMatchObject({ mode: 'codex' });
-    expect(startArg).not.toHaveProperty('model');
-    expect(startArg).not.toHaveProperty('effort');
+    // Open the popup — still nothing stopped.
+    const { interaction: open } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex', user: { id: 'u1' } });
+    await router.handle(open);
+    expect(calls.stop).not.toHaveBeenCalled();
+    // Pick a codex model / effort / sandbox mode, then confirm (perm.start).
+    await router.handle(component({ customId: 'model', value: 'gpt-5.4', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'model.next', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'effort', value: 'high', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'effort.next', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'perm.mode', value: 'workspace-write', user: { id: 'u1' } }).interaction);
+    const { interaction: confirm, replies, acks } = component({ customId: 'perm.start', user: { id: 'u1' } });
+    await router.handle(confirm);
+    // The confirm — and ONLY the confirm — tears down + restarts in the SAME channel (R3).
+    expect(calls.stop).toHaveBeenCalledWith('g1', 'c1');
+    expect(wcalls.detach).toHaveBeenCalledWith('g1', 'c1');
+    expect(calls.start).toHaveBeenCalledOnce();
+    // The restarted session inherits the EXISTING binding's owner ('owner'), not the actor
+    // who drove the popup ('u1') — R7 (owner carries over across the switch).
+    expect(calls.start).toHaveBeenCalledWith(
+      expect.objectContaining({ guildId: 'g1', channelId: 'c1', mode: 'codex', cwd: home, ownerId: 'owner', model: 'gpt-5.4', effort: 'high', permMode: 'workspace-write' }),
+    );
+    expect(wcalls.attach).toHaveBeenCalledWith('g1', 'c1', 'codex');
+    // The public fresh-context warning is a NON-ephemeral followUp; the confirmation edits
+    // the popup message (ephemeral).
+    const fresh = acks.find((a) => a.kind === 'followUp');
+    expect(fresh?.payload?.content).toContain('새 대화로 시작');
+    expect(fresh?.payload?.ephemeral).toBe(false);
+    expect(replies.some((r) => r.content?.includes('codex'))).toBe(true);
+    // D6: an in-place restart — NO new session-channel link and NO "save as preset" button.
+    const flatAll = replies.flatMap((r) => ((r.components ?? []) as { components: { customId: string }[] }[]).flatMap((row) => row.components));
+    expect(flatAll.some((c) => c.customId === 'preset.save')).toBe(false);
+  });
+
+  it('/mode backend reconfigure popup: cancelling keeps the running session untouched (R4)', async () => {
+    channelRegistry.set(binding(home)); // claude session s1
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring, calls: wcalls } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction: open } = slash({ commandName: 'mode', subcommand: 'backend', getStringValue: 'codex', user: { id: 'u1' } });
+    await router.handle(open);
+    const { interaction: cancel, replies } = component({ customId: 'cancel', user: { id: 'u1' } });
+    await router.handle(cancel);
+    // No teardown, no restart — the existing session + binding survive intact.
+    expect(calls.stop).not.toHaveBeenCalled();
+    expect(wcalls.detach).not.toHaveBeenCalled();
+    expect(calls.start).not.toHaveBeenCalled();
+    const still = channelRegistry.get('g1', 'c1');
+    expect(still?.mode).toBe('claude');
+    expect(still?.sessionId).toBe('s1');
+    // The cancel notice (wizard.cancelled) is rendered.
+    expect(replies.some((r) => (r.embeds as { description?: string }[] | undefined)?.[0]?.description?.includes('취소'))).toBe(true);
   });
 
   it('/stop stops the channel session and detaches renderers', async () => {
@@ -2146,5 +2207,297 @@ describe('InteractionRouter.maybePromptRenderSetup gating', () => {
     const router = buildRouter({ orchestrator, wiring, resolveChannel: async () => channel });
     await router.maybePromptRenderSetup('ctrl-1');
     expect(posts).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session presets (WO-3 flow): folder → preset step → immediate start, save, delete.
+// ---------------------------------------------------------------------------
+describe('InteractionRouter session presets', () => {
+  // Pin the locale: a /config locale test elsewhere in this file leaves the module-global
+  // locale on 'en', which would otherwise flake these Korean-string assertions by order.
+  beforeEach(() => {
+    setLocale('ko');
+  });
+
+  // Flatten a reply's component rows to a single component list for assertions.
+  function flatOf(reply: Reply | undefined): { type?: string; customId?: string; options?: { value: string }[] }[] {
+    return ((reply?.components ?? []) as { components: { type?: string; customId?: string; options?: { value: string }[] }[] }[]).flatMap((r) => r.components);
+  }
+
+  it('/agent start always opens at the folder step (never the preset picker first)', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude', model: 'sonnet', effort: 'high', permMode: 'plan', profile: null });
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies } = slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } });
+    await router.handle(interaction);
+    const flat = flatOf(replies[0]);
+    // First screen is the folder browser (dir:here), not the preset select.
+    expect(flat.some((c) => c.customId === 'dir:here')).toBe(true);
+    expect(flat.some((c) => c.customId === 'preset.pick')).toBe(false);
+  });
+
+  it('confirming the folder shows the preset step when the guild has saved presets', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude', model: 'sonnet', effort: 'high', permMode: 'plan', profile: null });
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    const { interaction, replies } = component({ customId: 'dir:here', user: { id: 'u1' } });
+    await router.handle(interaction);
+    const flat = flatOf(replies[replies.length - 1]);
+    const pick = flat.find((c) => c.customId === 'preset.pick');
+    expect(pick?.type).toBe('select');
+    expect(pick?.options?.map((o) => o.value)).toEqual(['claude-plan']);
+    expect(flat.some((c) => c.customId === 'preset.direct')).toBe(true);
+    expect(flat.some((c) => c.customId === 'preset.delete')).toBe(true);
+  });
+
+  it('confirming the folder goes straight to the backend step when the guild has NO presets (R6)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    const { interaction, replies } = component({ customId: 'dir:here', user: { id: 'u1' } });
+    await router.handle(interaction);
+    const flat = flatOf(replies[replies.length - 1]);
+    expect(flat.some((c) => c.customId === 'backend.next')).toBe(true);
+    expect(flat.some((c) => c.customId === 'preset.pick')).toBe(false);
+  });
+
+  it('picking a preset on the preset step starts immediately with the preset config (folder already chosen)', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude', model: 'sonnet', effort: 'high', permMode: 'plan', profile: null });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    expect(calls.start).not.toHaveBeenCalled();
+    // Picking the preset seeds the selection and starts at once (no more steps).
+    await router.handle(component({ customId: 'preset.pick', value: 'claude-plan', user: { id: 'u1' } }).interaction);
+    expect(calls.start).toHaveBeenCalledOnce();
+    expect(calls.start).toHaveBeenCalledWith(expect.objectContaining({ mode: 'claude', model: 'sonnet', effort: 'high', permMode: 'plan' }));
+  });
+
+  it('picking a preset whose backend is no longer registered blocks the start (must-fix)', async () => {
+    // A preset saved for a backend that is no longer registered (CLI removed / mode gone).
+    store.addServerPreset('g1', { name: 'gone', backend: 'grok', model: 'grok-4', effort: 'high', permMode: 'default', profile: null });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    const { interaction, replies } = component({ customId: 'preset.pick', value: 'gone', user: { id: 'u1' } });
+    await router.handle(interaction);
+    // No session started → no orphan session channel created for the dead backend.
+    expect(calls.start).not.toHaveBeenCalled();
+    // The wizard stays on the preset step and re-renders the picker with the unavailable notice.
+    const last = replies[replies.length - 1];
+    expect(flatOf(last).some((c) => c.customId === 'preset.pick')).toBe(true);
+    const description = (last?.embeds as { description?: string }[] | undefined)?.[0]?.description ?? '';
+    expect(description).toContain('grok');
+  });
+
+  it('“set up manually” on the preset step advances to the backend step', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude' });
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    const { interaction, replies } = component({ customId: 'preset.direct', user: { id: 'u1' } });
+    await router.handle(interaction);
+    expect(flatOf(replies[replies.length - 1]).some((c) => c.customId === 'backend.next')).toBe(true);
+  });
+
+  it('delete mode removes the picked preset from the guild config and refreshes the list in place', async () => {
+    store.addServerPreset('g1', { name: 'keep', backend: 'claude' });
+    store.addServerPreset('g1', { name: 'drop', backend: 'codex' });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    // Toggle delete mode (re-renders the picker), then pick 'drop' to remove it.
+    await router.handle(component({ customId: 'preset.delete', user: { id: 'u1' } }).interaction);
+    const { interaction, replies } = component({ customId: 'preset.pick', value: 'drop', user: { id: 'u1' } });
+    await router.handle(interaction);
+    // 'drop' is gone from the guild config; picking in delete mode never starts a session.
+    expect((store.loadServerConfig('g1')?.presets ?? []).map((p) => p.name)).toEqual(['keep']);
+    expect(calls.start).not.toHaveBeenCalled();
+    // The re-rendered picker shows the refreshed list (drop removed, keep still there).
+    const pick = flatOf(replies[replies.length - 1]).find((c) => c.customId === 'preset.pick');
+    expect(pick?.options?.map((o) => o.value)).toEqual(['keep']);
+  });
+
+  it('cancelling on the preset step ends the wizard without starting', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude' });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    const { interaction, replies } = component({ customId: 'cancel', user: { id: 'u1' } });
+    await router.handle(interaction);
+    // The wizard renders the cancel notice in its embed (mirrors a cancel from any step).
+    expect(replies.some((r) => (r.embeds as { description?: string }[] | undefined)?.[0]?.description?.includes('취소'))).toBe(true);
+    // The wizard is gone: a later pick does nothing (no start).
+    await router.handle(component({ customId: 'preset.pick', value: 'claude-plan', user: { id: 'u1' } }).interaction);
+    expect(calls.start).not.toHaveBeenCalled();
+  });
+
+  it('a completed normal wizard offers 💾 save; the name modal persists the launched config', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    // No presets → straight to the manual wizard; drive it to done.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    let doneReply: Reply | undefined;
+    for (const customId of ['dir:here', 'backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      const { interaction, replies } = component({ customId, user: { id: 'u1' } });
+      await router.handle(interaction);
+      if (replies.length > 0) doneReply = replies[replies.length - 1];
+    }
+    // The done reply carries the 💾 save button.
+    expect(flatOf(doneReply).some((c) => c.customId === 'preset.save')).toBe(true);
+
+    // Clicking save opens the name modal WITHOUT a preceding defer (showModal is the ack).
+    const { interaction: save, acks } = component({ customId: 'preset.save', user: { id: 'u1' } });
+    await router.handle(save);
+    expect(acks.map((a) => a.kind)).toEqual(['showModal']);
+    expect(acks[0].modal?.customId).toBe('preset.name');
+    expect(acks[0].modal?.fields[0]?.customId).toBe('name');
+
+    // Submitting the name persists the preset (backend from the launched config, no cwd).
+    const { interaction: submit, replies: sr } = modalSubmit({ customId: 'preset.name', user: { id: 'u1' }, fields: { name: 'my-preset' } });
+    await router.handle(submit);
+    expect(sr.some((r) => (r.content ?? '').includes('my-preset'))).toBe(true);
+    const presets = store.loadServerConfig('g1')?.presets ?? [];
+    expect(presets.map((p) => p.name)).toEqual(['my-preset']);
+    expect(presets[0]).toMatchObject({ backend: 'claude' });
+    expect(presets[0]).not.toHaveProperty('cwd');
+  });
+
+  it('clicking 💾 save with no captured draft replies with the “nothing to save” notice', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    const { interaction, replies, acks } = component({ customId: 'preset.save', user: { id: 'u1' } });
+    await router.handle(interaction);
+    expect(acks.some((a) => a.kind === 'showModal')).toBe(false);
+    expect(replies.some((r) => (r.content ?? '').includes('저장할 최근 세션 설정이 없어요'))).toBe(true);
+  });
+
+  it('a preset-launched wizard shows NO save button on done and captures no draft', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude', model: 'sonnet', effort: 'high', permMode: 'plan', profile: null });
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    const { interaction, replies } = component({ customId: 'preset.pick', value: 'claude-plan', user: { id: 'u1' } });
+    await router.handle(interaction);
+    const done = replies.find((r) => (r.content ?? '').includes('세션 채널'));
+    expect(done).toBeTruthy();
+    expect((done?.components ?? []).length).toBe(0);
+    // No draft captured → a subsequent 💾 save has nothing to persist.
+    const { interaction: save, acks } = component({ customId: 'preset.save', user: { id: 'u1' } });
+    await router.handle(save);
+    expect(acks.some((a) => a.kind === 'showModal')).toBe(false);
+  });
+
+  it('a preset pick from a NON-owner is ignored; the owner can still pick', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude' });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    // A bystander (also execute tier) picks → ignored (owner-bound).
+    await router.handle(component({ customId: 'preset.pick', value: 'claude-plan', user: { id: 'u2' } }).interaction);
+    expect(calls.start).not.toHaveBeenCalled();
+    // The owner picks → starts at once (folder already chosen).
+    await router.handle(component({ customId: 'preset.pick', value: 'claude-plan', user: { id: 'u1' } }).interaction);
+    expect(calls.start).toHaveBeenCalledOnce();
+  });
+
+  it('a preset pick from a non-drive user is denied', async () => {
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude' });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    const { interaction, replies } = component({ customId: 'preset.pick', value: 'claude-plan', roles: ['role-nobody'] });
+    await router.handle(interaction);
+    expect(calls.start).not.toHaveBeenCalled();
+    expect(replies.some((r) => (r.content ?? '').includes('권한이 없습니다'))).toBe(true);
+  });
+
+  it('a raw preset (profile:null) does NOT fall back to the guild default profile on start', async () => {
+    // Guild default profile is a non-null named profile; a RAW preset (profile:null) must
+    // start with profile:null, not overfall to that guild default.
+    store.saveServerConfig({
+      version: CONFIG_VERSION,
+      guildId: 'g1',
+      defaults: { permissionProfile: 'safe' },
+      presets: [{ name: 'raw-preset', backend: 'claude', model: 'sonnet', effort: 'high', permMode: 'default', profile: null }],
+    });
+    const { orchestrator, calls } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    await router.handle(component({ customId: 'preset.pick', value: 'raw-preset', user: { id: 'u1' } }).interaction);
+    expect(calls.start).toHaveBeenCalledOnce();
+    expect(calls.start).toHaveBeenCalledWith(expect.objectContaining({ mode: 'claude', profile: null }));
+  });
+
+  it('a preset-launched done shows no save button even after a prior normal wizard left a draft', async () => {
+    // First run a NORMAL wizard (set up manually) to DONE without saving — leaves a draft.
+    store.addServerPreset('g1', { name: 'claude-plan', backend: 'claude', model: 'sonnet', effort: 'high', permMode: 'plan', profile: null });
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction); // → preset step
+    await router.handle(component({ customId: 'preset.direct', user: { id: 'u1' } }).interaction); // → backend step
+    for (const customId of ['backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      await router.handle(component({ customId, user: { id: 'u1' } }).interaction);
+    }
+    // Same channel again: fresh wizard → folder → preset step → pick (express) to DONE.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    await router.handle(component({ customId: 'dir:here', user: { id: 'u1' } }).interaction);
+    const { interaction, replies } = component({ customId: 'preset.pick', value: 'claude-plan', user: { id: 'u1' } });
+    await router.handle(interaction);
+    // The preset-launched done keys the button off launchedFromPreset, not a stale draft.
+    const done = replies.find((r) => (r.content ?? '').includes('세션 채널'));
+    expect(done).toBeTruthy();
+    expect(flatOf(done).some((c) => c.customId === 'preset.save')).toBe(false);
+    expect((done?.components ?? []).length).toBe(0);
+  });
+
+  it('savePresetFromModal rejects an empty or >100-char name (server-side validation, no persist)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    // No presets → normal wizard; drive to done to capture a draft on the channel.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    for (const customId of ['dir:here', 'backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      await router.handle(component({ customId, user: { id: 'u1' } }).interaction);
+    }
+    const addSpy = vi.spyOn(store, 'addServerPreset');
+    // Empty name → rejected with a notice, nothing persisted.
+    const empty = modalSubmit({ customId: 'preset.name', user: { id: 'u1' }, fields: { name: '   ' } });
+    await router.handle(empty.interaction);
+    expect(addSpy).not.toHaveBeenCalled();
+    expect(empty.replies.length).toBeGreaterThan(0);
+    // >100-char name → also rejected (draft is untouched by the failed save, so it is still present).
+    const tooLong = modalSubmit({ customId: 'preset.name', user: { id: 'u1' }, fields: { name: 'x'.repeat(101) } });
+    await router.handle(tooLong.interaction);
+    expect(addSpy).not.toHaveBeenCalled();
+    expect(tooLong.replies.length).toBeGreaterThan(0);
+    expect((store.loadServerConfig('g1')?.presets ?? [])).toEqual([]);
   });
 });

@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Logger, ModelChoice, ModeSession, PermMode, ResumableSession } from '../core/contracts.js';
+import type { Logger, ModelChoice, ModeSession, PermMode, ResumableSession, SessionPermMode } from '../core/contracts.js';
 import { claudeCatalog, permissionModeLabel } from '../core/providerCatalog.js';
 import type { Authorizer, AuthAction } from '../core/auth.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { ConfigStore } from '../core/config.js';
+import type { Preset } from '../core/configSchema.js';
 import type { ConfigResolver } from '../core/configResolver.js';
 import type { PermissionResolver } from '../core/permissionResolver.js';
 import type { ModeRegistry } from '../core/modeRegistry.js';
@@ -183,6 +184,18 @@ function channelKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
 }
 
+// A session-config draft captured when a NORMAL wizard reaches done, so the done reply's
+// "💾 save as preset" button + name modal can persist exactly what was just launched.
+// No cwd — presets are folder-independent (§D1), the folder is picked fresh every start.
+// Mirrors the Preset schema's optional fields; consumed by savePresetFromModal.
+interface PresetDraft {
+  backend: string;
+  model?: string;
+  effort?: string;
+  permMode?: string;
+  profile?: string | null;
+}
+
 export class InteractionRouter {
   private readonly deps: InteractionRouterDeps;
   // Active wizards keyed by guildId:channelId, so follow-up component interactions
@@ -194,6 +207,13 @@ export class InteractionRouter {
   // Active /config panels keyed by guildId:channelId, so follow-up role/string
   // selects + Save route back to the panel that holds the pending selections.
   private readonly configPanels = new Map<string, ConfigPanel>();
+  // Session-config drafts captured when a NORMAL wizard reaches done, keyed by the ORIGINAL
+  // command channel (guildId:channelId), so the done reply's "💾 save as preset" button
+  // + name modal can persist what was just launched. A preset-launched wizard records none,
+  // so it never re-offers saving. Deleted on save; overwritten by the next normal start on
+  // the same channel. Not otherwise pruned — a draft can linger if the save button is never
+  // clicked, the flow is cancelled after done, or the channel is deleted.
+  private readonly presetDrafts = new Map<string, PresetDraft>();
   // Short-lived cache for /model's autocomplete ONLY (see getModelAutocomplete).
   // deps.modelsFor stays uncached for the wizard/config panel, which need the
   // freshest list on every (rare) open.
@@ -387,11 +407,29 @@ export class InteractionRouter {
 
   private async startWizard(i: SlashInteraction): Promise<void> {
     const guildId = i.guildId as string; // authorize() rejected DMs (no guild)
-    const resolved = this.deps.configResolver.resolve(guildId, i.channelId);
+    // Always open at the folder step. When the guild has saved presets, the wizard offers
+    // the preset picker AFTER the folder is chosen (folder → preset); with none it goes
+    // straight to the backend step (R6 — no regression for guilds that never saved one).
+    const wizard = await this.buildChannelWizard(guildId, i.channelId, i.user.id);
+    this.wizards.set(channelKey(guildId, i.channelId), wizard);
+    // Render the FIRST step (the folder picker) and attach it to the deferred reply.
+    // Sending only cmd.start.launched left the user with a text line and nothing to
+    // click — the wizard's embed + component rows (folder select + ⬆/✅ buttons) must
+    // ride the editReply so the picker actually appears (mirrors openConfigPanel).
+    const { embed, rows } = wizard.render();
+    await i.editReply({ content: t('cmd.start.launched'), embeds: [embed], components: rows });
+  }
+
+  // The per-backend option sources shared by the /agent start wizard and the /mode backend
+  // reconfigure popup: the resolved config, backend list, profiles, and the model /
+  // permission / effort suppliers. Extracted so both entry points build IDENTICAL sources
+  // without duplicating the catalog wiring (behavior unchanged for /agent start).
+  private async buildWizardOptionSources(guildId: string, channelId: string) {
+    const resolved = this.deps.configResolver.resolve(guildId, channelId);
     const config = this.deps.configStore.load();
+    const server = this.deps.configStore.loadServerConfig(guildId);
     const backends = this.deps.modeRegistry.list();
     const profiles = Object.keys(config.profiles);
-    const backend = resolved.mode;
 
     // Model list per backend — materialized ONCE at wizard start so the sync render
     // reads by backend key. The Claude probe is awaited here (fresh SDK list every
@@ -412,13 +450,23 @@ export class InteractionRouter {
       const supported = modelsFor(b).find((m) => m.value === model)?.supportedEffortLevels;
       return this.deps.modeRegistry.get(b).catalog.effortChoices(supported);
     };
-    // The wizard's pre-selected reasoning effort per backend. Prefers the guild's
-    // server-saved default (a NAMED config field, claudeEffort/codexEffort — §8, left as-is)
-    // when present; falls back to the backend catalog's default effort.
+    // The wizard's pre-selected reasoning effort per backend: the guild's server-saved
+    // default (a NAMED config field, claudeEffort/codexEffort — §8, left as-is), then the
+    // backend's catalog default. A preset seeds its own effort inside the wizard.
     const defaultEffortForBackend = (b: string): string => {
       const saved = b === 'codex' ? resolved.codexEffort : resolved.claudeEffort;
       return saved ?? this.deps.modeRegistry.get(b).catalog.defaultEffort() ?? '';
     };
+    return { resolved, config, server, backends, profiles, modelsFor, permsFor, effortsFor, defaultEffortForBackend };
+  }
+
+  // Assemble the /agent start ChannelWizard, always opening at the folder step. The guild's
+  // saved presets are injected so the wizard can offer the preset picker AFTER the folder
+  // (folder → preset → backend); picking one seeds + starts inside the wizard, so the
+  // router needs no separate picker flow.
+  private async buildChannelWizard(guildId: string, channelId: string, ownerId: string): Promise<ChannelWizard> {
+    const src = await this.buildWizardOptionSources(guildId, channelId);
+    const backend = src.resolved.mode;
 
     // Unbounded folder browsing by default (browse anywhere up to '/'), unless the
     // operator configured explicit browse roots — so the admin can pick a cwd on any
@@ -431,10 +479,12 @@ export class InteractionRouter {
       nativePanel: this.deps.pickFolder !== undefined,
     });
 
-    const wizard = new ChannelWizard({
+    return new ChannelWizard({
       guildId,
-      channelId: i.channelId,
-      ownerId: i.user.id,
+      channelId,
+      ownerId,
+      // The wizard just starts the session; the draft for "💾 save as preset" is captured
+      // from wizard.current() in the done handler (only for a NON-preset launch).
       start: (params) => this.startSession(params),
       defaults: {
         backend,
@@ -442,31 +492,54 @@ export class InteractionRouter {
         // which resets to it on a backend CHANGE), so a non-Claude default backend never
         // leaks the Claude default. Codex's catalog leads with config.defaults.codexModel
         // when set; the alias fallback covers a boot without the models dep wired.
-        model: modelsFor(backend)[0]?.value ?? resolved.claudeModel,
-        permMode: resolved.permissionMode,
-        profile: resolved.permissionProfile,
+        model: src.modelsFor(backend)[0]?.value ?? src.resolved.claudeModel,
+        permMode: src.resolved.permissionMode as SessionPermMode,
+        profile: src.resolved.permissionProfile,
       },
-      backends,
+      backends: src.backends,
       // Computed fresh on every wizard open (same dotfile scan /mode backend's choice
       // uses at command-registration time, but here it is live — no bot restart needed
       // to see a dotfile edit). Absent when the custom backend is not registered.
-      ...(backends.includes('custom') && this.deps.customBackendLabel
+      ...(src.backends.includes('custom') && this.deps.customBackendLabel
         ? { customBackendLabel: this.deps.customBackendLabel() }
         : {}),
-      modelsFor,
-      profiles,
-      permsFor,
-      effortsFor,
-      defaultEffortFor: defaultEffortForBackend,
+      modelsFor: src.modelsFor,
+      profiles: src.profiles,
+      permsFor: src.permsFor,
+      effortsFor: src.effortsFor,
+      defaultEffortFor: src.defaultEffortForBackend,
       browser,
+      // Saved presets offered as the step after the folder (empty = no preset step, R6).
+      // Deleting one removes it from the guild config and returns the refreshed list so the
+      // picker re-renders in place (the wizard stays pure — the router owns persistence).
+      presets: src.server?.presets ?? [],
+      summarizePreset: (p) => this.summarizePreset(p),
+      onDeletePreset: (name) => {
+        this.deps.configStore.removeServerPreset(guildId, name);
+        return this.deps.configStore.loadServerConfig(guildId)?.presets ?? [];
+      },
+      // A saved preset can outlive its backend (CLI removed / mode unregistered). The wizard
+      // guards a pick against this before seeding + starting, so it never creates an orphan
+      // session channel for a dead backend (mirrors isKnownBackend elsewhere in this router).
+      backendAvailable: (b) => this.deps.modeRegistry.has(b),
     });
-    this.wizards.set(channelKey(guildId, i.channelId), wizard);
-    // Render the FIRST step (the folder picker) and attach it to the deferred reply.
-    // Sending only cmd.start.launched left the user with a text line and nothing to
-    // click — the wizard's embed + component rows (folder select + ⬆/✅ buttons) must
-    // ride the editReply so the picker actually appears (mirrors openConfigPanel).
-    const { embed, rows } = wizard.render();
-    await i.editReply({ content: t('cmd.start.launched'), embeds: [embed], components: rows });
+  }
+
+  // The one-line summary shown as a preset option's description (backend · model · effort
+  // · perm). Missing values render as '-'; a named profile takes precedence over a raw
+  // permission mode for the perm slot.
+  private summarizePreset(p: Preset): string {
+    // Discord caps a select option's description at 100 chars — clamp so a long summary
+    // never throws when the picker renders (mirrors directoryBrowser.ts's clip helper).
+    const clip = (s: string, max = 100): string => (s.length <= max ? s : s.slice(0, max - 1) + '…');
+    return clip(
+      t('preset.summary', {
+        backend: p.backend,
+        model: p.model ?? '-',
+        effort: p.effort ?? '-',
+        perm: p.profile ?? p.permMode ?? '-',
+      }),
+    );
   }
 
   // Open the /config role-tier + defaults panel. Bootstrap gate: allowed if the actor
@@ -701,6 +774,12 @@ export class InteractionRouter {
       await this.guarded(i, () => this.handleManualPathModal(i));
       return;
     }
+    // The "save as preset" name modal submit persists the captured draft under the typed
+    // name (its own 3s window — reply as usual).
+    if (i.customId === 'preset.name') {
+      await this.guarded(i, () => this.savePresetFromModal(i));
+      return;
+    }
     await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
   }
 
@@ -749,6 +828,18 @@ export class InteractionRouter {
     const session = await this.deps.orchestrator.start(params);
     await this.deps.wiring.attach(params.guildId, params.channelId, params.mode);
     return session;
+  }
+
+  // The /mode backend cross-backend switch's confirm-time StartFn: stop → detach → restart
+  // IN THE SAME channel (startInChannel reuse — no new session channel, no intro, mirroring
+  // the same-backend switchBackend path). Only invoked when the reconfigure popup is
+  // confirmed (perm.start), so the running session is never torn down until the driver
+  // commits (R3/R4).
+  private async switchSession(params: StartParams): Promise<{ session: ModeSession; channelId: string }> {
+    await this.deps.orchestrator.stop(params.guildId, params.channelId);
+    this.deps.wiring.detach(params.guildId, params.channelId);
+    const session = await this.startInChannel({ ...params });
+    return { session, channelId: params.channelId };
   }
 
   // Create the dedicated session channel for this start, or fall back to the command's
@@ -912,30 +1003,75 @@ export class InteractionRouter {
       await i.editReply({ content: t('router.noSession') });
       return;
     }
-    // Switching the backend starts a fresh context (§9 step 3): stop the current
-    // session, then start a new one on the same cwd/owner/permMode and re-wire.
-    const { cwd, ownerId, permMode, profile, model, effort, mode: prevMode } = binding;
+    // Same backend re-selected: keep the existing immediate switch (R6). model/effort are
+    // carried over (both backend-specific — the SAME-backend guard below always holds here).
+    if (backend === binding.mode) {
+      // Switching the backend starts a fresh context (§9 step 3): stop the current
+      // session, then start a new one on the same cwd/owner/permMode and re-wire.
+      const { cwd, ownerId, permMode, profile, model, effort, mode: prevMode } = binding;
 
-    await this.deps.orchestrator.stop(guildId, i.channelId);
-    this.deps.wiring.detach(guildId, i.channelId);
-    await this.startInChannel({
+      await this.deps.orchestrator.stop(guildId, i.channelId);
+      this.deps.wiring.detach(guildId, i.channelId);
+      await this.startInChannel({
+        guildId,
+        channelId: i.channelId,
+        mode: backend,
+        cwd,
+        ownerId,
+        permMode,
+        profile,
+        // Carry the model/effort only when restarting on the SAME backend; both are
+        // backend-specific, so a cross-backend switch discards them (config default).
+        ...(backend === prevMode && model !== undefined ? { model } : {}),
+        ...(backend === prevMode && effort !== undefined ? { effort } : {}),
+      });
+      // Confirmation closes the ephemeral deferred reply (only the actor sees it). The
+      // fresh-context warning (§9 step 3) is PUBLIC so the whole channel sees the context
+      // reset — posted as a non-ephemeral followUp since the deferred reply is ephemeral.
+      await i.editReply({ content: t('cmd.mode.switched', { backend }) });
+      await safe(i.followUp({ content: t('cmd.mode.freshContext', { backend }), ephemeral: false }));
+      return;
+    }
+
+    // Different backend: DO NOT stop the running session (R1/R4). Open the reconfigure popup
+    // (model → effort → perm) so the driver re-picks settings for the new backend; the actual
+    // stop → detach → same-channel restart happens only on confirm, via switchSession (R3).
+    const src = await this.buildWizardOptionSources(guildId, i.channelId);
+    const browser = new DirectoryBrowser({
+      ...(this.deps.browseRoots && this.deps.browseRoots.length > 0
+        ? { allowedRoots: this.deps.browseRoots }
+        : {}),
+      nativePanel: this.deps.pickFolder !== undefined,
+    });
+    const wizard = new ChannelWizard({
       guildId,
       channelId: i.channelId,
-      mode: backend,
-      cwd,
-      ownerId,
-      permMode,
-      profile,
-      // Carry the model/effort only when restarting on the SAME backend; both are
-      // backend-specific, so a cross-backend switch discards them (config default).
-      ...(backend === prevMode && model !== undefined ? { model } : {}),
-      ...(backend === prevMode && effort !== undefined ? { effort } : {}),
+      // The actor drives the popup; the restarted session keeps the EXISTING binding's owner.
+      ownerId: i.user.id,
+      start: (p) => this.switchSession({ ...p, ownerId: binding.ownerId }),
+      defaults: {
+        backend,
+        model: src.modelsFor(backend)[0]?.value ?? src.resolved.claudeModel,
+        permMode: src.resolved.permissionMode as SessionPermMode,
+        profile: src.resolved.permissionProfile,
+      },
+      backends: src.backends,
+      ...(src.backends.includes('custom') && this.deps.customBackendLabel
+        ? { customBackendLabel: this.deps.customBackendLabel() }
+        : {}),
+      modelsFor: src.modelsFor,
+      profiles: src.profiles,
+      permsFor: src.permsFor,
+      effortsFor: src.effortsFor,
+      defaultEffortFor: src.defaultEffortForBackend,
+      browser,
+      // Seed: omit model/effort so the wizard pre-selects the NEW backend's defaults (R5/D5);
+      // carry the current permission (permMode/profile) over from the binding.
+      entry: { backend, cwd: binding.cwd, permMode: binding.permMode, profile: binding.profile ?? null },
     });
-    // Confirmation closes the ephemeral deferred reply (only the actor sees it). The
-    // fresh-context warning (§9 step 3) is PUBLIC so the whole channel sees the context
-    // reset — posted as a non-ephemeral followUp since the deferred reply is ephemeral.
-    await i.editReply({ content: t('cmd.mode.switched', { backend }) });
-    await safe(i.followUp({ content: t('cmd.mode.freshContext', { backend }), ephemeral: false }));
+    this.wizards.set(channelKey(guildId, i.channelId), wizard);
+    const { embed, rows } = wizard.render();
+    await i.editReply({ embeds: [embed], components: rows });
   }
 
   private async switchPerm(i: SlashInteraction): Promise<void> {
@@ -1273,7 +1409,21 @@ export class InteractionRouter {
       return;
     }
 
-    // Otherwise it is a wizard component (folder/backend/model/perm/confirm/cancel).
+    // The 💾 "save as preset" button on a completed wizard opens a name modal, and
+    // showModal IS the ack — so, like dir:create, it must be handled BEFORE the generic
+    // defer below (a deferred component can no longer show a modal). Gated on 'drive' only,
+    // NOT owner-bound: the wizard was already deleted at done, so any drive user on this
+    // channel can save the per-channel draft. A saved preset is then shared per-guild.
+    if (i.customId === 'preset.save') {
+      if (!this.authorize(i, 'drive')) return;
+      await this.guarded(i, () => this.openPresetSaveModal(i));
+      return;
+    }
+
+    // Otherwise it is a wizard component (folder/preset/backend/model/perm/confirm/cancel).
+    // The preset-step selects/buttons (preset.pick / preset.direct / preset.delete) fall
+    // through here too — they are just another step of the active wizard now — so no
+    // separate preset routing is needed (only preset.save above is special, being a modal).
     // The wizard flow is a drive action; only the driver who opened it advances it.
     if (!this.authorize(i, 'drive')) return;
     // Acknowledge FIRST: the confirm step calls orchestrator.start (spawns an agent),
@@ -1294,9 +1444,42 @@ export class InteractionRouter {
       // On a successful confirm the session was bound to a freshly created channel;
       // link it back to the driver (A4D-style "session started in <#newChannel>").
       if (step === 'done') {
+        // A reconfigure (backend switch) popup restarts IN PLACE — no new channel and no
+        // preset draft. Report the switch + the PUBLIC fresh-context warning (mirrors the
+        // same-backend switchBackend path) and stop before the new-channel/preset logic (D6).
+        if (wizard.isReconfigure()) {
+          const backend = wizard.current().backend;
+          await safe(i.editReply({ content: t('cmd.mode.switched', { backend }), embeds: [], components: [] }));
+          await safe(i.followUp({ content: t('cmd.mode.freshContext', { backend }), ephemeral: false }));
+          return;
+        }
         const newChannelId = wizard.sessionChannelId();
         if (newChannelId) {
-          await safe(i.editReply({ content: t('cmd.start.channelCreated', { channel: `<#${newChannelId}>` }) }));
+          const key = channelKey(i.guildId as string, i.channelId);
+          // Offer "💾 save as preset" ONLY for a NORMAL launch. A preset-launched wizard
+          // records no draft and shows no button — you don't re-save what you launched
+          // from. Capturing from current() at done (not at start) means each normal
+          // completion records exactly what it just launched (no stale draft carries over).
+          const fromPreset = wizard.launchedFromPreset();
+          if (!fromPreset) {
+            const s = wizard.current();
+            this.presetDrafts.set(key, {
+              backend: s.backend,
+              model: s.model,
+              effort: s.effort,
+              permMode: s.permMode,
+              profile: s.profile,
+            });
+          }
+          await safe(
+            i.editReply({
+              content: t('cmd.start.channelCreated', { channel: `<#${newChannelId}>` }),
+              embeds: [],
+              components: fromPreset
+                ? []
+                : [{ components: [{ type: 'button', customId: 'preset.save', label: t('preset.save.button'), style: 'secondary' }] }],
+            }),
+          );
         }
         return;
       }
@@ -1608,6 +1791,62 @@ export class InteractionRouter {
     } catch (err) {
       this.logError('failed to post resume intro', err);
     }
+  }
+
+  // ---- Session preset save -----------------------------------------------
+
+  // Open the "save as preset" name modal for the captured draft. showModal IS the ack, so
+  // this runs BEFORE any defer (routed like dir:create). With no draft (nothing was just
+  // launched here) there is nothing to save — reply with an ephemeral notice instead.
+  private async openPresetSaveModal(i: ComponentInteraction): Promise<void> {
+    const draft = i.guildId ? this.presetDrafts.get(channelKey(i.guildId, i.channelId)) : undefined;
+    if (!draft) {
+      await safe(i.reply({ content: t('preset.save.none'), ephemeral: true }));
+      return;
+    }
+    await i.showModal({
+      customId: 'preset.name',
+      title: t('preset.save.title'),
+      fields: [
+        {
+          customId: 'name',
+          label: t('preset.save.label'),
+          placeholder: t('preset.save.placeholder'),
+          required: true,
+        },
+      ],
+    });
+  }
+
+  // Persist the captured draft as a named preset. Validates the name (non-empty after
+  // trim, ≤100 chars — the name doubles as the Discord select value, ≤100). No cwd is
+  // stored (§D1). Clears the draft so a re-open does not double-save.
+  private async savePresetFromModal(i: ModalSubmitInteraction): Promise<void> {
+    if (!i.guildId) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    const key = channelKey(i.guildId, i.channelId);
+    const draft = this.presetDrafts.get(key);
+    if (!draft) {
+      await safe(i.reply({ content: t('preset.save.none'), ephemeral: true }));
+      return;
+    }
+    const name = i.getField('name').trim();
+    if (name.length === 0 || name.length > 100) {
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
+      return;
+    }
+    this.deps.configStore.addServerPreset(i.guildId, {
+      name,
+      backend: draft.backend,
+      ...(draft.model !== undefined ? { model: draft.model } : {}),
+      ...(draft.effort !== undefined ? { effort: draft.effort } : {}),
+      ...(draft.permMode !== undefined ? { permMode: draft.permMode } : {}),
+      ...(draft.profile !== undefined ? { profile: draft.profile } : {}),
+    });
+    this.presetDrafts.delete(key);
+    await safe(i.reply({ content: t('preset.saved', { name }), ephemeral: true }));
   }
 
   // deferUpdate the component interaction (the first ack, keeping its message). Returns

@@ -1,4 +1,5 @@
 import type { ModelChoice, ModeSession, SessionPermMode } from '../../core/contracts.js';
+import type { Preset } from '../../core/configSchema.js';
 import type { ButtonSpec, ComponentRow, EmbedSpec, SelectSpec } from '../ports.js';
 import { DirectoryBrowser } from '../directoryBrowser.js';
 import { t } from '../i18n.js';
@@ -22,7 +23,7 @@ import { t } from '../i18n.js';
 // select/button inputs (no discord.js here) so 7b can wire real interactions and tests
 // can drive it directly.
 
-export type WizardStep = 'folder' | 'backend' | 'model' | 'effort' | 'perm' | 'confirm' | 'done' | 'cancelled';
+export type WizardStep = 'folder' | 'preset' | 'backend' | 'model' | 'effort' | 'perm' | 'confirm' | 'done' | 'cancelled';
 
 // The subset of SessionOrchestrator.start the wizard depends on. Injected so tests
 // mock it; 7b passes the real orchestrator's bound start.
@@ -87,13 +88,33 @@ export interface ChannelWizardOptions {
   defaultEffortFor: (backend: string) => string;
   // Folder browser (allowed roots / start path already configured by 7b).
   browser: DirectoryBrowser;
+  // Saved session presets offered as a step AFTER the folder (folder → preset → backend).
+  // Empty/absent = no preset step (folder goes straight to backend — R6 no regression). A
+  // snapshot taken when the wizard is built; onDeletePreset returns the refreshed list.
+  presets?: Preset[];
+  // Option-description formatter for a preset (the router supplies the i18n summary,
+  // already clamped ≤100 for the Discord select). Absent → the option has no description.
+  summarizePreset?: (p: Preset) => string;
+  // Remove a preset by name, returning the refreshed list. The router wires
+  // removeServerPreset + reload; the wizard stays pure (same injection pattern as `start`).
+  onDeletePreset?: (name: string) => Preset[];
+  // Whether a preset's backend is still usable. A saved preset can outlive its backend (the
+  // CLI was removed, or the mode is no longer registered). Checked on a pick BEFORE seeding
+  // + starting, so an unavailable-backend preset never reaches start() — which would create
+  // an orphan session channel before orchestrator.start throws. Absent → no availability guard.
+  backendAvailable?: (backend: string) => boolean;
+  // Present → reconfigure (backend switch) mode: the folder/preset/backend steps are skipped
+  // and the wizard starts at the model step. backend/cwd/permMode/profile carry over from the
+  // existing session binding; model/effort are pre-selected (seeded from the new backend's
+  // defaults when absent).
+  entry?: { backend: string; cwd: string; permMode: SessionPermMode; profile: string | null; model?: string; effort?: string };
 }
 
 // A wizard select/button input. `id` is the component id ('backend', 'model',
 // 'effort', 'perm.mode', 'perm.profile', 'dir:into', 'dir:up', 'dir:here', the
-// confirm buttons 'backend.next', 'model.next', 'effort.next', 'perm.start', plus
-// 'wizard.back' and 'cancel'); `value` is the selected option value (for selects) or
-// empty (for buttons).
+// preset-step 'preset.pick'/'preset.direct'/'preset.delete', the confirm buttons
+// 'backend.next', 'model.next', 'effort.next', 'perm.start', plus 'wizard.back' and
+// 'cancel'); `value` is the selected option value (for selects) or empty (for buttons).
 export interface WizardInput {
   id: string;
   value?: string;
@@ -115,7 +136,26 @@ export class ChannelWizard {
   private readonly opts: ChannelWizardOptions;
   private readonly browser: DirectoryBrowser;
   private step: WizardStep = 'folder';
+  // The wizard's first step: 'folder' for /agent start, 'model' for reconfigure. Back
+  // navigation and the back-button visibility key off this so the first step never renders
+  // a back button and a stray wizard.back there is a no-op.
+  private readonly firstStep: WizardStep;
+  // 'start' = /agent start (folder → … → done, creates a channel). 'reconfigure' = backend
+  // switch popup (model → effort → perm → done, same-channel restart). Selects the i18n keys
+  // and lets the router branch the done handling.
+  private readonly kind: 'start' | 'reconfigure';
   private readonly selection: Selection;
+  // Saved presets shown in the preset step (snapshot at build time; shrinks on delete).
+  private presets: Preset[];
+  // Delete mode: a preset pick REMOVES instead of launching. Toggled by the 🗑 button.
+  private presetDeleteMode = false;
+  // Set when the driver launched from a preset (seeded selection + immediate start), so
+  // the router omits the "save as preset" affordance on done — no re-saving a preset.
+  private fromPreset = false;
+  // The backend of a just-picked preset that is no longer available (unregistered mode).
+  // Set by handlePreset's guard and recomputed on the next preset-step interaction; the
+  // preset step renders it as a one-line notice so the driver knows why the pick did nothing.
+  private presetUnavailable: string | null = null;
   // Pending (not-yet-confirmed) select values for the current step. A select onChange
   // writes here + re-renders; the step's confirm button reads it (falling back to the
   // committed selection when the dropdown was never touched) and advances.
@@ -132,18 +172,46 @@ export class ChannelWizard {
     this.opts = options;
     this.browser = options.browser;
     this.ownerId = options.ownerId;
-    this.selection = {
-      cwd: null,
-      backend: options.defaults.backend,
-      model: options.defaults.model,
-      effort: options.defaultEffortFor(options.defaults.backend),
-      permMode: options.defaults.permMode,
-      profile: options.defaults.profile,
-    };
+    this.presets = options.presets ?? [];
+    const entry = options.entry;
+    if (entry) {
+      // Reconfigure (backend switch): skip folder/preset/backend, start at the model step.
+      // backend/cwd/permMode/profile carry over from the existing binding; model/effort are
+      // seeded from the caller or the new backend's defaults (§3-3 D5).
+      this.kind = 'reconfigure';
+      this.firstStep = 'model';
+      this.step = 'model';
+      this.selection = {
+        cwd: entry.cwd,
+        backend: entry.backend,
+        model: entry.model ?? options.modelsFor(entry.backend)[0]?.value ?? options.defaults.model,
+        effort: entry.effort ?? options.defaultEffortFor(entry.backend),
+        permMode: entry.permMode,
+        profile: entry.profile,
+      };
+    } else {
+      this.kind = 'start';
+      this.firstStep = 'folder';
+      this.step = 'folder';
+      this.selection = {
+        cwd: null,
+        backend: options.defaults.backend,
+        model: options.defaults.model,
+        effort: options.defaultEffortFor(options.defaults.backend),
+        permMode: options.defaults.permMode,
+        profile: options.defaults.profile,
+      };
+    }
   }
 
   currentStep(): WizardStep {
     return this.step;
+  }
+
+  // True when this wizard was opened as the backend-switch popup (reconfigure entry). The
+  // router branches its done handling on this (same-channel restart vs. new channel).
+  isReconfigure(): boolean {
+    return this.kind === 'reconfigure';
   }
 
   // The folder currently in view in the wizard's browser. Used by the router's
@@ -181,6 +249,9 @@ export class ChannelWizard {
       case 'folder':
         await this.handleFolder(input);
         break;
+      case 'preset':
+        await this.handlePreset(input);
+        break;
       case 'backend':
         this.handleBackend(input);
         break;
@@ -206,10 +277,18 @@ export class ChannelWizard {
   // skip, §6). The folder step is the first — back is not rendered there and a stray
   // input is a no-op, like every other unknown id.
   private stepBack(): void {
+    // The first step has nothing to go back to (folder for /agent start, model for
+    // reconfigure). Guarding here also covers the folder-first case unchanged.
+    if (this.step === this.firstStep) return;
     this.pending = {};
     switch (this.step) {
-      case 'backend':
+      case 'preset':
         this.step = 'folder';
+        break;
+      case 'backend':
+        // Back from backend returns to the preset step when there is one (mirrors the
+        // forward folder → preset skip), otherwise to the folder step as before.
+        this.step = this.hasPresetStep() ? 'preset' : 'folder';
         break;
       case 'model':
         this.step = 'backend';
@@ -231,8 +310,59 @@ export class ChannelWizard {
     } else if (input.id === 'dir:up') {
       this.browser.up();
     } else if (input.id === 'dir:here') {
+      // Re-entering the preset step from the folder (wizard.back → dir:here) does not pass
+      // through handlePreset, so clear any stale unavailable-backend notice here — otherwise
+      // a fresh visit would still show the previous pick's notice.
+      this.presetUnavailable = null;
       this.selection.cwd = this.browser.select();
+      // With saved presets, offer the preset step next (pick one to start at once, or set
+      // up manually); with none, go straight to the backend step (R6 — no regression).
+      this.step = this.hasPresetStep() ? 'preset' : 'backend';
+    }
+  }
+
+  // Whether the guild had ≥1 saved preset when this wizard was built. Drives the folder →
+  // preset (vs folder → backend) transition and the symmetric back step.
+  private hasPresetStep(): boolean {
+    return this.presets.length > 0;
+  }
+
+  // Preset step (only reached with ≥1 preset): a dropdown of presets plus 🆕 set-up-
+  // manually / 🗑 delete-mode / back / cancel. In delete mode a pick REMOVES the preset
+  // (via onDeletePreset) and stays on the step to re-render; otherwise a pick SEEDS the
+  // selection from the preset and starts immediately (the folder is already chosen).
+  private async handlePreset(input: WizardInput): Promise<void> {
+    // Recompute the unavailable notice per interaction on this step: the guard below re-sets
+    // it only when a newly picked preset's backend is gone, so any other action clears it.
+    this.presetUnavailable = null;
+    if (input.id === 'preset.direct') {
       this.step = 'backend';
+    } else if (input.id === 'preset.delete') {
+      this.presetDeleteMode = !this.presetDeleteMode;
+    } else if (input.id === 'preset.pick' && input.value) {
+      if (this.presetDeleteMode) {
+        this.presets = this.opts.onDeletePreset?.(input.value) ?? this.presets.filter((p) => p.name !== input.value);
+        this.presetDeleteMode = false;
+        return;
+      }
+      const picked = this.presets.find((p) => p.name === input.value);
+      if (!picked) return; // guard a stale/foreign value (must be one we listed)
+      // A saved preset can outlive its backend (CLI removed / mode unregistered). Guard BEFORE
+      // seeding + starting: otherwise the seeded selection reaches start() and the router
+      // creates an orphan session channel before orchestrator.start throws.
+      if (this.opts.backendAvailable && !this.opts.backendAvailable(picked.backend)) {
+        this.presetUnavailable = picked.backend; // rendered as a notice; the preset step stays
+        return;
+      }
+      this.selection.backend = picked.backend;
+      this.selection.model = picked.model ?? this.opts.modelsFor(picked.backend)[0]?.value ?? this.selection.model;
+      this.selection.effort = picked.effort ?? this.opts.defaultEffortFor(picked.backend);
+      this.selection.permMode = (picked.permMode ?? this.opts.defaults.permMode) as SessionPermMode;
+      // null (a raw-mode preset) is an EXPLICIT choice, not "no override" — distinguish it
+      // from undefined so a raw preset does not fall back to the guild default profile.
+      this.selection.profile = picked.profile !== undefined ? picked.profile : this.opts.defaults.profile;
+      this.fromPreset = true;
+      await this.start();
     }
   }
 
@@ -356,12 +486,42 @@ export class ChannelWizard {
     return this.createdChannelId;
   }
 
+  // True when the confirmed session was launched from a picked preset (seeded selection +
+  // immediate start). The router reads it on done to skip the "save as preset" button —
+  // you do not re-save what you just launched from.
+  launchedFromPreset(): boolean {
+    return this.fromPreset;
+  }
+
+  // The embed title: the reconfigure popup names the target backend; /agent start uses the
+  // generic wizard title.
+  private title(): string {
+    return this.kind === 'reconfigure'
+      ? t('wizard.recfg.title', { backend: this.selection.backend })
+      : t('wizard.title');
+  }
+
+  // The guidance i18n key for a choice step, swapping in the reconfigure variant
+  // (wizard.recfg.step.*) when this is a backend-switch popup.
+  private stepLabelKey(step: 'model' | 'effort' | 'perm'): string {
+    return this.kind === 'reconfigure' ? `wizard.recfg.step.${step}` : `wizard.step.${step}`;
+  }
+
+  // The back button, rendered only when the current step is NOT the wizard's first step
+  // (folder for /agent start, model for reconfigure) — the first step has nothing to go back
+  // to. Spread into a button row.
+  private backRow(): ButtonSpec[] {
+    return this.step === this.firstStep ? [] : [backButton()];
+  }
+
   // Render the current step as a plain component spec (embed + rows). 7b maps it onto
   // a discord.js reply/update. Pure data — the tests assert on it directly.
   render(): { embed: EmbedSpec; rows: ComponentRow[] } {
     switch (this.step) {
       case 'folder':
         return this.browser.render();
+      case 'preset':
+        return this.presetStep();
       case 'backend':
         return this.choiceStep(
           'wizard.step.backend',
@@ -381,7 +541,7 @@ export class ChannelWizard {
       case 'model':
         // English labels from the catalog (model id / SDK displayName), not localized.
         return this.choiceStep(
-          'wizard.step.model',
+          this.stepLabelKey('model'),
           'model',
           this.opts.modelsFor(this.selection.backend).map((m) => ({
             label: m.label,
@@ -392,7 +552,7 @@ export class ChannelWizard {
         );
       case 'effort':
         return this.choiceStep(
-          'wizard.step.effort',
+          this.stepLabelKey('effort'),
           'effort',
           this.opts.effortsFor(this.selection.backend, this.selection.model).map((e) => ({
             label: e.label,
@@ -410,7 +570,7 @@ export class ChannelWizard {
       case 'done':
         return {
           embed: {
-            title: t('wizard.title'),
+            title: this.title(),
             description: t('wizard.started', {
               backend: this.selection.backend,
               cwd: this.selection.cwd ?? '',
@@ -419,8 +579,47 @@ export class ChannelWizard {
           rows: [],
         };
       case 'cancelled':
-        return { embed: { title: t('wizard.title'), description: t('wizard.cancelled') }, rows: [] };
+        return { embed: { title: this.title(), description: t('wizard.cancelled') }, rows: [] };
     }
+  }
+
+  // Preset step: a select of saved presets (label/value = name, description = the injected
+  // summary) plus 🆕 set-up-manually / 🗑 delete-mode / back / cancel buttons. In delete
+  // mode the placeholder + guidance switch to the delete prompt. The dropdown is omitted
+  // once the list is empty (e.g. after deleting the last preset), leaving only the buttons.
+  private presetStep(): { embed: EmbedSpec; rows: ComponentRow[] } {
+    const rows: ComponentRow[] = [];
+    if (this.presets.length > 0) {
+      const select: SelectSpec = {
+        type: 'select',
+        customId: 'preset.pick',
+        placeholder: this.presetDeleteMode ? t('preset.delete.active') : t('preset.pick.placeholder'),
+        options: this.presets.slice(0, 25).map((p) => ({
+          label: p.name,
+          value: p.name,
+          ...(this.opts.summarizePreset ? { description: this.opts.summarizePreset(p) } : {}),
+        })),
+      };
+      rows.push({ components: [select] });
+    }
+    rows.push({
+      components: [
+        { type: 'button', customId: 'preset.direct', label: t('preset.direct'), style: 'primary' },
+        { type: 'button', customId: 'preset.delete', label: t('preset.delete.button'), style: 'secondary' },
+        ...this.backRow(),
+        cancelButton(),
+      ],
+    });
+    const baseDescription = this.presetDeleteMode ? t('preset.delete.active') : t('preset.step.pick');
+    // When the last pick targeted an unregistered backend, append the notice so the driver
+    // sees why nothing launched (cleared on the next interaction — see handlePreset).
+    const description = this.presetUnavailable
+      ? `${baseDescription}\n${t('preset.backend.unavailable', { backend: this.presetUnavailable })}`
+      : baseDescription;
+    return {
+      embed: { title: this.title(), description },
+      rows,
+    };
   }
 
   // A choice step: a single-select (pending-aware `default`) + a confirm button that
@@ -434,8 +633,8 @@ export class ChannelWizard {
   ): { embed: EmbedSpec; rows: ComponentRow[] } {
     const select: SelectSpec = { type: 'select', customId: id, placeholder: t(titleKey), options };
     return {
-      embed: { title: t('wizard.title'), description: t(titleKey) },
-      rows: [{ components: [select] }, { components: [confirm, backButton(), cancelButton()] }],
+      embed: { title: this.title(), description: t(titleKey) },
+      rows: [{ components: [select] }, { components: [confirm, ...this.backRow(), cancelButton()] }],
     };
   }
 
@@ -479,12 +678,12 @@ export class ChannelWizard {
     rows.push({ components: [modeSelect] });
     rows.push({
       components: [
-        { type: 'button', customId: 'perm.start', label: t('wizard.start'), style: 'success' },
-        backButton(),
+        { type: 'button', customId: 'perm.start', label: t(this.kind === 'reconfigure' ? 'wizard.recfg.start' : 'wizard.start'), style: 'success' },
+        ...this.backRow(),
         cancelButton(),
       ],
     });
-    return { embed: { title: t('wizard.title'), description: t('wizard.step.perm') }, rows };
+    return { embed: { title: this.title(), description: t(this.stepLabelKey('perm')) }, rows };
   }
 }
 
