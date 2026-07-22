@@ -114,6 +114,10 @@ Codex는 자신의 승인/샌드박스 모드로 매핑합니다.
 
 여러 세션의 **작업 완료와 에러**를 `#agent-status` 채널 한 곳에 요약해 알려줍니다. `/config` → **🔔 알림 설정** 에서 켜기/끄기와 대상 채널을 바꿀 수 있습니다.
 
+### 문서 공유
+
+세션 채널에서 `/doc path:docs/foo.md` 를 실행하면 작업 디렉터리의 마크다운 파일이 `📄` 스레드에 게시됩니다 — 원본 `.md` 첨부는 항상, 본문은 설정에 따라(렌더링이 켜져 있으면 표/mermaid는 이미지). 에이전트에게 "공유해줘"라고 요청하는 방법도 있습니다(`share_document` 도구). 자세한 사용법과 설정: [docs/document-share-usage.md](docs/document-share-usage.md)
+
 ---
 
 License: MIT

@@ -82,4 +82,78 @@ describe('AttachGateway', () => {
     });
     expect(res.status).toBe(401);
   });
+
+  it('shares a document via POST /share (path-only, confirmation only)', async () => {
+    gateway = await startAttachGateway();
+
+    const shared: string[] = [];
+    gateway.register('tok-4', {
+      workspaceRoot: os.tmpdir(),
+      sendFile: async () => 'ok',
+      shareDocument: async (p) => {
+        shared.push(p);
+        return { ok: true, threadName: '📄 notes.md', path: p };
+      },
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'tok-4', path: 'notes.md' }),
+    });
+    const body = (await res.json()) as { ok: boolean; text: string };
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    // Confirmation string only — the document body is never returned over the wire (D2).
+    expect(body.text).toContain('Shared');
+    expect(body.text).toContain('📄 notes.md');
+    expect(shared).toEqual(['notes.md']);
+  });
+
+  it('maps a coded share rejection to an error confirmation', async () => {
+    gateway = await startAttachGateway();
+    gateway.register('tok-5', {
+      workspaceRoot: os.tmpdir(),
+      sendFile: async () => 'ok',
+      shareDocument: async () => ({ ok: false, code: 'notFound' }),
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'tok-5', path: 'missing.md' }),
+    });
+    const body = (await res.json()) as { ok: boolean; text: string };
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.text).toContain('file not found');
+  });
+
+  it('refuses /share when the session has no shareDocument sink', async () => {
+    gateway = await startAttachGateway();
+    gateway.register('tok-6', {
+      workspaceRoot: os.tmpdir(),
+      sendFile: async () => 'ok',
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'tok-6', path: 'x.md' }),
+    });
+    const body = (await res.json()) as { ok: boolean; text: string };
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.text).toMatch(/not available/i);
+  });
+
+  it('rejects unknown tokens on /share too', async () => {
+    gateway = await startAttachGateway();
+    const res = await fetch(`${gateway.baseUrl}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'nope', path: 'x.md' }),
+    });
+    expect(res.status).toBe(401);
+  });
 });

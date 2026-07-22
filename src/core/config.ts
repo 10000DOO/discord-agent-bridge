@@ -66,6 +66,7 @@ function applyDefaults(raw: Record<string, unknown>): unknown {
     usage: mergeNested(raw['usage'], CONFIG_DEFAULTS.usage),
     audit: mergeNested(raw['audit'], CONFIG_DEFAULTS.audit),
     render: mergeNested(raw['render'], CONFIG_DEFAULTS.render),
+    documentShare: mergeNested(raw['documentShare'], CONFIG_DEFAULTS.documentShare),
     chromium: mergeNested(raw['chromium'], CONFIG_DEFAULTS.chromium),
     autoUpdate: mergeNested(raw['autoUpdate'], CONFIG_DEFAULTS.autoUpdate),
   };

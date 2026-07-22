@@ -208,26 +208,42 @@ export function createApp(deps: CreateAppDeps): App {
   // Claude: sendFileFor is wired to the wiring layer's per-channel sink factory so
   // the in-process attach_file MCP tool can deliver a confined file to the channel a
   // session is bound to (kept out of the mode so modes stay transport-agnostic).
+  // shareDocumentFor is the sibling factory for the in-process share_document tool
+  // (path-only markdown → Discord thread; same funnel as the /doc slash).
   modeRegistry.register(
-    new ClaudeMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
+    new ClaudeMode({
+      sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
+      shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
+    }),
   );
   // Codex: long-lived `codex app-server` + phase 2 thinking/usage/fileDiff; dynamicTools
-  // attach_file when sendFileFor is wired.
+  // attach_file when sendFileFor is wired, plus share_document (path-only markdown → Discord
+  // thread; same funnel as the /doc slash) when shareDocumentFor is wired.
   modeRegistry.register(
-    new CodexMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
+    new CodexMode({
+      sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
+      shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
+    }),
   );
-  // Grok Build: long-lived `grok agent stdio` ACP session. fileAttach via subprocess MCP
-  // → AttachGateway. Persisted ids `grok` / `grok-agent` migrate to `grok-build` on load.
+  // Grok Build: long-lived `grok agent stdio` ACP session. fileAttach + share_document via
+  // subprocess MCP → AttachGateway (loopback /attach and /share). shareDocumentFor is the
+  // sibling factory to sendFileFor (same funnel as the /doc slash), threaded to the ACP
+  // session so buildMcpServers registers the share sink on the same loopback token.
+  // Persisted ids `grok` / `grok-agent` migrate to `grok-build` on load.
   modeRegistry.register(
     new GrokBuildMode({
       sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
+      shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
       attachGateway,
     }),
   );
   // Custom: reuses the Claude SDK but injects env vars extracted from the operator's
-  // shell aliases (kimi / claude). Wired like Claude for attach_file delivery.
+  // shell aliases (kimi / claude). Wired like Claude for attach_file + share_document.
   modeRegistry.register(
-    new CustomMode({ sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId) }),
+    new CustomMode({
+      sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
+      shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
+    }),
   );
 
   // A defaults.mode that no registered backend matches would fail at every use site (a
@@ -267,6 +283,11 @@ export function createApp(deps: CreateAppDeps): App {
     permissionResolver,
     modeRegistry,
     wiring,
+    // /doc funnels through the wiring's per-channel shareDocumentFor factory (mirrors the
+    // sendFileFor closure injected into the modes above): it resolves the bound channel +
+    // cwd, reads the documentShare config, and posts the markdown into a thread via the
+    // documentShare core.
+    shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
     usageService,
     logger,
     // Chromium provisioner: /init offers a background-install prompt when no browser is

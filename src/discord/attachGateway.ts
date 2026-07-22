@@ -1,14 +1,18 @@
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { attachFileConfined, type SendFileCallback } from '../modes/claude/mcpFileTool.js';
+import { attachFileConfined, shareDocumentResult, type SendFileCallback, type ShareDocumentCallback } from '../modes/claude/mcpFileTool.js';
 
-// Loopback HTTP gateway so subprocess MCP servers (Grok) can call attach_file
-// without an in-process callback. Tokens map to per-session workspace + sendFile.
-// Never log tokens.
+// Loopback HTTP gateway so subprocess MCP servers (Grok) can call attach_file /
+// share_document without an in-process callback. Tokens map to a per-session
+// workspace + sendFile (+ optional shareDocument sink). Never log tokens.
 
 export interface AttachRegistration {
   workspaceRoot: string;
   sendFile: SendFileCallback;
+  // Present only when the session also wired a share_document sink (via
+  // SessionWiring.shareDocumentFor): lets POST /share post a workspace markdown file
+  // into a Discord thread. Absent → POST /share is refused for this token.
+  shareDocument?: ShareDocumentCallback;
 }
 
 export interface AttachGateway {
@@ -84,7 +88,8 @@ async function handleRequest(
       json(res, 200, { ok: true });
       return;
     }
-    if (req.method !== 'POST' || req.url !== '/attach') {
+    const isShare = req.method === 'POST' && req.url === '/share';
+    if (req.method !== 'POST' || (req.url !== '/attach' && !isShare)) {
       json(res, 404, { ok: false, text: 'Not found' });
       return;
     }
@@ -106,6 +111,20 @@ async function handleRequest(
     const reg = registry.get(token);
     if (!reg) {
       json(res, 401, { ok: false, text: 'Unknown or expired attach token' });
+      return;
+    }
+    // Share endpoint: same loopback token/auth as /attach. The bot process reads the file
+    // and posts it into a thread via the injected shareDocument callback; the subprocess only
+    // relays the confirmation string (PATH-ONLY — never the document body, D2). Reuses the
+    // shared shareDocumentResult mapper so the model-facing strings match every other backend.
+    if (isShare) {
+      if (!reg.shareDocument) {
+        json(res, 400, { ok: false, text: 'share_document is not available for this session' });
+        return;
+      }
+      const shareRes = await shareDocumentResult(reg.shareDocument, requestedPath);
+      const shareText = shareRes.content.map((c) => c.text).join('\n') || (shareRes.isError ? 'failed' : 'ok');
+      json(res, shareRes.isError ? 400 : 200, { ok: !shareRes.isError, text: shareText });
       return;
     }
     const result = await attachFileConfined(reg.workspaceRoot, reg.sendFile, requestedPath, filename);

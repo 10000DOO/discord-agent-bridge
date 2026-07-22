@@ -114,6 +114,10 @@ Codex maps these onto its own approval/sandbox modes.
 
 Completions and errors from all your sessions get summarized into a single `#agent-status` channel. Toggle it and change the target channel from `/config` → **🔔 Notification Settings**.
 
+### Sharing documents
+
+`/doc path:docs/foo.md` in a session channel posts a workspace markdown file into a `📄` thread — the original `.md` is always attached, plus the body text (tables/mermaid rendered as images when rendering is on). Or just ask the agent to share a document (the `share_document` tool). Usage & config: [docs/document-share-usage.md](docs/document-share-usage.md) (Korean).
+
 ---
 
 License: MIT

@@ -27,6 +27,12 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     usage: { userAgent: 'claude-code', cacheSec: 180 },
     audit: { channelId: null },
     render: { enabled: true },
+    documentShare: {
+      maxBytes: 524288,
+      bodyMode: 'preview',
+      previewMaxChars: 8000,
+      extensions: ['.md', '.markdown'],
+    },
     chromium: { decision: 'undecided' as const },
     locale: 'ko',
     logLevel: 'info',

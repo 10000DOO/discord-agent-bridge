@@ -12,7 +12,12 @@ import {
 import { mapAppServerNotification, type MapContext } from './eventMapper.js';
 import { isAutoApprovePolicy, resolveThreadPolicy } from './policy.js';
 import { resolveCodexHome } from './resolveHome.js';
-import { attachFileConfined, type SendFileCallback } from '../claude/mcpFileTool.js';
+import {
+  attachFileConfined,
+  shareDocumentResult,
+  type SendFileCallback,
+  type ShareDocumentCallback,
+} from '../claude/mcpFileTool.js';
 import { appendNonImageHints, classifyTurnFiles } from '../shared/turnFiles.js';
 
 // Long-lived Codex ModeSession over one `codex app-server` child. One user message =
@@ -48,6 +53,8 @@ export interface CodexAppSessionDeps {
   createClient?: CreateCodexAppServerClient;
   // When set, register attach_file dynamic tool and handle item/tool/call.
   sendFile?: SendFileCallback;
+  // When set, register share_document dynamic tool (path-only markdown → Discord thread).
+  shareDocument?: ShareDocumentCallback;
 }
 
 const DEFAULT_CODEX_TIMEOUT_MS = 1_800_000;
@@ -67,6 +74,22 @@ const ATTACH_FILE_DYNAMIC_TOOL: DynamicToolSpec = {
   },
 };
 
+// PATH-ONLY (D2): the tool takes only a path — the bot reads the file itself and posts it to
+// a Discord thread, so the result is a short confirmation, never the document body. Mirrors
+// ATTACH_FILE_DYNAMIC_TOOL; registered only when a shareDocument sink is wired for the session.
+const SHARE_DOCUMENT_DYNAMIC_TOOL: DynamicToolSpec = {
+  type: 'function',
+  name: 'share_document',
+  description: 'Post a markdown document from the workspace into a Discord thread.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Workspace-relative or absolute path inside workspace' },
+    },
+    required: ['path'],
+  },
+};
+
 interface TurnWait {
   turnId: string;
   settle: () => void; // ends the send() wait (idempotent)
@@ -81,6 +104,7 @@ export class CodexAppSession implements ModeSession {
   private effort: string;
   private readonly createClient: CreateCodexAppServerClient;
   private readonly sendFile: SendFileCallback | undefined;
+  private readonly shareDocument: ShareDocumentCallback | undefined;
 
   private client: CodexAppServerClientLike | null = null;
   private initialized = false;
@@ -113,6 +137,7 @@ export class CodexAppSession implements ModeSession {
       deps.createClient ??
       ((options) => new CodexAppServerClient(options));
     this.sendFile = deps.sendFile;
+    this.shareDocument = deps.shareDocument;
     if (deps.resumeId !== undefined) {
       this.sessionIdValue = deps.resumeId;
     }
@@ -285,7 +310,7 @@ export class CodexAppSession implements ModeSession {
       ...(codexHome !== undefined ? { codexHome } : {}),
       onApproval: async (req) => this.handleApproval(req, policy.approvalPolicy),
     };
-    if (this.sendFile) {
+    if (this.sendFile || this.shareDocument) {
       clientOptions.onDynamicToolCall = (params) => this.handleDynamicToolCall(params);
     }
 
@@ -325,7 +350,10 @@ export class CodexAppSession implements ModeSession {
       sandbox: policy.sandbox,
     };
     if (this.model.length > 0) startParams.model = this.model;
-    if (this.sendFile) startParams.dynamicTools = [ATTACH_FILE_DYNAMIC_TOOL];
+    const dynamicTools: DynamicToolSpec[] = [];
+    if (this.sendFile) dynamicTools.push(ATTACH_FILE_DYNAMIC_TOOL);
+    if (this.shareDocument) dynamicTools.push(SHARE_DOCUMENT_DYNAMIC_TOOL);
+    if (dynamicTools.length > 0) startParams.dynamicTools = dynamicTools;
 
     const threadId = await client.threadStart(startParams);
     this.captureSessionId(threadId);
@@ -339,9 +367,15 @@ export class CodexAppSession implements ModeSession {
   }
 
   private async handleDynamicToolCall(params: DynamicToolCallParams): Promise<DynamicToolCallResult> {
-    const toolId = params.callId || `attach-${++this.toolSeq}`;
     const args = asRecord(params.arguments) ?? {};
     const requestedPath = typeof args.path === 'string' ? args.path : '';
+
+    // share_document is PATH-ONLY (D2): no filename, result is a confirmation string only.
+    if (params.tool === 'share_document') {
+      return this.handleShareDocumentCall(params, requestedPath);
+    }
+
+    const toolId = params.callId || `attach-${++this.toolSeq}`;
     const filename = typeof args.filename === 'string' ? args.filename : undefined;
 
     this.ctx.emit({
@@ -370,6 +404,45 @@ export class CodexAppSession implements ModeSession {
     }
 
     const result = await attachFileConfined(this.cwd, this.sendFile, requestedPath, filename);
+    const text = result.content.map((c) => c.text).join('\n') || (result.isError ? 'failed' : 'ok');
+    const success = !result.isError;
+    this.ctx.emit({ kind: 'tool_result', id: toolId, ok: success, content: text });
+    return {
+      success,
+      contentItems: [{ type: 'inputText', text }],
+    };
+  }
+
+  // Path-only share: the bot reads the file and posts it into a Discord thread via the injected
+  // shareDocument sink; the tool result is a short confirmation, never the document body (D2).
+  // shareDocumentResult already degrades a rethrown core error (EACCES, post failure) to a
+  // neutral notice — mirroring attach_file, a failure becomes an MCP error result, not a crash.
+  private async handleShareDocumentCall(
+    params: DynamicToolCallParams,
+    requestedPath: string,
+  ): Promise<DynamicToolCallResult> {
+    const toolId = params.callId || `share-${++this.toolSeq}`;
+
+    this.ctx.emit({
+      kind: 'tool_use',
+      id: toolId,
+      name: 'share_document',
+      input: { path: requestedPath },
+    });
+
+    if (!this.shareDocument) {
+      const text = 'share_document is not available in this session.';
+      this.ctx.emit({ kind: 'tool_result', id: toolId, ok: false, content: text });
+      return { success: false, contentItems: [{ type: 'inputText', text }] };
+    }
+
+    if (requestedPath.length === 0) {
+      const text = 'share_document requires a path.';
+      this.ctx.emit({ kind: 'tool_result', id: toolId, ok: false, content: text });
+      return { success: false, contentItems: [{ type: 'inputText', text }] };
+    }
+
+    const result = await shareDocumentResult(this.shareDocument, requestedPath, this.ctx.logger);
     const text = result.content.map((c) => c.text).join('\n') || (result.isError ? 'failed' : 'ok');
     const success = !result.isError;
     this.ctx.emit({ kind: 'tool_result', id: toolId, ok: success, content: text });

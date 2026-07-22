@@ -9,7 +9,13 @@ import {
 import type { ModeContext, ModeSession, SessionPermMode, TurnInput } from '../../core/contracts.js';
 import { isClaudeRuntimeEffort } from '../../core/providerCatalog.js';
 import { makeCanUseTool } from './permissions.js';
-import { createMcpFileTool, ATTACH_FILE_TOOL_NAME, type SendFileCallback } from './mcpFileTool.js';
+import {
+  createMcpFileTool,
+  ATTACH_FILE_TOOL_NAME,
+  SHARE_DOCUMENT_TOOL_NAME,
+  type SendFileCallback,
+  type ShareDocumentCallback,
+} from './mcpFileTool.js';
 import { resolvePlugins } from './plugins.js';
 import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../shared/turnFiles.js';
 
@@ -24,6 +30,9 @@ export interface ClaudeSessionDeps {
   // Wired by the Discord layer; when absent, attach_file is not exposed (the tool
   // is only useful once a transport can actually deliver the file).
   sendFile?: SendFileCallback;
+  // Wired by the Discord layer alongside sendFile; when absent, share_document is not
+  // exposed. Posts a workspace markdown file into a Discord thread (path-only, §D2).
+  shareDocument?: ShareDocumentCallback;
   // Existing backend session id to resume; omitted for a fresh session.
   resumeId?: string;
   // Optional full env override for the SDK subprocess. Used by the `custom` backend
@@ -96,9 +105,12 @@ export class ClaudeSession implements ModeSession {
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     const allowedTools = [...(ctx.config.allowedTools ?? [])];
     if (deps.sendFile) {
-      mcpServers.discord = createMcpFileTool(ctx.cwd, deps.sendFile);
+      mcpServers.discord = createMcpFileTool(ctx.cwd, deps.sendFile, deps.shareDocument, ctx.logger);
       if (!allowedTools.includes(ATTACH_FILE_TOOL_NAME)) {
         allowedTools.push(ATTACH_FILE_TOOL_NAME);
+      }
+      if (deps.shareDocument && !allowedTools.includes(SHARE_DOCUMENT_TOOL_NAME)) {
+        allowedTools.push(SHARE_DOCUMENT_TOOL_NAME);
       }
     }
 

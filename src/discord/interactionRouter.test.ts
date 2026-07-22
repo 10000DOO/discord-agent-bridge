@@ -9,6 +9,7 @@ import {
   type SlashInteraction,
 } from './interactionRouter.js';
 import type { MessageChannel, ModalSpec } from './ports.js';
+import type { ShareResult } from './documentShare.js';
 import type { GuildChannelProvisioner } from './guildChannels.js';
 import { ConfigStore } from '../core/config.js';
 import { CONFIG_VERSION, type AppConfig } from '../core/configSchema.js';
@@ -346,6 +347,7 @@ function buildRouter(deps: {
   imageProvisioner?: ChromiumProvisioner;
   customBackendLabel?: () => string;
   pickFolder?: (startDir: string, prompt: string, timeoutMs: number) => Promise<string | null>;
+  shareDocumentFor?: (guildId: string, channelId: string) => (path: string) => Promise<ShareResult>;
 }): InteractionRouter {
   // Default: Claude usage unavailable (API-key-only / no OAuth) so /agent stats shows the
   // login notice; a test can inject a usage snapshot to exercise the utilization lines.
@@ -384,6 +386,7 @@ function buildRouter(deps: {
     ...(deps.imageProvisioner ? { imageProvisioner: deps.imageProvisioner } : {}),
     ...(deps.customBackendLabel ? { customBackendLabel: deps.customBackendLabel } : {}),
     ...(deps.pickFolder ? { pickFolder: deps.pickFolder } : {}),
+    ...(deps.shareDocumentFor ? { shareDocumentFor: deps.shareDocumentFor } : {}),
   });
 }
 
@@ -831,6 +834,81 @@ describe('InteractionRouter slash commands', () => {
     expect(calls.stop).not.toHaveBeenCalled();
     expect(wcalls.detach).not.toHaveBeenCalled();
     expect(calls.start).not.toHaveBeenCalled();
+    expect(acks[0].kind).toBe('deferReply');
+    expect(acks[0].payload?.ephemeral).toBe(true);
+    expect(replies[0].content).toContain('활성 세션이 없어요');
+  });
+
+  it('/doc with a binding funnels to shareDocumentFor with the typed path and confirms', async () => {
+    channelRegistry.set(binding(home));
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    // The per-channel factory returns the inner share callback; assert BOTH the (guild,
+    // channel) the factory was bound with AND the path the callback received.
+    const shareInner = vi.fn(async (_path: string): Promise<ShareResult> => ({ ok: true, threadName: '📄 x.md', path: 'docs/x.md' }));
+    const shareDocumentFor = vi.fn((_g: string, _c: string) => shareInner);
+    const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
+    const { interaction, replies } = slash({ commandName: 'doc', getStringValue: 'docs/x.md' });
+    await router.handle(interaction);
+    expect(shareDocumentFor).toHaveBeenCalledWith('g1', 'c1');
+    expect(shareInner).toHaveBeenCalledWith('docs/x.md');
+    // The success notice echoes the shared relative path (doc.shared).
+    expect(replies[0].content).toContain('docs/x.md');
+  });
+
+  it('/doc localizes a coded rejection via doc.error.<code> (no throw)', async () => {
+    channelRegistry.set(binding(home));
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => ({ ok: false, code: 'escape' }));
+    const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
+    const { interaction, replies } = slash({ commandName: 'doc', getStringValue: '../../etc/passwd' });
+    await router.handle(interaction);
+    expect(replies[0].content).toContain('세션 폴더 밖');
+  });
+
+  it('/doc treats an uncoded {ok:false} as router.noSession (channel unwired backstop)', async () => {
+    channelRegistry.set(binding(home));
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    // Binding exists (the !binding gate passes) but the channel has no live sink, so
+    // shareDocumentFor returns an UNCODED failure (no ShareErrorCode). This is the shared
+    // backstop contract the WO-3/4/5 tool handlers also rely on.
+    const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => ({ ok: false }));
+    const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
+    const { interaction, replies } = slash({ commandName: 'doc', getStringValue: 'docs/x.md' });
+    await router.handle(interaction);
+    expect(shareDocumentFor).toHaveBeenCalledWith('g1', 'c1');
+    expect(replies[0].content).toContain('활성 세션이 없어요');
+  });
+
+  it('/doc catches a thrown core error and falls back to a generic notice', async () => {
+    channelRegistry.set(binding(home));
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    // The core rethrows non-coded errors (EACCES etc.); the edge must catch, not crash.
+    const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => {
+      throw new Error('EACCES');
+    });
+    const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
+    const { interaction, replies } = slash({ commandName: 'doc', getStringValue: 'docs/x.md' });
+    await router.handle(interaction);
+    // Pin the inner catch (cmd.error.generic) exactly: if it were removed, the throw would
+    // fall through to the outer guarded (cmd.error, which appends String(err) and can leak an
+    // absolute path). Both messages share '처리하지 못했어요', so only the full generic string
+    // — with its unique '잠시 후 다시 시도해 주세요.' tail — distinguishes them.
+    expect(replies[0].content).toBe('명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.');
+  });
+
+  it('/doc with NO binding returns router.noSession (shareDocumentFor not called)', async () => {
+    // No channelRegistry.set → no binding.
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => ({ ok: true }));
+    const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
+    const { interaction, replies, acks } = slash({ commandName: 'doc', getStringValue: 'docs/x.md' });
+    await router.handle(interaction);
+    expect(shareDocumentFor).not.toHaveBeenCalled();
     expect(acks[0].kind).toBe('deferReply');
     expect(acks[0].payload?.ephemeral).toBe(true);
     expect(replies[0].content).toContain('활성 세션이 없어요');

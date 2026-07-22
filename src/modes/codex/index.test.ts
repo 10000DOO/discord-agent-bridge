@@ -8,6 +8,7 @@ import type { CodexAppServerClientLike, CreateCodexAppServerClient } from './app
 import type { CodexDiscovery } from './discovery.js';
 import type { ResumableSession } from '../../core/contracts.js';
 import type { NotificationHandler } from './appServerClient.js';
+import type { ShareResult } from '../../discord/documentShare.js';
 
 const nullLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -536,5 +537,62 @@ describe('CodexAppSession dynamic tool attach_file', () => {
     };
     expect(startParams.dynamicTools).toBeUndefined();
     expect(fake.lastCreateOptions?.onDynamicToolCall).toBeUndefined();
+  });
+});
+
+describe('CodexAppSession dynamic tool share_document', () => {
+  it('registers share_document on thread/start and handles it (path-only confirmation)', async () => {
+    const fake = new FakeClient();
+    const shared: string[] = [];
+    const shareDocument = async (p: string): Promise<ShareResult> => {
+      shared.push(p);
+      return { ok: true, threadName: '📄 x.md', path: p };
+    };
+    const mode = new CodexMode({
+      createClient: makeCreateClient(fake),
+      shareDocumentFor: () => shareDocument,
+    });
+    const { ctx, events } = makeCtx({ cwd: os.tmpdir() });
+    const session = await mode.start(ctx);
+    await session.send({ text: 'hi' });
+
+    const startParams = fake.calls.find((c) => c.method === 'thread/start')?.params as {
+      dynamicTools?: Array<{ name: string }>;
+    };
+    expect(startParams.dynamicTools?.some((t) => t.name === 'share_document')).toBe(true);
+    expect(fake.lastCreateOptions?.onDynamicToolCall).toBeTypeOf('function');
+
+    // Invoke the handler as app-server would for item/tool/call.
+    const handler = fake.lastCreateOptions!.onDynamicToolCall!;
+    const result = await handler({
+      tool: 'share_document',
+      arguments: { path: 'docs/x.md' },
+      callId: 'dyn-share-1',
+      threadId: 'thread-xyz',
+      turnId: 'turn-1',
+    });
+    expect(result.success).toBe(true);
+    expect(result.contentItems[0]).toMatchObject({ type: 'inputText' });
+    // Confirmation string only — never the document body (D2).
+    const text = (result.contentItems[0] as { type: 'inputText'; text: string }).text;
+    expect(text).toContain('Shared');
+    expect(shared).toEqual(['docs/x.md']);
+    expect(events.some((e) => e.kind === 'tool_use' && e.name === 'share_document')).toBe(true);
+    expect(events.some((e) => e.kind === 'tool_result' && e.ok === true)).toBe(true);
+  });
+
+  it('registers only attach_file when shareDocumentFor is not wired', async () => {
+    const fake = new FakeClient();
+    const mode = new CodexMode({
+      createClient: makeCreateClient(fake),
+      sendFileFor: () => async () => 'ok',
+    });
+    await (await mode.start(makeCtx().ctx)).send({ text: 'x' });
+    const startParams = fake.calls.find((c) => c.method === 'thread/start')?.params as {
+      dynamicTools?: Array<{ name: string }>;
+    };
+    const names = (startParams.dynamicTools ?? []).map((t) => t.name);
+    expect(names).toContain('attach_file');
+    expect(names).not.toContain('share_document');
   });
 });

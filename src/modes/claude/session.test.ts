@@ -6,7 +6,7 @@ import type { AgentEvent, ModeContext, PermissionDecision } from '../../core/con
 import { ClaudeMode } from './index.js';
 import { ClaudeSession, humanizeModelId, resolveModelDisplayName, type QueryFn } from './session.js';
 import { makeCanUseTool } from './permissions.js';
-import { attachFileConfined } from './mcpFileTool.js';
+import { attachFileConfined, shareDocumentResult } from './mcpFileTool.js';
 
 // ---- Test doubles ------------------------------------------------------------
 
@@ -802,6 +802,63 @@ describe('ClaudeSession — query options', () => {
     expect(options.mcpServers?.discord).toBeDefined();
     expect(options.allowedTools).toContain('mcp__discord__attach_file');
     await session.stop();
+  });
+
+  it('exposes the share_document MCP tool and allowlists it when shareDocument is wired', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn, captured } = fakeQueryFn([]);
+    const session = new ClaudeSession(ctx, {
+      queryFn,
+      sendFile: async () => 'sent',
+      shareDocument: async () => ({ ok: true, threadName: '📄 x.md', path: 'x.md' }),
+    });
+    const options = captured.options as {
+      mcpServers?: Record<string, unknown>;
+      allowedTools?: string[];
+    };
+    expect(options.mcpServers?.discord).toBeDefined();
+    expect(options.allowedTools).toContain('mcp__discord__share_document');
+    await session.stop();
+  });
+});
+
+// ---- share_document result mapping (path-only, D2) ---------------------------
+
+describe('shareDocumentResult — model-facing mapping', () => {
+  it('ok → concise confirmation with thread name, never the document body', async () => {
+    const res = await shareDocumentResult(
+      async () => ({ ok: true, threadName: '📄 x.md', path: 'docs/x.md' }),
+      'docs/x.md',
+    );
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toBe('Shared "docs/x.md" to thread 📄 x.md');
+  });
+
+  it('coded rejection → short reason derived from the code', async () => {
+    const res = await shareDocumentResult(async () => ({ ok: false, code: 'notMarkdown' }), 'notes.txt');
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe('Could not share notes.txt: not a markdown file');
+  });
+
+  it('tooLarge → includes the display-formatted max', async () => {
+    const res = await shareDocumentResult(async () => ({ ok: false, code: 'tooLarge', max: '512.0 KiB' }), 'big.md');
+    expect(res.content[0].text).toBe('Could not share big.md: too large (512.0 KiB)');
+  });
+
+  it('uncoded failure → no active session (wiring backstop)', async () => {
+    const res = await shareDocumentResult(async () => ({ ok: false }), 'x.md');
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe('Could not share x.md: no active session for this channel');
+  });
+
+  it('thrown → generic notice; raw error / absolute path is not surfaced to the model', async () => {
+    const res = await shareDocumentResult(async () => {
+      throw new Error('/abs/secret EACCES permission denied');
+    }, 'x.md');
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe('Could not share x.md: unexpected error');
+    expect(res.content[0].text).not.toContain('EACCES');
+    expect(res.content[0].text).not.toContain('/abs/secret');
   });
 });
 

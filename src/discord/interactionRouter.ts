@@ -11,6 +11,7 @@ import type { ModeRegistry } from '../core/modeRegistry.js';
 import type { SessionOrchestrator, StartParams } from '../core/sessionOrchestrator.js';
 import type { UsageResult, UsageService } from '../core/usageService.js';
 import type { SessionWiring } from './wiring.js';
+import type { ShareResult } from './documentShare.js';
 import { ChannelWizard, type WizardInput } from './wizard/channelWizard.js';
 import { ResumeWizard } from './wizard/resumeWizard.js';
 import { DirectoryBrowser } from './directoryBrowser.js';
@@ -50,6 +51,7 @@ const ACTION_TIER: Record<string, AuthAction> = {
   effort: 'drive',
   stop: 'drive',
   clear: 'drive',
+  doc: 'drive',
   'stop-all': 'admin',
 };
 
@@ -138,6 +140,11 @@ export interface InteractionRouterDeps {
   permissionResolver: PermissionResolver;
   modeRegistry: ModeRegistry;
   wiring: SessionWiring;
+  // Per-channel document-share factory (mirrors the mode's sendFileFor closure): given a
+  // session's guild+channel it returns the callback /doc uses to post a markdown file
+  // into a document thread. Sourced from SessionWiring.shareDocumentFor at app boot;
+  // optional so tests that never exercise /doc need not wire it.
+  shareDocumentFor?: (guildId: string, channelId: string) => (path: string) => Promise<ShareResult>;
   // Chromium provisioner (image render). When present, /init offers a background-install
   // prompt if no browser is present yet, and /config can install/toggle later. Absent →
   // no install UX (rendering still works when a system Chrome exists).
@@ -328,6 +335,9 @@ export class InteractionRouter {
           break;
         case 'clear':
           await this.clearContext(i);
+          break;
+        case 'doc':
+          await this.shareDoc(i);
           break;
         case 'stop-all':
           await this.stopAll(i);
@@ -1130,6 +1140,39 @@ export class InteractionRouter {
     // context reset (same pattern as /mode backend's fresh-context followUp).
     await i.editReply({ content: t('cmd.clear.done') });
     await safe(i.followUp({ content: t('cmd.clear.public'), ephemeral: false }));
+  }
+
+  // /doc <path>: post a markdown file from the session workspace into a document thread
+  // (the original `.md` attachment + its body). Mirrors clearContext's binding gate; the
+  // confinement, read, and thread post are the shared shareDocumentFor funnel (→ the
+  // documentShare core). No autocomplete by design (avoids a per-keystroke fs listing).
+  private async shareDoc(i: SlashInteraction): Promise<void> {
+    const guildId = i.guildId as string;
+    const binding = this.deps.channelRegistry.get(guildId, i.channelId);
+    const shareDocumentFor = this.deps.shareDocumentFor;
+    if (!binding || !shareDocumentFor) {
+      await i.editReply({ content: t('router.noSession') });
+      return;
+    }
+    const docPath = i.getString('path');
+    if (!docPath) return;
+    // The core returns one of its five ShareErrorCodes for known rejections but RETHROWS
+    // anything else (EACCES, a stat↔read race, a Discord post failure — ch.8). Wrap the
+    // funnel so a thrown error becomes a generic notice, not an unhandled rejection.
+    try {
+      const res = await shareDocumentFor(guildId, i.channelId)(docPath);
+      if (res.ok) {
+        await i.editReply({ content: t('doc.shared', { path: res.path ?? docPath }) });
+      } else if (res.code) {
+        await i.editReply({ content: t('doc.error.' + res.code, { path: docPath, ...(res.max ? { max: res.max } : {}) }) });
+      } else {
+        // Uncoded failure = the channel has no live session/sink (shareDocumentFor backstop).
+        await i.editReply({ content: t('router.noSession') });
+      }
+    } catch (err) {
+      this.logError('failed to share document', err);
+      await i.editReply({ content: t('cmd.error.generic') });
+    }
   }
 
   private async stopAll(i: SlashInteraction): Promise<void> {

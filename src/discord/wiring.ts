@@ -16,6 +16,7 @@ import type { UsageSessionMeta } from './renderers/usageEmbed.js';
 import { PermissionButtonsHandler, parseCustomId } from './renderers/permissionButtons.js';
 import { ChannelAdapter, resolveChannelAdapter } from './client.js';
 import type { MessageChannel } from './ports.js';
+import { shareDocument, type DocumentShareOptions, type ShareResult } from './documentShare.js';
 import type { ConfigStore } from '../core/config.js';
 import { SessionNotifier, resolveNotifications } from './notifier.js';
 import { IdleWatchdog } from './idleWatchdog.js';
@@ -426,6 +427,33 @@ export class SessionWiring {
       if (!wiring) throw new Error('Channel is not wired; cannot send file.');
       await wiring.channel.send({ files: [{ path: absPath, ...(filename ? { name: filename } : {}) }] });
       return `Sent ${filename ?? absPath} to the channel.`;
+    };
+  }
+
+  // The shareDocumentFor callback for a channel's /doc slash + share_document tools:
+  // post a markdown file from the session workspace into a document thread. Mirrors
+  // sendFileFor — bound per channel, it resolves the SAME wired MessageChannel and the
+  // binding's cwd, merges the GLOBAL documentShare config (render's `?? DEFAULT` idiom),
+  // and funnels through the documentShare core. The image renderer is resolved
+  // per-invocation the SAME way attach() does — resolveImageRenderer is gated by
+  // config.render.enabled (default true) AND browser availability; null → undefined →
+  // the core's plain chunkMessage text fallback (design §7 / D9). No binding / no wired
+  // channel → an UNCODED ShareResult failure (distinct from the core's five coded
+  // rejections) so the edge can tell "no live session" apart from a rejected path.
+  shareDocumentFor(guildId: string, channelId: string): (path: string) => Promise<ShareResult> {
+    return async (path: string): Promise<ShareResult> => {
+      const binding = this.channelRegistry.get(guildId, channelId);
+      const wiring = this.channels.get(channelKey(guildId, channelId));
+      if (!binding || !wiring) return { ok: false };
+      const ds = this.configStore?.load().documentShare;
+      const options: DocumentShareOptions = {
+        maxBytes: ds?.maxBytes ?? 524288,
+        bodyMode: ds?.bodyMode ?? 'preview',
+        previewMaxChars: ds?.previewMaxChars ?? 8000,
+        extensions: ds?.extensions ?? ['.md', '.markdown'],
+      };
+      const renderImage = (await this.resolveImageRenderer()) ?? undefined;
+      return shareDocument({ channel: wiring.channel, cwd: binding.cwd, path, options, renderImage });
     };
   }
 

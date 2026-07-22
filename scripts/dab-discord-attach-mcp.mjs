@@ -33,6 +33,21 @@ const TOOLS = [
       required: ['path'],
     },
   },
+  {
+    name: 'share_document',
+    description:
+      'Post a markdown document from the workspace into a Discord thread. Path must be inside the workspace; only a confirmation is returned, never the document body.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Workspace-relative or absolute path to the markdown file (inside workspace)',
+        },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 function write(msg) {
@@ -47,15 +62,14 @@ function respondError(id, code, message) {
   write({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
-async function postAttach(path, filename) {
+// One loopback POST → normalized { ok, text }. The single fetch() call site: both
+// attach_file and share_document route through it so the bridge does the real work and
+// returns only a confirmation string (never a document body).
+async function postJson(endpoint, body) {
   if (!ATTACH_URL || !ATTACH_TOKEN) {
     return { ok: false, text: 'Attach gateway is not configured (missing DAB_ATTACH_URL/TOKEN).' };
   }
-  const url = ATTACH_URL.replace(/\/$/, '') + '/attach';
-  const body = { token: ATTACH_TOKEN, path };
-  if (filename !== undefined && filename !== null && String(filename).length > 0) {
-    body.filename = String(filename);
-  }
+  const url = ATTACH_URL.replace(/\/$/, '') + endpoint;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,6 +83,20 @@ async function postAttach(path, filename) {
   }
   const text = typeof data?.text === 'string' ? data.text : res.ok ? 'ok' : 'failed';
   return { ok: data?.ok === true || (res.ok && data?.ok !== false), text };
+}
+
+async function postAttach(path, filename) {
+  const body = { token: ATTACH_TOKEN, path };
+  if (filename !== undefined && filename !== null && String(filename).length > 0) {
+    body.filename = String(filename);
+  }
+  return postJson('/attach', body);
+}
+
+// share_document is PATH-ONLY: send only the path; the bridge reads the file, posts it into
+// a Discord thread, and returns just the confirmation string.
+async function postShare(path) {
+  return postJson('/share', { token: ATTACH_TOKEN, path });
 }
 
 async function handleRequest(msg) {
@@ -96,7 +124,7 @@ async function handleRequest(msg) {
   if (method === 'tools/call') {
     const name = params?.name;
     const args = params?.arguments ?? {};
-    if (name !== 'attach_file') {
+    if (name !== 'attach_file' && name !== 'share_document') {
       respond(id, {
         content: [{ type: 'text', text: `Unknown tool: ${name}` }],
         isError: true,
@@ -106,23 +134,24 @@ async function handleRequest(msg) {
     const path = typeof args.path === 'string' ? args.path : '';
     if (!path) {
       respond(id, {
-        content: [{ type: 'text', text: 'attach_file requires a path.' }],
+        content: [{ type: 'text', text: `${name} requires a path.` }],
         isError: true,
       });
       return;
     }
     try {
-      const result = await postAttach(path, args.filename);
+      const result = name === 'share_document' ? await postShare(path) : await postAttach(path, args.filename);
       respond(id, {
         content: [{ type: 'text', text: result.text }],
         isError: !result.ok,
       });
     } catch (err) {
+      const verb = name === 'share_document' ? 'share document' : 'attach file';
       respond(id, {
         content: [
           {
             type: 'text',
-            text: `Failed to attach file: ${err instanceof Error ? err.message : String(err)}`,
+            text: `Failed to ${verb}: ${err instanceof Error ? err.message : String(err)}`,
           },
         ],
         isError: true,

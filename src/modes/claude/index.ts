@@ -7,7 +7,7 @@ import type {
   ResumableSession,
 } from '../../core/contracts.js';
 import { ClaudeSession, type QueryFn } from './session.js';
-import type { SendFileCallback } from './mcpFileTool.js';
+import type { SendFileCallback, ShareDocumentCallback } from './mcpFileTool.js';
 import { CLAUDE_PERMISSION_MODES, claudeCatalog } from '../../core/providerCatalog.js';
 
 // The signature of the SDK's listSessions() — narrowed to what listResumable uses.
@@ -29,6 +29,10 @@ const LIST_RESUMABLE_LIMIT = 25;
 export interface ClaudeModeDeps {
   queryFn?: QueryFn;
   sendFileFor?: (guildId: string, channelId: string) => SendFileCallback;
+  // Sibling factory to sendFileFor: given a session's guild+channel, returns the
+  // callback the in-process share_document MCP tool uses to post a workspace markdown
+  // file into a Discord thread for THAT channel. Bound per session, same as sendFileFor.
+  shareDocumentFor?: (guildId: string, channelId: string) => ShareDocumentCallback;
   listSessionsFn?: ListSessionsFn;
 }
 
@@ -94,9 +98,11 @@ export class ClaudeMode implements AgentMode {
 
   private sessionDeps(ctx: ModeContext) {
     const sendFile = this.deps.sendFileFor?.(ctx.guildId, ctx.channelId);
+    const shareDocument = this.deps.shareDocumentFor?.(ctx.guildId, ctx.channelId);
     return {
       ...(this.deps.queryFn !== undefined ? { queryFn: this.deps.queryFn } : {}),
       ...(sendFile !== undefined ? { sendFile } : {}),
+      ...(shareDocument !== undefined ? { shareDocument } : {}),
     };
   }
 }
