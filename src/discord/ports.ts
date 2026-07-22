@@ -24,6 +24,11 @@ export interface OutgoingMessage {
   ephemeral?: boolean;
   // Users to ping (owner @mention on completion). Rendered into allowedMentions.
   mentionUserIds?: string[];
+  // Roles to ping (e.g. admin @mention on the update prompt). Rendered into allowedMentions.roles.
+  mentionRoleIds?: string[];
+  // When true, ping @here. The caller must put the literal `@here` text in `content`;
+  // rendered into allowedMentions via the "everyone" parse type.
+  mentionHere?: boolean;
 }
 
 export interface OutgoingFile {

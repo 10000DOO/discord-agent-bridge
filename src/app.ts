@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PermissionFlagsBits, type Client } from 'discord.js';
-import { ConfigStore, type AppConfig } from './core/config.js';
+import { ConfigStore, type AppConfig, type ServerConfig } from './core/config.js';
 import { StateStore } from './core/state/store.js';
 import { ChannelRegistry } from './core/channelRegistry.js';
 import { EventBus } from './core/eventBus.js';
@@ -31,7 +31,6 @@ import { SessionWiring } from './discord/wiring.js';
 import { ChromiumProvisioner } from './discord/render/chromiumProvisioner.js';
 import { DiscordClient, resolveGuildProvisioner } from './discord/client.js';
 import { autoProvisionGuild } from './discord/guildChannels.js';
-import { resolveNotifications } from './discord/notifier.js';
 import { buildUpdatePrompt } from './discord/renderers/updateButton.js';
 import type { MessageChannel } from './discord/ports.js';
 import { createAttachGateway } from './discord/attachGateway.js';
@@ -314,7 +313,7 @@ export function createApp(deps: CreateAppDeps): App {
         await wiring.attach(binding.guildId, binding.channelId, binding.mode);
       }
       // Start the auto-updater only now — the gateway + guilds are ready, so postPrompt
-      // can enumerate guilds and resolve their status channels (§4). No-op when disabled.
+      // can enumerate guilds and resolve their control channels (§4). No-op when disabled.
       autoUpdater.start();
       logger.info('boot complete', { guilds: client.guilds.cache.size });
     },
@@ -356,20 +355,21 @@ export function createApp(deps: CreateAppDeps): App {
   interactionRouter.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));
 
   // ---- Auto-update (§7). Created AFTER the client so postPrompt/announce can enumerate
-  // guilds and resolve each guild's status channel over the live gateway. This closure is
+  // guilds and resolve each guild's control channel over the live gateway. This closure is
   // the ONE place guild/discord.js meets the updater — src/update/ depends only on ports.
-  // Notifications target each guild's status channel (notifier's resolution), admin-gated
-  // at the button in interactionRouter. ----
-  const resolveStatusChannel = SessionWiring.resolveOverClient(discord.raw);
-  const forEachStatusChannel = async (fn: (channel: MessageChannel) => Promise<void>): Promise<void> => {
+  // Notifications target each guild's control channel (#session-generator) so the prompt
+  // lands where operators act and can carry an admin @mention, admin-gated at the button
+  // in interactionRouter. ----
+  const resolveControlChannel = SessionWiring.resolveOverClient(discord.raw);
+  const forEachControlChannel = async (fn: (channel: MessageChannel, server: ServerConfig | null) => Promise<void>): Promise<void> => {
     for (const guildId of discord.raw.guilds.cache.keys()) {
       const server = configStore.loadServerConfig(guildId);
-      const channelId = resolveNotifications(server).channelId;
+      const channelId = server?.channels?.controlChannelId;
       if (!channelId) continue;
-      const channel = await resolveStatusChannel(channelId);
+      const channel = await resolveControlChannel(channelId);
       if (!channel) continue;
       try {
-        await fn(channel);
+        await fn(channel, server);
       } catch (err) {
         logger.warn('auto-update notify failed', { guildId, err: String(err) });
       }
@@ -385,12 +385,20 @@ export function createApp(deps: CreateAppDeps): App {
     writeMeta: (patch: Partial<UpdateMeta>) => stateStore.setUpdateMeta(patch),
     postPrompt: async (version: string) => {
       const { embed, rows } = buildUpdatePrompt(version, readVersion());
-      await forEachStatusChannel(async (channel) => {
-        await channel.send({ embeds: [embed], components: rows });
+      await forEachControlChannel(async (channel, server) => {
+        // Ping the guild's effective admin roles so Discord actually notifies; @here when
+        // no admin role is configured. The mention text is per-guild, so build it here.
+        const adminRoles = server?.auth?.adminRoleIds ?? config.auth.adminRoleIds;
+        if (adminRoles.length > 0) {
+          const content = adminRoles.map((id) => `<@&${id}>`).join(' ');
+          await channel.send({ content, embeds: [embed], components: rows, mentionRoleIds: adminRoles });
+        } else {
+          await channel.send({ content: '@here', embeds: [embed], components: rows, mentionHere: true });
+        }
       });
     },
     announce: async (text: string) => {
-      await forEachStatusChannel(async (channel) => {
+      await forEachControlChannel(async (channel) => {
         await channel.send({ content: text });
       });
     },
