@@ -1,12 +1,14 @@
 import type { SessionPermMode } from './contracts.js';
 import { StateStore } from './state/store.js';
-import type { AppState, ChannelBindingState } from './state/schema.js';
+import type { ChannelBindingState } from './state/schema.js';
 
 // The binding "channel → { mode, sessionId, cwd, ownerId, permissionMode, ... }",
 // keyed by "<guildId>:<channelId>". This is the source of truth for which channel
-// runs which mode/session (§4, §8). Backed by the chunk-1 StateStore: the whole
-// AppState is loaded once on init and every mutation is persisted through the
-// store's atomic write. See docs/DESIGN.md §8 (state.json channels).
+// runs which mode/session (§4, §8). Backed by the chunk-1 StateStore: bindings are
+// loaded once on init and every mutation persists by reloading the AppState fresh and
+// replacing ONLY its `channels` field via the store's atomic write. This class owns
+// just `channels`; other top-level fields are never re-written from a boot snapshot.
+// See docs/DESIGN.md §8 (state.json channels).
 
 // Per-project access control carried on a binding (§7.1/§8, narrows only).
 export interface ProjectAuth {
@@ -99,16 +101,14 @@ export class ChannelRegistry {
   // In-memory cache of the channels map, loaded from the store on construction
   // and kept in sync on every mutation (each mutation also persists).
   private readonly bindings = new Map<string, ChannelBinding>();
-  // The full AppState loaded once at construction and held as the in-memory
-  // source of truth. persist() mutates only its `channels` and re-saves it, so
-  // non-channel top-level fields (e.g. scheduledCommands) are preserved without a
-  // reload-then-clobber round-trip on every mutation.
-  private readonly state: AppState;
 
   constructor(store: StateStore, private readonly now: () => string = () => new Date().toISOString()) {
     this.store = store;
-    this.state = store.load();
-    for (const [k, binding] of Object.entries(this.state.channels)) {
+    // Boot load is used ONLY to seed the in-memory bindings; it is not held as a
+    // save source. persist() reloads fresh so out-of-band writes to other top-level
+    // fields are preserved (see persist()).
+    const initial = store.load();
+    for (const [k, binding] of Object.entries(initial.channels)) {
       const [guildId, channelId] = splitKey(k);
       this.bindings.set(k, fromState(guildId, channelId, binding));
     }
@@ -160,17 +160,21 @@ export class ChannelRegistry {
     return binding;
   }
 
-  // Serialize the in-memory map into the held AppState's `channels` and write it
-  // atomically. The held state is the source of truth, so non-channel fields
-  // (e.g. scheduledCommands) are preserved without reloading from disk. The store
-  // validates and normalizes (unknown fields dropped) on write.
+  // Reload the AppState fresh, replace ONLY its `channels` with the serialized
+  // in-memory map, and write it atomically. Reloading on every persist (rather than
+  // re-saving a boot snapshot) is what keeps out-of-band writers to other top-level
+  // fields (presetDrafts, autoUpdate, scheduledCommands) from being clobbered by a
+  // stale in-memory copy. The per-call load is negligible — persist() fires only on a
+  // binding change and state.json is tiny, so correctness wins over the round-trip.
+  // The store validates and normalizes (unknown fields dropped) on write.
   private persist(): void {
+    const fresh = this.store.load();
     const channels: Record<string, ChannelBindingState> = {};
     for (const [k, binding] of this.bindings) {
       channels[k] = toState(binding);
     }
-    this.state.channels = channels;
-    this.store.save(this.state);
+    fresh.channels = channels;
+    this.store.save(fresh);
   }
 }
 

@@ -65,16 +65,32 @@ export const autoUpdateStateSchema = z
   })
   .default({ lastCheckAt: 0, dismissedVersion: null });
 
+// A session-config draft captured at wizard 'done' so the "💾 save as preset" name modal
+// can persist it even across a restart (the router's in-memory draft Map is otherwise lost).
+// Keyed by channelKey ("<guildId>:<channelId>") in appStateSchema.presetDrafts. Fields
+// mirror interactionRouter.ts PresetDraft exactly (profile is nullable).
+export const presetDraftStateSchema = z.object({
+  backend: z.string(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  permMode: z.string().optional(),
+  profile: z.string().nullable().optional(),
+});
+
 export const appStateSchema = z.object({
   version: z.number(),
   channels: z.record(z.string(), channelBindingSchema),
   scheduledCommands: z.array(z.unknown()).default([]),
   autoUpdate: autoUpdateStateSchema,
+  // Preset drafts backed up per channel. A .default({}) (like scheduledCommands) means NO
+  // version bump / migration — an existing state.json without the field loads empty.
+  presetDrafts: z.record(z.string(), presetDraftStateSchema).default({}),
 });
 
 export type AppState = z.infer<typeof appStateSchema>;
 export type ChannelBindingState = z.infer<typeof channelBindingSchema>;
 export type AutoUpdateState = z.infer<typeof autoUpdateStateSchema>;
+export type PresetDraftState = z.infer<typeof presetDraftStateSchema>;
 
 // A fresh, empty v2 state used when no state.json exists yet.
 export function emptyState(): AppState {
@@ -83,5 +99,6 @@ export function emptyState(): AppState {
     channels: {},
     scheduledCommands: [],
     autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
+    presetDrafts: {},
   };
 }

@@ -285,6 +285,7 @@ export function createApp(deps: CreateAppDeps): App {
     orchestrator,
     channelRegistry,
     configStore,
+    stateStore,
     configResolver,
     permissionResolver,
     modeRegistry,

@@ -189,7 +189,22 @@ export class ConfigStore {
       guildId,
       presets: [...others, preset],
     };
-    this.saveServerConfig(next);
+    // Write, then verify the preset actually landed by reading the file back
+    // (read-after-write). A transient I/O failure would otherwise silently drop the
+    // preset. Retries are immediate (0ms) up to 3x: the atomic tmp+rename can fail
+    // transiently, and an immediate retry is the effective remedy — no backoff needed.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        this.saveServerConfig(next);
+        const reloaded = this.loadServerConfig(guildId);
+        if (reloaded?.presets?.some((p) => p.name === preset.name)) return;
+        lastErr = new Error(`preset "${preset.name}" not found after save (read-after-write verification failed)`);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(`preset save verification failed for guild ${guildId}`);
   }
 
   // Remove a preset by name. Returns false (no write) when the name is absent.
