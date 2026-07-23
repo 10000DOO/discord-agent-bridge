@@ -219,8 +219,8 @@ describe('ensureGuildChannels', () => {
     expect(prov.renamed.size).toBe(0);
   });
 
-  it('preserves existing server auth/defaults when persisting channels (first /init)', async () => {
-    // A /config-created server file already has auth; /init must not clobber it.
+  it('preserves existing server auth/defaults when persisting channels (first /setup)', async () => {
+    // A /config-created server file already has auth; /setup must not clobber it.
     store.saveServerConfig({ version: 1, guildId: 'g1', auth: { executeRoleIds: ['role-exec'] } });
     const prov = new FakeProvisioner();
     await ensureGuildChannels(prov, store);
@@ -240,7 +240,7 @@ describe('ensureGuildChannels', () => {
   });
 });
 
-describe('autoProvisionGuild (ready / guild-join, /init optional)', () => {
+describe('autoProvisionGuild (ready / guild-join, /setup optional)', () => {
   it('provisions the channel structure when a guild lacks it (invokes create)', async () => {
     const prov = new FakeProvisioner();
     const { logger, info } = fakeLogger();

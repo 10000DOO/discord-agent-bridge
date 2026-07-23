@@ -112,7 +112,7 @@ export async function ensureGuildChannels(
   return channels;
 }
 
-// Auto-provision a guild's channel structure without a manual /init. Called on
+// Auto-provision a guild's channel structure without a manual /setup. Called on
 // ClientReady (for every existing guild) and on GuildCreate (a fresh invite), so the
 // 🤖 Agent category + #session-generator control channel + Agent - Sessions category appear
 // automatically. GUARDED and NON-THROWING by design: skips with a clear warning when
@@ -148,7 +148,7 @@ export async function autoProvisionGuild(
 }
 
 // Create a dedicated session channel for a picked project folder, under the guild's
-// sessions category (from /init) when available. The name is derived from the folder
+// sessions category (from /setup) when available. The name is derived from the folder
 // basename, sanitized to Discord's channel-name rules and prefixed `proj-`. Returns
 // the new channel; the caller binds the session to its id.
 export async function createSessionChannel(
@@ -175,7 +175,7 @@ export function sessionChannelName(folderPath: string): string {
 
 // Merge the resolved channel ids into servers/<guildId>.json without disturbing the
 // server's other fields (auth / defaults / locale). A server file may not exist yet
-// (first /init before any /config); create a minimal one carrying just the channels.
+// (first /setup before any /config); create a minimal one carrying just the channels.
 function persistChannels(
   configStore: ConfigStore,
   guildId: string,

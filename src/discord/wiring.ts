@@ -408,7 +408,7 @@ export class SessionWiring {
 
     // Render branch (design §7): decide at session start whether tables/mermaid become
     // PNG images. Enabled ⇔ global config render.enabled (default true) AND a browser is
-    // available — a system Chrome OR a Chromium provisioned on demand via the /init and
+    // available — a system Chrome OR a Chromium provisioned on demand via the /setup and
     // /config install prompts (imageProvisioner). Absent → text-only (existing behavior).
     const renderImage = (await this.resolveImageRenderer()) ?? undefined;
 

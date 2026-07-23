@@ -81,7 +81,7 @@ discord-agent-bridge service restart
 
 Once the bot joins a server, it **automatically creates a control channel (`#session-generator`), a sessions category, and a notifications channel (`#agent-status`)** (as long as it has Manage Channels). From there: **`/config` → `/agent start`**.
 
-1. **(Automatic)** Channel structure is created on bot start / server invite. Admins can rebuild it manually with **`/init`** (existing channels are reused).
+1. **(Automatic)** Channel structure is created on bot start / server invite. Admins can rebuild it manually with **`/setup`** (existing channels are reused).
 2. **`/config`** (admin) — set role tiers and defaults. Server Administrators can always use the bot even before roles are configured.
 3. In `#session-generator`, run **`/agent start`**. The **wizard** walks you through: **working folder → backend (Claude / Codex) → model → reasoning effort → permission mode**. Each step advances with a **Next** button. The folder browser lets you navigate to parents/other volumes, create folders, and resume prior sessions. On confirm, a **dedicated session channel (`proj-<folder>`)** is created and bound.
 4. In that session channel, **just send normal messages**. Claude mode gives you streaming output, tool-run threads, and permission approval buttons.
@@ -90,7 +90,7 @@ Once the bot joins a server, it **automatically creates a control channel (`#ses
 
 | Command | Description |
 |---|---|
-| `/init` | (admin) Create the control channel + sessions category (reuses existing) |
+| `/setup` | (admin) Create the control channel + sessions category (reuses existing) |
 | `/agent start` | Start a new session — creates a dedicated session channel on confirm |
 | `/agent resume` | Resume a previous session |
 | `/agent close` | End the session and delete its channel |

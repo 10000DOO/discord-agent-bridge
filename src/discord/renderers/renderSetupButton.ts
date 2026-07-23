@@ -1,7 +1,7 @@
 import type { ButtonSpec, ComponentRow } from '../ports.js';
 import { t } from '../i18n.js';
 
-// The Chromium install prompt shown at /init when image rendering is enabled but no
+// The Chromium install prompt shown at /setup when image rendering is enabled but no
 // browser is present yet (design §9.1). custom_id scheme `render-setup:<action>` with
 // action ∈ install|decline (no ids needed — the decision is host-wide/global). Mirrors
 // the interrupt/permission button conventions (prefix + ':' split).

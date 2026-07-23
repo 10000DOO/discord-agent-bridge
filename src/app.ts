@@ -123,7 +123,7 @@ export function createApp(deps: CreateAppDeps): App {
   const eventBus = new EventBus();
   // Chromium provisioner for image rendering (tables/mermaid → PNG). Cheap to construct
   // (no download/launch here); shared by the wiring layer (executable resolution) and the
-  // interaction router (/init + /config install prompts). Cache dir lives in the app home.
+  // interaction router (/setup + /config install prompts). Cache dir lives in the app home.
   const imageProvisioner = new ChromiumProvisioner({
     cacheDir: ChromiumProvisioner.cacheDirFor(configStore.dir),
     logger,
@@ -297,7 +297,7 @@ export function createApp(deps: CreateAppDeps): App {
     shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
     usageService,
     logger,
-    // Chromium provisioner: /init offers a background-install prompt when no browser is
+    // Chromium provisioner: /setup offers a background-install prompt when no browser is
     // present, and /config can install/toggle image rendering later.
     imageProvisioner,
     // Folder-browser roots + per-backend model list are config-driven (§8.1): the
@@ -375,7 +375,7 @@ export function createApp(deps: CreateAppDeps): App {
       autoUpdater.start();
       logger.info('boot complete', { guilds: client.guilds.cache.size });
     },
-    // Auto-provision each guild's channel structure on ready / guild-join so /init is
+    // Auto-provision each guild's channel structure on ready / guild-join so /setup is
     // optional. Resolves the guild's provisioner over the live gateway, then runs the
     // idempotent, Manage-Channels-guarded, non-throwing provisioner.
     autoProvisionGuild: async (guildId: string, isNewGuild: boolean) => {
@@ -402,7 +402,7 @@ export function createApp(deps: CreateAppDeps): App {
   // the plain null-or-channel resolver still backs notifier/sendFile.
   wiring.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));
   wiring.setResolveChannelResult(SessionWiring.resolveResultOverClient(discord.raw));
-  // Bind the interaction router's guild/channel resolvers for /init + auto-created
+  // Bind the interaction router's guild/channel resolvers for /setup + auto-created
   // session channels (same late-binding pattern: the client depends on the router).
   interactionRouter.setResolveGuildProvisioner((guildId) => resolveGuildProvisioner(discord.raw, guildId));
   interactionRouter.setResolveChannel(SessionWiring.resolveOverClient(discord.raw));

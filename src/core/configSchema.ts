@@ -96,7 +96,7 @@ export const configSchema = z.object({
     })
     .partial()
     .optional(),
-  // Chromium provisioning decision (host-wide). 'undecided' → the /init prompt may offer
+  // Chromium provisioning decision (host-wide). 'undecided' → the /setup prompt may offer
   // the install button; 'declined' → never re-prompt (only /config can re-enable);
   // 'accepted' → the operator opted in. The installed state itself is NOT stored here —
   // it is detected on disk (chromiumProvisioner) to avoid drift.
@@ -179,9 +179,9 @@ export const serverConfigSchema = z.object({
   // so this MUST be declared here — otherwise saveServerConfig (→ serverConfigSchema.parse)
   // would drop it on every /config round-trip. Optional: existing server files load unchanged.
   presets: z.array(presetSchema).optional(),
-  // A4D-style channel structure created by /init and persisted here so it can be
+  // A4D-style channel structure created by /setup and persisted here so it can be
   // reused (idempotent re-init) and so /agent start knows where to put new session
-  // channels. Absent until /init runs. controlChannelId is where the session-start UI
+  // channels. Absent until /setup runs. controlChannelId is where the session-start UI
   // lives; sessionsCategoryId parents auto-created per-project session channels.
   channels: z
     .object({

@@ -151,7 +151,7 @@ export interface InteractionRouterDeps {
   // into a document thread. Sourced from SessionWiring.shareDocumentFor at app boot;
   // optional so tests that never exercise /doc need not wire it.
   shareDocumentFor?: (guildId: string, channelId: string) => (path: string) => Promise<ShareResult>;
-  // Chromium provisioner (image render). When present, /init offers a background-install
+  // Chromium provisioner (image render). When present, /setup offers a background-install
   // prompt if no browser is present yet, and /config can install/toggle later. Absent →
   // no install UX (rendering still works when a system Chrome exists).
   imageProvisioner?: ChromiumProvisioner;
@@ -171,10 +171,10 @@ export interface InteractionRouterDeps {
   // Optional so tests/deploys without the custom backend need not wire it; the
   // wizard then falls back to the plain i18n 'backend.custom' label.
   customBackendLabel?: () => string;
-  // Resolve a guildId to a channel provisioner over the live gateway (A4D-style /init
+  // Resolve a guildId to a channel provisioner over the live gateway (A4D-style /setup
   // + auto-created session channels). Returns null when the guild is unknown or the
   // client is not connected yet (tests inject a fake). Optional so the pre-gateway
-  // graph builds without it; when absent, /init and session-channel creation report a
+  // graph builds without it; when absent, /setup and session-channel creation report a
   // graceful notice instead of throwing.
   resolveGuildProvisioner?: (guildId: string) => Promise<GuildChannelProvisioner | null>;
   // Resolve a channelId to a message sink (to post the status embed + intro into a
@@ -252,7 +252,7 @@ export class InteractionRouter {
 
   // Bind the live-gateway resolvers AFTER construction (app boot). The client depends
   // on this router, so the router cannot capture the client at construction — these
-  // setters mirror wiring.setResolveChannel. Used by /init and /agent start's session-
+  // setters mirror wiring.setResolveChannel. Used by /setup and /agent start's session-
   // channel creation + intro post.
   setResolveGuildProvisioner(fn: (guildId: string) => Promise<GuildChannelProvisioner | null>): void {
     this.deps.resolveGuildProvisioner = fn;
@@ -325,11 +325,11 @@ export class InteractionRouter {
       return;
     }
 
-    // /init creates the guild channel structure (control channel + sessions category).
+    // /setup creates the guild channel structure (control channel + sessions category).
     // Same bootstrap gate as /config (Administrator OR admin tier) so a fresh server
     // admin can run it before any role is configured.
-    if (actionKey === 'init') {
-      await this.guarded(i, () => this.runInit(i));
+    if (actionKey === 'setup') {
+      await this.guarded(i, () => this.runSetup(i));
       return;
     }
 
@@ -632,10 +632,10 @@ export class InteractionRouter {
     await i.followUp({ components: defaultRows, ephemeral: true });
   }
 
-  // /init: idempotently create the A4D-style channel structure (control channel +
+  // /setup: idempotently create the A4D-style channel structure (control channel +
   // sessions category) and persist the ids to servers/<guildId>.json. Re-running
   // reuses existing channels by their stored ids. Same bootstrap gate as /config.
-  private async runInit(i: SlashInteraction): Promise<void> {
+  private async runSetup(i: SlashInteraction): Promise<void> {
     if (i.guildId === null) {
       await i.editReply({ content: t('auth.denied', { reason: 'DM' }) });
       return;
@@ -648,12 +648,30 @@ export class InteractionRouter {
       ? await this.deps.resolveGuildProvisioner(i.guildId)
       : null;
     if (!provisioner) {
-      await i.editReply({ content: t('cmd.init.unavailable') });
+      await i.editReply({ content: t('cmd.setup.unavailable') });
+      return;
+    }
+    // Skip create/rename entirely when the stored structure's four channels are all
+    // still alive — a no-op re-run must not touch discord.js or offer the (already
+    // resolved) Chromium prompt. Assumes a live control channel never has a stale
+    // name, so a rename-only re-run is not a case this guard needs to handle.
+    const existing = this.guildChannels(i.guildId);
+    if (
+      existing &&
+      existing.statusChannelId &&
+      provisioner.channelExists(existing.categoryId) &&
+      provisioner.channelExists(existing.controlChannelId) &&
+      provisioner.channelExists(existing.sessionsCategoryId) &&
+      provisioner.channelExists(existing.statusChannelId)
+    ) {
+      await i.editReply({
+        content: t('cmd.setup.alreadyDone', { control: `<#${existing.controlChannelId}>` }),
+      });
       return;
     }
     const channels = await ensureGuildChannels(provisioner, this.deps.configStore);
     await i.editReply({
-      content: t('cmd.init.done', { control: `<#${channels.controlChannelId}>` }),
+      content: t('cmd.setup.done', { control: `<#${channels.controlChannelId}>` }),
     });
     // Offer the Chromium install prompt in the fresh control channel (design §9.2).
     await this.maybePromptRenderSetup(channels.controlChannelId);
@@ -661,7 +679,7 @@ export class InteractionRouter {
 
   // Post the one-time Chromium install prompt to a channel when image rendering is
   // enabled, no browser is present, and the operator has not yet decided. Best-effort:
-  // a failure never affects /init or guild provisioning. Anyone can act on it (host-wide
+  // a failure never affects /setup or guild provisioning. Anyone can act on it (host-wide
   // decision). Public so the app's GuildCreate auto-provision path can offer it on a fresh
   // invite (guarded there so ClientReady re-provisioning never re-posts it).
   async maybePromptRenderSetup(channelId: string): Promise<void> {
@@ -775,7 +793,7 @@ export class InteractionRouter {
       return;
     }
     if (result.kind === 'renderInstall') {
-      // Install from /config reuses the same provisioner flow as the /init button.
+      // Install from /config reuses the same provisioner flow as the /setup button.
       await safe(i.deferUpdate());
       await this.handleRenderSetup(i, 'install');
       return;
@@ -833,9 +851,9 @@ export class InteractionRouter {
   // A4D-style session start: CREATE a dedicated session channel from the picked
   // folder, start the session bound to THAT new channel (not the command's channel),
   // wire renderers/permission/sendFile there, and post the status embed + intro. Falls
-  // back to the command's channel when the guild has no /init structure and no
+  // back to the command's channel when the guild has no /setup structure and no
   // provisioner is available (so a session can still start), but the channel is created
-  // under the sessions category when /init has run. Returns the effective channel id so
+  // under the sessions category when /setup has run. Returns the effective channel id so
   // the wizard/router can link the new channel to the driver.
   private async startSession(params: StartParams): Promise<{ session: ModeSession; channelId: string }> {
     const channelId = await this.resolveSessionChannelId(params);
@@ -866,7 +884,7 @@ export class InteractionRouter {
   }
 
   // Create the dedicated session channel for this start, or fall back to the command's
-  // channel when no provisioner is wired. When /init has run, the new channel is placed
+  // channel when no provisioner is wired. When /setup has run, the new channel is placed
   // under the guild's sessions category; otherwise it is created without a parent (or,
   // if creation is impossible, the command's channel is reused).
   private async resolveSessionChannelId(params: StartParams): Promise<string> {
@@ -879,7 +897,7 @@ export class InteractionRouter {
     return created.id;
   }
 
-  // The persisted /init channel structure for a guild, or undefined when /init has not
+  // The persisted /setup channel structure for a guild, or undefined when /setup has not
   // run. A corrupt server file is treated as absent (loadServerConfig returns null).
   private guildChannels(guildId: string): GuildChannels | undefined {
     return this.deps.configStore.loadServerConfig(guildId)?.channels;
@@ -936,7 +954,7 @@ export class InteractionRouter {
   }
 
   // Delete the session channel that was closed, unless it is the guild's control
-  // channel (never delete /init's control channel). No-op when no provisioner is wired.
+  // channel (never delete /setup's control channel). No-op when no provisioner is wired.
   private async deleteSessionChannel(guildId: string, channelId: string): Promise<void> {
     const channels = this.guildChannels(guildId);
     if (channels && channelId === channels.controlChannelId) return;
@@ -1415,7 +1433,7 @@ export class InteractionRouter {
       return;
     }
 
-    // Chromium install prompt (render-setup:install|decline) — post at /init. Anyone may
+    // Chromium install prompt (render-setup:install|decline) — post at /setup. Anyone may
     // trigger it (design §8.2: no owner gate beyond the component's drive tier). The
     // decision is host-wide; install downloads Chromium in the background with progress.
     const renderSetup = parseRenderSetupId(i.customId);

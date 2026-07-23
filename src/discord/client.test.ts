@@ -406,7 +406,7 @@ describe('adaptInteraction — modal wiring (generic)', () => {
   });
 });
 
-// The auto-provision wiring on ClientReady / GuildCreate (§ auto-provision, /init
+// The auto-provision wiring on ClientReady / GuildCreate (§ auto-provision, /setup
 // optional). discord.js is faked: the Client captures its event handlers so a test
 // fires ClientReady / GuildCreate WITHOUT a gateway. The fake's token is empty so
 // registerCommands fails fast (no REST/network) — the ready handler catches it and

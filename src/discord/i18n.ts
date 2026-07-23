@@ -74,7 +74,7 @@ const ko: Catalog = {
   'config.notif.button': '🔔 알림 설정',
   'config.notif.title': '이벤트 알림 설정',
   'config.notif.intro':
-    '세션의 주요 이벤트(완료·에러)를 상태 채널로 한 줄 요약해 보냅니다.\n현재 상태: **{state}**\n아래에서 상태 채널을 고르고, 버튼으로 켜고 끌 수 있어요. 채널을 비우면 `/init` 이 만든 기본 상태 채널을 사용합니다.',
+    '세션의 주요 이벤트(완료·에러)를 상태 채널로 한 줄 요약해 보냅니다.\n현재 상태: **{state}**\n아래에서 상태 채널을 고르고, 버튼으로 켜고 끌 수 있어요. 채널을 비우면 `/setup` 이 만든 기본 상태 채널을 사용합니다.',
   'config.notif.on': '켜짐',
   'config.notif.off': '꺼짐',
   'config.notif.enable': '알림 켜기',
@@ -90,7 +90,7 @@ const ko: Catalog = {
   'config.render.enable': '렌더 켜기',
   'config.render.disable': '렌더 끄기',
   'config.render.install': 'Chromium 설치/재설치',
-  // Chromium install prompt (posted at /init) + install flow notices.
+  // Chromium install prompt (posted at /setup) + install flow notices.
   'render.setup.prompt':
     '🖼 표·다이어그램을 **이미지로** 보시겠어요? 렌더링에 필요한 Chromium(약 300MB)을 설치할 수 있어요. 설치하지 않아도 답변은 원문 텍스트로 정상 표시됩니다.',
   'render.setup.install': '설치',
@@ -227,8 +227,9 @@ const ko: Catalog = {
   'cmd.start.launched': '세션 시작 마법사를 열었어요.',
   'cmd.start.channelCreated': '세션 채널 생성됨: {channel}',
   'cmd.start.intro': '이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.',
-  'cmd.init.done': '채널 구성을 완료했어요. {control} 에서 `/agent start` 로 세션을 시작하세요.',
-  'cmd.init.unavailable': '채널을 만들 수 없어요. 봇에 "채널 관리(Manage Channels)" 권한이 있는지 확인하세요.',
+  'cmd.setup.done': '채널 구성을 완료했어요. {control} 에서 `/agent start` 로 세션을 시작하세요.',
+  'cmd.setup.alreadyDone': '이미 채널 구성이 모두 되어 있어요. {control} 에서 `/agent start` 로 세션을 시작하세요.',
+  'cmd.setup.unavailable': '채널을 만들 수 없어요. 봇에 "채널 관리(Manage Channels)" 권한이 있는지 확인하세요.',
   'cmd.config.opened': '역할·기본값 설정 패널을 열었어요. ① 역할을 고르고 저장, ② 아래 기본값은 고르면 바로 저장돼요.',
   'cmd.config.denied': '`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.',
   'cmd.resume.none': '재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.',

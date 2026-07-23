@@ -202,7 +202,7 @@ export class ConfigPanel {
         return this.toggleNotifications();
       case IDS.notifChannel:
         // A channel-select delivers the picked channel id(s) in `values`. An empty
-        // pick clears the override (falls back to the /init status channel).
+        // pick clears the override (falls back to the /setup status channel).
         return this.setNotificationChannel(input.values?.[0] ?? null);
       case IDS.save:
         return { kind: 'saved', summary: this.saveRoles() };

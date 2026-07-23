@@ -201,14 +201,14 @@ export function buildSlashCommands(
     .setDescription('Configure role tiers and defaults for this server')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  // /init creates the A4D-style channel structure (control channel + sessions
+  // /setup creates the A4D-style channel structure (control channel + sessions
   // category). Administrator-gated: it creates channels, so only server admins run it.
-  const init = new SlashCommandBuilder()
-    .setName('init')
-    .setDescription('Create the agent control channel and sessions category')
+  const setup = new SlashCommandBuilder()
+    .setName('setup')
+    .setDescription('Create the agent control channel and sessions category (unnecessary if the channels already exist)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
-  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), clear.toJSON(), doc.toJSON(), stopAll.toJSON(), config.toJSON(), init.toJSON()];
+  return [agent.toJSON(), mode.toJSON(), model.toJSON(), effort.toJSON(), stop.toJSON(), clear.toJSON(), doc.toJSON(), stopAll.toJSON(), config.toJSON(), setup.toJSON()];
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +445,7 @@ export async function resolveChannelAdapter(
 }
 
 // A discord.js Guild adapted onto the GuildChannelProvisioner port — the single place
-// that touches guild.channels.create/delete for the /init + session-channel flows.
+// that touches guild.channels.create/delete for the /setup + session-channel flows.
 // Every ensure* checks the guild's channel cache for the given id first (idempotency)
 // and only creates when absent, mirroring A4D's init.
 class GuildProvisionerAdapter implements GuildChannelProvisioner {
@@ -507,7 +507,7 @@ class GuildProvisionerAdapter implements GuildChannelProvisioner {
 
 // Resolve a guildId to a GuildChannelProvisioner over the live client, or null when
 // the guild is unknown (not cached / bot no longer a member). Used by the interaction
-// router for /init and /agent start's session-channel creation.
+// router for /setup and /agent start's session-channel creation.
 export async function resolveGuildProvisioner(
   client: Client,
   guildId: string,
@@ -534,7 +534,7 @@ export interface DiscordClientDeps {
   // sessions (§9 step 4). Wired to orchestrator.resumeAll by the app boot.
   onReady: (client: Client) => Promise<void>;
   // Auto-provision the 🤖 Agent category + #session-generator control channel + sessions
-  // category for a guild, so /init is optional (§ auto-provision). Called for every
+  // category for a guild, so /setup is optional (§ auto-provision). Called for every
   // existing guild on ClientReady (isNewGuild=false) and for a guild the bot is added to on
   // GuildCreate (isNewGuild=true). The flag lets the app post the one-time render-setup
   // prompt ONLY on a fresh invite, not on every restart's re-provisioning of existing
@@ -590,7 +590,7 @@ export class DiscordClient {
     });
 
     // Register commands for a guild the bot joins after startup, too, and
-    // auto-provision its channel structure so /init is optional (§ auto-provision).
+    // auto-provision its channel structure so /setup is optional (§ auto-provision).
     // The two are INDEPENDENT: a command-registration hiccup must not prevent channel
     // creation, so each is guarded separately (mirrors handleReady's per-guild loop).
     this.client.on(Events.GuildCreate, (guild) => {
@@ -719,7 +719,7 @@ export class DiscordClient {
         this.logger.error('command registration failed', { guildId, err: String(err) });
       });
       // Auto-provision each existing guild so the control/session channels appear
-      // without a manual /init (idempotent + Manage-Channels-guarded + non-throwing).
+      // without a manual /setup (idempotent + Manage-Channels-guarded + non-throwing).
       // isNewGuild=false: re-provisioning an existing guild on (re)boot must NOT re-post the
       // render-setup prompt — only a fresh invite (GuildCreate) does.
       if (this.autoProvisionGuild) {

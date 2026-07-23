@@ -12,7 +12,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Chromium provisioning (design §6.1/§8.2/§9). Chromium is a ~300MB host resource that is
 // NEVER downloaded at npm-install time (.puppeteerrc.cjs skipDownload) nor synchronously
 // at answer time. Instead: a system Chrome is reused when present, or the operator opts in
-// via a button (/init, /config) → we download a dedicated Chromium in the BACKGROUND.
+// via a button (/setup, /config) → we download a dedicated Chromium in the BACKGROUND.
 //
 // macOS note: @puppeteer/browsers' install() has two issues on macOS — its promise can
 // stay UNSETTLED after the download, and its built-in extractor produces a broken .app
@@ -46,7 +46,7 @@ export class ChromiumProvisioner {
   private readonly provisionFn: ProvisionFn;
   private readonly systemChrome: () => string | undefined;
   // In-flight install guard: concurrent install() callers (e.g. a button click racing an
-  // /init prompt) join THIS promise instead of kicking off a second download/unzip into the
+  // /setup prompt) join THIS promise instead of kicking off a second download/unzip into the
   // same cache dir (which would race/corrupt). Cleared once the install settles.
   private installing: Promise<string> | null = null;
 

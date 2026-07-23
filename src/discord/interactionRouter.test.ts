@@ -398,7 +398,7 @@ function fakeProvisioner(installed: boolean): ChromiumProvisioner {
   return { isInstalled: () => installed } as unknown as ChromiumProvisioner;
 }
 
-// A fake provisioner for /init + session-channel tests: records creates + deletes and
+// A fake provisioner for /setup + session-channel tests: records creates + deletes and
 // resolves reuse by an in-memory channel map (mirrors guildChannels.test.ts's fake).
 class FakeProvisioner implements GuildChannelProvisioner {
   readonly guildId: string;
@@ -1545,14 +1545,14 @@ describe('InteractionRouter /config command', () => {
   });
 });
 
-describe('InteractionRouter /init command', () => {
+describe('InteractionRouter /setup command', () => {
   it('creates the category + control channel + status channel + sessions category and persists the ids', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const prov = new FakeProvisioner('g1');
     const router = buildRouter({ orchestrator, wiring, resolveGuildProvisioner: async () => prov });
 
-    const { interaction, replies } = slash({ commandName: 'init', hasAdminPermission: true, roles: ['role-nobody'] });
+    const { interaction, replies } = slash({ commandName: 'setup', hasAdminPermission: true, roles: ['role-nobody'] });
     await router.handle(interaction);
 
     // Four channels created; ids persisted to servers/g1.json.
@@ -1565,31 +1565,64 @@ describe('InteractionRouter /init command', () => {
     expect(replies[0].content).toContain(`<#${saved!.channels!.controlChannelId}>`);
   });
 
-  it('is idempotent: a second /init reuses the stored channels (no duplicates)', async () => {
+  it('is idempotent: a second /setup reuses the stored channels (no duplicates)', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const prov = new FakeProvisioner('g1');
     const router = buildRouter({ orchestrator, wiring, resolveGuildProvisioner: async () => prov });
 
-    const { interaction: first } = slash({ commandName: 'init', hasAdminPermission: true });
+    const { interaction: first } = slash({ commandName: 'setup', hasAdminPermission: true });
     await router.handle(first);
     const afterFirst = store.loadServerConfig('g1')?.channels;
     expect(prov.createdNames).toHaveLength(4);
 
-    const { interaction: second } = slash({ commandName: 'init', hasAdminPermission: true });
+    const { interaction: second } = slash({ commandName: 'setup', hasAdminPermission: true });
     await router.handle(second);
     // No new creates; the stored ids are unchanged.
     expect(prov.createdNames).toHaveLength(4);
     expect(store.loadServerConfig('g1')?.channels).toEqual(afterFirst);
   });
 
-  it('denies /init for a non-admin, non-allowlisted user (no channels created)', async () => {
+  it('skips channel creation when the stored structure is already fully alive', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const prov = new FakeProvisioner('g1');
     const router = buildRouter({ orchestrator, wiring, resolveGuildProvisioner: async () => prov });
 
-    const { interaction, replies } = slash({ commandName: 'init', roles: [EXEC_ROLE], hasAdminPermission: false });
+    // Pre-provision all four channels directly on the fake (bypassing /setup) and
+    // persist their ids, mirroring a guild that was already set up.
+    const category = await prov.ensureCategory('🤖 Agent');
+    const control = await prov.ensureTextChannel('session-generator', category.id);
+    const status = await prov.ensureTextChannel('agent-status', category.id);
+    const sessionsCategory = await prov.ensureCategory('Agent - Sessions');
+    store.saveServerConfig({
+      version: 1,
+      guildId: 'g1',
+      channels: {
+        categoryId: category.id,
+        controlChannelId: control.id,
+        sessionsCategoryId: sessionsCategory.id,
+        statusChannelId: status.id,
+      },
+    });
+    const createdBefore = prov.createdNames.length;
+
+    const { interaction, replies } = slash({ commandName: 'setup', hasAdminPermission: true });
+    await router.handle(interaction);
+
+    // No new channels created — the guard short-circuited before ensureGuildChannels.
+    expect(prov.createdNames).toHaveLength(createdBefore);
+    expect(replies[0].content).toContain('이미');
+    expect(replies[0].content).toContain(`<#${control.id}>`);
+  });
+
+  it('denies /setup for a non-admin, non-allowlisted user (no channels created)', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const prov = new FakeProvisioner('g1');
+    const router = buildRouter({ orchestrator, wiring, resolveGuildProvisioner: async () => prov });
+
+    const { interaction, replies } = slash({ commandName: 'setup', roles: [EXEC_ROLE], hasAdminPermission: false });
     await router.handle(interaction);
     expect(prov.createdNames).toHaveLength(0);
     expect(store.loadServerConfig('g1')?.channels).toBeUndefined();
@@ -1600,7 +1633,7 @@ describe('InteractionRouter /init command', () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
     const router = buildRouter({ orchestrator, wiring, resolveGuildProvisioner: async () => null });
-    const { interaction, replies } = slash({ commandName: 'init', hasAdminPermission: true });
+    const { interaction, replies } = slash({ commandName: 'setup', hasAdminPermission: true });
     await router.handle(interaction);
     expect(replies[0].content).toContain('채널 관리');
   });
@@ -1620,7 +1653,7 @@ describe('InteractionRouter /agent start creates a dedicated session channel', (
       resolveChannel: async () => channel,
     });
     if (sessionsCategoryId) {
-      // Seed a persisted /init structure so the session channel is placed under it.
+      // Seed a persisted /setup structure so the session channel is placed under it.
       store.saveServerConfig({
         version: 1,
         guildId: 'g1',
@@ -1676,7 +1709,7 @@ describe('InteractionRouter /agent start creates a dedicated session channel', (
     expect(compReplies.some((r) => r.content?.includes(`<#${newChannelId}>`))).toBe(true);
   });
 
-  it('places the new session channel under the /init sessions category when present', async () => {
+  it('places the new session channel under the /setup sessions category when present', async () => {
     const prov = new FakeProvisioner('g1');
     // Seed the sessions category id into the fake so createTextChannel records its parent.
     prov.channels.set('sessions-cat', 'Agent - Sessions');
@@ -1705,7 +1738,7 @@ describe('InteractionRouter /agent close deletes the session channel', () => {
   });
 
   it('never deletes the control channel on close', async () => {
-    // Persist an /init structure whose control channel is 'ctrl'.
+    // Persist a /setup structure whose control channel is 'ctrl'.
     store.saveServerConfig({
       version: 1,
       guildId: 'g1',
