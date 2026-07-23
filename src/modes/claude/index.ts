@@ -1,4 +1,4 @@
-import { listSessions as realListSessions, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
+import { listSessions as realListSessions, type Options, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentMode,
   Capabilities,
@@ -9,6 +9,10 @@ import type {
 import { ClaudeSession, type QueryFn } from './session.js';
 import type { SendFileCallback, ShareDocumentCallback } from './mcpFileTool.js';
 import { CLAUDE_PERMISSION_MODES, claudeCatalog } from '../../core/providerCatalog.js';
+import {
+  ClaudeSidecarClient,
+  resolveClaudeSidecarSpawn,
+} from './sidecarClient.js';
 
 // The signature of the SDK's listSessions() — narrowed to what listResumable uses.
 // Injectable so tests pass a fake without touching the SDK or the filesystem (the
@@ -18,6 +22,13 @@ export type ListSessionsFn = (options: { dir?: string; limit?: number }) => Prom
 // The maximum resumable sessions surfaced in the resume picker (Discord select cap).
 const LIST_RESUMABLE_LIMIT = 25;
 
+// Optional start/resume prep: adjust ctx (e.g. model from shell env) and/or supply
+// Options.env for the SDK subprocess. Used by the `custom` backend.
+export type ClaudeSessionPrep = {
+  ctx?: ModeContext;
+  env?: Options['env'];
+};
+
 // Injected once when the mode is registered (§4/§10). `queryFn` defaults to the
 // real SDK query inside ClaudeSession; tests inject a fake. `sendFileFor` is wired
 // by the Discord layer: it is a FACTORY that, given a session's guild+channel,
@@ -26,6 +37,10 @@ const LIST_RESUMABLE_LIMIT = 25;
 // per-channel sink must be bound per session (start/resume) from ctx — not once at
 // registration. Kept out of the mode's core so modes stay transport-agnostic.
 // `listSessionsFn` defaults to the real SDK listSessions; tests inject a fake.
+//
+// Sidecar (W7, opt-in via DAB_CLAUDE_SIDECAR=1 / useSidecar): start/resume/list go
+// through ClaudeSidecarClient. Prefer injecting one shared `sidecarClient` for
+// claude + custom so both modes share a single multi-session sidecar process.
 export interface ClaudeModeDeps {
   queryFn?: QueryFn;
   sendFileFor?: (guildId: string, channelId: string) => SendFileCallback;
@@ -34,13 +49,28 @@ export interface ClaudeModeDeps {
   // file into a Discord thread for THAT channel. Bound per session, same as sendFileFor.
   shareDocumentFor?: (guildId: string, channelId: string) => ShareDocumentCallback;
   listSessionsFn?: ListSessionsFn;
+  /** Mode id (default 'claude'). Use 'custom' for shell-env backend. */
+  name?: string;
+  /** Optional prep before start/resume; may adjust ctx (model) and supply env. */
+  prepareSession?: (ctx: ModeContext) => ClaudeSessionPrep | void;
+  /**
+   * When true, sessions are opened via the Claude sidecar client instead of
+   * in-process ClaudeSession. Default false (in-process). App sets this from
+   * DAB_CLAUDE_SIDECAR=1.
+   */
+  useSidecar?: boolean;
+  /**
+   * Shared long-lived sidecar client (one process, multi-session). When omitted
+   * and useSidecar is true, ClaudeMode lazily spawns its own client.
+   */
+  sidecarClient?: ClaudeSidecarClient;
 }
 
 // The Claude backend: wraps the Claude Agent SDK query() as a ModeSession and
 // maps SDK messages to normalized AgentEvents (§5a). Capabilities drive which
-// Discord renderers run (§6).
+// Discord renderers run (§6). With useSidecar, ModeSession is a SidecarModeSession.
 export class ClaudeMode implements AgentMode {
-  readonly name = 'claude';
+  readonly name: string;
 
   readonly capabilities: Capabilities = {
     streaming: true,
@@ -63,17 +93,35 @@ export class ClaudeMode implements AgentMode {
   readonly catalog = claudeCatalog;
 
   private readonly deps: ClaudeModeDeps;
+  /** Lazily created only when useSidecar and no shared client was injected. */
+  private ownedSidecar: ClaudeSidecarClient | null = null;
 
   constructor(deps: ClaudeModeDeps = {}) {
     this.deps = deps;
+    this.name = deps.name ?? 'claude';
   }
 
   async start(ctx: ModeContext): Promise<ModeSession> {
-    return new ClaudeSession(ctx, this.sessionDeps(ctx));
+    const { ctx: sessionCtx, env } = this.applyPrep(ctx);
+    if (this.deps.useSidecar) {
+      return this.openViaSidecar(sessionCtx, { env });
+    }
+    return new ClaudeSession(sessionCtx, {
+      ...this.sessionDeps(ctx),
+      ...(env !== undefined ? { env } : {}),
+    });
   }
 
   async resume(ctx: ModeContext, sessionId: string): Promise<ModeSession> {
-    return new ClaudeSession(ctx, { ...this.sessionDeps(ctx), resumeId: sessionId });
+    const { ctx: sessionCtx, env } = this.applyPrep(ctx);
+    if (this.deps.useSidecar) {
+      return this.openViaSidecar(sessionCtx, { env, resumeId: sessionId });
+    }
+    return new ClaudeSession(sessionCtx, {
+      ...this.sessionDeps(ctx),
+      ...(env !== undefined ? { env } : {}),
+      resumeId: sessionId,
+    });
   }
 
   // List resumable Claude sessions for the resume UX (§9). Reads the SDK's
@@ -85,15 +133,75 @@ export class ClaudeMode implements AgentMode {
   //   updatedAt ← lastModified (ms epoch) rendered as an ISO timestamp
   // Guarded with try/catch → [] on any failure: listSessions may be unavailable
   // (older SDK, no local store) and a resume list is never load-bearing.
+  // With useSidecar and no injected listSessionsFn, list goes through the sidecar
+  // (sessions.list). An explicit listSessionsFn always wins (tests / overrides).
   async listResumable(ctx: ModeContext): Promise<ResumableSession[]> {
-    const listSessionsFn = this.deps.listSessionsFn ?? (realListSessions as ListSessionsFn);
+    if (this.deps.listSessionsFn) {
+      return this.listViaFn(ctx, this.deps.listSessionsFn);
+    }
+    if (this.deps.useSidecar) {
+      try {
+        return await this.sidecar().sessionsList(ctx.cwd, LIST_RESUMABLE_LIMIT);
+      } catch (err) {
+        ctx.logger.warn(`${this.name} listResumable (sidecar) failed; returning empty`, {
+          err: String(err),
+        });
+        return [];
+      }
+    }
+    return this.listViaFn(ctx, realListSessions as ListSessionsFn);
+  }
+
+  private async listViaFn(ctx: ModeContext, listSessionsFn: ListSessionsFn): Promise<ResumableSession[]> {
     try {
       const sessions = await listSessionsFn({ dir: ctx.cwd, limit: LIST_RESUMABLE_LIMIT });
       return sessions.map((s) => toResumable(s, ctx.cwd));
     } catch (err) {
-      ctx.logger.warn('claude listResumable failed; returning empty', { err: String(err) });
+      ctx.logger.warn(`${this.name} listResumable failed; returning empty`, { err: String(err) });
       return [];
     }
+  }
+
+  private async openViaSidecar(
+    sessionCtx: ModeContext,
+    opts: { env?: Options['env']; resumeId?: string },
+  ): Promise<ModeSession> {
+    const envOverlay =
+      opts.env !== undefined
+        ? (opts.env as Record<string, string | undefined>)
+        : undefined;
+    // Per-channel Discord sinks for reverse RPC host.file.attach / host.file.share.
+    const sendFile = this.deps.sendFileFor?.(sessionCtx.guildId, sessionCtx.channelId);
+    const shareDocument = this.deps.shareDocumentFor?.(
+      sessionCtx.guildId,
+      sessionCtx.channelId,
+    );
+    return this.sidecar().openModeSession(sessionCtx, {
+      ...(opts.resumeId !== undefined ? { resumeId: opts.resumeId } : {}),
+      ...(envOverlay !== undefined ? { env: envOverlay } : {}),
+      ...(sendFile !== undefined ? { sendFile } : {}),
+      ...(shareDocument !== undefined ? { shareDocument } : {}),
+    });
+  }
+
+  private sidecar(): ClaudeSidecarClient {
+    if (this.deps.sidecarClient) return this.deps.sidecarClient;
+    if (!this.ownedSidecar) {
+      const spawn = resolveClaudeSidecarSpawn();
+      this.ownedSidecar = new ClaudeSidecarClient({
+        spawnCommand: spawn.command,
+        spawnArgs: spawn.args,
+      });
+    }
+    return this.ownedSidecar;
+  }
+
+  private applyPrep(ctx: ModeContext): { ctx: ModeContext; env?: Options['env'] } {
+    const prep = this.deps.prepareSession?.(ctx);
+    return {
+      ctx: prep?.ctx ?? ctx,
+      ...(prep?.env !== undefined ? { env: prep.env } : {}),
+    };
   }
 
   private sessionDeps(ctx: ModeContext) {

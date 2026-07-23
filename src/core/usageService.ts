@@ -63,6 +63,13 @@ export interface UsageUnavailable {
 
 export type UsageResult = UsageSnapshot | UsageUnavailable;
 
+// Shared contract for mode usage pollers (Claude / Codex / Grok). Wiring routes
+// by mode name; each backend keeps its own implementation.
+export interface UsageProvider {
+  isAvailable(): boolean;
+  getUsage(): Promise<UsageResult>;
+}
+
 // ---------------------------------------------------------------------------
 // Wire schemas (zod-validate the endpoint response; tolerate missing/null fields)
 // ---------------------------------------------------------------------------
@@ -203,7 +210,7 @@ function mergeOauthInto(existingRaw: string | null, creds: OAuthCredentials): Re
 // Service
 // ---------------------------------------------------------------------------
 
-export class UsageService {
+export class UsageService implements UsageProvider {
   private readonly logger: Logger;
   private readonly userAgent: string;
   private readonly cacheMs: number;

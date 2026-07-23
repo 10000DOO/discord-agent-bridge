@@ -1,5 +1,5 @@
 import type { Logger } from '../../core/contracts.js';
-import type { UsageResult, UsageSnapshot, UsageLimit } from '../../core/usageService.js';
+import type { UsageProvider, UsageResult, UsageSnapshot, UsageLimit } from '../../core/usageService.js';
 import { CodexAppServerClient } from './appServerClient.js';
 import { resolveCodexHome } from './resolveHome.js';
 
@@ -18,7 +18,7 @@ export interface CodexUsageServiceOptions {
   codexHome?: string;
 }
 
-export class CodexUsageService {
+export class CodexUsageService implements UsageProvider {
   private readonly logger: Logger;
   private readonly cacheMs: number;
   private readonly now: () => number;

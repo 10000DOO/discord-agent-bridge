@@ -3,7 +3,7 @@ import type { Client } from 'discord.js';
 import type { AgentEvent, Logger, PermissionDecision } from '../core/contracts.js';
 import type { EventBus } from '../core/eventBus.js';
 import type { ModeRegistry } from '../core/modeRegistry.js';
-import type { UsageResult, UsageService } from '../core/usageService.js';
+import type { UsageProvider, UsageResult } from '../core/usageService.js';
 import { codexUsageUnavailable } from '../core/usageService.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { AuditLog } from '../core/auditLog.js';
@@ -65,12 +65,11 @@ export interface SessionWiringDeps {
   eventBus: EventBus;
   modeRegistry: ModeRegistry;
   channelRegistry: ChannelRegistry;
-  usageService: UsageService;
-  // Optional Grok weekly-limit poller. When present, getUsageFor('grok-build')
-  // routes here; absent → unavailable (no-credentials). Claude path is unchanged.
-  grokUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
-  // Optional Codex rate-limit poller (account/rateLimits/read via app-server).
-  codexUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
+  // Claude (and custom) usage poller — default when mode has no usageByMode entry.
+  usageService: UsageProvider;
+  // mode name → poller (e.g. codex, grok-build). Absent key keeps per-mode
+  // unavailable reasons from getUsageFor (codex-unsupported / no-credentials).
+  usageByMode?: Partial<Record<string, UsageProvider>>;
   logger: Logger;
   // Per-server config source, read at attach() to resolve a guild's notifications
   // settings (enabled/channelId/events). Optional so tests that do not exercise
@@ -148,9 +147,8 @@ export class SessionWiring {
   private readonly eventBus: EventBus;
   private readonly modeRegistry: ModeRegistry;
   private readonly channelRegistry: ChannelRegistry;
-  private readonly usageService: UsageService;
-  private readonly grokUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
-  private readonly codexUsageService?: { isAvailable(): boolean; getUsage(): Promise<UsageResult> };
+  private readonly usageService: UsageProvider;
+  private readonly usageByMode?: Partial<Record<string, UsageProvider>>;
   private readonly logger: Logger;
   // Mutable so app boot can bind it to the live gateway AFTER the client is
   // constructed (the client depends on the routers which depend on this wiring —
@@ -186,8 +184,7 @@ export class SessionWiring {
     this.modeRegistry = deps.modeRegistry;
     this.channelRegistry = deps.channelRegistry;
     this.usageService = deps.usageService;
-    this.grokUsageService = deps.grokUsageService;
-    this.codexUsageService = deps.codexUsageService;
+    this.usageByMode = deps.usageByMode;
     this.logger = deps.logger;
     this.auditLog = deps.auditLog;
     this.configStore = deps.configStore;
@@ -616,19 +613,20 @@ export class SessionWiring {
 
   // Usage feed for the embed/notifier, read fresh per turn:
   //   - capability usagePanel=false → unavailable
-  //   - codex → CodexUsageService (account/rateLimits/read)
-  //   - grok-build → GrokUsageService (weekly credits)
-  //   - claude / custom → Claude UsageService
+  //   - codex / grok-build → usageByMode entry when present
+  //   - claude / custom (and any other mode) → usageService
+  // Unavailable fallbacks keep historical reasons (codex-unsupported / no-credentials).
   // getUsage() never throws by contract, so this needs no try/catch.
   private getUsageFor(mode: string): Promise<UsageResult> {
     if (this.modeRegistry.has(mode) && !this.modeRegistry.get(mode).capabilities.usagePanel) {
       return Promise.resolve(codexUsageUnavailable());
     }
+    const provider = this.usageByMode?.[mode];
     if (mode === 'codex') {
-      return this.codexUsageService?.getUsage() ?? Promise.resolve(codexUsageUnavailable());
+      return provider?.getUsage() ?? Promise.resolve(codexUsageUnavailable());
     }
     if (mode === 'grok-build') {
-      return this.grokUsageService?.getUsage() ?? Promise.resolve({ available: false, reason: 'no-credentials' });
+      return provider?.getUsage() ?? Promise.resolve({ available: false, reason: 'no-credentials' });
     }
     return this.usageService.getUsage();
   }

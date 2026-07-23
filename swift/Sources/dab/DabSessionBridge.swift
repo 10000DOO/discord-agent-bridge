@@ -1,0 +1,222 @@
+import DiscordAgentBridge
+import Foundation
+
+/// Shared Claude sidecar + per-channel session map for the minimal `!dab` path (W9b).
+actor DabSessionBridge {
+    static let shared = DabSessionBridge()
+
+    private var client: ClaudeSidecarClient?
+    /// channelId (snowflake string) → sidecar session handle
+    private var sessions: [String: String] = [:]
+    /// handle → in-flight turn accumulator
+    private var turns: [String: TurnBox] = [:]
+    /// Serialize turns per channel (avoid concurrent send on same session).
+    private var channelGates: [String: Task<String, Error>] = [:]
+
+    private struct TurnBox {
+        var text = ""
+        var done = false
+        var continuation: CheckedContinuation<String, Error>?
+        var timeoutTask: Task<Void, Never>?
+    }
+
+    private var cwd: String {
+        let env = ProcessInfo.processInfo.environment
+        if let v = env["DAB_CWD"], !v.isEmpty { return v }
+        return NSHomeDirectory()
+    }
+
+    private var permMode: String {
+        let env = ProcessInfo.processInfo.environment
+        if let v = env["DAB_PERM_MODE"], !v.isEmpty { return v }
+        // Smoke-friendly default: no permission UI. Dangerous on real machines — document it.
+        return "bypassPermissions"
+    }
+
+    private var turnTimeoutNs: UInt64 {
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+        return UInt64(max(5, sec)) * 1_000_000_000
+    }
+
+    func ensureClient() async throws -> ClaudeSidecarClient {
+        if let client { return client }
+        let spawn = resolveClaudeSidecarSpawn()
+        print("dab: spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
+        let c = try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
+        try await c.connect()
+        print("dab: sidecar ready (cwd=\(cwd) permMode=\(permMode))")
+        self.client = c
+        return c
+    }
+
+    /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
+    /// Turns on the same channel are serialized.
+    func runTurn(
+        channelId: String,
+        guildId: String,
+        ownerId: String?,
+        text: String
+    ) async throws -> String {
+        // Chain after previous turn for this channel (if any).
+        if let prev = channelGates[channelId] {
+            _ = try? await prev.value
+        }
+
+        let task = Task { () -> String in
+            try await self.executeTurn(
+                channelId: channelId,
+                guildId: guildId,
+                ownerId: ownerId,
+                text: text
+            )
+        }
+        channelGates[channelId] = task
+        defer { channelGates[channelId] = nil }
+        return try await task.value
+    }
+
+    private func executeTurn(
+        channelId: String,
+        guildId: String,
+        ownerId: String?,
+        text: String
+    ) async throws -> String {
+        let client = try await ensureClient()
+        let handle = try await sessionHandle(
+            client: client,
+            channelId: channelId,
+            guildId: guildId,
+            ownerId: ownerId
+        )
+
+        let timeoutNs = turnTimeoutNs
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: timeoutNs)
+                guard !Task.isCancelled else { return }
+                self.finishTurn(handle: handle, error: nil, timeoutFallback: true)
+            }
+            turns[handle] = TurnBox(
+                text: "",
+                done: false,
+                continuation: cont,
+                timeoutTask: timeoutTask
+            )
+
+            Task {
+                do {
+                    try await client.sessionSend(session: handle, text: text)
+                } catch {
+                    self.finishTurn(handle: handle, error: error)
+                }
+            }
+        }
+    }
+
+    private func sessionHandle(
+        client: ClaudeSidecarClient,
+        channelId: String,
+        guildId: String,
+        ownerId: String?
+    ) async throws -> String {
+        if let existing = sessions[channelId] {
+            return existing
+        }
+        let started = try await client.sessionStart(
+            SessionStartParams(
+                cwd: cwd,
+                guildId: guildId,
+                channelId: channelId,
+                ownerId: ownerId,
+                permMode: permMode
+            )
+        )
+        let handle = started.session
+        sessions[channelId] = handle
+        client.registerSessionHandlers(
+            handle: handle,
+            handlers: SidecarSessionHandlers { [weak self] ev in
+                Task { await self?.onEvent(handle: handle, event: ev) }
+            }
+        )
+        print("dab: session.start channel=\(channelId) handle=\(handle)")
+        return handle
+    }
+
+    private func onEvent(handle: String, event: AgentEvent) {
+        guard var box = turns[handle], !box.done else { return }
+        switch event {
+        case .text(let t, _):
+            box.text += t
+            turns[handle] = box
+        case .result(let t, _, _, _, _):
+            if let t, !t.isEmpty {
+                if box.text.isEmpty {
+                    box.text = t
+                } else if !box.text.contains(t) {
+                    box.text += t
+                }
+            }
+            turns[handle] = box
+            let out = box.text.isEmpty ? "(empty result)" : box.text
+            finishTurnUnlocked(handle: handle, result: out)
+        case .error(let message, _):
+            finishTurnUnlocked(
+                handle: handle,
+                result: nil,
+                error: SidecarRpcError(code: "sdk_error", message: message)
+            )
+        default:
+            break
+        }
+    }
+
+    private func finishTurn(handle: String, error: Error?, timeoutFallback: Bool = false) {
+        guard let box = turns[handle], !box.done else { return }
+        if let error {
+            finishTurnUnlocked(handle: handle, result: nil, error: error)
+            return
+        }
+        if timeoutFallback {
+            if box.text.isEmpty {
+                finishTurnUnlocked(
+                    handle: handle,
+                    result: nil,
+                    error: SidecarRpcError(
+                        code: "internal",
+                        message: "turn timeout (no text)",
+                        retryable: true
+                    )
+                )
+            } else {
+                finishTurnUnlocked(handle: handle, result: box.text + "\n…(timeout)")
+            }
+        }
+    }
+
+    private func finishTurnUnlocked(handle: String, result: String?, error: Error? = nil) {
+        guard var box = turns[handle], !box.done else { return }
+        box.done = true
+        box.timeoutTask?.cancel()
+        let cont = box.continuation
+        box.continuation = nil
+        box.timeoutTask = nil
+        turns[handle] = box
+        if let error {
+            cont?.resume(throwing: error)
+        } else {
+            cont?.resume(returning: result ?? box.text)
+        }
+    }
+}
+
+/// Discord message content hard limit.
+enum DiscordText {
+    static let maxLen = 2000
+
+    static func clip(_ s: String, limit: Int = maxLen) -> String {
+        if s.count <= limit { return s }
+        let idx = s.index(s.startIndex, offsetBy: max(0, limit - 1))
+        return String(s[..<idx]) + "…"
+    }
+}

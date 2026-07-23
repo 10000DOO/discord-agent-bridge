@@ -15,7 +15,7 @@ import type {
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { AuditLog } from '../core/auditLog.js';
 import type { AuditEntry } from '../core/contracts.js';
-import type { UsageResult, UsageService } from '../core/usageService.js';
+import type { UsageProvider, UsageResult } from '../core/usageService.js';
 import type { ConfigStore } from '../core/config.js';
 import type { ServerConfig } from '../core/configSchema.js';
 import type { ChannelResolution, EditableMessage, MessageChannel, OutgoingMessage } from './ports.js';
@@ -107,15 +107,17 @@ function makeWiring(opts: {
   const channelRegistry = {
     get: () => ({ ownerId: opts.ownerId ?? 'owner', ...(opts.binding ?? {}) }),
   } as unknown as ChannelRegistry;
-  const usageService = {
+  const usageService: UsageProvider = {
     isAvailable: () => opts.usage !== undefined,
     getUsage: async () => opts.usage ?? { available: false as const, reason: 'no-credentials' as const },
-  } as unknown as UsageService;
-  const grokUsageService =
+  };
+  const usageByMode: Partial<Record<string, UsageProvider>> | undefined =
     opts.grokUsage !== undefined
       ? {
-          isAvailable: () => true,
-          getUsage: async () => opts.grokUsage!,
+          'grok-build': {
+            isAvailable: () => true,
+            getUsage: async () => opts.grokUsage!,
+          },
         }
       : undefined;
   const configStore =
@@ -127,7 +129,7 @@ function makeWiring(opts: {
     modeRegistry,
     channelRegistry,
     usageService,
-    ...(grokUsageService ? { grokUsageService } : {}),
+    ...(usageByMode ? { usageByMode } : {}),
     logger,
     resolveChannel: opts.resolveChannel ?? (async () => opts.channel),
     permissionTimeoutSec: opts.permissionTimeoutSec ?? 60,

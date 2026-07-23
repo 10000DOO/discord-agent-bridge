@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint src/",
+    "sidecar:claude": "tsx src/sidecar/claude/cli.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

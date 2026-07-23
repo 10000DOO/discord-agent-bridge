@@ -1,5 +1,4 @@
 import type { SessionPermMode } from './contracts.js';
-import type { PolicyTier } from './commandPolicy.js';
 import type { ConfigStore } from './config.js';
 import type { ConfigResolver } from './configResolver.js';
 
@@ -11,6 +10,10 @@ import type { ConfigResolver } from './configResolver.js';
 //   1. layered defaults (global → server → project binding) via ConfigResolver
 //   2. if a named profile resolves, its bundled permissionMode/allowedTools/tier
 //   3. an explicit per-session override (mode and/or profile set live via /mode)
+
+// Raw policy tiers (formerly commandPolicy.ts). §8.1 profiles may also use
+// 'read-only' | 'normal' | 'relaxed' aliases — see ProfilePolicyTier.
+export type PolicyTier = 'safe-read' | 'normal-mutate' | 'dangerous-mutate';
 
 // The tier a profile maps onto. §8.1 profiles use 'read-only' | 'normal' |
 // 'relaxed'; a profile may also name a raw PolicyTier.

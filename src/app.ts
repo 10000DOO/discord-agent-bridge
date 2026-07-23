@@ -19,6 +19,13 @@ import { SessionOrchestrator } from './core/sessionOrchestrator.js';
 import { createLogger } from './core/logger.js';
 import type { Logger } from './core/contracts.js';
 import { ClaudeMode } from './modes/claude/index.js';
+// W7: Claude sidecar (CLAUDE_SIDECAR_PROTOCOL.md). Default remains in-process.
+// Opt-in: DAB_CLAUDE_SIDECAR=1 → one long-lived sidecar process shared by claude+custom.
+import {
+  ClaudeSidecarClient,
+  isClaudeSidecarEnabled,
+  resolveClaudeSidecarSpawn,
+} from './modes/claude/sidecarClient.js';
 import { CodexMode, resolveCodexHome } from './modes/codex/index.js';
 import { GrokBuildMode } from './modes/grok/agent/index.js';
 import { GrokUsageService } from './modes/grok/usageService.js';
@@ -166,8 +173,10 @@ export function createApp(deps: CreateAppDeps): App {
     modeRegistry,
     channelRegistry,
     usageService,
-    grokUsageService,
-    codexUsageService,
+    usageByMode: {
+      codex: codexUsageService,
+      'grok-build': grokUsageService,
+    },
     logger,
     auditLog,
     // Read the guild's notifications config at attach() to forward key session events
@@ -209,10 +218,29 @@ export function createApp(deps: CreateAppDeps): App {
   // session is bound to (kept out of the mode so modes stay transport-agnostic).
   // shareDocumentFor is the sibling factory for the in-process share_document tool
   // (path-only markdown → Discord thread; same funnel as the /doc slash).
+  //
+  // Sidecar opt-in (W7b): DAB_CLAUDE_SIDECAR=1 shares one multi-session sidecar
+  // process between claude + custom. Unset → in-process ClaudeSession (default).
+  const useClaudeSidecar = isClaudeSidecarEnabled();
+  let claudeSidecarClient: ClaudeSidecarClient | undefined;
+  if (useClaudeSidecar) {
+    const spawn = resolveClaudeSidecarSpawn();
+    claudeSidecarClient = new ClaudeSidecarClient({
+      spawnCommand: spawn.command,
+      spawnArgs: spawn.args,
+    });
+    logger.info('Claude sidecar enabled (DAB_CLAUDE_SIDECAR)', {
+      command: spawn.command,
+      args: spawn.args,
+    });
+  }
   modeRegistry.register(
     new ClaudeMode({
       sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
       shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
+      ...(useClaudeSidecar
+        ? { useSidecar: true, sidecarClient: claudeSidecarClient }
+        : {}),
     }),
   );
   // Codex: long-lived `codex app-server` + phase 2 thinking/usage/fileDiff; dynamicTools
@@ -238,10 +266,14 @@ export function createApp(deps: CreateAppDeps): App {
   );
   // Custom: reuses the Claude SDK but injects env vars extracted from the operator's
   // shell aliases (kimi / claude). Wired like Claude for attach_file + share_document.
+  // When sidecar is on, custom shares the same process (env overlay via prepareSession).
   modeRegistry.register(
     new CustomMode({
       sendFileFor: (guildId, channelId) => wiring.sendFileFor(guildId, channelId),
       shareDocumentFor: (guildId, channelId) => wiring.shareDocumentFor(guildId, channelId),
+      ...(useClaudeSidecar
+        ? { useSidecar: true, sidecarClient: claudeSidecarClient }
+        : {}),
     }),
   );
 

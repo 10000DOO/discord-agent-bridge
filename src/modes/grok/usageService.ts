@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { z } from 'zod';
 import type { Logger } from '../../core/contracts.js';
-import type { UsageResult, UsageSnapshot } from '../../core/usageService.js';
+import type { UsageProvider, UsageResult, UsageSnapshot } from '../../core/usageService.js';
 
 // Grok Build weekly-limit poller. Mirrors Claude UsageService's public contract
 // (isAvailable / getUsage → UsageResult) and never-throw cache style, but talks to
@@ -79,7 +79,7 @@ function defaultAuthPath(): string {
 // Service
 // ---------------------------------------------------------------------------
 
-export class GrokUsageService {
+export class GrokUsageService implements UsageProvider {
   private readonly logger: Logger;
   private readonly cacheMs: number;
   private readonly fetchFn: typeof fetch;
