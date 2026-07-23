@@ -115,6 +115,31 @@ describe('ChannelRegistry', () => {
     expect(onDisk.scheduledCommands).toEqual([{ id: 'sched-1', cron: '0 9 * * *', command: 'status' }]);
   });
 
+  it('does not clobber a preset draft written out-of-band after boot (WO-4 fresh-merge)', () => {
+    // Boot: the registry snapshots state (no drafts yet).
+    const reg = new ChannelRegistry(new StateStore(dir), now);
+    // An out-of-band writer (StateStore.setPresetDraft, sharing the same home) persists a draft.
+    new StateStore(dir).setPresetDraft('g:c', { backend: 'claude' });
+    // First session use persists a binding — must NOT overwrite the draft with the boot snapshot.
+    reg.set(input());
+
+    const drafts = new StateStore(dir).getPresetDrafts();
+    expect(drafts['g:c']).toEqual({ backend: 'claude' });
+  });
+
+  it('does not resurrect a preset draft deleted out-of-band (WO-4 no zombie)', () => {
+    // The draft exists at boot, so the registry's snapshot would carry it.
+    new StateStore(dir).setPresetDraft('g:c', { backend: 'claude' });
+    const reg = new ChannelRegistry(new StateStore(dir), now);
+    // The draft is deleted out-of-band (e.g. a preset save succeeded elsewhere).
+    new StateStore(dir).deletePresetDraft('g:c');
+    // A later binding mutation must not write the stale boot snapshot back.
+    reg.set(input());
+
+    const drafts = new StateStore(dir).getPresetDrafts();
+    expect('g:c' in drafts).toBe(false);
+  });
+
   it('round-trips an optional model; a binding without one stays absent', () => {
     const reg = new ChannelRegistry(new StateStore(dir), now);
     reg.set(input({ model: 'claude-fable-5' }));

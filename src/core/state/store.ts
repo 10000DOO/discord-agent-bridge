@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { normalizeModeId } from '../config.js';
-import { appStateSchema, emptyState, STATE_VERSION, type AppState, type AutoUpdateState } from './schema.js';
+import { appStateSchema, emptyState, STATE_VERSION, type AppState, type AutoUpdateState, type PresetDraftState } from './schema.js';
 
 // Versioned JSON state store. Loads state.json, runs ordered migrations up to the
 // current version, zod-validates, and writes atomically (tmp + rename). Unknown
@@ -110,6 +110,28 @@ export class StateStore {
   setUpdateMeta(patch: Partial<AutoUpdateState>): void {
     const state = this.load();
     state.autoUpdate = { ...state.autoUpdate, ...patch };
+    this.save(state);
+  }
+
+  // Preset-draft backup convenience accessors, mirroring setUpdateMeta: the interaction
+  // router restores these on boot and backs up a draft when the wizard reaches 'done', so
+  // a "💾 save as preset" button survives a restart. Keyed by "<guildId>:<channelId>".
+  getPresetDrafts(): Record<string, PresetDraftState> {
+    return this.load().presetDrafts;
+  }
+
+  // Back up (or overwrite) one channel's draft. Load → set → save so unrelated drafts and
+  // the channel bindings are preserved.
+  setPresetDraft(key: string, draft: PresetDraftState): void {
+    const state = this.load();
+    state.presetDrafts[key] = draft;
+    this.save(state);
+  }
+
+  // Drop one channel's backed-up draft (a missing key is a no-op). Load → delete → save.
+  deletePresetDraft(key: string): void {
+    const state = this.load();
+    delete state.presetDrafts[key];
     this.save(state);
   }
 }

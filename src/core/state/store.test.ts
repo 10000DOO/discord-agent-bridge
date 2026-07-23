@@ -62,6 +62,28 @@ describe('StateStore', () => {
     expect(store.getUpdateMeta()).toEqual({ lastCheckAt: 12345, dismissedVersion: '1.2.3' });
   });
 
+  it('setPresetDraft → getPresetDrafts round-trips and keys independently', () => {
+    const store = new StateStore(dir);
+    expect(store.getPresetDrafts()).toEqual({});
+    const draft = { backend: 'claude', model: 'opus', effort: 'medium', permMode: 'default', profile: null };
+    store.setPresetDraft('g1:c1', draft);
+    expect(store.getPresetDrafts()).toEqual({ 'g1:c1': draft });
+    // A second key is added without clobbering the first.
+    store.setPresetDraft('g1:c2', { backend: 'codex' });
+    expect(store.getPresetDrafts()).toEqual({ 'g1:c1': draft, 'g1:c2': { backend: 'codex' } });
+  });
+
+  it('deletePresetDraft removes only the given key (missing key is a no-op)', () => {
+    const store = new StateStore(dir);
+    store.setPresetDraft('g1:c1', { backend: 'claude' });
+    store.setPresetDraft('g1:c2', { backend: 'codex' });
+    store.deletePresetDraft('g1:c1');
+    expect(store.getPresetDrafts()).toEqual({ 'g1:c2': { backend: 'codex' } });
+    // Deleting a key that is not present does not throw and leaves the rest intact.
+    store.deletePresetDraft('nope');
+    expect(store.getPresetDrafts()).toEqual({ 'g1:c2': { backend: 'codex' } });
+  });
+
   it('setUpdateMeta preserves channel bindings', () => {
     const store = new StateStore(dir);
     store.save({
@@ -69,6 +91,7 @@ describe('StateStore', () => {
       channels: { 'g1:c1': binding() },
       scheduledCommands: [],
       autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
+      presetDrafts: {},
     });
     store.setUpdateMeta({ lastCheckAt: 999 });
     const loaded = store.load();
@@ -83,6 +106,7 @@ describe('StateStore', () => {
       channels: { 'g1:c1': binding() },
       scheduledCommands: [],
       autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
+      presetDrafts: {},
     };
     store.save(state);
     expect(store.load()).toEqual(state);
@@ -188,6 +212,7 @@ describe('StateStore', () => {
       channels: { 'g1:c1': binding() },
       scheduledCommands: [],
       autoUpdate: { lastCheckAt: 0, dismissedVersion: null },
+      presetDrafts: {},
     };
     expect(() => store.save(state)).toThrow();
     // The occupied path is untouched: still a directory holding the sentinel,

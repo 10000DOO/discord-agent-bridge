@@ -5,6 +5,7 @@ import { claudeCatalog, permissionModeLabel } from '../core/providerCatalog.js';
 import type { Authorizer, AuthAction } from '../core/auth.js';
 import type { ChannelRegistry } from '../core/channelRegistry.js';
 import type { ConfigStore } from '../core/config.js';
+import type { StateStore } from '../core/state/store.js';
 import type { Preset } from '../core/configSchema.js';
 import type { ConfigResolver } from '../core/configResolver.js';
 import type { PermissionResolver } from '../core/permissionResolver.js';
@@ -137,6 +138,10 @@ export interface InteractionRouterDeps {
   orchestrator: SessionOrchestrator;
   channelRegistry: ChannelRegistry;
   configStore: ConfigStore;
+  // Versioned state store (state.json). Used to back up / restore per-channel preset drafts
+  // so a "💾 save as preset" button survives a restart (the in-memory presetDrafts Map is
+  // otherwise lost). Same instance app boot passes to ChannelRegistry.
+  stateStore: StateStore;
   configResolver: ConfigResolver;
   permissionResolver: PermissionResolver;
   modeRegistry: ModeRegistry;
@@ -238,6 +243,11 @@ export class InteractionRouter {
 
   constructor(deps: InteractionRouterDeps) {
     this.deps = deps;
+    // Restore any preset drafts backed up to state.json so a "💾 save as preset" button
+    // survives a restart (the in-memory Map is otherwise lost on boot).
+    for (const [key, draft] of Object.entries(deps.stateStore.getPresetDrafts())) {
+      this.presetDrafts.set(key, draft);
+    }
   }
 
   // Bind the live-gateway resolvers AFTER construction (app boot). The client depends
@@ -1513,13 +1523,23 @@ export class InteractionRouter {
             const fromPreset = wizard.launchedFromPreset();
             if (!fromPreset) {
               const s = wizard.current();
-              this.presetDrafts.set(wKey, {
+              const draft: PresetDraft = {
                 backend: s.backend,
                 model: s.model,
                 effort: s.effort,
                 permMode: s.permMode,
                 profile: s.profile,
-              });
+              };
+              this.presetDrafts.set(wKey, draft);
+              // Back the draft to state.json so the save button survives a restart. Deletion
+              // on save success is wired in WO-3 alongside the save path. Best-effort: the
+              // session already launched and the in-memory draft alone can back an in-session
+              // save, so a backup write failure must not mask the channelCreated success notice.
+              try {
+                this.deps.stateStore.setPresetDraft(wKey, draft);
+              } catch (err) {
+                this.logError('preset draft backup failed', err);
+              }
             }
             await this.editWizardReply(i, {
               content: t('cmd.start.channelCreated', { channel: `<#${newChannelId}>` }),
@@ -1904,26 +1924,28 @@ export class InteractionRouter {
     }
   }
 
-  // Persist the captured draft as a named preset. Ack first with deferReply (3s rule +
-  // network headroom), then validate / save / editReply. Draft is kept on persist failure
-  // (so the user can retry); deleted only after a successful addServerPreset.
+  // Persist the captured draft as a named preset. A local file write is network-independent,
+  // so we persist FIRST (before any ack) and notify best-effort AFTER: a failed Discord
+  // response can never roll back a saved preset. The draft is kept on persist failure (so the
+  // user can retry); dropped (memory + state backup) only after a successful addServerPreset.
   private async savePresetFromModal(i: ModalSubmitInteraction): Promise<void> {
-    if (!(await this.ackDefer(i, { ephemeral: true }))) return;
+    // Not deferred yet: gate failures reply directly (best-effort, interaction still unacked).
     if (!i.guildId) {
-      await safe(i.editReply({ content: t('cmd.error.generic'), ephemeral: true }));
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
       return;
     }
     const key = channelKey(i.guildId, i.channelId);
     const draft = this.presetDrafts.get(key);
     if (!draft) {
-      await safe(i.editReply({ content: t('preset.save.none'), ephemeral: true }));
+      await safe(i.reply({ content: t('preset.save.none'), ephemeral: true }));
       return;
     }
     const name = i.getField('name').trim();
     if (name.length === 0 || name.length > 100) {
-      await safe(i.editReply({ content: t('cmd.error.generic'), ephemeral: true }));
+      await safe(i.reply({ content: t('cmd.error.generic'), ephemeral: true }));
       return;
     }
+    let payload: AckPayload;
     try {
       this.deps.configStore.addServerPreset(i.guildId, {
         name,
@@ -1933,17 +1955,19 @@ export class InteractionRouter {
         ...(draft.permMode !== undefined ? { permMode: draft.permMode } : {}),
         ...(draft.profile !== undefined ? { profile: draft.profile } : {}),
       });
+      // Config is source of truth: drop the draft (memory + state backup) after a
+      // successful persist so a retry cannot double-save.
+      this.presetDrafts.delete(key);
+      this.deps.stateStore.deletePresetDraft(key);
+      this.deps.logger.info('preset saved', { guildId: i.guildId, name });
+      payload = { content: t('preset.saved', { name }), ephemeral: true };
     } catch (err) {
-      // Persist failed — keep draft so a retry can still save.
+      // Persist failed — keep the draft so a retry can still save.
       this.logError('preset save failed', err);
-      await safe(i.editReply({ content: t('cmd.error', { error: String(err) }), ephemeral: true }));
-      return;
+      payload = { content: t('cmd.error', { error: String(err) }), ephemeral: true };
     }
-    // Config is source of truth: drop draft after successful persist so a retry cannot
-    // double-save; editReply failure still leaves the preset saved.
-    this.presetDrafts.delete(key);
-    this.deps.logger.info('preset saved', { guildId: i.guildId, name });
-    await safe(i.editReply({ content: t('preset.saved', { name }), ephemeral: true }));
+    // Best-effort notification: a response failure must not undo the persisted save.
+    await safe(i.acknowledged ? i.editReply(payload) : i.reply(payload));
   }
 
   // deferUpdate the component interaction (the first ack, keeping its message). Returns

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -313,6 +313,34 @@ describe('ConfigStore', () => {
     const store = new ConfigStore(dir);
     store.addServerPreset('gNew', { name: 'p1', backend: 'claude' });
     expect(store.loadServerConfig('gNew')?.presets).toEqual([{ name: 'p1', backend: 'claude' }]);
+  });
+
+  it('addServerPreset retries the write and succeeds once read-after-write verifies', () => {
+    const store = new ConfigStore(dir);
+    const original = store.saveServerConfig.bind(store);
+    let calls = 0;
+    const spy = vi.spyOn(store, 'saveServerConfig').mockImplementation((cfg) => {
+      calls++;
+      // First attempt drops the write (simulated transient I/O failure) → the
+      // read-after-write check misses the preset → the loop retries.
+      if (calls === 1) return;
+      original(cfg);
+    });
+    store.addServerPreset('g1', { name: 'p1', backend: 'claude' });
+    expect(calls).toBe(2);
+    expect(store.loadServerConfig('g1')?.presets).toEqual([{ name: 'p1', backend: 'claude' }]);
+    spy.mockRestore();
+  });
+
+  it('addServerPreset throws after 3 attempts when read-after-write never verifies', () => {
+    const store = new ConfigStore(dir);
+    // Every write is dropped → verification never passes → all 3 retries fail.
+    const spy = vi.spyOn(store, 'saveServerConfig').mockImplementation(() => {});
+    expect(() => store.addServerPreset('g1', { name: 'p1', backend: 'claude' })).toThrow();
+    expect(spy).toHaveBeenCalledTimes(3);
+    // Nothing was persisted.
+    expect(store.loadServerConfig('g1')).toBeNull();
+    spy.mockRestore();
   });
 
   it('removeServerPreset returns true and removes; false for an unknown name or guild', () => {

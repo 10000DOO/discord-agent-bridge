@@ -363,6 +363,7 @@ function buildRouter(deps: {
     orchestrator: deps.orchestrator,
     channelRegistry,
     configStore: store,
+    stateStore,
     configResolver,
     permissionResolver,
     modeRegistry,
@@ -1043,6 +1044,7 @@ describe('InteractionRouter.getModelAutocomplete — /model value suggestions', 
       orchestrator,
       channelRegistry,
       configStore: store,
+      stateStore,
       configResolver,
       permissionResolver,
       modeRegistry,
@@ -1066,6 +1068,7 @@ describe('InteractionRouter.getModelAutocomplete — /model value suggestions', 
       orchestrator,
       channelRegistry,
       configStore: store,
+      stateStore,
       configResolver,
       permissionResolver,
       modeRegistry,
@@ -1086,6 +1089,7 @@ describe('InteractionRouter.getModelAutocomplete — /model value suggestions', 
       orchestrator,
       channelRegistry,
       configStore: store,
+      stateStore,
       configResolver,
       permissionResolver,
       modeRegistry,
@@ -1124,6 +1128,7 @@ describe('InteractionRouter.getEffortAutocomplete — /effort value suggestions'
       orchestrator,
       channelRegistry,
       configStore: store,
+      stateStore,
       configResolver,
       permissionResolver,
       modeRegistry,
@@ -1164,6 +1169,7 @@ describe('InteractionRouter.getEffortAutocomplete — /effort value suggestions'
       orchestrator,
       channelRegistry,
       configStore: store,
+      stateStore,
       configResolver,
       permissionResolver,
       modeRegistry,
@@ -2457,6 +2463,35 @@ describe('InteractionRouter session presets', () => {
     expect(presets[0]).not.toHaveProperty('cwd');
   });
 
+  it('a draft backup write failure (state.json throws) does NOT hide the launch success notice', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const { logger: fake, error } = fakeLogger();
+    const router = buildRouter({ orchestrator, wiring, logger: fake });
+    // The state.json draft backup throws (e.g. disk I/O) at wizard done — the session has
+    // already launched, so the failure must be swallowed and not mask the success notice.
+    vi.spyOn(stateStore, 'setPresetDraft').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    // No presets → straight to the manual wizard; drive it to done.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    let doneReply: Reply | undefined;
+    for (const customId of ['dir:here', 'backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      const { interaction, replies } = component({ customId, user: { id: 'u1' } });
+      await router.handle(interaction);
+      if (replies.length > 0) doneReply = replies[replies.length - 1];
+    }
+    // The channelCreated notice + 💾 save button still arrive despite the backup failure.
+    expect((doneReply?.content ?? '').includes('세션 채널')).toBe(true);
+    expect(flatOf(doneReply).some((c) => c.customId === 'preset.save')).toBe(true);
+    // The failure was logged best-effort, not surfaced as a command error.
+    expect(error).toHaveBeenCalledWith('preset draft backup failed', expect.objectContaining({ error: 'disk full' }));
+    // The in-memory draft still backs an in-session save (the button opens the name modal).
+    const { interaction: save, acks } = component({ customId: 'preset.save', user: { id: 'u1' } });
+    await router.handle(save);
+    expect(acks.map((a) => a.kind)).toEqual(['showModal']);
+  });
+
   it('clicking 💾 save with no captured draft replies with the “nothing to save” notice', async () => {
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
@@ -2577,5 +2612,58 @@ describe('InteractionRouter session presets', () => {
     expect(addSpy).not.toHaveBeenCalled();
     expect(tooLong.replies.length).toBeGreaterThan(0);
     expect((store.loadServerConfig('g1')?.presets ?? [])).toEqual([]);
+  });
+
+  it('a persist failure keeps the draft (retry can still save) and notifies with an error', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    // No presets → normal wizard; drive to done to capture a draft on the channel.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    for (const customId of ['dir:here', 'backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      await router.handle(component({ customId, user: { id: 'u1' } }).interaction);
+    }
+    // addServerPreset throws (e.g. disk I/O) → the draft must survive so a retry can still save.
+    const addSpy = vi.spyOn(store, 'addServerPreset').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const delSpy = vi.spyOn(stateStore, 'deletePresetDraft');
+    const fail = modalSubmit({ customId: 'preset.name', user: { id: 'u1' }, fields: { name: 'my-preset' } });
+    await router.handle(fail.interaction);
+    expect(addSpy).toHaveBeenCalledOnce();
+    // User is notified of the failure and the draft backup is NOT cleared.
+    expect(fail.replies.length).toBeGreaterThan(0);
+    expect(delSpy).not.toHaveBeenCalled();
+    // Retry once the fault clears: the SAME draft persists, proving it was kept.
+    addSpy.mockRestore();
+    const retry = modalSubmit({ customId: 'preset.name', user: { id: 'u1' }, fields: { name: 'my-preset' } });
+    await router.handle(retry.interaction);
+    expect((store.loadServerConfig('g1')?.presets ?? []).map((p) => p.name)).toEqual(['my-preset']);
+  });
+
+  it('a response failure does not block the save: the preset persists and the draft is cleared', async () => {
+    const { orchestrator } = fakeOrchestrator();
+    const { wiring } = fakeWiring();
+    const router = buildRouter({ orchestrator, wiring });
+    // No presets → normal wizard; drive to done to capture a draft on the channel.
+    await router.handle(slash({ commandName: 'agent', subcommand: 'start', user: { id: 'u1' } }).interaction);
+    for (const customId of ['dir:here', 'backend.next', 'model.next', 'effort.next', 'perm.start']) {
+      await router.handle(component({ customId, user: { id: 'u1' } }).interaction);
+    }
+    const addSpy = vi.spyOn(store, 'addServerPreset');
+    const delSpy = vi.spyOn(stateStore, 'deletePresetDraft');
+    // Discord replies fail (ConnectTimeout / Unknown interaction) — must NOT roll back the save.
+    const submit = modalSubmit({ customId: 'preset.name', user: { id: 'u1' }, fields: { name: 'my-preset' } });
+    submit.interaction.reply = async () => {
+      throw new Error('Unknown interaction');
+    };
+    submit.interaction.editReply = async () => {
+      throw new Error('Unknown interaction');
+    };
+    await router.handle(submit.interaction);
+    // The persist ran and the draft (memory + state backup) was cleared despite the response failure.
+    expect(addSpy).toHaveBeenCalledOnce();
+    expect((store.loadServerConfig('g1')?.presets ?? []).map((p) => p.name)).toEqual(['my-preset']);
+    expect(delSpy).toHaveBeenCalledWith('g1:c1');
   });
 });
