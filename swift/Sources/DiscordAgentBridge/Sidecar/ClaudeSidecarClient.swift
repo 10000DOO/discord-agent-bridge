@@ -33,6 +33,10 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
     private struct State {
         var pending: [String: PendingRpc] = [:]
         var sessionHandlers: [String: SidecarSessionHandlers] = [:]
+        // A `session.backend_id` notify can arrive before the caller registers handlers (the start
+        // response resumes the caller, but the read loop processes the very next line — the notify —
+        // before the caller runs registerSessionHandlers). Buffer it here and replay at registration.
+        var pendingBackendIds: [String: String] = [:]
         var eventContinuations: [String: [UUID: AsyncStream<AgentEvent>.Continuation]] = [:]
         var ready = false
         var readyWaiters: [CheckedContinuation<Void, Never>] = []
@@ -148,7 +152,11 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
             if let session = env.session,
                let backend = env.params?["backendSessionId"]?.stringValue
             {
-                let handler = state.withLock { $0.sessionHandlers[session] }
+                let handler = state.withLock { s -> SidecarSessionHandlers? in
+                    if let h = s.sessionHandlers[session] { return h }
+                    s.pendingBackendIds[session] = backend   // no handler yet → buffer, replay at register
+                    return nil
+                }
                 handler?.onBackendId?(backend)
             }
             return
@@ -238,7 +246,12 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
     }
 
     public func registerSessionHandlers(handle: String, handlers: SidecarSessionHandlers) {
-        state.withLock { $0.sessionHandlers[handle] = handlers }
+        let buffered = state.withLock { s -> String? in
+            s.sessionHandlers[handle] = handlers
+            return s.pendingBackendIds.removeValue(forKey: handle)
+        }
+        // A backend id that raced ahead of this registration was buffered — deliver it now.
+        if let buffered { handlers.onBackendId?(buffered) }
     }
 
     public func unregisterSessionHandlers(handle: String) {
