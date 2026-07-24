@@ -54,6 +54,40 @@ actor FakeGrokAcp {
                 "id": id,
                 "result": .object([:]),
             ])
+        case "session/prompt":
+            // First text block routes the fake: "boom" → error response (turn failure);
+            // else stream two agent_message_chunk updates then the terminator result.
+            let firstText = msg["params"]?["prompt"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+            if firstText == "boom" {
+                await write([
+                    "jsonrpc": .string("2.0"),
+                    "id": id,
+                    "error": .object([
+                        "code": .number(-32000),
+                        "message": .string("grok prompt failed"),
+                    ]),
+                ])
+                return
+            }
+            for chunk in ["Hello", ", grok"] {
+                await pushNotification(
+                    method: "session/update",
+                    params: .object(["update": .object([
+                        "sessionUpdate": .string("agent_message_chunk"),
+                        "content": .object(["type": .string("text"), "text": .string(chunk)]),
+                    ])])
+                )
+            }
+            await write([
+                "jsonrpc": .string("2.0"),
+                "id": id,
+                // Echo inputs so the test can assert sessionPrompt sent correct params.
+                "result": .object([
+                    "stopReason": .string("end_turn"),
+                    "echoSessionId": msg["params"]?["sessionId"] ?? .null,
+                    "echoText": .string(firstText),
+                ]),
+            ])
         case "ping":
             await write([
                 "jsonrpc": .string("2.0"),
@@ -335,5 +369,102 @@ struct AcpClientTests {
             options: [AcpPermissionOption(optionId: "a", kind: "allow_once")]
         )
         #expect(allow["outcome"]?["optionId"]?.stringValue == "a")
+    }
+}
+
+@Suite("grokUpdateStep")
+struct GrokUpdateStepTests {
+    private func agentChunk(_ text: String) -> JSONValue {
+        .object(["update": .object([
+            "sessionUpdate": .string("agent_message_chunk"),
+            "content": .object(["type": .string("text"), "text": .string(text)]),
+        ])])
+    }
+
+    @Test func textChunkMaps() {
+        #expect(grokUpdateStep(method: "session/update", params: agentChunk("hi")) == .appendText("hi"))
+        // x.ai/session/update is the same stream (acpClient.ts:504)
+        #expect(grokUpdateStep(method: "x.ai/session/update", params: agentChunk("y")) == .appendText("y"))
+    }
+
+    @Test func nonTextIgnored() {
+        // agent_thought_chunk / tool_call are out of scope for the text reply path
+        let thought = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("agent_thought_chunk"),
+            "content": .object(["text": .string("thinking")]),
+        ])])
+        #expect(grokUpdateStep(method: "session/update", params: thought) == .ignore)
+        let tool = JSONValue.object(["update": .object(["sessionUpdate": .string("tool_call")])])
+        #expect(grokUpdateStep(method: "session/update", params: tool) == .ignore)
+        // empty text, unknown method
+        #expect(grokUpdateStep(method: "session/update", params: agentChunk("")) == .ignore)
+        #expect(grokUpdateStep(method: "session/cancel", params: nil) == .ignore)
+    }
+}
+
+@Suite("GrokAcpClient prompt turn (fake transport)")
+struct GrokPromptTurnTests {
+    // Subscribe like a bridge would, run a prompt, assert the terminator result + accumulated text.
+    @Test func promptAccumulatesAndCompletes() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+
+        let text = LockedBox("")
+        _ = client.onNotification { method, params in
+            if case .appendText(let d) = grokUpdateStep(method: method, params: params) {
+                text.withLock { $0 += d }
+            }
+        }
+
+        _ = try await client.initialize()
+        let sid = try await client.sessionNew(cwd: "/ws")
+        let result = try await client.sessionPrompt(prompt: "hi")
+
+        // (a) request params correct (echoed by the fake)
+        #expect(result["echoSessionId"]?.stringValue == sid)
+        #expect(result["echoText"]?.stringValue == "hi")
+        // (b) terminator result readable
+        #expect(result["stopReason"]?.stringValue == "end_turn")
+        // (c) session/update chunks accumulated
+        #expect(text.withLock { $0 } == "Hello, grok")
+
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func promptErrorThrows() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+        do {
+            _ = try await client.sessionPrompt(prompt: "boom")
+            Issue.record("expected prompt error to throw")
+        } catch let err as AcpClientError {
+            #expect(err.message.contains("grok prompt failed"))
+        }
+
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func promptWithoutSessionThrows() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 1_000)
+        do {
+            _ = try await client.sessionPrompt(prompt: "hi")
+            Issue.record("expected no-session error")
+        } catch let err as AcpClientError {
+            #expect(err.message.contains("no session"))
+        }
+        await client.close()
+        await pair.sidecar.close()
     }
 }

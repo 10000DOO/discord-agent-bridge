@@ -57,13 +57,13 @@ actor DabSessionBridge {
         ownerId: String?,
         text: String
     ) async throws -> String {
-        // Chain after previous turn for this channel (if any).
-        if let prev = channelGates[channelId] {
-            _ = try? await prev.value
-        }
-
+        // Read + install the gate with NO await between them, so a reentering job cannot install a
+        // rival task against the same session. The previous turn is awaited INSIDE the task — that
+        // is where serialization happens.
+        let prev = channelGates[channelId]
         let task = Task { () -> String in
-            try await self.executeTurn(
+            if let prev { _ = try? await prev.value }
+            return try await self.executeTurn(
                 channelId: channelId,
                 guildId: guildId,
                 ownerId: ownerId,
@@ -71,7 +71,7 @@ actor DabSessionBridge {
             )
         }
         channelGates[channelId] = task
-        defer { channelGates[channelId] = nil }
+        defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
         return try await task.value
     }
 

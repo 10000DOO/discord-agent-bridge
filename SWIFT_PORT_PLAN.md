@@ -1,7 +1,7 @@
 # Discord Agent Bridge — Swift 포팅 & 슬림화 설계
 
 > 브랜치: `plan/swift-port`  
-> 문서 갱신: **2026-07-23**  
+> 문서 갱신: **2026-07-24**  
 > 대상: `discord-agent-bridge` (TypeScript / Node 20+ + Swift 병행)  
 > 목표: **봇 본체 = Swift**, Claude Code만 얇은 **Node(TS) 사이드카**, 포팅 전에 TS **과설계 제거**
 
@@ -14,14 +14,14 @@
 
 | 항목 | 상태 |
 |------|------|
-| **전체 단계** | Phase A~E **MVP 완료**, Phase F **클라이언트 골격**, Phase G~H 대기 |
+| **전체 단계** | Phase A~F **MVP 완료**(3백엔드 `!dab`/`!codex`/`!grok` 텍스트 경로), Phase G~H 대기 |
 | **브랜치** | `plan/swift-port` |
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
-| **Swift 봇** | `swift run --package-path swift dab` + `!dab <prompt>` |
-| **검증** | TS tests PASS · `swift test` **40** PASS |
+| **Swift 봇** | `swift run --package-path swift dab` + `!dab` / `!codex` / `!grok <prompt>` |
+| **검증** | TS tests PASS · `swift test` **50** PASS |
 
-### 완료 (W1–W9, W10b)
+### 완료 (W1–W10)
 
 | ID | 요약 |
 |----|------|
@@ -31,12 +31,14 @@
 | W8 | SwiftPM + DiscordBM + gateway ready |
 | W9 | Swift 사이드카 클라이언트 + Discord `!dab` → Claude 답글 (MVP) |
 | W10b | Grok ACP stdio 클라이언트 골격 |
+| W10-c1 | Codex `!codex` Discord 배선 (텍스트 답글, 형제 브리지) |
+| W10-c2 | Grok prompt stream: `GrokAcpClient.sessionPrompt` + 순수 `grokUpdateStep` (텍스트) |
+| W10-c3 | Grok `!grok` Discord 배선 (`GrokSessionBridge`, 형제). 3백엔드 텍스트 경로 완성 |
 
 ### 진행 중 / 부분 완료
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W10** | `doing` | Codex app-server 클라이언트 골격 완료. **Discord AgentMode·세션 배선·`/mode` 패리티 없음**. Grok prompt stream 없음 |
 | **W11** | `todo` | 슬래시, 권한 버튼, i18n, 스트리밍 편집, launchd, 이미지 렌더 등 UX 패리티 |
 | **W12** | `todo` | 레거시 TS 정책, 버전 호환, 루트 README 마이그레이션 가이드 |
 
@@ -67,9 +69,8 @@ swift run --package-path swift dab grok-smoke
 
 ### 다음에 할 일 (우선순위)
 
-1. **W10 계속** — Codex/Grok을 Discord·세션 레이어에 연결 (TS `appSession` / `acpSession` 대응)  
-2. **W11** — 슬래시·권한 UI·설정·배포  
-3. **W12** — 레거시/문서/호환 매트릭스  
+1. **W11** — 슬래시·`/mode`·권한 UI·설정·배포  
+2. **W12** — 레거시/문서/호환 매트릭스  
 
 ---
 
@@ -253,8 +254,11 @@ yagni:  Do not re-port full test volume
 | **W7** | C | `done` | TS 안 Claude 사이드카 프로세스 분리 + opt-in ClaudeMode 배선 + host.file reverse RPC; Discord E2E는 수동 | Discord Claude 스모크 동등 (E2E 수동) |
 | **W8** | D | `done` | SwiftPM 골격 + Discord 라이브러리 spike + 로그인 hello | Swift 바이너리 접속 |
 | **W9** | E | `done` | Swift 사이드카 클라이언트 + `!dab` Discord E2E (MVP). 풀 오케스트레이터/슬래시/스트리밍 편집은 W11 | `!dab` 메시지 → Claude 답글 |
-| **W10** | F | `doing` | Codex app-server Swift 클라이언트 골격 완료. Discord/AgentMode 미연동. Grok은 W10b | `/mode` 3백엔드 (full) |
+| **W10** | F | `done` | Codex/Grok Discord·세션 배선 (c1/c2/c3). `/mode`·슬래시 파리티는 W11 | 3백엔드 `!dab`/`!codex`/`!grok` 텍스트 경로 |
 | **W10b** | F | `done` | Grok ACP stdio 클라이언트 골격 (`Grok/AcpClient`). prompt stream·Discord 미연동 | ACP request/notify skeleton |
+| **W10-c1** | F | `done` | Codex `!codex` Discord 배선: lib `codexTurnStep` + `CodexSessionBridge`(형제 브리지) + DabMain 분기 | `!codex` → Codex 답글, 단위테스트+build |
+| **W10-c2** | F | `done` | `GrokAcpClient.sessionPrompt` + 순수 `grokUpdateStep`(텍스트) + fake transport 단위테스트 | Grok prompt stream (텍스트 델타 누적) |
+| **W10-c3** | F | `done` | Grok `!grok` 배선 `GrokSessionBridge`(형제). sessionPrompt 반환=완료, onNotification 동기 fold→LockedBox | `!grok` → Grok 답글, build+grok-smoke |
 | **W11** | G | `todo` | 슬래시·패널·i18n·이미지 렌더(후순위)·launchd·배포 | 패리티 체크리스트 |
 | **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
 
@@ -297,6 +301,10 @@ yagni:  Do not re-port full test volume
 | 2026-07-23 | W10 slice1 | **Codex app-server scaffold**: `Codex/AppServerClient.swift` + `CodexSpawn.swift` (JSON-RPC NDJSON, initialize/thread/turn, notify, approval auto-accept). InMemory transport tests. `dab codex-smoke` (missing CLI → exit 0). Grok → **W10b**. No AgentMode/Discord. |
 | 2026-07-23 | W10b | **Grok ACP stdio scaffold**: `Grok/AcpClient.swift` + `GrokSpawn.swift` (JSON-RPC NDJSON, initialize/session/new|load, notify, permission default-deny). InMemory transport tests. `dab grok-smoke` (missing CLI → exit 0). No prompt stream / AgentMode / Discord. |
 | 2026-07-23 | docs | §0 진행 스냅샷 추가. 브랜치 `plan/swift-port` 커밋·푸시 시점 문서 고정. |
+| 2026-07-24 | W10-c1 | Codex `!codex` Discord 배선. lib `codexTurnStep`(eventMapper.ts 근거 매핑) + `CodexSessionBridge`(DabSessionBridge 형제, 채널당 codex 프로세스). RV 반영: isClosed 재스폰 가드 + 초기화 실패 시 `close()`(고아 방지), 다채널 상주는 ceiling 주석 후 W11 defer. swift build ok · swift test **45** PASS. |
+| 2026-07-24 | W10-c2 | Grok prompt stream. `GrokAcpClient.sessionPrompt`(session/prompt 응답=턴 종결) + 순수 `grokUpdateStep`(session/update agent_message_chunk→텍스트, `x.ai/` 접두사 포함). 완료/실패는 응답 기반(wire). 턴 타임아웃은 c3 브리지가 requestTimeoutMs로 소유. TS 원본으로 params·content.text 형태 대조 확인(coordinator). swift test **50** PASS. |
+| 2026-07-24 | W10-c3 | Grok `!grok` 배선 `GrokSessionBridge`(CodexSessionBridge 형제). 완료=sessionPrompt 반환(블로킹), 텍스트=onNotification **동기 fold**→`LockedBox`(read-루프 happens-before로 무손실, RV 코드검증). `LockedBox` public화 재사용. c1 RV 교훈(isClosed 재스폰·초기화 실패 close) 선반영. 실물 grok 0.2.111 grok-smoke PASS. swift test **50** PASS. |
+| 2026-07-24 | fix | `runTurn` 게이트 **액터 재진입** 수정(Dab/Codex/Grok 3브리지 공통). 게이트 읽기↔설치 사이 await 제거로 동시 sessionPrompt+버퍼 교차오염 차단, defer `== task` 가드. 같은 채널 다중 턴 몰림 시 발생하던 결함(RV 발견). swift build ok · swift test **50** PASS. |
 
 ---
 
@@ -357,7 +365,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** W10 (Codex/Grok Discord·세션 배선) → W11 (UX 패리티) → W12 (레거시·문서).
+**큐 헤드:** W11 (슬래시·`/mode`·권한 UI·배포) → W12 (레거시·문서).
 
 ---
 

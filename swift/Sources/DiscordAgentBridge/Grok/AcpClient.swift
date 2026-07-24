@@ -206,6 +206,30 @@ public final class GrokAcpClient: @unchecked Sendable {
         state.withLock { $0.sessionId = sessionId }
     }
 
+    /// Run one prompt turn. session/update text chunks stream to `onNotification` subscribers
+    /// meanwhile; this BLOCKS until the `session/prompt` RESPONSE — the turn terminator
+    /// (acpClient.ts:341-342, 470-475). Returns the prompt result (stopReason/usage); throws on
+    /// prompt error or child exit (in-flight reject). Requires a prior sessionNew/sessionLoad.
+    ///
+    /// ponytail: the prompt turn shares the control-request timeout (requestTimeoutMs). The c3
+    /// bridge owns the turn timeout by creating the client with requestTimeoutMs = the turn budget
+    /// (like CodexSessionBridge). TS separates control/prompt timeouts (acpClient.ts:162) — split
+    /// here only if fast-failing control requests becomes necessary.
+    public func sessionPrompt(prompt: String) async throws -> JSONValue {
+        let sid = state.withLock { $0.sessionId }
+        guard let sid else {
+            throw AcpClientError("grok agent stdio: no session — call sessionNew or sessionLoad first.")
+        }
+        let params: JSONValue = .object([
+            "sessionId": .string(sid),
+            "prompt": .array([.object([
+                "type": .string("text"),
+                "text": .string(prompt),
+            ])]),
+        ])
+        return try await request(method: "session/prompt", params: params)
+    }
+
     /// Low-level control request (initialize / session/*). Not used for streaming prompt turns.
     /// TODO(TS): session/prompt uses activePrompt stream; response terminates updates, not pending map.
     public func request(method: String, params: JSONValue? = nil) async throws -> JSONValue {

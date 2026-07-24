@@ -60,6 +60,19 @@ struct EventHandler: GatewayEventHandler {
         if payload.webhook_id != nil { return }
 
         let content = payload.content
+
+        // !codex <prompt> → Codex app-server (parallel to !dab; W10-c1). !dab path unchanged.
+        if content.hasPrefix("!codex ") {
+            await handleCodexMessage(payload, content: content)
+            return
+        }
+
+        // !grok <prompt> → Grok ACP (parallel to !dab; W10-c3). !dab/!codex paths unchanged.
+        if content.hasPrefix("!grok ") {
+            await handleGrokMessage(payload, content: content)
+            return
+        }
+
         let prefix = "!dab "
         guard content.hasPrefix(prefix) else { return }
 
@@ -94,6 +107,72 @@ struct EventHandler: GatewayEventHandler {
         } catch {
             let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
             print("dab: turn failed: \(error)")
+            _ = try? await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: msg)
+            )
+        }
+    }
+
+    /// Parallel to the `!dab` handling above, routed to the Codex bridge (W10-c1).
+    func handleCodexMessage(_ payload: Gateway.MessageCreate, content: String) async {
+        let prefix = "!codex "
+        let prompt = String(content.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            _ = try? await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: "Usage: `!codex <prompt>`")
+            )
+            return
+        }
+
+        let channelId = payload.channel_id.rawValue
+        print("dab: !codex channel=\(channelId) prompt=\(prompt.prefix(80))")
+
+        do {
+            let reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, text: prompt)
+            let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
+            _ = try await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: body)
+            )
+        } catch {
+            let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
+            print("dab: codex turn failed: \(error)")
+            _ = try? await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: msg)
+            )
+        }
+    }
+
+    /// Parallel to the `!codex` handling above, routed to the Grok bridge (W10-c3).
+    func handleGrokMessage(_ payload: Gateway.MessageCreate, content: String) async {
+        let prefix = "!grok "
+        let prompt = String(content.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            _ = try? await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: "Usage: `!grok <prompt>`")
+            )
+            return
+        }
+
+        let channelId = payload.channel_id.rawValue
+        print("dab: !grok channel=\(channelId) prompt=\(prompt.prefix(80))")
+
+        do {
+            let reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, text: prompt)
+            let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
+            _ = try await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: body)
+            )
+        } catch {
+            let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
+            print("dab: grok turn failed: \(error)")
             _ = try? await client.createMessage(
                 channelId: payload.channel_id,
                 payload: .init(content: msg)
