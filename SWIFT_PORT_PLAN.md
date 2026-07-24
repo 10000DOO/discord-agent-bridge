@@ -266,7 +266,8 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11** | G | `doing` | UX·운영 패리티 (a~e 분할) | 세션 UX·권한·배포 |
 | **W11-a** | G | `done` | 슬래시 인프라(DiscordBM) + `SessionRegistry` + 순수 `routeDecision` + `/agent start·close` + config seam | `/agent start`로 채널 바인딩 → 접두사 없이 대화 |
 | **W11-b1** | G | `done` | 브리지 model·effort 실소비(config→client params) + `/agent start model·effort` 옵션 | model/effort 세션 반영, fake 검증 |
-| **W11-b2** | G | `todo` | `/agent start` 셀렉트 마법사(옵션 → 인터랙티브 컴포넌트) | 마법사 UI |
+| **W11-h** | G | `todo` | **provider 카탈로그 Swift 포팅** (W11-b2 선행). 3백엔드 모델/추론/권한을 **전부 라이브** 조회(하드코딩 고정 금지 — 백엔드만 고정). Claude=사이드카 **`models.list` RPC 신설**(supportedModels 프로브), Codex/Grok=`models_cache.json` 읽기, 추론=모델별 `supportedEffortLevels` 좁힘, 권한=백엔드별(Codex 샌드박스는 `codex --help` 동적). 상세 §14.10 | 카탈로그 라이브 조회 |
+| **W11-b2** | G | `todo` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그를 셀렉트에 주입**, 옵션→인터랙티브 컴포넌트). 설계 `docs/w11b2-agent-start-wizard.md`(모델/추론/권한 섹션은 라이브 카탈로그 기준으로 갱신 필요) | 마법사 UI |
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
 | **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
@@ -419,7 +420,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` HEAD = **`a1829d9`**(W11-f2 병합 `385aff6` + 문서 갱신), **원격 푸시됨**·워킹트리 clean. W10 + W11-a/b1/c/e/f1/**f2** 완료. **다음(문서 순서) = W11-b2(마법사) → W11-d(라이브 슬래시) → W11-g(패널) → W12.**
+`plan/swift-port` HEAD = **`a1829d9`**(W11-f2 병합 `385aff6` + 문서 갱신), **원격 푸시됨**·워킹트리 clean. W10 + W11-a/b1/c/e/f1/**f2** 완료. **다음(문서 순서) = W11-h(카탈로그, b2 선행) → W11-b2(마법사) → W11-d(라이브 슬래시) → W11-g(패널) → W12.**
 
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
@@ -456,10 +457,11 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. **W11-b2** — `/agent start` 셀렉트 마법사 UI. ← **다음 착수**
-2. **W11-d** — 라이브 슬래시 `/model`·`/effort`·`/mode`·`/perm`·`/stop`·**`/clear`**(14.6).
-3. **W11-g** — 사용량/HUD 패널 Swift 포팅 + 정보 최신화 (상세 §14.9). W11-d 이후 권장(모델 변경↔패널 최신이 한 흐름).
-4. **W12** — 레거시 TS 정리·호환·README.
+1. **W11-h** — provider 카탈로그 Swift 포팅 (3백엔드 모델/추론/권한 라이브, 상세 §14.10). ← **다음 착수 (b2 선행)**
+2. **W11-b2** — `/agent start` 셀렉트 마법사 UI (W11-h 카탈로그 주입).
+3. **W11-d** — 라이브 슬래시 `/model`·`/effort`·`/mode`·`/perm`·`/stop`·**`/clear`**(14.6). (W11-h 카탈로그 재사용)
+4. **W11-g** — 사용량/HUD 패널 Swift 포팅 + 정보 최신화 (상세 §14.9). W11-d 이후 권장.
+5. **W12** — 레거시 TS 정리·호환·README.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영.
 
 ### 14.8 병렬 작업 교훈
@@ -475,4 +477,16 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
   - **Claude**: `context_usage.model`/`modelDisplayName`을 **영구 Node 사이드카의 `ClaudeSession`(`src/modes/claude/session.ts`)이 생성**(사이드카 서버 `src/sidecar/claude/sessionBridge.ts`가 재사용). ⚠️ **알려진 버그**: `setModel`이 `modelDisplayName`을 init 때 래치(`modelDisplayNameRequested`)로 **1회만** 해석 → `/model` 변경 후에도 옛 표시명 유지. **W11-d(Swift `/model`) + W11-g 착수 시 사이드카 쪽에서 함께 교정**: `setModel`에서 `this.modelDisplayName=null; this.modelDisplayNameRequested=false; this.captureModelDisplayName()`로 재해석. (이 파일은 영구 사이드카가 쓰는 KEEP 모듈이라 정당. Swift `/model`이 사이드카 `session.setModel`을 실제 호출해야 발현.)
   - **Codex/Grok**: Swift 브리지가 app-server/ACP 응답의 tokenUsage/totalTokens·모델에서 `context_usage`를 **직접 생성**해야 함(현재 Swift 브리지는 텍스트만 누적, 미생성).
 - **착수 순서**: **W11-d 이후** 권장 — `/model` 라이브 변경과 "패널 모델 최신"이 한 흐름으로 맞물림.
+
+### 14.10 (기록) W11-h provider 카탈로그 Swift 포팅 — TS 파리티 (사용자 확정)
+사용자 확정(2026-07-25): **`/agent start` 마법사(W11-b2)는 TS와 동일하게 백엔드·모델·추론·권한을 전부 라이브 셀렉트.** **하드코딩 고정값 금지 — 백엔드 목록(claude/codex/grok)만 고정.** 현 `SlashCommandSpec`의 static effort/perm 목록은 TS와 불일치라 폐기 대상. b2의 UI 이전에 이 카탈로그가 선행돼야 함.
+
+- **TS 근거(포팅 원본)**: `src/core/providerCatalog.ts`(단일 진실원), `src/modes/codex/configSource.ts`·`permissionSource.ts`, `src/modes/grok/catalog.ts`·`configSource.ts`, 소비처 `src/discord/interaction/router.ts`(getModel/getEffortAutocomplete).
+- **값별 소스 (백엔드별, 전부 라이브)**:
+  - **모델**: Claude=SDK `supportedModels()` 프로브(15s 타임아웃·실패시 alias opus/sonnet/haiku 폴백·매 호출 재조회·in-flight 디둡). Codex=`~/.codex/models_cache.json`. Grok=`${GROK_HOME}/models_cache.json`. 각 모델에 `supportedEffortLevels` 동반.
+  - **추론(effort)**: 백엔드 기본 레벨을 **선택 모델의 `supportedEffortLevels`로 좁힘**. Claude 시작-시엔 max 포함, 런타임(`/effort`)엔 max 제외. Codex/Grok은 모델별, 없으면 폴백.
+  - **권한(perm)**: Claude=SDK PermissionMode 전체(default/acceptEdits/bypassPermissions/plan/dontAsk/auto), Codex=**`codex --help` 동적 샌드박스 모드**(현 Swift `CodexPolicy.resolveThreadPolicy`는 매핑만 있음 — 목록 조회는 미포팅), Grok=grok 권한모드.
+- **⚠️ Claude 신규 사이드카 RPC 필요**: 마법사는 세션 생성 전에 모델 목록이 필요. TS는 별도 단명 `query()`로 supportedModels()를 프로브. Swift는 사이드카 너머라 **프로토콜에 `models.list`(또는 `claude.models`) 신설** + 사이드카 핸들러(단명 프로브) + Swift 클라 메서드 + 프로토콜 v 상향. (현 프로토콜엔 없음.)
+- **Swift 기존 조각**: `Codex/CodexPolicy.swift`(permMode→approvalPolicy/sandbox 매핑 + `codexSandboxModes`)만 있음. 모델/추론/권한 목록 조회 계층은 전무.
+- **테스트**: 카탈로그 파싱/폴백/좁힘은 순수 단위테스트(캐시파일 fake, 사이드카 fake), TS의 타임아웃·in-flight 디둡·폴백 동작 미러링.
 
