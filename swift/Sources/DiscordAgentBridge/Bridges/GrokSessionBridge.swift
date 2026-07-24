@@ -47,7 +47,9 @@ public actor GrokSessionBridge {
 
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, text: String) async throws -> String {
+    public func runTurn(channelId: String, text: String, config: SessionConfig? = nil) async throws -> String {
+        // config seam (W11-a): model/effort/permMode not consumed yet — wizard wiring is W11-b.
+        _ = config
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.

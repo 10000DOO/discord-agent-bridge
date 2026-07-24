@@ -85,8 +85,11 @@ public actor DabSessionBridge {
         channelId: String,
         guildId: String,
         ownerId: String?,
-        text: String
+        text: String,
+        config: SessionConfig? = nil
     ) async throws -> String {
+        // config seam (W11-a): model/effort/permMode not consumed yet — wizard wiring is W11-b.
+        _ = config
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session. The previous turn is awaited INSIDE the task — that
         // is where serialization happens.

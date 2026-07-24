@@ -52,6 +52,54 @@ struct EventHandler: GatewayEventHandler {
     func onReady(_ payload: Gateway.Ready) async throws {
         let user = payload.user
         print("ready: username=\(user.username) id=\(user.id) app=\(payload.application.id)")
+        await registerAgentCommand(appId: payload.application.id)
+    }
+
+    /// Register `/agent`. Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h propagation).
+    private func registerAgentCommand(appId: ApplicationSnowflake) async {
+        let cmd = agentCommandPayload()
+        do {
+            if let g = ProcessInfo.processInfo.environment["DAB_DEV_GUILD_ID"], !g.isEmpty {
+                _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(g), payload: [cmd])
+                print("dab: registered /agent to guild \(g)")
+            } else {
+                _ = try await client.bulkSetApplicationCommands(appId: appId, payload: [cmd])
+                print("dab: registered /agent globally (propagation ~1h)")
+            }
+        } catch {
+            print("dab: slash register failed: \(error)")
+        }
+    }
+
+    func onInteractionCreate(_ payload: Interaction) async throws {
+        guard let cmd = try? payload.data?.requireApplicationCommand(), cmd.name == "agent",
+              let sub = cmd.options?.first
+        else { return }
+        let channelId = payload.channel_id?.rawValue ?? ""
+        switch sub.name {
+        case "start":
+            guard let raw = try? sub.requireOption(named: "backend").requireString(),
+                  let backend = Backend(rawValue: raw)
+            else {
+                try await respondEphemeral(payload, "알 수 없는 backend")
+                return
+            }
+            await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend))
+            try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨. 이제 접두사 없이 메시지를 보내면 됩니다.")
+        case "close":
+            await SessionRegistry.shared.unbind(channelId: channelId)
+            try await respondEphemeral(payload, "이 채널의 세션 바인딩을 해제했습니다.")
+        default:
+            try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
+        }
+    }
+
+    private func respondEphemeral(_ payload: Interaction, _ text: String) async throws {
+        _ = try await client.createInteractionResponse(
+            id: payload.id,
+            token: payload.token,
+            payload: .channelMessageWithSource(.init(content: text, flags: [.ephemeral]))
+        )
     }
 
     func onMessageCreate(_ payload: Gateway.MessageCreate) async throws {
@@ -59,124 +107,53 @@ struct EventHandler: GatewayEventHandler {
         if payload.author?.bot == true { return }
         if payload.webhook_id != nil { return }
 
-        let content = payload.content
-
-        // !codex <prompt> → Codex app-server (parallel to !claude; W10-c1). !claude path unchanged.
-        if content.hasPrefix("!codex ") {
-            await handleCodexMessage(payload, content: content)
-            return
-        }
-
-        // !grok <prompt> → Grok ACP (parallel to !claude; W10-c3). !claude/!codex paths unchanged.
-        if content.hasPrefix("!grok ") {
-            await handleGrokMessage(payload, content: content)
-            return
-        }
-
-        let prefix = "!claude "
-        guard content.hasPrefix(prefix) else { return }
-
-        let prompt = String(content.dropFirst(prefix.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
-            _ = try? await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: "Usage: `!claude <prompt>`")
-            )
-            return
-        }
-
         let channelId = payload.channel_id.rawValue
-        let guildId = payload.guild_id?.rawValue ?? "dm"
-        let ownerId = payload.author?.id.rawValue
-
-        print("dab: !claude channel=\(channelId) prompt=\(prompt.prefix(80))")
-
-        do {
-            let reply = try await DabSessionBridge.shared.runTurn(
-                channelId: channelId,
-                guildId: guildId,
-                ownerId: ownerId,
-                text: prompt
-            )
-            let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
-            _ = try await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: body)
-            )
-        } catch {
-            let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
-            print("dab: turn failed: \(error)")
+        let binding = await SessionRegistry.shared.binding(channelId: channelId)
+        switch routeDecision(content: payload.content, binding: binding) {
+        case .ignore:
+            return
+        case .usage(let label):
             _ = try? await client.createMessage(
                 channelId: payload.channel_id,
-                payload: .init(content: msg)
+                payload: .init(content: "Usage: `\(label) <prompt>`")
             )
+        case .prefixClaude(let text):
+            await runAndReply(.claude, payload, text: text, binding: nil)
+        case .prefixCodex(let text):
+            await runAndReply(.codex, payload, text: text, binding: nil)
+        case .prefixGrok(let text):
+            await runAndReply(.grok, payload, text: text, binding: nil)
+        case .bound(let backend, let text):
+            await runAndReply(backend, payload, text: text, binding: binding)
         }
     }
 
-    /// Parallel to the `!claude` handling above, routed to the Codex bridge (W10-c1).
-    func handleCodexMessage(_ payload: Gateway.MessageCreate, content: String) async {
-        let prefix = "!codex "
-        let prompt = String(content.dropFirst(prefix.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
-            _ = try? await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: "Usage: `!codex <prompt>`")
-            )
-            return
-        }
-
+    /// Run one turn on the chosen backend's bridge and post the reply (or a ⚠️ notice).
+    private func runAndReply(_ backend: Backend, _ payload: Gateway.MessageCreate, text: String, binding: SessionConfig?) async {
         let channelId = payload.channel_id.rawValue
-        print("dab: !codex channel=\(channelId) prompt=\(prompt.prefix(80))")
-
+        print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
         do {
-            let reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, text: prompt)
+            let reply: String
+            switch backend {
+            case .claude:
+                reply = try await DabSessionBridge.shared.runTurn(
+                    channelId: channelId,
+                    guildId: payload.guild_id?.rawValue ?? "dm",
+                    ownerId: payload.author?.id.rawValue,
+                    text: text,
+                    config: binding
+                )
+            case .codex:
+                reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, text: text, config: binding)
+            case .grok:
+                reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, text: text, config: binding)
+            }
             let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
-            _ = try await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: body)
-            )
+            _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: body))
         } catch {
             let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
-            print("dab: codex turn failed: \(error)")
-            _ = try? await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: msg)
-            )
-        }
-    }
-
-    /// Parallel to the `!codex` handling above, routed to the Grok bridge (W10-c3).
-    func handleGrokMessage(_ payload: Gateway.MessageCreate, content: String) async {
-        let prefix = "!grok "
-        let prompt = String(content.dropFirst(prefix.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
-            _ = try? await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: "Usage: `!grok <prompt>`")
-            )
-            return
-        }
-
-        let channelId = payload.channel_id.rawValue
-        print("dab: !grok channel=\(channelId) prompt=\(prompt.prefix(80))")
-
-        do {
-            let reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, text: prompt)
-            let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
-            _ = try await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: body)
-            )
-        } catch {
-            let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
-            print("dab: grok turn failed: \(error)")
-            _ = try? await client.createMessage(
-                channelId: payload.channel_id,
-                payload: .init(content: msg)
-            )
+            print("dab: \(backend.rawValue) turn failed: \(error)")
+            _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: msg))
         }
     }
 }
