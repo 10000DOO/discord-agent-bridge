@@ -13,16 +13,17 @@ import Foundation
 public actor GrokSessionBridge {
     public static let shared = GrokSessionBridge()
 
-    /// Client factory (test seam). Default = real spawn with the turn budget as requestTimeoutMs,
-    /// so sessionPrompt is bounded by DAB_TURN_TIMEOUT_SEC. Injected via `@testable` in tests.
-    private let makeClient: @Sendable () throws -> GrokAcpClient
+    /// Client factory (test seam). Grok's model/effort are SPAWN-time flags, so the factory takes
+    /// the channel's SessionConfig to build the spawn (TS parity: no live setModel/setEffort). Default
+    /// = real spawn with the turn budget as requestTimeoutMs. Injected via `@testable` in tests.
+    private let makeClient: @Sendable (SessionConfig?) throws -> GrokAcpClient
 
-    init(makeClient: @escaping @Sendable () throws -> GrokAcpClient = {
+    init(makeClient: @escaping @Sendable (SessionConfig?) throws -> GrokAcpClient = { config in
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
         // danger/parity: `--always-approve` (bypassPermissions) makes grok never send a permission
-        // ask — parity with the !claude/!codex danger default. No permission UI yet (TEMPORARY, W11);
-        // DANGEROUS on real machines (tools run unapproved).
-        let spawn = resolveGrokSpawn(bypassPermissions: true)
+        // ask — parity with the !claude/!codex danger default. No permission UI yet (TEMPORARY, W11-c);
+        // DANGEROUS on real machines (tools run unapproved). model/effort from the bound config.
+        let spawn = resolveGrokSpawn(model: config?.model, effort: config?.effort, bypassPermissions: true)
         print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
         return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000)
     }) {
@@ -48,23 +49,21 @@ public actor GrokSessionBridge {
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized.
     public func runTurn(channelId: String, text: String, config: SessionConfig? = nil) async throws -> String {
-        // config seam (W11-a): model/effort/permMode not consumed yet — wizard wiring is W11-b.
-        _ = config
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> String in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, text: text)
+            return try await self.executeTurn(channelId: channelId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
         return try await task.value
     }
 
-    private func executeTurn(channelId: String, text: String) async throws -> String {
-        let channel = try await ensureChannel(channelId: channelId)
+    private func executeTurn(channelId: String, text: String, config: SessionConfig?) async throws -> String {
+        let channel = try await ensureChannel(channelId: channelId, config: config)
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
         // buffer is complete when the await returns (see type comment). No actor hop / Task here.
@@ -81,7 +80,7 @@ public actor GrokSessionBridge {
         return out.isEmpty ? "(no text)" : out
     }
 
-    private func ensureChannel(channelId: String) async throws -> Channel {
+    private func ensureChannel(channelId: String, config: SessionConfig?) async throws -> Channel {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors CodexSessionBridge.ensureChannel).
         if let existing = channels[channelId] {
@@ -94,7 +93,9 @@ public actor GrokSessionBridge {
         // ponytail: channel당 grok 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
         // 최소 경로엔 /stop·세션 수명이 없어 닫을 자연 지점이 없다. W11에서 세션 수명 배선 시
         // close() + channels 제거로 업그레이드. 최소 경로에선 채널 수 소량 가정.
-        let client = try makeClient()
+        // ponytail: model/effort are baked at spawn from the FIRST turn's config (TS parity — Grok
+        // has no live setModel/setEffort). A later /model change would need a respawn (W11-c+).
+        let client = try makeClient(config)
 
         do {
             _ = try await client.initialize()

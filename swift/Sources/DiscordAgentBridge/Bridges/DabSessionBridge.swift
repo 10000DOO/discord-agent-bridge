@@ -88,8 +88,6 @@ public actor DabSessionBridge {
         text: String,
         config: SessionConfig? = nil
     ) async throws -> String {
-        // config seam (W11-a): model/effort/permMode not consumed yet — wizard wiring is W11-b.
-        _ = config
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session. The previous turn is awaited INSIDE the task — that
         // is where serialization happens.
@@ -100,7 +98,8 @@ public actor DabSessionBridge {
                 channelId: channelId,
                 guildId: guildId,
                 ownerId: ownerId,
-                text: text
+                text: text,
+                config: config
             )
         }
         channelGates[channelId] = task
@@ -112,14 +111,16 @@ public actor DabSessionBridge {
         channelId: String,
         guildId: String,
         ownerId: String?,
-        text: String
+        text: String,
+        config: SessionConfig?
     ) async throws -> String {
         let client = try await ensureClient()
         let handle = try await sessionHandle(
             client: client,
             channelId: channelId,
             guildId: guildId,
-            ownerId: ownerId
+            ownerId: ownerId,
+            config: config
         )
 
         let timeoutNs = turnTimeoutNs
@@ -150,17 +151,22 @@ public actor DabSessionBridge {
         client: ClaudeSidecarClient,
         channelId: String,
         guildId: String,
-        ownerId: String?
+        ownerId: String?,
+        config: SessionConfig?
     ) async throws -> String {
         if let existing = sessions[channelId] {
             return existing
         }
+        // W11-b1: model/effort from the bound session config. permMode stays env-driven until the
+        // permission UI lands (W11-c) — a non-bypass permMode would hang without Allow/Deny buttons.
         let started = try await client.sessionStart(
             SessionStartParams(
                 cwd: cwd,
                 guildId: guildId,
                 channelId: channelId,
                 ownerId: ownerId,
+                model: config?.model,
+                effort: config?.effort,
                 permMode: permMode
             )
         )

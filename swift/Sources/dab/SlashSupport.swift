@@ -16,7 +16,8 @@ func agentCommandPayload() -> Payloads.ApplicationCommandCreate {
                     name: opt.name,
                     description: opt.description,
                     required: opt.required,
-                    choices: opt.choices.map { .init(name: $0.name, value: .string($0.value)) }
+                    // Empty → nil: a free-text option must omit `choices` (Discord rejects []).
+                    choices: opt.choices.isEmpty ? nil : opt.choices.map { .init(name: $0.name, value: .string($0.value)) }
                 )
             }
         )

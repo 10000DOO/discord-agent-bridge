@@ -84,8 +84,11 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, "알 수 없는 backend")
                 return
             }
-            await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend))
-            try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨. 이제 접두사 없이 메시지를 보내면 됩니다.")
+            let model = try? sub.requireOption(named: "model").requireString()
+            let effort = try? sub.requireOption(named: "effort").requireString()
+            await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort))
+            let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }].compactMap { $0 }.joined(separator: " ")
+            try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다.")
         case "close":
             await SessionRegistry.shared.unbind(channelId: channelId)
             try await respondEphemeral(payload, "이 채널의 세션 바인딩을 해제했습니다.")

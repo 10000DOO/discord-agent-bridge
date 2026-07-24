@@ -51,6 +51,15 @@ public func agentCommandSpec() -> SlashCommandSpec {
                         required: true,
                         choices: Backend.allCases.map { .init(name: $0.rawValue, value: $0.rawValue) }
                     ),
+                    // model: free text (backend-specific, catalogs are dynamic) — blank = backend default.
+                    .init(name: "model", description: "Model id (blank = backend default)", required: false, choices: []),
+                    // effort: common union across backends (permMode is deferred to W11-c).
+                    .init(
+                        name: "effort",
+                        description: "Reasoning effort",
+                        required: false,
+                        choices: ["minimal", "low", "medium", "high"].map { .init(name: $0, value: $0) }
+                    ),
                 ]
             ),
             .init(name: "close", description: "Unbind this channel's session", options: []),

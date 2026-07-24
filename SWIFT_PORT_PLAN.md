@@ -19,7 +19,7 @@
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
 | **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
-| **검증** | `bash verify.sh` (**Swift 전용**: `swift test` **79** PASS · 스모크 3종). TS는 참고용 — 테스트 안 함 |
+| **검증** | `bash verify.sh` (**Swift 전용**: `swift test` **83** PASS · 스모크 3종). TS는 참고용 — 테스트 안 함 |
 
 ### 완료 (W1–W10)
 
@@ -39,7 +39,7 @@
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W11** | `doing` | **a 완료**(슬래시 인프라·`SessionRegistry`·`/agent start·close`). 남은: 마법사(b)·권한 버튼(c)·라이브 슬래시(d)·배포(e) |
+| **W11** | `doing` | **a·b1 완료**(슬래시·세션·model/effort 소비). 남은: 권한 버튼(c)·마법사 UI(b2)·라이브 슬래시(d)·배포(e) |
 | **W12** | `todo` | 레거시 TS 정책, 버전 호환, 루트 README 마이그레이션 가이드 |
 
 ### 의도적으로 아직 없는 것
@@ -72,7 +72,7 @@ swift run --package-path swift dab grok-smoke
 
 ### 다음에 할 일 (우선순위)
 
-1. **W11-b · W11-c** — `/agent start` 마법사(모델·추론·권한) · 권한 Allow/Deny 버튼  
+1. **W11-c** — 권한 Allow/Deny 버튼(permMode 실소비) · **W11-b2** 셀렉트 마법사  
 2. **W11-d · W11-e** — 라이브 슬래시(`/mode`·`/model`·`/effort`·`/stop`·`/clear`) · launchd·배포  
 3. **W12** — 레거시/문서/호환 매트릭스  
 
@@ -265,7 +265,8 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W10-c3** | F | `done` | Grok `!grok` 배선 `GrokSessionBridge`(형제). sessionPrompt 반환=완료, onNotification 동기 fold→LockedBox | `!grok` → Grok 답글, build+grok-smoke |
 | **W11** | G | `doing` | UX·운영 패리티 (a~e 분할) | 세션 UX·권한·배포 |
 | **W11-a** | G | `done` | 슬래시 인프라(DiscordBM) + `SessionRegistry` + 순수 `routeDecision` + `/agent start·close` + config seam | `/agent start`로 채널 바인딩 → 접두사 없이 대화 |
-| **W11-b** | G | `todo` | `/agent start` 셀렉트 마법사(모델·추론·권한) + 브리지 config 실제 소비 | 세션 설정 UI |
+| **W11-b1** | G | `done` | 브리지 model·effort 실소비(config→client params) + `/agent start model·effort` 옵션 | model/effort 세션 반영, fake 검증 |
+| **W11-b2** | G | `todo` | `/agent start` 셀렉트 마법사(옵션 → 인터랙티브 컴포넌트) | 마법사 UI |
 | **W11-c** | G | `todo` | 권한 Allow/Deny 버튼 (danger 기본값 대체) | 인터랙티브 승인 |
 | **W11-d** | G | `todo` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/perm`·`/stop`·`/clear`·`/agent resume·stats` | 세션 조작 |
 | **W11-e** | G | `todo` | launchd·배포·설정 영속화 | 운영 |
@@ -320,6 +321,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-24 | test-B | **브리지 단위테스트 전량 +21** (3브리지 × happy/직렬화+재진입회귀/재스폰/init실패정리/에러/타임아웃/누적특성). 결정론 `TurnGate`(sleep 없음), fake 입력 echo로 버퍼 격리, `maxConcurrent==1`로 재진입 회귀 고정. 타임아웃 DI(Codex/Dab)·reqTimeout(Grok). swift test 50→**71**. |
 | 2026-07-24 | pivot | **전략 확정: 제품은 Swift, TS/npm은 참고용(추후 제거).** 테스트·검증 **Swift 전용**(`verify.sh` = swift build+test+스모크; TS 테스트 미실행). 명령 접두사 `!dab`→`!claude`. 단 **Claude용 얇은 Node 사이드카 1겹은 유지**(Agent SDK가 Node 전용 — 의도된 예외, 제거 안 함). **UX 정정: 접두사는 MVP 임시 — 실제 방식은 `/agent start` 마법사로 백엔드·모델·추론·권한 설정해 채널=세션 생성 후 대화(W11 이식 대상).** |
 | 2026-07-24 | W11-a | 세션 기반 UX 토대. lib `SessionRegistry`(actor, 채널→`SessionConfig`) + 순수 `routeDecision`(접두사 우선 / 바인딩 라우팅 / usage / ignore) + `agentCommandSpec`(`/agent start·close`). DiscordBM 슬래시·인터랙션 네이티브(`onInteractionCreate`, ephemeral, 길드/글로벌 등록). DabMain 라우팅 리팩터(중복 핸들러 제거) + `runTurn(config:)` seam(미소비, W11-b). swift test 71→**79**. |
+| 2026-07-24 | W11-b1 | 브리지 `SessionConfig` model·effort **실소비**: Claude `SessionStartParams(model/effort)`, Codex thread/start model + turn/start effort·model, Grok 팩토리 config-aware(`resolveGrokSpawn(model:effort:)`). `/agent start`에 model(free-text)·effort(choices) 옵션. permMode는 W11-c로 미룸(현 danger 유지). fake transport로 config→params 검증. swift test 79→**83**. |
 | 2026-07-24 | test-C | 최상위 `verify.sh` + `npm run verify`(TS typecheck+tests · Swift build+tests · 스모크 best-effort) + README Development 섹션. 한 명령 전체 검증. |
 
 ---
@@ -381,7 +383,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** W11-b (`/agent start` 마법사) · W11-c (권한 버튼) → W11-d/e → W12 (레거시·문서).
+**큐 헤드:** W11-c (권한 버튼·permMode) · W11-b2 (마법사 UI) → W11-d/e → W12 (레거시·문서).
 
 ---
 

@@ -9,12 +9,14 @@ private actor GateableSidecar {
     private let transport: InMemorySidecarTransport
     private let gate: TurnGate?
     private let resultEchoesText: Bool
+    private let capture: LockedBox<[String: String]>?   // records session.start params
     private var counter = 0
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
+        self.capture = capture
     }
 
     func run() async {
@@ -29,6 +31,8 @@ private actor GateableSidecar {
         switch method {
         case "session.start":
             counter += 1
+            if let m = env.params?["model"]?.stringValue { capture?.withLock { $0["model"] = m } }
+            if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
             await writeEnv(res(id: id, method: method, result: .object([
                 "session": .string("h\(counter)"), "backendSessionId": .null,
             ])))
@@ -68,12 +72,13 @@ private actor GateableSidecar {
 private func makeDabBridge(
     gate: TurnGate? = nil,
     resultEchoesText: Bool = false,
-    timeoutNs: UInt64? = nil
+    timeoutNs: UInt64? = nil,
+    capture: LockedBox<[String: String]>? = nil
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
     let bridge = DabSessionBridge(makeClient: {
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText)
+        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture)
         Task { await server.run() }
         return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
     }, turnTimeoutOverrideNs: timeoutNs)
@@ -165,5 +170,17 @@ struct DabSessionBridgeTests {
         let t = Task { try await run(bridge, "x") }
         await gate.waitReceived(1)                  // held, no events → TurnBox timeout (no text) → throw
         await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // W11-b1: model/effort from the bound config reach session.start params (permMode stays env).
+    @Test func configReachesSessionStartParams() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture)
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi",
+                                             config: SessionConfig(backend: .claude, model: "claude-x", effort: "high"))
+        #expect(reply == "ok:hi")
+        let got = capture.withLock { $0 }
+        #expect(got["model"] == "claude-x")
+        #expect(got["effort"] == "high")
     }
 }

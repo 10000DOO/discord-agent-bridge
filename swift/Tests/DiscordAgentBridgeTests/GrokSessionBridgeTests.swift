@@ -80,10 +80,12 @@ private func makeGrokBridge(
     gate: TurnGate? = nil,
     initFails: Bool = false,
     fixedChunks: [String]? = nil,
-    reqTimeoutMs: Int = 5_000
+    reqTimeoutMs: Int = 5_000,
+    configSpy: LockedBox<[SessionConfig?]>? = nil
 ) -> (GrokSessionBridge, MadeClients<GrokAcpClient>) {
     let made = MadeClients<GrokAcpClient>()
-    let bridge = GrokSessionBridge(makeClient: {
+    let bridge = GrokSessionBridge(makeClient: { cfg in
+        configSpy?.withLock { $0.append(cfg) }   // Grok bakes model/effort at spawn from this config
         let pair = InMemorySidecarTransport.makePair()
         let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks)
         Task { await server.run() }
@@ -164,5 +166,20 @@ struct GrokSessionBridgeTests {
         let t = Task { try await bridge.runTurn(channelId: "c", text: "x") }
         await gate.waitReceived(1)                  // held, never released → client times out
         await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // W11-b1: the bound config reaches the spawn factory (Grok bakes model/effort at spawn).
+    @Test func configReachesSpawnFactory() async throws {
+        let spy = LockedBox<[SessionConfig?]>([])
+        let (bridge, _) = makeGrokBridge(configSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-4", effort: "high"))
+        let got = spy.withLock { $0 }
+        #expect(got.count == 1)
+        #expect(got.first??.model == "grok-4")
+        #expect(got.first??.effort == "high")
+        // And the pure spawn builder turns those into CLI flags:
+        let spawn = resolveGrokSpawn(model: "grok-4", effort: "high", bypassPermissions: true)
+        #expect(spawn.args.contains("-m") && spawn.args.contains("grok-4"))
+        #expect(spawn.args.contains("--reasoning-effort") && spawn.args.contains("high"))
     }
 }

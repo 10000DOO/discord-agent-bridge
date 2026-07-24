@@ -63,6 +63,18 @@ struct AgentCommandSpecTests {
         #expect(backend?.choices.map(\.value) == ["claude", "codex", "grok"])
     }
 
+    @Test func startHasOptionalModelAndEffort() {
+        let start = agentCommandSpec().subcommands.first { $0.name == "start" }
+        let model = start?.options.first { $0.name == "model" }
+        let effort = start?.options.first { $0.name == "effort" }
+        #expect(model?.required == false)
+        #expect(model?.choices.isEmpty == true)   // free text
+        #expect(effort?.required == false)
+        #expect(effort?.choices.map(\.value) == ["minimal", "low", "medium", "high"])
+        // permMode/perm option deferred to W11-c
+        #expect(start?.options.contains { $0.name == "perm" } == false)
+    }
+
     @Test func closeHasNoOptions() {
         let spec = agentCommandSpec()
         let close = spec.subcommands.first { $0.name == "close" }

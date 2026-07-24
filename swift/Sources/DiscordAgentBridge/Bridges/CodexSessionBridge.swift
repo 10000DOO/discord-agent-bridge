@@ -64,23 +64,21 @@ public actor CodexSessionBridge {
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
     /// Turns on the same channel are serialized.
     public func runTurn(channelId: String, text: String, config: SessionConfig? = nil) async throws -> String {
-        // config seam (W11-a): model/effort/permMode not consumed yet — wizard wiring is W11-b.
-        _ = config
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> String in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, text: text)
+            return try await self.executeTurn(channelId: channelId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
         return try await task.value
     }
 
-    private func executeTurn(channelId: String, text: String) async throws -> String {
-        let channel = try await ensureChannel(channelId: channelId)
+    private func executeTurn(channelId: String, text: String, config: SessionConfig?) async throws -> String {
+        let channel = try await ensureChannel(channelId: channelId, config: config)
         let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
             let timeoutTask = Task {
@@ -95,17 +93,18 @@ public actor CodexSessionBridge {
                 timeoutTask: timeoutTask
             )
 
+            // W11-b1: model/effort from the bound session config. permMode → approvalPolicy/sandbox
+            // stays hardcoded (danger) until the permission UI lands (W11-c).
+            var input: [String: JSONValue] = [
+                "threadId": .string(channel.threadId),
+                "input": .array([.object(["type": .string("text"), "text": .string(text)])]),
+            ]
+            if let effort = config?.effort, !effort.isEmpty { input["effort"] = .string(effort) }
+            if let model = config?.model, !model.isEmpty { input["model"] = .string(model) }
+
             Task {
                 do {
-                    _ = try await channel.client.turnStart(
-                        params: .object([
-                            "threadId": .string(channel.threadId),
-                            "input": .array([.object([
-                                "type": .string("text"),
-                                "text": .string(text),
-                            ])]),
-                        ])
-                    )
+                    _ = try await channel.client.turnStart(params: .object(input))
                 } catch {
                     self.finishTurn(channelId: channelId, error: error)
                 }
@@ -113,7 +112,7 @@ public actor CodexSessionBridge {
         }
     }
 
-    private func ensureChannel(channelId: String) async throws -> Channel {
+    private func ensureChannel(channelId: String, config: SessionConfig?) async throws -> Channel {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors TS appSession.ts:296 `if (this.client && !this.client.isClosed) return`).
         if let existing = channels[channelId] {
@@ -133,16 +132,16 @@ public actor CodexSessionBridge {
             _ = try await client.initialize()
             // ponytail: hardcoded danger policy = Claude default `bypassPermissions` equivalent
             // (policy.ts:32-33 maps bypassPermissions → never / danger-full-access). No permission
-            // UI in the minimal path — TEMPORARY until W11 wires Allow/Deny + /mode. DANGEROUS on
+            // UI in the minimal path — TEMPORARY until W11-c wires Allow/Deny + /mode. DANGEROUS on
             // real machines: the agent runs shell commands and edits files with no sandbox and no
-            // approval prompt. Gate behind a per-channel policy once W11 lands.
-            threadId = try await client.threadStart(
-                params: .object([
-                    "cwd": .string(cwd),
-                    "approvalPolicy": .string("never"),
-                    "sandbox": .string("danger-full-access"),
-                ])
-            )
+            // approval prompt. Gate behind a per-channel policy once W11-c lands.
+            var startParams: [String: JSONValue] = [
+                "cwd": .string(cwd),
+                "approvalPolicy": .string("never"),
+                "sandbox": .string("danger-full-access"),
+            ]
+            if let model = config?.model, !model.isEmpty { startParams["model"] = .string(model) }
+            threadId = try await client.threadStart(params: .object(startParams))
         } catch {
             // Init failed: close the spawned child so it does not leak as an orphan.
             await client.close()

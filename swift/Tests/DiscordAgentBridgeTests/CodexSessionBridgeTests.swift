@@ -12,12 +12,14 @@ private actor GateableCodexServer {
     private let gate: TurnGate?
     private let initFails: Bool
     private let completion: Completion
+    private let capture: LockedBox<[String: String]>?   // records thread/start + turn/start params
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
         self.completion = completion
+        self.capture = capture
     }
 
     func run() async {
@@ -39,9 +41,12 @@ private actor GateableCodexServer {
                 await writeResult(id, .object(["userAgent": .string("fake-codex")]))
             }
         case "thread/start":
+            if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["threadModel"] = m } }
             await writeResult(id, .object(["thread": .object(["id": .string("t1")])]))
         case "turn/start":
             let text = msg["params"]?["input"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+            if let e = msg["params"]?["effort"]?.stringValue { capture?.withLock { $0["turnEffort"] = e } }
+            if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["turnModel"] = m } }
             await writeResult(id, .object(["turn": .object(["id": .string("u1")])]))
             Task { await self.completeTurn(text: text) }   // non-blocking: read loop keeps counting
         case "turn/interrupt":
@@ -87,12 +92,13 @@ private func makeCodexBridge(
     gate: TurnGate? = nil,
     initFails: Bool = false,
     completion: GateableCodexServer.Completion = .delta,
-    timeoutNs: UInt64? = nil
+    timeoutNs: UInt64? = nil,
+    capture: LockedBox<[String: String]>? = nil
 ) -> (CodexSessionBridge, MadeClients<CodexAppServerClient>) {
     let made = MadeClients<CodexAppServerClient>()
     let bridge = CodexSessionBridge(makeClient: {
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion)
+        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture)
         Task { await server.run() }
         return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000))
     }, turnTimeoutOverrideNs: timeoutNs)
@@ -171,5 +177,17 @@ struct CodexSessionBridgeTests {
         let t = Task { try await bridge.runTurn(channelId: "c", text: "x") }
         await gate.waitReceived(1)                  // held, never released → TurnBox timeout fires
         await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // W11-b1: model → thread/start params, effort/model → turn/start params.
+    @Test func configReachesThreadAndTurnParams() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeCodexBridge(capture: capture)
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex, model: "gpt-5-codex", effort: "high"))
+        #expect(reply == "ok:hi")
+        let got = capture.withLock { $0 }
+        #expect(got["threadModel"] == "gpt-5-codex")
+        #expect(got["turnEffort"] == "high")
+        #expect(got["turnModel"] == "gpt-5-codex")
     }
 }
