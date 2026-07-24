@@ -78,27 +78,43 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         while true {
             let chunk = handle.availableData
             if chunk.isEmpty {
-                if !buffer.isEmpty, let s = String(data: buffer, encoding: .utf8) {
-                    let trimmed = s.trimmingCharacters(in: .newlines)
-                    if !trimmed.isEmpty {
-                        continuation.yield(trimmed)
-                    }
+                if let last = flushNDJSON(buffer: &buffer) {
+                    continuation.yield(last)
                 }
                 continuation.finish()
                 return
             }
-            buffer.append(chunk)
-            while let range = buffer.range(of: Data([0x0A])) {
-                let lineData = buffer.subdata(in: buffer.startIndex..<range.lowerBound)
-                buffer.removeSubrange(buffer.startIndex...range.lowerBound)
-                if let s = String(data: lineData, encoding: .utf8) {
-                    let line = s.hasSuffix("\r") ? String(s.dropLast()) : s
-                    if !line.isEmpty {
-                        continuation.yield(line)
-                    }
+            for line in splitNDJSON(chunk: chunk, buffer: &buffer) {
+                continuation.yield(line)
+            }
+        }
+    }
+
+    /// Append `chunk` to `buffer` and return every complete `\n`-terminated line.
+    /// Strips a trailing `\r` (CRLF), skips empty lines; a trailing partial line stays in `buffer`.
+    static func splitNDJSON(chunk: Data, buffer: inout Data) -> [String] {
+        buffer.append(chunk)
+        var lines: [String] = []
+        while let range = buffer.range(of: Data([0x0A])) {
+            let lineData = buffer.subdata(in: buffer.startIndex..<range.lowerBound)
+            buffer.removeSubrange(buffer.startIndex...range.lowerBound)
+            if let s = String(data: lineData, encoding: .utf8) {
+                let line = s.hasSuffix("\r") ? String(s.dropLast()) : s
+                if !line.isEmpty {
+                    lines.append(line)
                 }
             }
         }
+        return lines
+    }
+
+    /// Flush the buffered partial line at EOF (no trailing newline). Empties `buffer`.
+    /// Returns nil when the buffer is empty, undecodable, or blank after trimming newlines.
+    static func flushNDJSON(buffer: inout Data) -> String? {
+        defer { buffer.removeAll() }
+        guard !buffer.isEmpty, let s = String(data: buffer, encoding: .utf8) else { return nil }
+        let trimmed = s.trimmingCharacters(in: .newlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     public func writeLine(_ line: String) async throws {
