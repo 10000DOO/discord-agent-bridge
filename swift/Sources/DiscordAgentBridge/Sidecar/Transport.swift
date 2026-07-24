@@ -56,7 +56,7 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         }
     }
 
-    private static func resolveExecutable(_ command: String) -> String {
+    static func resolveExecutable(_ command: String) -> String {
         if command.contains("/") {
             return command
         }
