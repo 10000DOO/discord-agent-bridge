@@ -30,7 +30,7 @@ struct DabMain {
         )
 
         print("dab: connecting to Discord gateway…")
-        print("dab: !dab <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
+        print("dab: !claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -61,19 +61,19 @@ struct EventHandler: GatewayEventHandler {
 
         let content = payload.content
 
-        // !codex <prompt> → Codex app-server (parallel to !dab; W10-c1). !dab path unchanged.
+        // !codex <prompt> → Codex app-server (parallel to !claude; W10-c1). !claude path unchanged.
         if content.hasPrefix("!codex ") {
             await handleCodexMessage(payload, content: content)
             return
         }
 
-        // !grok <prompt> → Grok ACP (parallel to !dab; W10-c3). !dab/!codex paths unchanged.
+        // !grok <prompt> → Grok ACP (parallel to !claude; W10-c3). !claude/!codex paths unchanged.
         if content.hasPrefix("!grok ") {
             await handleGrokMessage(payload, content: content)
             return
         }
 
-        let prefix = "!dab "
+        let prefix = "!claude "
         guard content.hasPrefix(prefix) else { return }
 
         let prompt = String(content.dropFirst(prefix.count))
@@ -81,7 +81,7 @@ struct EventHandler: GatewayEventHandler {
         guard !prompt.isEmpty else {
             _ = try? await client.createMessage(
                 channelId: payload.channel_id,
-                payload: .init(content: "Usage: `!dab <prompt>`")
+                payload: .init(content: "Usage: `!claude <prompt>`")
             )
             return
         }
@@ -90,7 +90,7 @@ struct EventHandler: GatewayEventHandler {
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let ownerId = payload.author?.id.rawValue
 
-        print("dab: !dab channel=\(channelId) prompt=\(prompt.prefix(80))")
+        print("dab: !claude channel=\(channelId) prompt=\(prompt.prefix(80))")
 
         do {
             let reply = try await DabSessionBridge.shared.runTurn(
@@ -114,7 +114,7 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
-    /// Parallel to the `!dab` handling above, routed to the Codex bridge (W10-c1).
+    /// Parallel to the `!claude` handling above, routed to the Codex bridge (W10-c1).
     func handleCodexMessage(_ payload: Gateway.MessageCreate, content: String) async {
         let prefix = "!codex "
         let prompt = String(content.dropFirst(prefix.count))

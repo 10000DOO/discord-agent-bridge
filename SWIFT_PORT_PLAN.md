@@ -14,12 +14,12 @@
 
 | 항목 | 상태 |
 |------|------|
-| **전체 단계** | Phase A~F **MVP 완료**(3백엔드 `!dab`/`!codex`/`!grok` 텍스트 경로), Phase G~H 대기 |
+| **전체 단계** | Phase A~F **MVP 완료**(3백엔드 `!claude`/`!codex`/`!grok` 텍스트 경로), Phase G~H 대기 |
 | **브랜치** | `plan/swift-port` |
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
-| **Swift 봇** | `swift run --package-path swift dab` + `!dab` / `!codex` / `!grok <prompt>` |
-| **검증** | `npm run verify` 한 방 (TS typecheck+tests · `swift test` **71** PASS · 스모크 3종) |
+| **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
+| **검증** | `bash verify.sh` (**Swift 전용**: `swift test` **71** PASS · 스모크 3종). TS는 참고용 — 테스트 안 함 |
 
 ### 완료 (W1–W10)
 
@@ -29,7 +29,7 @@
 | W6 | 사이드카 프로토콜 문서 (`CLAUDE_SIDECAR_PROTOCOL.md`) |
 | W7 | Node Claude 사이드카 + Host 클라이언트 + host.file 역RPC + opt-in 배선 |
 | W8 | SwiftPM + DiscordBM + gateway ready |
-| W9 | Swift 사이드카 클라이언트 + Discord `!dab` → Claude 답글 (MVP) |
+| W9 | Swift 사이드카 클라이언트 + Discord `!claude` → Claude 답글 (MVP) |
 | W10b | Grok ACP stdio 클라이언트 골격 |
 | W10-c1 | Codex `!codex` Discord 배선 (텍스트 답글, 형제 브리지) |
 | W10-c2 | Grok prompt stream: `GrokAcpClient.sessionPrompt` + 순수 `grokUpdateStep` (텍스트) |
@@ -46,7 +46,7 @@
 
 - 풀 SessionOrchestrator / ChannelRegistry Swift 포팅  
 - Codex·Grok Discord 연동 및 멀티 백엔드 `/mode`  
-- 권한 Allow/Deny 버튼 (Swift `!dab` 기본 `bypassPermissions`)  
+- 권한 Allow/Deny 버튼 (Swift `!claude` 기본 `bypassPermissions`)  
 - host.file.* 실제 Discord 업로드 (Swift 쪽; TS 사이드카 경로는 구현됨)  
 - 기존 npm 봇 기능 100% 패리티  
 
@@ -56,13 +56,13 @@
 # TS 봇 — Claude 사이드카 opt-in
 DAB_CLAUDE_SIDECAR=1 npm run dev
 
-# Swift — Discord + !dab (repo root에서)
+# Swift — Discord + !claude (repo root에서)
 export DISCORD_BOT_TOKEN=...
 swift run --package-path swift dab
-# 채널: !dab hello
+# 채널: !claude hello
 
-# 전체 검증 (TS + Swift 한 방)
-npm run verify
+# 전체 검증 (Swift 전용)
+bash verify.sh
 
 # 스모크
 swift run --package-path swift dab sidecar-smoke
@@ -256,8 +256,8 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W6** | B | `done` | `AgentEvent`/사이드카 RPC JSON Schema 또는 표 문서 (`claude-sidecar-protocol` 절 또는 별도 md) | 메서드·이벤트 kind 고정표 1장 |
 | **W7** | C | `done` | TS 안 Claude 사이드카 프로세스 분리 + opt-in ClaudeMode 배선 + host.file reverse RPC; Discord E2E는 수동 | Discord Claude 스모크 동등 (E2E 수동) |
 | **W8** | D | `done` | SwiftPM 골격 + Discord 라이브러리 spike + 로그인 hello | Swift 바이너리 접속 |
-| **W9** | E | `done` | Swift 사이드카 클라이언트 + `!dab` Discord E2E (MVP). 풀 오케스트레이터/슬래시/스트리밍 편집은 W11 | `!dab` 메시지 → Claude 답글 |
-| **W10** | F | `done` | Codex/Grok Discord·세션 배선 (c1/c2/c3). `/mode`·슬래시 파리티는 W11 | 3백엔드 `!dab`/`!codex`/`!grok` 텍스트 경로 |
+| **W9** | E | `done` | Swift 사이드카 클라이언트 + `!claude` Discord E2E (MVP). 풀 오케스트레이터/슬래시/스트리밍 편집은 W11 | `!claude` 메시지 → Claude 답글 |
+| **W10** | F | `done` | Codex/Grok Discord·세션 배선 (c1/c2/c3). `/mode`·슬래시 파리티는 W11 | 3백엔드 `!claude`/`!codex`/`!grok` 텍스트 경로 |
 | **W10b** | F | `done` | Grok ACP stdio 클라이언트 골격 (`Grok/AcpClient`). prompt stream·Discord 미연동 | ACP request/notify skeleton |
 | **W10-c1** | F | `done` | Codex `!codex` Discord 배선: lib `codexTurnStep` + `CodexSessionBridge`(형제 브리지) + DabMain 분기 | `!codex` → Codex 답글, 단위테스트+build |
 | **W10-c2** | F | `done` | `GrokAcpClient.sessionPrompt` + 순수 `grokUpdateStep`(텍스트) + fake transport 단위테스트 | Grok prompt stream (텍스트 델타 누적) |
@@ -300,7 +300,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-23 | W7c | **host.file.attach / host.file.share reverse RPC**: SidecarServer `requestHost` + reversePending; SessionBridge wires sendFile/shareDocument; ClaudeSidecarClient handleReverseRpc + openModeSession file cbs; ClaudeMode openViaSidecar passes Discord sinks. Opt-in + reverse file RPC; Discord E2E manual. |
 | 2026-07-23 | W8 | `swift/` SwiftPM: DiscordBM + executable `dab`. Token from `DISCORD_BOT_TOKEN`/`DISCORD_TOKEN`/argv. Gateway Message Content Intent; ready log on connect. `swift build` OK. |
 | 2026-07-23 | W9 | **slice**: Swift `AgentEvent`+Envelope Codable, `ClaudeSidecarClient` (inject transport / Process spawn, NDJSON, ready wait, session.start/send/stop, sessions.list, host.file.* → unsupported). Unit tests + fake pipes (16). `dab sidecar-smoke` real Node. DiscordBM only on `dab` target. Discord channel path deferred **W9b**. |
-| 2026-07-23 | W9b | **minimal Discord path**: `!dab <prompt>` → shared sidecar → per-channel session → text events → createMessage reply. Env: `DAB_CWD`, `DAB_PERM_MODE` (default `bypassPermissions`), `DAB_TURN_TIMEOUT_SEC`. No slash/permission UI/multi-mode. |
+| 2026-07-23 | W9b | **minimal Discord path**: `!claude <prompt>` → shared sidecar → per-channel session → text events → createMessage reply. Env: `DAB_CWD`, `DAB_PERM_MODE` (default `bypassPermissions`), `DAB_TURN_TIMEOUT_SEC`. No slash/permission UI/multi-mode. |
 | 2026-07-23 | W10 slice1 | **Codex app-server scaffold**: `Codex/AppServerClient.swift` + `CodexSpawn.swift` (JSON-RPC NDJSON, initialize/thread/turn, notify, approval auto-accept). InMemory transport tests. `dab codex-smoke` (missing CLI → exit 0). Grok → **W10b**. No AgentMode/Discord. |
 | 2026-07-23 | W10b | **Grok ACP stdio scaffold**: `Grok/AcpClient.swift` + `GrokSpawn.swift` (JSON-RPC NDJSON, initialize/session/new|load, notify, permission default-deny). InMemory transport tests. `dab grok-smoke` (missing CLI → exit 0). No prompt stream / AgentMode / Discord. |
 | 2026-07-23 | docs | §0 진행 스냅샷 추가. 브랜치 `plan/swift-port` 커밋·푸시 시점 문서 고정. |
@@ -312,6 +312,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-24 | test-A | 브리지 3종을 라이브러리 `Bridges/`로 이동(테스트 가능화) + **client 팩토리 DI**(가짜 클라 주입, 기본=실제 spawn). `DiscordText`는 dab 잔류. DabMain·명령 동작 불변. |
 | 2026-07-24 | fix | `DabSessionBridge.ensureClient`에 **isClosed 재스폰 가드 + connect 실패 close + 재스폰 시 stale 세션 정리(`sessions.removeAll`)** — Codex/Grok과 통일. 죽은 사이드카 영구먹통·고아 프로세스 방지. |
 | 2026-07-24 | test-B | **브리지 단위테스트 전량 +21** (3브리지 × happy/직렬화+재진입회귀/재스폰/init실패정리/에러/타임아웃/누적특성). 결정론 `TurnGate`(sleep 없음), fake 입력 echo로 버퍼 격리, `maxConcurrent==1`로 재진입 회귀 고정. 타임아웃 DI(Codex/Dab)·reqTimeout(Grok). swift test 50→**71**. |
+| 2026-07-24 | pivot | **전략 확정: 제품은 Swift, TS/npm은 참고용(추후 제거).** 테스트·검증 **Swift 전용**(`verify.sh` = swift build+test+스모크; TS 테스트 미실행). 명령 접두사 `!dab`→`!claude`. 단 **Claude용 얇은 Node 사이드카 1겹은 유지**(Agent SDK가 Node 전용 — 의도된 예외, 제거 안 함). **UX 정정: 접두사는 MVP 임시 — 실제 방식은 `/agent start` 마법사로 백엔드·모델·추론·권한 설정해 채널=세션 생성 후 대화(W11 이식 대상).** |
 | 2026-07-24 | test-C | 최상위 `verify.sh` + `npm run verify`(TS typecheck+tests · Swift build+tests · 스모크 best-effort) + README Development 섹션. 한 명령 전체 검증. |
 
 ---

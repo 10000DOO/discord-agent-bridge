@@ -122,17 +122,18 @@ Completions and errors from all your sessions get summarized into a single `#age
 
 ## Development
 
-Run the full verification suite (TypeScript + Swift) with one command:
+Run the Swift test suite with one command:
 
 ```bash
-npm run verify   # or: bash verify.sh
+bash verify.sh
 ```
 
-Gate (must pass): TS typecheck, TS tests (vitest), Swift build, Swift tests (`swift/`).
-It then runs the Swift backend smokes (`sidecar`/`codex`/`grok`) best-effort — they
-skip cleanly when a backend CLI is absent, so they never fail the gate.
+The product is Swift; the TypeScript code is reference-only and is **not** tested here.
+Gate (must pass): Swift build, Swift tests (`swift/`). It then runs the backend smokes
+(`sidecar`/`codex`/`grok`) best-effort — they skip cleanly when a backend CLI is absent,
+so they never fail the gate.
 
-The Swift port (native bot + Node Claude sidecar) is tracked in [SWIFT_PORT_PLAN.md](SWIFT_PORT_PLAN.md).
+The Swift port is tracked in [SWIFT_PORT_PLAN.md](SWIFT_PORT_PLAN.md).
 
 ---
 

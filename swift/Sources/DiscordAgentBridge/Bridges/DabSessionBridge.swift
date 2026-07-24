@@ -1,6 +1,6 @@
 import Foundation
 
-/// Shared Claude sidecar + per-channel session map for the minimal `!dab` path (W9b).
+/// Shared Claude sidecar + per-channel session map for the minimal `!claude` path (W9b).
 public actor DabSessionBridge {
     public static let shared = DabSessionBridge()
 

@@ -20,7 +20,7 @@ public actor GrokSessionBridge {
     init(makeClient: @escaping @Sendable () throws -> GrokAcpClient = {
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
         // danger/parity: `--always-approve` (bypassPermissions) makes grok never send a permission
-        // ask — parity with the !dab/!codex danger default. No permission UI yet (TEMPORARY, W11);
+        // ask — parity with the !claude/!codex danger default. No permission UI yet (TEMPORARY, W11);
         // DANGEROUS on real machines (tools run unapproved).
         let spawn = resolveGrokSpawn(bypassPermissions: true)
         print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
