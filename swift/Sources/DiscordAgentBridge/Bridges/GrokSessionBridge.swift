@@ -31,11 +31,18 @@ public actor GrokSessionBridge {
             print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
             return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000, onPermission: onPermission)
         },
-        gate: PermissionGate = .shared
+        gate: PermissionGate = .shared,
+        store: SessionStore = .shared
     ) {
         self.makeClient = makeClient
         self.gate = gate
+        self.store = store
     }
+
+    /// Session persistence (default shared; tests inject a temp-file store).
+    private let store: SessionStore
+    /// One-shot resume-failure notice to prepend to the next reply (F5).
+    private var fallbackNotice: [String: String] = [:]
 
     private struct Channel {
         let client: GrokAcpClient
@@ -62,22 +69,24 @@ public actor GrokSessionBridge {
 
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, ownerId: String? = nil, text: String, config: SessionConfig? = nil) async throws -> String {
+    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> String {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> String in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, text: text, config: config)
+            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
-        return try await task.value
+        let reply = try await task.value
+        if let notice = fallbackNotice.removeValue(forKey: channelId) { return notice + "\n\n" + reply }
+        return reply
     }
 
-    private func executeTurn(channelId: String, ownerId: String?, text: String, config: SessionConfig?) async throws -> String {
-        let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId)
+    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> String {
+        let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
         // buffer is complete when the await returns (see type comment). No actor hop / Task here.
@@ -94,7 +103,7 @@ public actor GrokSessionBridge {
         return out.isEmpty ? "(no text)" : out
     }
 
-    private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?) async throws -> Channel {
+    private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?, guildId: String) async throws -> Channel {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors CodexSessionBridge.ensureChannel).
         if let existing = channels[channelId] {
@@ -131,10 +140,23 @@ public actor GrokSessionBridge {
             }
         }
         let client = try makeClient(config, onPermission)
+        let persisted = await store.binding(channelId: channelId)
 
         do {
             _ = try await client.initialize()
-            _ = try await client.sessionNew(cwd: cwd)
+            // W11-f2: load the stored session if any; on failure start a fresh one (F5).
+            if let resumeId = persisted?.backendSessionId {
+                do {
+                    try await client.sessionLoad(sessionId: resumeId, cwd: cwd)
+                    print("dab: grok session/load channel=\(channelId) sid=\(resumeId)")
+                } catch {
+                    fallbackNotice[channelId] = sessionFallbackNotice
+                    _ = try await client.sessionNew(cwd: cwd)
+                    print("dab: grok load failed (\(error)) → session/new channel=\(channelId)")
+                }
+            } else {
+                _ = try await client.sessionNew(cwd: cwd)
+            }
         } catch {
             // Init failed: close the spawned child so it does not leak as an orphan.
             await client.close()
@@ -143,6 +165,8 @@ public actor GrokSessionBridge {
 
         let channel = Channel(client: client)
         channels[channelId] = channel
+        // F7: capture the grok session id + live context.
+        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: client.sessionId)
         print("dab: grok session channel=\(channelId) sid=\(client.sessionId ?? "?")")
         return channel
     }

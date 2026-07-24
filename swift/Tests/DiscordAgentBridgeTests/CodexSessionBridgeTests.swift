@@ -13,13 +13,15 @@ private actor GateableCodexServer {
     private let initFails: Bool
     private let completion: Completion
     private let capture: LockedBox<[String: String]>?   // records thread/start + turn/start params
+    private let backendIdCapture: LockedBox<[String]>?  // records "start" / "resume:<threadId>"
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil, backendIdCapture: LockedBox<[String]>? = nil) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
         self.completion = completion
         self.capture = capture
+        self.backendIdCapture = backendIdCapture
     }
 
     func run() async {
@@ -44,7 +46,12 @@ private actor GateableCodexServer {
             if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["threadModel"] = m } }
             if let a = msg["params"]?["approvalPolicy"]?.stringValue { capture?.withLock { $0["approvalPolicy"] = a } }
             if let s = msg["params"]?["sandbox"]?.stringValue { capture?.withLock { $0["sandbox"] = s } }
+            backendIdCapture?.withLock { $0.append("start") }
             await writeResult(id, .object(["thread": .object(["id": .string("t1")])]))
+        case "thread/resume":
+            let tid = msg["params"]?["threadId"]?.stringValue ?? "?"
+            backendIdCapture?.withLock { $0.append("resume:\(tid)") }
+            await writeResult(id, .object([:]))
         case "turn/start":
             let text = msg["params"]?["input"]?.arrayValue?.first?["text"]?.stringValue ?? ""
             if let e = msg["params"]?["effort"]?.stringValue { capture?.withLock { $0["turnEffort"] = e } }
@@ -97,16 +104,18 @@ private func makeCodexBridge(
     timeoutNs: UInt64? = nil,
     capture: LockedBox<[String: String]>? = nil,
     permGate: PermissionGate = .shared,
-    onApprovalSpy: LockedBox<[AppServerApprovalHandler?]>? = nil
+    onApprovalSpy: LockedBox<[AppServerApprovalHandler?]>? = nil,
+    store: SessionStore? = nil,
+    backendIdCapture: LockedBox<[String]>? = nil
 ) -> (CodexSessionBridge, MadeClients<CodexAppServerClient>) {
     let made = MadeClients<CodexAppServerClient>()
     let bridge = CodexSessionBridge(makeClient: { onApproval in
         onApprovalSpy?.withLock { $0.append(onApproval) }
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture)
+        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture, backendIdCapture: backendIdCapture)
         Task { await server.run() }
         return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000, onApproval: onApproval))
-    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate)
+    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore())
     return (bridge, made)
 }
 
@@ -221,6 +230,34 @@ struct CodexSessionBridgeTests {
         #expect(await gate.resolve(reqKey: prompts.withLock { $0[0].reqKey }, action: .allow, byUserId: "owner-1") == true)
         _ = await t.value
         #expect(decision.withLock { $0 } == .accept)
+    }
+
+    // T2 (Codex): first turn persists threadId; a fresh bridge sharing the store thread/resume-s it.
+    @Test func t2_reconnectResumesThread() async throws {
+        let store = freshTempStore()
+        let (b1, _) = makeCodexBridge(store: store)
+        _ = try await b1.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex))
+        #expect(await store.binding(channelId: "c")?.backendSessionId == "t1")
+
+        let ids = LockedBox<[String]>([])
+        let (b2, _) = makeCodexBridge(store: store, backendIdCapture: ids)   // restart
+        _ = try await b2.runTurn(channelId: "c", text: "again", config: SessionConfig(backend: .codex))
+        #expect(ids.withLock { $0 }.contains("resume:t1"))
+        #expect(!ids.withLock { $0 }.contains("start"))
+    }
+
+    // T7: two concurrent turns on a freshly-persisted channel resume exactly once (serial gate).
+    @Test func t7_concurrentTurnsResumeOnce() async throws {
+        let store = freshTempStore()
+        let (b1, _) = makeCodexBridge(store: store)
+        _ = try await b1.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex))
+
+        let ids = LockedBox<[String]>([])
+        let (b2, _) = makeCodexBridge(store: store, backendIdCapture: ids)
+        async let r1 = b2.runTurn(channelId: "c", text: "a", config: SessionConfig(backend: .codex))
+        async let r2 = b2.runTurn(channelId: "c", text: "b", config: SessionConfig(backend: .codex))
+        _ = try await [r1, r2]
+        #expect(ids.withLock { $0.filter { $0.hasPrefix("resume:") } }.count == 1)
     }
 
     // W11-b1: model → thread/start params, effort/model → turn/start params.

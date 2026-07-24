@@ -12,16 +12,22 @@ private actor GateableSidecar {
     private let capture: LockedBox<[String: String]>?   // records session.start params
     private let emitsPermission: Bool                   // emit a permission_request instead of finishing
     private let capturePerm: LockedBox<[String: String]>?  // records the session.permission answer
+    private let emitsBackendId: String?                 // emit session.backend_id notify with this id
+    private let reqCapture: LockedBox<[String]>?        // records "start" / "resume:<backendId>"
+    private let resumeFails: Bool                       // session.resume → error (forces fallback)
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
         self.capture = capture
         self.emitsPermission = emitsPermission
         self.capturePerm = capturePerm
+        self.emitsBackendId = emitsBackendId
+        self.reqCapture = reqCapture
+        self.resumeFails = resumeFails
     }
 
     func run() async {
@@ -34,13 +40,30 @@ private actor GateableSidecar {
     private func handle(_ line: String) async {
         guard let env = try? parseEnvelope(line), env.type == .req, let id = env.id, let method = env.method else { return }
         switch method {
-        case "session.start":
+        case "session.resume" where resumeFails:
+            reqCapture?.withLock { $0.append("resume-fail") }
+            await writeEnv(resError(id: id, method: method, error: makeError(code: "sdk_error", message: "session expired")))
+        case "session.start", "session.resume":
             counter += 1
             if let m = env.params?["model"]?.stringValue { capture?.withLock { $0["model"] = m } }
             if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
+            if method == "session.resume" {
+                reqCapture?.withLock { $0.append("resume:\(env.params?["backendSessionId"]?.stringValue ?? "?")") }
+            } else {
+                reqCapture?.withLock { $0.append("start") }
+            }
+            let handle = "h\(counter)"
+            // resume echoes the requested backend id; start starts null (T3) unless it emits one.
+            let backendField: JSONValue = method == "session.resume"
+                ? .string(env.params?["backendSessionId"]?.stringValue ?? "")
+                : .null
             await writeEnv(res(id: id, method: method, result: .object([
-                "session": .string("h\(counter)"), "backendSessionId": .null,
+                "session": .string(handle), "backendSessionId": backendField,
             ])))
+            // T1/T3: backend id arrives via a later notify (start returned null).
+            if method == "session.start", let bid = emitsBackendId {
+                await writeEnv(notify(method: "session.backend_id", params: ["backendSessionId": .string(bid)], session: handle))
+            }
         case "session.send":
             let session = env.session ?? env.params?["session"]?.stringValue ?? ""
             let text = env.params?["text"]?.stringValue ?? ""
@@ -94,15 +117,19 @@ private func makeDabBridge(
     capture: LockedBox<[String: String]>? = nil,
     permGate: PermissionGate = .shared,
     emitsPermission: Bool = false,
-    capturePerm: LockedBox<[String: String]>? = nil
+    capturePerm: LockedBox<[String: String]>? = nil,
+    store: SessionStore? = nil,
+    emitsBackendId: String? = nil,
+    reqCapture: LockedBox<[String]>? = nil,
+    resumeFails: Bool = false
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
     let bridge = DabSessionBridge(makeClient: {
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm)
+        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm, emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails)
         Task { await server.run() }
         return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
-    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate)
+    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore())
     return (bridge, made)
 }
 
@@ -233,6 +260,54 @@ struct DabSessionBridgeTests {
         let reply = try await t.value
         #expect(reply == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "deny")
+    }
+
+    // T1 (core): backend id captured on notify → persisted → a fresh bridge sharing the store RESUMES
+    // that exact session (session.resume, not session.start).
+    @Test func t1_reconnectResumesSameSession() async throws {
+        let store = freshTempStore()
+        let (b1, _) = makeDabBridge(store: store, emitsBackendId: "B-123")
+        _ = try await b1.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
+        while await store.binding(channelId: "c")?.backendSessionId == nil { await Task.yield() }
+        #expect(await store.binding(channelId: "c")?.backendSessionId == "B-123")
+
+        let reqs = LockedBox<[String]>([])
+        let (b2, _) = makeDabBridge(store: store, reqCapture: reqs)   // restart
+        _ = try await b2.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "again", config: SessionConfig(backend: .claude))
+        #expect(reqs.withLock { $0 }.contains("resume:B-123"))
+        #expect(!reqs.withLock { $0 }.contains("start"))
+    }
+
+    // T3: start returns null → nothing persisted until the backend_id notify fires (no notify → no record).
+    @Test func t3_noRecordWithoutBackendId() async throws {
+        let store = freshTempStore()
+        let (b, _) = makeDabBridge(store: store)   // emitsBackendId nil → no notify
+        _ = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
+        #expect(await store.binding(channelId: "c") == nil)
+    }
+
+    // T4: a stored session that fails to resume → fall back to a fresh start + one-time notice.
+    @Test func t4_resumeFailureFallsBackWithNotice() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(backend: .claude, backendSessionId: "STALE", cwd: "/x", guildId: "g", updatedAt: "t"))
+        let reqs = LockedBox<[String]>([])
+        let (b, _) = makeDabBridge(store: store, reqCapture: reqs, resumeFails: true)
+        let reply = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
+        #expect(reply.contains("이전 세션 복구 실패"))
+        #expect(reply.hasSuffix("ok:hi"))
+        #expect(reqs.withLock { $0 }.contains("resume-fail"))
+        #expect(reqs.withLock { $0 }.contains("start"))   // fell back to a fresh start
+    }
+
+    // T6: stored model/effort are re-applied as the resume params (not lost across restart).
+    @Test func t6_storedModelEffortReappliedOnResume() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(backend: .claude, backendSessionId: "B-7", cwd: "/x", guildId: "g", model: "claude-x", effort: "high", updatedAt: "t"))
+        let cap = LockedBox<[String: String]>([:])
+        let (b, _) = makeDabBridge(capture: cap, store: store)
+        _ = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")   // no live config
+        #expect(cap.withLock { $0["model"] } == "claude-x")
+        #expect(cap.withLock { $0["effort"] } == "high")
     }
 
     // W11-b1: model/effort from the bound config reach session.start params (permMode stays env).

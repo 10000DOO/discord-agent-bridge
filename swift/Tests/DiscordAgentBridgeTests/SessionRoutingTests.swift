@@ -49,6 +49,29 @@ struct RouteDecisionTests {
     }
 }
 
+@Suite("boot session restore (T9)")
+struct BootRestoreTests {
+    // T9: store → SessionRegistry → routeDecision routes prefix-less messages to the stored backend.
+    @Test func restoredBindingRoutesToStoredBackend() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-t9-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("swift-state.json", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = SessionStore(fileURL: url)
+        try await store.upsert(channelId: "c", PersistedSession(backend: .grok, cwd: "/x", guildId: "g", updatedAt: "t"))
+
+        // Simulate DabMain.onReady restore into a fresh registry.
+        let reg = SessionRegistry()
+        await store.load()
+        for (ch, ps) in await store.all() {
+            await reg.bind(channelId: ch, SessionConfig(backend: ps.backend, model: ps.model, effort: ps.effort, permMode: ps.permMode))
+        }
+        let binding = await reg.binding(channelId: "c")
+        #expect(binding?.backend == .grok)
+        #expect(routeDecision(content: "hello there", binding: binding) == .bound(.grok, "hello there"))
+    }
+}
+
 @Suite("agentCommandSpec")
 struct AgentCommandSpecTests {
     @Test func startHasRequiredBackendWithAllChoices() {
