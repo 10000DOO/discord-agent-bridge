@@ -18,6 +18,7 @@
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "verify": "bash verify.sh",
     "lint": "eslint src/",
     "sidecar:claude": "tsx src/sidecar/claude/cli.ts",
     "prepublishOnly": "npm run build"

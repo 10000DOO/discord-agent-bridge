@@ -1,4 +1,3 @@
-import DiscordAgentBridge
 import Foundation
 
 /// Sibling of `DabSessionBridge` for the minimal `!codex` path (W10-c1). Same shape:
@@ -9,8 +8,26 @@ import Foundation
 /// child per channel** — matching TS `CodexAppSession` (one client per session,
 /// src/modes/codex/appSession.ts:317) — so a client's notifications belong to that channel's
 /// single thread and need no threadId routing.
-actor CodexSessionBridge {
-    static let shared = CodexSessionBridge()
+public actor CodexSessionBridge {
+    public static let shared = CodexSessionBridge()
+
+    /// Client factory (test seam). Default = real spawn. Injected via `@testable` in tests.
+    private let makeClient: @Sendable () throws -> CodexAppServerClient
+    /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
+    private let turnTimeoutOverrideNs: UInt64?
+
+    // approval auto-accept: no onApproval handler → CodexAppServerClient answers `.accept`.
+    init(
+        makeClient: @escaping @Sendable () throws -> CodexAppServerClient = {
+            let spawn = resolveCodexSpawn()
+            print("dab: spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            return try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000)
+        },
+        turnTimeoutOverrideNs: UInt64? = nil
+    ) {
+        self.makeClient = makeClient
+        self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
+    }
 
     private struct Channel {
         let client: CodexAppServerClient
@@ -39,13 +56,14 @@ actor CodexSessionBridge {
     }
 
     private var turnTimeoutNs: UInt64 {
+        if let turnTimeoutOverrideNs { return turnTimeoutOverrideNs }
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
     /// Turns on the same channel are serialized.
-    func runTurn(channelId: String, text: String) async throws -> String {
+    public func runTurn(channelId: String, text: String) async throws -> String {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
@@ -106,10 +124,7 @@ actor CodexSessionBridge {
         // ponytail: channel당 codex 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
         // 최소 경로엔 /stop·세션 수명이 없어 닫을 자연 지점이 없다. W11에서 세션 수명 배선 시
         // close() + channels 제거로 업그레이드. 최소 경로에선 채널 수 소량 가정.
-        let spawn = resolveCodexSpawn()
-        print("dab: spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
-        // approval auto-accept: no onApproval handler → CodexAppServerClient answers `.accept`.
-        let client = try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000)
+        let client = try makeClient()
 
         let threadId: String
         do {

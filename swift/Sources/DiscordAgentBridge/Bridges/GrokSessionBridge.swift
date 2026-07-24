@@ -1,4 +1,3 @@
-import DiscordAgentBridge
 import Foundation
 
 /// Sibling of `CodexSessionBridge` for the minimal `!grok` path (W10-c3). One `grok agent stdio`
@@ -11,8 +10,24 @@ import Foundation
 /// 337-340, 386-391, 343-352), so a synchronous fold into a lock buffer is complete at return —
 /// no continuation / TurnBox / timeout task needed here (the client's requestTimeoutMs owns the
 /// turn budget). Do NOT hop onto the actor from the handler (a Task would run after the return).
-actor GrokSessionBridge {
-    static let shared = GrokSessionBridge()
+public actor GrokSessionBridge {
+    public static let shared = GrokSessionBridge()
+
+    /// Client factory (test seam). Default = real spawn with the turn budget as requestTimeoutMs,
+    /// so sessionPrompt is bounded by DAB_TURN_TIMEOUT_SEC. Injected via `@testable` in tests.
+    private let makeClient: @Sendable () throws -> GrokAcpClient
+
+    init(makeClient: @escaping @Sendable () throws -> GrokAcpClient = {
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+        // danger/parity: `--always-approve` (bypassPermissions) makes grok never send a permission
+        // ask — parity with the !dab/!codex danger default. No permission UI yet (TEMPORARY, W11);
+        // DANGEROUS on real machines (tools run unapproved).
+        let spawn = resolveGrokSpawn(bypassPermissions: true)
+        print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
+        return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000)
+    }) {
+        self.makeClient = makeClient
+    }
 
     private struct Channel {
         let client: GrokAcpClient
@@ -30,15 +45,9 @@ actor GrokSessionBridge {
         return NSHomeDirectory()
     }
 
-    /// Turn budget → the client's per-request timeout, so sessionPrompt is bounded by it.
-    private var turnTimeoutMs: Int {
-        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
-        return max(5, sec) * 1000
-    }
-
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized.
-    func runTurn(channelId: String, text: String) async throws -> String {
+    public func runTurn(channelId: String, text: String) async throws -> String {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
@@ -83,13 +92,7 @@ actor GrokSessionBridge {
         // ponytail: channel당 grok 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
         // 최소 경로엔 /stop·세션 수명이 없어 닫을 자연 지점이 없다. W11에서 세션 수명 배선 시
         // close() + channels 제거로 업그레이드. 최소 경로에선 채널 수 소량 가정.
-        //
-        // danger/parity: `--always-approve`(resolveGrokSpawn bypassPermissions:true)로 grok이
-        // permission ask를 아예 보내지 않는다 — !dab/!codex의 danger 기본값과 parity. 권한 UI가
-        // 없는 임시 상태이며 실기기에서 위험(도구 무승인 실행). W11 권한 UI 배선 시 제거.
-        let spawn = resolveGrokSpawn(bypassPermissions: true)
-        print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
-        let client = try GrokAcpClient(spawn: spawn, requestTimeoutMs: turnTimeoutMs)
+        let client = try makeClient()
 
         do {
             _ = try await client.initialize()

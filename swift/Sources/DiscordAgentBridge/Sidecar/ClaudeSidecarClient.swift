@@ -66,6 +66,10 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         self.init(transport: transport, requestTimeoutMs: requestTimeoutMs, ownsTransport: true)
     }
 
+    public var isClosed: Bool {
+        state.withLock { $0.closed }
+    }
+
     private func nextId() -> String {
         let seq = state.withLock { s -> Int in
             s.reqSeq += 1

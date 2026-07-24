@@ -1,9 +1,25 @@
-import DiscordAgentBridge
 import Foundation
 
 /// Shared Claude sidecar + per-channel session map for the minimal `!dab` path (W9b).
-actor DabSessionBridge {
-    static let shared = DabSessionBridge()
+public actor DabSessionBridge {
+    public static let shared = DabSessionBridge()
+
+    /// Client factory (test seam). Default = real sidecar spawn. Injected via `@testable` in tests.
+    private let makeClient: @Sendable () throws -> ClaudeSidecarClient
+    /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
+    private let turnTimeoutOverrideNs: UInt64?
+
+    init(
+        makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
+            let spawn = resolveClaudeSidecarSpawn()
+            print("dab: spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            return try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
+        },
+        turnTimeoutOverrideNs: UInt64? = nil
+    ) {
+        self.makeClient = makeClient
+        self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
+    }
 
     private var client: ClaudeSidecarClient?
     /// channelId (snowflake string) → sidecar session handle
@@ -34,16 +50,30 @@ actor DabSessionBridge {
     }
 
     private var turnTimeoutNs: UInt64 {
+        if let turnTimeoutOverrideNs { return turnTimeoutOverrideNs }
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
     func ensureClient() async throws -> ClaudeSidecarClient {
-        if let client { return client }
-        let spawn = resolveClaudeSidecarSpawn()
-        print("dab: spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
-        let c = try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
-        try await c.connect()
+        // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
+        // (mirrors CodexSessionBridge/GrokSessionBridge.ensureChannel). The dead client's session
+        // handles are invalid, so clear them — otherwise the next turn reuses a stale handle on the
+        // fresh client and never registers a session handler (turn hangs).
+        if let client {
+            if !client.isClosed { return client }
+            await client.close()
+            self.client = nil
+            self.sessions.removeAll()
+        }
+        let c = try makeClient()
+        do {
+            try await c.connect()
+        } catch {
+            // connect failed: close the spawned child so it does not leak as an orphan.
+            await c.close()
+            throw error
+        }
         print("dab: sidecar ready (cwd=\(cwd) permMode=\(permMode))")
         self.client = c
         return c
@@ -51,7 +81,7 @@ actor DabSessionBridge {
 
     /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
     /// Turns on the same channel are serialized.
-    func runTurn(
+    public func runTurn(
         channelId: String,
         guildId: String,
         ownerId: String?,
@@ -207,16 +237,5 @@ actor DabSessionBridge {
         } else {
             cont?.resume(returning: result ?? box.text)
         }
-    }
-}
-
-/// Discord message content hard limit.
-enum DiscordText {
-    static let maxLen = 2000
-
-    static func clip(_ s: String, limit: Int = maxLen) -> String {
-        if s.count <= limit { return s }
-        let idx = s.index(s.startIndex, offsetBy: max(0, limit - 1))
-        return String(s[..<idx]) + "…"
     }
 }
