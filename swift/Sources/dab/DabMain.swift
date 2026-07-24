@@ -32,6 +32,13 @@ struct DabMain {
         print("dab: connecting to Discord gateway…")
         print("dab: !claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
+        // Wire the permission-button presenter once: the gate (library) posts Allow/Deny to the
+        // prompt's channel via the Discord client. Set before events flow.
+        let client = bot.client
+        await PermissionGate.shared.setPresenter { prompt in
+            await postPermissionButtons(client: client, prompt: prompt)
+        }
+
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 await bot.connect()
@@ -72,6 +79,27 @@ struct EventHandler: GatewayEventHandler {
     }
 
     func onInteractionCreate(_ payload: Interaction) async throws {
+        // (A) Permission button click → resolve the gate. Only the session approver may decide.
+        if let comp = try? payload.data?.requireMessageComponent(),
+           let (reqKey, action) = parseCustomId(comp.custom_id) {
+            let userId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
+            let accepted = await PermissionGate.shared.resolve(reqKey: reqKey, action: action, byUserId: userId)
+            if accepted {
+                // Replace the buttons with the outcome (idempotent, removes the buttons).
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .updateMessage(.init(content: "🔐 \(action.rawValue.uppercased()) — <@\(userId ?? "")>", components: []))
+                )
+            } else {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(content: "이 결정은 세션 승인자만 할 수 있어요 (또는 이미 처리됨/만료).", flags: [.ephemeral]))
+                )
+            }
+            return
+        }
+
+        // (B) Slash command.
         guard let cmd = try? payload.data?.requireApplicationCommand(), cmd.name == "agent",
               let sub = cmd.options?.first
         else { return }
@@ -86,8 +114,9 @@ struct EventHandler: GatewayEventHandler {
             }
             let model = try? sub.requireOption(named: "model").requireString()
             let effort = try? sub.requireOption(named: "effort").requireString()
-            await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort))
-            let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }].compactMap { $0 }.joined(separator: " ")
+            let perm = try? sub.requireOption(named: "perm").requireString()
+            await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort, permMode: perm))
+            let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }].compactMap { $0 }.joined(separator: " ")
             try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다.")
         case "close":
             await SessionRegistry.shared.unbind(channelId: channelId)
@@ -147,9 +176,9 @@ struct EventHandler: GatewayEventHandler {
                     config: binding
                 )
             case .codex:
-                reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, text: text, config: binding)
+                reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, text: text, config: binding)
             case .grok:
-                reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, text: text, config: binding)
+                reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, text: text, config: binding)
             }
             let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
             _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: body))
@@ -159,6 +188,23 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: msg))
         }
     }
+}
+
+// MARK: - permission buttons
+
+/// The gate's presenter sink: post Allow/Deny buttons to the prompt's channel. custom_id carries the
+/// reqKey so the click routes back to the same pending ask (`parseCustomId` → `gate.resolve`).
+func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) async {
+    let allow = Interaction.ActionRow.Button(style: .primary, label: "Allow", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .allow))
+    let deny = Interaction.ActionRow.Button(style: .danger, label: "Deny", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .deny))
+    let row: Interaction.ActionRow = [.button(allow), .button(deny)]
+    let detail = prompt.detail.map { ": `\($0)`" } ?? ""
+    let mention = prompt.approverId.map { " <@\($0)>" } ?? ""
+    let content = "🔐 권한 요청\(mention): **\(prompt.toolName)**\(detail)"
+    _ = try? await client.createMessage(
+        channelId: ChannelSnowflake(prompt.channelId),
+        payload: .init(content: content, components: [row])
+    )
 }
 
 // MARK: - codex-smoke

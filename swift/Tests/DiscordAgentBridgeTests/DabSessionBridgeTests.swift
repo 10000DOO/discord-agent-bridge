@@ -10,13 +10,18 @@ private actor GateableSidecar {
     private let gate: TurnGate?
     private let resultEchoesText: Bool
     private let capture: LockedBox<[String: String]>?   // records session.start params
+    private let emitsPermission: Bool                   // emit a permission_request instead of finishing
+    private let capturePerm: LockedBox<[String: String]>?  // records the session.permission answer
     private var counter = 0
+    private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
         self.capture = capture
+        self.emitsPermission = emitsPermission
+        self.capturePerm = capturePerm
     }
 
     func run() async {
@@ -39,8 +44,21 @@ private actor GateableSidecar {
         case "session.send":
             let session = env.session ?? env.params?["session"]?.stringValue ?? ""
             let text = env.params?["text"]?.stringValue ?? ""
+            lastText = text
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: session))
-            Task { await self.completeTurn(session: session, text: text) }   // non-blocking
+            if emitsPermission {
+                // Ask for permission; the turn finishes only after session.permission answers.
+                Task { await self.emit(session: session, event: .permissionRequest(id: "perm-1", toolName: "Bash", input: .object(["command": .string("ls")]))) }
+            } else {
+                Task { await self.completeTurn(session: session, text: text) }   // non-blocking
+            }
+        case "session.permission":
+            capturePerm?.withLock {
+                $0["behavior"] = env.params?["behavior"]?.stringValue ?? ""
+                $0["requestId"] = env.params?["requestId"]?.stringValue ?? ""
+            }
+            await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
+            await completeTurn(session: env.session ?? "", text: lastText)   // tool proceeds → finish turn
         case "session.stop":
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
         default:
@@ -73,15 +91,18 @@ private func makeDabBridge(
     gate: TurnGate? = nil,
     resultEchoesText: Bool = false,
     timeoutNs: UInt64? = nil,
-    capture: LockedBox<[String: String]>? = nil
+    capture: LockedBox<[String: String]>? = nil,
+    permGate: PermissionGate = .shared,
+    emitsPermission: Bool = false,
+    capturePerm: LockedBox<[String: String]>? = nil
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
     let bridge = DabSessionBridge(makeClient: {
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture)
+        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm)
         Task { await server.run() }
         return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
-    }, turnTimeoutOverrideNs: timeoutNs)
+    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate)
     return (bridge, made)
 }
 
@@ -170,6 +191,48 @@ struct DabSessionBridgeTests {
         let t = Task { try await run(bridge, "x") }
         await gate.waitReceived(1)                  // held, no events → TurnBox timeout (no text) → throw
         await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // W11-c: permission_request event → Discord gate → session.permission with the owner's decision.
+    @Test func permissionRequestAnsweredWithGateDecision() async throws {
+        let gate = PermissionGate()
+        let prompts = LockedBox<[PermissionPrompt]>([])
+        await gate.setPresenter { p in prompts.withLock { $0.append(p) } }
+        let capturePerm = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(permGate: gate, emitsPermission: true, capturePerm: capturePerm)
+
+        let t = Task { try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
+                                                config: SessionConfig(backend: .claude, permMode: "plan")) }
+        while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
+        let prompt = prompts.withLock { $0[0] }
+        #expect(prompt.toolName == "Bash")
+        #expect(prompt.approverId == "owner-1")
+        #expect(prompt.detail == "ls")
+        // Owner approves → sidecar receives behavior "allow" → turn completes.
+        #expect(await gate.resolve(reqKey: prompt.reqKey, action: .allow, byUserId: "owner-1") == true)
+        let reply = try await t.value
+        #expect(reply == "ok:hi")
+        #expect(capturePerm.withLock { $0["behavior"] } == "allow")
+    }
+
+    // W11-c security: a non-owner cannot answer; only the session owner's click resolves.
+    @Test func bystanderCannotApprove() async throws {
+        let gate = PermissionGate()
+        let prompts = LockedBox<[PermissionPrompt]>([])
+        await gate.setPresenter { p in prompts.withLock { $0.append(p) } }
+        let capturePerm = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(permGate: gate, emitsPermission: true, capturePerm: capturePerm)
+
+        let t = Task { try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
+                                                config: SessionConfig(backend: .claude, permMode: "plan")) }
+        while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
+        let key = prompts.withLock { $0[0].reqKey }
+        #expect(await gate.resolve(reqKey: key, action: .allow, byUserId: "intruder") == false)   // ignored
+        #expect(capturePerm.withLock { $0["behavior"] } == nil)                                   // not answered yet
+        #expect(await gate.resolve(reqKey: key, action: .deny, byUserId: "owner-1") == true)       // owner decides
+        let reply = try await t.value
+        #expect(reply == "ok:hi")
+        #expect(capturePerm.withLock { $0["behavior"] } == "deny")
     }
 
     // W11-b1: model/effort from the bound config reach session.start params (permMode stays env).

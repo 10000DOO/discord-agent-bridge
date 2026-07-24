@@ -42,6 +42,8 @@ private actor GateableCodexServer {
             }
         case "thread/start":
             if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["threadModel"] = m } }
+            if let a = msg["params"]?["approvalPolicy"]?.stringValue { capture?.withLock { $0["approvalPolicy"] = a } }
+            if let s = msg["params"]?["sandbox"]?.stringValue { capture?.withLock { $0["sandbox"] = s } }
             await writeResult(id, .object(["thread": .object(["id": .string("t1")])]))
         case "turn/start":
             let text = msg["params"]?["input"]?.arrayValue?.first?["text"]?.stringValue ?? ""
@@ -93,15 +95,18 @@ private func makeCodexBridge(
     initFails: Bool = false,
     completion: GateableCodexServer.Completion = .delta,
     timeoutNs: UInt64? = nil,
-    capture: LockedBox<[String: String]>? = nil
+    capture: LockedBox<[String: String]>? = nil,
+    permGate: PermissionGate = .shared,
+    onApprovalSpy: LockedBox<[AppServerApprovalHandler?]>? = nil
 ) -> (CodexSessionBridge, MadeClients<CodexAppServerClient>) {
     let made = MadeClients<CodexAppServerClient>()
-    let bridge = CodexSessionBridge(makeClient: {
+    let bridge = CodexSessionBridge(makeClient: { onApproval in
+        onApprovalSpy?.withLock { $0.append(onApproval) }
         let pair = InMemorySidecarTransport.makePair()
         let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture)
         Task { await server.run() }
-        return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000))
-    }, turnTimeoutOverrideNs: timeoutNs)
+        return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000, onApproval: onApproval))
+    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate)
     return (bridge, made)
 }
 
@@ -177,6 +182,45 @@ struct CodexSessionBridgeTests {
         let t = Task { try await bridge.runTurn(channelId: "c", text: "x") }
         await gate.waitReceived(1)                  // held, never released → TurnBox timeout fires
         await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // W11-c: bypass permMode → auto policy (never/danger) + NO approval handler.
+    @Test func autoPolicyInstallsNoApprovalHandler() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let handlers = LockedBox<[AppServerApprovalHandler?]>([])
+        let (bridge, _) = makeCodexBridge(capture: capture, onApprovalSpy: handlers)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex, permMode: "bypassPermissions"))
+        #expect(capture.withLock { $0["approvalPolicy"] } == "never")
+        #expect(capture.withLock { $0["sandbox"] } == "danger-full-access")
+        #expect(handlers.withLock { $0.first ?? nil } == nil)   // no gate handler when auto
+    }
+
+    // W11-c: non-auto permMode → on-request policy + approval handler that routes allow→accept.
+    @Test func nonAutoPolicyHandlerAllowMapsToAccept() async throws {
+        let gate = PermissionGate()
+        let prompts = LockedBox<[PermissionPrompt]>([])
+        await gate.setPresenter { p in prompts.withLock { $0.append(p) } }
+        let capture = LockedBox<[String: String]>([:])
+        let handlers = LockedBox<[AppServerApprovalHandler?]>([])
+        let (bridge, _) = makeCodexBridge(capture: capture, permGate: gate, onApprovalSpy: handlers)
+        _ = try await bridge.runTurn(channelId: "c", ownerId: "owner-1", text: "hi", config: SessionConfig(backend: .codex, permMode: "plan"))
+        #expect(capture.withLock { $0["approvalPolicy"] } == "on-request")
+        #expect(capture.withLock { $0["sandbox"] } == "read-only")
+
+        let handler = handlers.withLock { $0.first ?? nil }
+        #expect(handler != nil)
+        // Exercise the real handler: allow → accept (deny would map to decline).
+        let decision = LockedBox<AppServerApprovalDecision?>(nil)
+        let t = Task {
+            let d = await handler!(AppServerApprovalRequest(requestId: .number(1), method: "item/commandExecution/requestApproval", params: .object(["command": .string("ls")])))
+            decision.withLock { $0 = d }
+        }
+        while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
+        #expect(prompts.withLock { $0[0].toolName } == "shell")     // derived from command param
+        #expect(prompts.withLock { $0[0].approverId } == "owner-1")  // approver = session owner
+        #expect(await gate.resolve(reqKey: prompts.withLock { $0[0].reqKey }, action: .allow, byUserId: "owner-1") == true)
+        _ = await t.value
+        #expect(decision.withLock { $0 } == .accept)
     }
 
     // W11-b1: model → thread/start params, effort/model → turn/start params.

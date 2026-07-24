@@ -81,16 +81,19 @@ private func makeGrokBridge(
     initFails: Bool = false,
     fixedChunks: [String]? = nil,
     reqTimeoutMs: Int = 5_000,
-    configSpy: LockedBox<[SessionConfig?]>? = nil
+    configSpy: LockedBox<[SessionConfig?]>? = nil,
+    permGate: PermissionGate = .shared,
+    onPermissionSpy: LockedBox<[AcpPermissionHandler?]>? = nil
 ) -> (GrokSessionBridge, MadeClients<GrokAcpClient>) {
     let made = MadeClients<GrokAcpClient>()
-    let bridge = GrokSessionBridge(makeClient: { cfg in
-        configSpy?.withLock { $0.append(cfg) }   // Grok bakes model/effort at spawn from this config
+    let bridge = GrokSessionBridge(makeClient: { cfg, onPermission in
+        configSpy?.withLock { $0.append(cfg) }   // Grok bakes model/effort/bypass at spawn from this config
+        onPermissionSpy?.withLock { $0.append(onPermission) }
         let pair = InMemorySidecarTransport.makePair()
         let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks)
         Task { await server.run() }
-        return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs))
-    })
+        return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
+    }, gate: permGate)
     return (bridge, made)
 }
 
@@ -166,6 +169,36 @@ struct GrokSessionBridgeTests {
         let t = Task { try await bridge.runTurn(channelId: "c", text: "x") }
         await gate.waitReceived(1)                  // held, never released → client times out
         await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // W11-c: bypass permMode → no permission handler; non-bypass → handler routes allow→allow.
+    @Test func bypassPermModeInstallsNoHandler() async throws {
+        let spy = LockedBox<[AcpPermissionHandler?]>([])
+        let (bridge, _) = makeGrokBridge(onPermissionSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, permMode: "bypassPermissions"))
+        #expect(spy.withLock { $0.first ?? nil } == nil)
+    }
+
+    @Test func nonBypassPermModeHandlerAllowMapsToAllow() async throws {
+        let gate = PermissionGate()
+        let prompts = LockedBox<[PermissionPrompt]>([])
+        await gate.setPresenter { p in prompts.withLock { $0.append(p) } }
+        let spy = LockedBox<[AcpPermissionHandler?]>([])
+        let (bridge, _) = makeGrokBridge(permGate: gate, onPermissionSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", ownerId: "owner-1", text: "hi", config: SessionConfig(backend: .grok, permMode: "plan"))
+
+        let handler = spy.withLock { $0.first ?? nil }
+        #expect(handler != nil)
+        let decision = LockedBox<AcpPermissionDecision?>(nil)
+        let t = Task {
+            let d = await handler!(AcpPermissionRequest(requestId: .number(1), toolName: "Bash"))
+            decision.withLock { $0 = d }
+        }
+        while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
+        #expect(prompts.withLock { $0[0].approverId } == "owner-1")
+        #expect(await gate.resolve(reqKey: prompts.withLock { $0[0].reqKey }, action: .allow, byUserId: "owner-1") == true)
+        _ = await t.value
+        #expect(decision.withLock { $0 } == .allow)
     }
 
     // W11-b1: the bound config reaches the spawn factory (Grok bakes model/effort at spawn).

@@ -8,6 +8,8 @@ public actor DabSessionBridge {
     private let makeClient: @Sendable () throws -> ClaudeSidecarClient
     /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
     private let turnTimeoutOverrideNs: UInt64?
+    /// Permission gate (default the process-wide shared one; tests inject a fresh gate for isolation).
+    private let gate: PermissionGate
 
     init(
         makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
@@ -15,15 +17,19 @@ public actor DabSessionBridge {
             print("dab: spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
             return try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
         },
-        turnTimeoutOverrideNs: UInt64? = nil
+        turnTimeoutOverrideNs: UInt64? = nil,
+        gate: PermissionGate = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
+        self.gate = gate
     }
 
     private var client: ClaudeSidecarClient?
     /// channelId (snowflake string) → sidecar session handle
     private var sessions: [String: String] = [:]
+    /// handle → (channelId, approverId) for routing permission prompts (approver = session's first-turn owner).
+    private var sessionMeta: [String: (channelId: String, approverId: String?)] = [:]
     /// handle → in-flight turn accumulator
     private var turns: [String: TurnBox] = [:]
     /// Serialize turns per channel (avoid concurrent send on same session).
@@ -54,6 +60,10 @@ public actor DabSessionBridge {
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
         return UInt64(max(5, sec)) * 1_000_000_000
     }
+
+    // ponytail: invariant — the permission-button deadline must be SHORTER than the turn timeout so
+    // an unanswered ask denies (and the tool result flows) before the whole turn times out.
+    private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
 
     func ensureClient() async throws -> ClaudeSidecarClient {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
@@ -157,8 +167,8 @@ public actor DabSessionBridge {
         if let existing = sessions[channelId] {
             return existing
         }
-        // W11-b1: model/effort from the bound session config. permMode stays env-driven until the
-        // permission UI lands (W11-c) — a non-bypass permMode would hang without Allow/Deny buttons.
+        // W11-b1: model/effort from config. W11-c: permMode from config (non-bypass now surfaces
+        // permission_request events, answered via the Discord buttons in onEvent). Env is the fallback.
         let started = try await client.sessionStart(
             SessionStartParams(
                 cwd: cwd,
@@ -167,11 +177,12 @@ public actor DabSessionBridge {
                 ownerId: ownerId,
                 model: config?.model,
                 effort: config?.effort,
-                permMode: permMode
+                permMode: config?.permMode ?? permMode
             )
         )
         let handle = started.session
         sessions[channelId] = handle
+        sessionMeta[handle] = (channelId: channelId, approverId: ownerId)
         client.registerSessionHandlers(
             handle: handle,
             handlers: SidecarSessionHandlers { [weak self] ev in
@@ -205,6 +216,23 @@ public actor DabSessionBridge {
                 result: nil,
                 error: SidecarRpcError(code: "sdk_error", message: message)
             )
+        case .permissionRequest(let id, let toolName, let input):
+            // Ask the owner via Discord buttons; deny-by-default on timeout. Answer the sidecar with
+            // the decision so the tool proceeds/aborts. Does not touch the turn accumulator.
+            let meta = sessionMeta[handle]
+            let prompt = PermissionPrompt(
+                reqKey: UUID().uuidString,
+                channelId: meta?.channelId ?? "",
+                toolName: toolName,
+                detail: permissionDetail(input),
+                approverId: meta?.approverId
+            )
+            let timeout = permGateTimeoutNs
+            let client = self.client
+            Task {
+                let decision = await self.gate.await(prompt: prompt, timeoutNs: timeout)
+                try? await client?.sessionPermission(session: handle, requestId: id, behavior: decision.rawValue)
+            }
         default:
             break
         }
@@ -247,4 +275,11 @@ public actor DabSessionBridge {
             cont?.resume(returning: result ?? box.text)
         }
     }
+}
+
+/// Short human hint for the permission button message (e.g. the shell command). Best-effort.
+private func permissionDetail(_ input: JSONValue) -> String? {
+    if let c = input["command"]?.stringValue, !c.isEmpty { return c }
+    if let p = input["file_path"]?.stringValue, !p.isEmpty { return p }
+    return nil
 }

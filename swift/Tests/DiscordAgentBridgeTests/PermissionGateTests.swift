@@ -14,22 +14,22 @@ struct PermissionGateTests {
     @Test func resolveAllowAndDeny() async {
         for expected in [PermissionDecision.allow, .deny] {
             let gate = PermissionGate()
-            let t = Task { await gate.await(prompt: .init(reqKey: "k", toolName: "bash"), timeoutNs: bigTimeout) }
+            let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
             await waitRegistered(gate)
-            #expect(await gate.resolve(reqKey: "k", action: expected) == true)
+            #expect(await gate.resolve(reqKey: "k", action: expected, byUserId: "owner") == true)
             #expect(await t.value == expected)
         }
     }
 
     @Test func timeoutDeniesByDefault() async {
         let gate = PermissionGate()
-        let decision = await gate.await(prompt: .init(reqKey: "k", toolName: "bash"), timeoutNs: 50_000_000) // 50ms
+        let decision = await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 50_000_000) // 50ms
         #expect(decision == .deny)
     }
 
     @Test func approverMismatchIgnored() async {
         let gate = PermissionGate()
-        let t = Task { await gate.await(prompt: .init(reqKey: "k", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
         await waitRegistered(gate)
         // Bystander cannot answer.
         #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "other") == false)
@@ -46,11 +46,23 @@ struct PermissionGateTests {
 
     @Test func secondResolveIsNoOp() async {
         let gate = PermissionGate()
-        let t = Task { await gate.await(prompt: .init(reqKey: "k", toolName: "bash"), timeoutNs: bigTimeout) }
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
         await waitRegistered(gate)
-        #expect(await gate.resolve(reqKey: "k", action: .allow) == true)
+        #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "owner") == true)
         _ = await t.value
-        #expect(await gate.resolve(reqKey: "k", action: .deny) == false)   // already settled
+        #expect(await gate.resolve(reqKey: "k", action: .deny, byUserId: "owner") == false)   // already settled
+    }
+
+    // Regression guard (c2 security RV): a prompt with NO approver cannot be resolved by anyone —
+    // it stays pending and deny-by-defaults at timeout (never auto-allow via a stray click).
+    @Test func nilApproverCannotBeResolved() async {
+        let gate = PermissionGate()
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 60_000_000) } // 60ms
+        await waitRegistered(gate)
+        #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "anyone") == false)
+        #expect(await gate.resolve(reqKey: "k", action: .allow) == false)   // byUserId nil too
+        #expect(await gate.pendingCount() == 1)   // still pending → will deny at timeout
+        #expect(await t.value == .deny)
     }
 }
 

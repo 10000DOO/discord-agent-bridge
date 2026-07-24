@@ -11,22 +11,26 @@ import Foundation
 public actor CodexSessionBridge {
     public static let shared = CodexSessionBridge()
 
-    /// Client factory (test seam). Default = real spawn. Injected via `@testable` in tests.
-    private let makeClient: @Sendable () throws -> CodexAppServerClient
+    /// Client factory (test seam). The per-channel approval handler is passed at construction (the
+    /// client stores it immutably), so the factory takes it. Default = real spawn. `@testable` in tests.
+    private let makeClient: @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient
     /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
     private let turnTimeoutOverrideNs: UInt64?
+    /// Permission gate (default shared; tests inject a fresh gate for isolation).
+    private let gate: PermissionGate
 
-    // approval auto-accept: no onApproval handler → CodexAppServerClient answers `.accept`.
     init(
-        makeClient: @escaping @Sendable () throws -> CodexAppServerClient = {
+        makeClient: @escaping @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient = { onApproval in
             let spawn = resolveCodexSpawn()
             print("dab: spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
-            return try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000)
+            return try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000, onApproval: onApproval)
         },
-        turnTimeoutOverrideNs: UInt64? = nil
+        turnTimeoutOverrideNs: UInt64? = nil,
+        gate: PermissionGate = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
+        self.gate = gate
     }
 
     private struct Channel {
@@ -61,24 +65,27 @@ public actor CodexSessionBridge {
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
+    // ponytail: permission-button deadline < turn timeout so an unanswered ask denies in time.
+    private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
+
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
     /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, text: String, config: SessionConfig? = nil) async throws -> String {
+    public func runTurn(channelId: String, ownerId: String? = nil, text: String, config: SessionConfig? = nil) async throws -> String {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> String in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, text: text, config: config)
+            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
         return try await task.value
     }
 
-    private func executeTurn(channelId: String, text: String, config: SessionConfig?) async throws -> String {
-        let channel = try await ensureChannel(channelId: channelId, config: config)
+    private func executeTurn(channelId: String, ownerId: String?, text: String, config: SessionConfig?) async throws -> String {
+        let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId)
         let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
             let timeoutTask = Task {
@@ -112,7 +119,7 @@ public actor CodexSessionBridge {
         }
     }
 
-    private func ensureChannel(channelId: String, config: SessionConfig?) async throws -> Channel {
+    private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?) async throws -> Channel {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors TS appSession.ts:296 `if (this.client && !this.client.isClosed) return`).
         if let existing = channels[channelId] {
@@ -123,22 +130,40 @@ public actor CodexSessionBridge {
             channels[channelId] = nil
         }
         // ponytail: channel당 codex 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
-        // 최소 경로엔 /stop·세션 수명이 없어 닫을 자연 지점이 없다. W11에서 세션 수명 배선 시
-        // close() + channels 제거로 업그레이드. 최소 경로에선 채널 수 소량 가정.
-        let client = try makeClient()
+        // W11에서 세션 수명 배선 시 close() + channels 제거로 업그레이드.
+
+        // W11-c: permMode → approvalPolicy/sandbox (resolveThreadPolicy). Default bypassPermissions
+        // (danger) preserved when no permMode bound. A non-auto policy routes Codex approval requests
+        // through the Discord permission gate; an auto policy needs no handler (nil).
+        let policy = resolveThreadPolicy(permMode: config?.permMode ?? "bypassPermissions")
+        let gateTimeout = permGateTimeoutNs
+        let gate = self.gate
+        let onApproval: AppServerApprovalHandler?
+        if isAutoApprovePolicy(policy) {
+            onApproval = nil   // auto-approve: no Discord prompt needed
+        } else {
+            onApproval = { req in
+                let decision = await gate.await(
+                    prompt: PermissionPrompt(
+                        reqKey: UUID().uuidString,
+                        channelId: channelId,
+                        toolName: codexApprovalToolName(req),
+                        approverId: ownerId
+                    ),
+                    timeoutNs: gateTimeout
+                )
+                return decision == .allow ? .accept : .decline   // deny-by-default via gate timeout
+            }
+        }
+        let client = try makeClient(onApproval)
 
         let threadId: String
         do {
             _ = try await client.initialize()
-            // ponytail: hardcoded danger policy = Claude default `bypassPermissions` equivalent
-            // (policy.ts:32-33 maps bypassPermissions → never / danger-full-access). No permission
-            // UI in the minimal path — TEMPORARY until W11-c wires Allow/Deny + /mode. DANGEROUS on
-            // real machines: the agent runs shell commands and edits files with no sandbox and no
-            // approval prompt. Gate behind a per-channel policy once W11-c lands.
             var startParams: [String: JSONValue] = [
                 "cwd": .string(cwd),
-                "approvalPolicy": .string("never"),
-                "sandbox": .string("danger-full-access"),
+                "approvalPolicy": .string(policy.approvalPolicy),
+                "sandbox": .string(policy.sandbox),
             ]
             if let model = config?.model, !model.isEmpty { startParams["model"] = .string(model) }
             threadId = try await client.threadStart(params: .object(startParams))
@@ -211,4 +236,16 @@ public actor CodexSessionBridge {
             cont?.resume(returning: result ?? box.text)
         }
     }
+}
+
+/// Short tool label for a Codex approval prompt (mirrors TS deriveApprovalToolName, appSession.ts).
+private func codexApprovalToolName(_ req: AppServerApprovalRequest) -> String {
+    if case .object(let p)? = req.params {
+        if p["command"] != nil { return "shell" }
+        if let tool = p["tool"]?.stringValue { return tool }
+        if let name = p["name"]?.stringValue { return name }
+    }
+    if req.method.contains("commandExecution") { return "shell" }
+    if req.method.contains("fileChange") { return "apply_patch" }
+    return "tool"
 }

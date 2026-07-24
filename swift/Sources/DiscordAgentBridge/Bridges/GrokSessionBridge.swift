@@ -13,21 +13,28 @@ import Foundation
 public actor GrokSessionBridge {
     public static let shared = GrokSessionBridge()
 
-    /// Client factory (test seam). Grok's model/effort are SPAWN-time flags, so the factory takes
-    /// the channel's SessionConfig to build the spawn (TS parity: no live setModel/setEffort). Default
-    /// = real spawn with the turn budget as requestTimeoutMs. Injected via `@testable` in tests.
-    private let makeClient: @Sendable (SessionConfig?) throws -> GrokAcpClient
+    /// Client factory (test seam). Grok's model/effort AND bypass are SPAWN-time flags, so the factory
+    /// takes the channel's SessionConfig to build the spawn (TS parity: no live setModel/setEffort).
+    /// The permission handler is also construction-time, so it is passed too. `@testable` in tests.
+    private let makeClient: @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient
+    /// Permission gate (default shared; tests inject a fresh gate for isolation).
+    private let gate: PermissionGate
 
-    init(makeClient: @escaping @Sendable (SessionConfig?) throws -> GrokAcpClient = { config in
-        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
-        // danger/parity: `--always-approve` (bypassPermissions) makes grok never send a permission
-        // ask — parity with the !claude/!codex danger default. No permission UI yet (TEMPORARY, W11-c);
-        // DANGEROUS on real machines (tools run unapproved). model/effort from the bound config.
-        let spawn = resolveGrokSpawn(model: config?.model, effort: config?.effort, bypassPermissions: true)
-        print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
-        return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000)
-    }) {
+    init(
+        makeClient: @escaping @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient = { config, onPermission in
+            let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+            // W11-c: bypass (`--always-approve`) only when the permMode is an auto-approve one; else
+            // grok emits permission asks answered via the Discord gate (onPermission). model/effort
+            // from the bound config. No permMode bound → bypass (danger default parity).
+            let bypass = grokBypassPermMode(config?.permMode)
+            let spawn = resolveGrokSpawn(model: config?.model, effort: config?.effort, bypassPermissions: bypass)
+            print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000, onPermission: onPermission)
+        },
+        gate: PermissionGate = .shared
+    ) {
         self.makeClient = makeClient
+        self.gate = gate
     }
 
     private struct Channel {
@@ -46,24 +53,31 @@ public actor GrokSessionBridge {
         return NSHomeDirectory()
     }
 
+    // ponytail: permission-button deadline < the turn budget (client requestTimeoutMs) so an
+    // unanswered ask denies before the sessionPrompt request itself times out.
+    private var permGateTimeoutNs: UInt64 {
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+        return UInt64(max(5, sec)) * 1_000_000_000 / 2
+    }
+
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, text: String, config: SessionConfig? = nil) async throws -> String {
+    public func runTurn(channelId: String, ownerId: String? = nil, text: String, config: SessionConfig? = nil) async throws -> String {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> String in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, text: text, config: config)
+            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
         return try await task.value
     }
 
-    private func executeTurn(channelId: String, text: String, config: SessionConfig?) async throws -> String {
-        let channel = try await ensureChannel(channelId: channelId, config: config)
+    private func executeTurn(channelId: String, ownerId: String?, text: String, config: SessionConfig?) async throws -> String {
+        let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId)
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
         // buffer is complete when the await returns (see type comment). No actor hop / Task here.
@@ -80,7 +94,7 @@ public actor GrokSessionBridge {
         return out.isEmpty ? "(no text)" : out
     }
 
-    private func ensureChannel(channelId: String, config: SessionConfig?) async throws -> Channel {
+    private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?) async throws -> Channel {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors CodexSessionBridge.ensureChannel).
         if let existing = channels[channelId] {
@@ -91,11 +105,32 @@ public actor GrokSessionBridge {
             channels[channelId] = nil
         }
         // ponytail: channel당 grok 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
-        // 최소 경로엔 /stop·세션 수명이 없어 닫을 자연 지점이 없다. W11에서 세션 수명 배선 시
-        // close() + channels 제거로 업그레이드. 최소 경로에선 채널 수 소량 가정.
-        // ponytail: model/effort are baked at spawn from the FIRST turn's config (TS parity — Grok
-        // has no live setModel/setEffort). A later /model change would need a respawn (W11-c+).
-        let client = try makeClient(config)
+        // W11에서 세션 수명 배선 시 close() + channels 제거로 업그레이드.
+        // ponytail: model/effort/bypass are baked at spawn from the FIRST turn's config (TS parity —
+        // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
+
+        // W11-c: bypass permMode → `--always-approve` (no handler). Non-bypass → route grok's
+        // permission asks through the Discord gate (onPermission), deny-by-default on timeout.
+        let gateTimeout = permGateTimeoutNs
+        let gate = self.gate
+        let onPermission: AcpPermissionHandler?
+        if grokBypassPermMode(config?.permMode) {
+            onPermission = nil   // `--always-approve`: grok never asks
+        } else {
+            onPermission = { req in
+                let decision = await gate.await(
+                    prompt: PermissionPrompt(
+                        reqKey: UUID().uuidString,
+                        channelId: channelId,
+                        toolName: req.toolName ?? "tool",
+                        approverId: ownerId
+                    ),
+                    timeoutNs: gateTimeout
+                )
+                return decision == .allow ? .allow : .deny   // deny-by-default via gate timeout
+            }
+        }
+        let client = try makeClient(config, onPermission)
 
         do {
             _ = try await client.initialize()
@@ -111,4 +146,11 @@ public actor GrokSessionBridge {
         print("dab: grok session channel=\(channelId) sid=\(client.sessionId ?? "?")")
         return channel
     }
+}
+
+/// Whether a permMode auto-approves for Grok (→ `--always-approve`, no permission UI). No bound
+/// permMode → true (danger default parity). Non-bypass modes route asks through the gate.
+func grokBypassPermMode(_ permMode: String?) -> Bool {
+    guard let permMode, !permMode.isEmpty else { return true }
+    return permMode == "bypassPermissions" || permMode == "danger-full-access"
 }

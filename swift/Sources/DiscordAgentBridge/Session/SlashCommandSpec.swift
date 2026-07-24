@@ -53,12 +53,19 @@ public func agentCommandSpec() -> SlashCommandSpec {
                     ),
                     // model: free text (backend-specific, catalogs are dynamic) — blank = backend default.
                     .init(name: "model", description: "Model id (blank = backend default)", required: false, choices: []),
-                    // effort: common union across backends (permMode is deferred to W11-c).
+                    // effort: common union across backends.
                     .init(
                         name: "effort",
                         description: "Reasoning effort",
                         required: false,
                         choices: ["minimal", "low", "medium", "high"].map { .init(name: $0, value: $0) }
+                    ),
+                    // perm: common permission modes (Codex maps via resolveThreadPolicy; Grok = bypass or not).
+                    .init(
+                        name: "perm",
+                        description: "Permission mode",
+                        required: false,
+                        choices: ["default", "plan", "acceptEdits", "bypassPermissions"].map { .init(name: $0, value: $0) }
                     ),
                 ]
             ),

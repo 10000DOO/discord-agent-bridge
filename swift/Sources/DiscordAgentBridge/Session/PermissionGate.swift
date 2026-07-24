@@ -4,17 +4,23 @@ import Foundation
 /// reply back via `reqKey`).
 public struct PermissionPrompt: Sendable, Equatable {
     public var reqKey: String
+    public var channelId: String
     public var toolName: String
     public var detail: String?
     public var approverId: String?
 
-    public init(reqKey: String, toolName: String, detail: String? = nil, approverId: String? = nil) {
+    public init(reqKey: String, channelId: String, toolName: String, detail: String? = nil, approverId: String? = nil) {
         self.reqKey = reqKey
+        self.channelId = channelId
         self.toolName = toolName
         self.detail = detail
         self.approverId = approverId
     }
 }
+
+/// Discord-agnostic sink: the dab layer posts Allow/Deny buttons for a prompt. Lives on the gate so
+/// the library never imports DiscordBM.
+public typealias PermissionPresenter = @Sendable (PermissionPrompt) async -> Void
 
 public enum PermissionDecision: String, Sendable, Equatable {
     case allow
@@ -33,12 +39,21 @@ public actor PermissionGate {
         let timeoutTask: Task<Void, Never>
     }
     private var pending: [String: Pending] = [:]
+    private var presenter: PermissionPresenter?
 
     public init() {}
 
+    /// Wire the button presenter once at startup (dab). Absent → prompts still register and simply
+    /// deny-by-default at timeout (no UI = no approval).
+    public func setPresenter(_ presenter: @escaping PermissionPresenter) {
+        self.presenter = presenter
+    }
+
     /// Suspend until `resolve` (or the timeout) settles this `reqKey`. Deny-by-default on timeout.
+    /// Registers BEFORE presenting so a fast button click can never race ahead of registration.
     public func await(prompt: PermissionPrompt, timeoutNs: UInt64) async -> PermissionDecision {
-        await withCheckedContinuation { (cont: CheckedContinuation<PermissionDecision, Never>) in
+        let presenter = self.presenter
+        return await withCheckedContinuation { (cont: CheckedContinuation<PermissionDecision, Never>) in
             let key = prompt.reqKey
             let timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: timeoutNs)
@@ -46,6 +61,7 @@ public actor PermissionGate {
                 await self?.settle(reqKey: key, decision: .deny)
             }
             pending[key] = Pending(continuation: cont, approverId: prompt.approverId, timeoutTask: timeoutTask)
+            if let presenter { Task { await presenter(prompt) } }
         }
     }
 
@@ -55,7 +71,9 @@ public actor PermissionGate {
     @discardableResult
     public func resolve(reqKey: String, action: PermissionDecision, byUserId: String? = nil) -> Bool {
         guard let entry = pending[reqKey] else { return false }
-        if let approver = entry.approverId, approver != byUserId { return false }
+        // deny-by-default: only the named approver may decide. An ask with no approver (approverId
+        // == nil) cannot be resolved by any click — it stays pending and can only deny at timeout.
+        guard let approver = entry.approverId, approver == byUserId else { return false }
         settleEntry(reqKey: reqKey, entry: entry, decision: action)
         return true
     }
