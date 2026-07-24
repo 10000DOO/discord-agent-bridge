@@ -439,6 +439,7 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 
 ### 14.4 알려진 이슈
 - ~~clean f1 격리 실행 시 1건 실패~~ → **해결**: 14.3의 backend_id 레이스와 동일 근본(병렬 스케줄 타이밍 의존). 수정 후 병렬/직렬 모두 171 PASS로 재현 안 됨.
+- **`DabSessionBridgeTests.serializationReentrancyIsolation()` 플래키 (미확인, W11-h WO-4 중 관측)**: 부하 상태(동시 빌드)에서 12회 중 ~2회 실패 관측. **W11-h와 무관**(순수 신규 파일). 단 f2 데드락-수정 직후엔 병렬 5회 연속 171 PASS였음 → 부하 의존 타이밍 민감성 의심. **미확인**: 테스트 하네스 프래질(TurnGate release/waitReceived 시퀀싱)인지, 브리지 직렬화(hardening 2026-07-24 fix 이후)의 실제 재진입인지 특정 필요. 다음 여유 시 격리 반복 실행으로 재현·근본 판정.
 
 ### 14.5 W11-f2 설계 요지 (재연결 — 재구현/수정 기준)
 - **영속(f1 완료)**: `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드). 채널→`PersistedSession{backend,backendSessionId,cwd,guildId,ownerId,model,effort,permMode}`.
