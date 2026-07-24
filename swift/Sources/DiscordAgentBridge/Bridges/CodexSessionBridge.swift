@@ -18,6 +18,8 @@ public actor CodexSessionBridge {
     private let turnTimeoutOverrideNs: UInt64?
     /// Permission gate (default shared; tests inject a fresh gate for isolation).
     private let gate: PermissionGate
+    /// Session persistence (default shared; tests inject a temp-file store).
+    private let store: SessionStore
 
     init(
         makeClient: @escaping @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient = { onApproval in
@@ -26,12 +28,17 @@ public actor CodexSessionBridge {
             return try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000, onApproval: onApproval)
         },
         turnTimeoutOverrideNs: UInt64? = nil,
-        gate: PermissionGate = .shared
+        gate: PermissionGate = .shared,
+        store: SessionStore = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
+        self.store = store
     }
+
+    /// One-shot resume-failure notice to prepend to the next reply (F5).
+    private var fallbackNotice: [String: String] = [:]
 
     private struct Channel {
         let client: CodexAppServerClient
@@ -70,22 +77,24 @@ public actor CodexSessionBridge {
 
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
     /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, ownerId: String? = nil, text: String, config: SessionConfig? = nil) async throws -> String {
+    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> String {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> String in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, text: text, config: config)
+            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
-        return try await task.value
+        let reply = try await task.value
+        if let notice = fallbackNotice.removeValue(forKey: channelId) { return notice + "\n\n" + reply }
+        return reply
     }
 
-    private func executeTurn(channelId: String, ownerId: String?, text: String, config: SessionConfig?) async throws -> String {
-        let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId)
+    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> String {
+        let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
         let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
             let timeoutTask = Task {
@@ -119,7 +128,7 @@ public actor CodexSessionBridge {
         }
     }
 
-    private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?) async throws -> Channel {
+    private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?, guildId: String) async throws -> Channel {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors TS appSession.ts:296 `if (this.client && !this.client.isClosed) return`).
         if let existing = channels[channelId] {
@@ -156,17 +165,32 @@ public actor CodexSessionBridge {
             }
         }
         let client = try makeClient(onApproval)
+        let persisted = await store.binding(channelId: channelId)
+
+        var startParams: [String: JSONValue] = [
+            "cwd": .string(cwd),
+            "approvalPolicy": .string(policy.approvalPolicy),
+            "sandbox": .string(policy.sandbox),
+        ]
+        if let model = config?.model, !model.isEmpty { startParams["model"] = .string(model) }
 
         let threadId: String
         do {
             _ = try await client.initialize()
-            var startParams: [String: JSONValue] = [
-                "cwd": .string(cwd),
-                "approvalPolicy": .string(policy.approvalPolicy),
-                "sandbox": .string(policy.sandbox),
-            ]
-            if let model = config?.model, !model.isEmpty { startParams["model"] = .string(model) }
-            threadId = try await client.threadStart(params: .object(startParams))
+            // W11-f2: resume the stored thread if any; on failure start a fresh one (F5).
+            if let resumeId = persisted?.backendSessionId {
+                do {
+                    _ = try await client.threadResume(params: .object(["threadId": .string(resumeId)]))
+                    threadId = resumeId
+                    print("dab: codex thread/resume channel=\(channelId) thread=\(resumeId)")
+                } catch {
+                    fallbackNotice[channelId] = sessionFallbackNotice
+                    threadId = try await client.threadStart(params: .object(startParams))
+                    print("dab: codex resume failed (\(error)) → thread/start channel=\(channelId)")
+                }
+            } else {
+                threadId = try await client.threadStart(params: .object(startParams))
+            }
         } catch {
             // Init failed: close the spawned child so it does not leak as an orphan.
             await client.close()
@@ -178,6 +202,8 @@ public actor CodexSessionBridge {
         }
         let channel = Channel(client: client, threadId: threadId)
         channels[channelId] = channel
+        // F7: capture the thread id (= backend session) + live context.
+        await persistSession(store: store, backend: .codex, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: threadId)
         print("dab: codex thread channel=\(channelId) thread=\(threadId)")
         return channel
     }

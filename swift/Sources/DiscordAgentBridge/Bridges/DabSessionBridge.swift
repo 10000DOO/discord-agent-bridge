@@ -10,6 +10,8 @@ public actor DabSessionBridge {
     private let turnTimeoutOverrideNs: UInt64?
     /// Permission gate (default the process-wide shared one; tests inject a fresh gate for isolation).
     private let gate: PermissionGate
+    /// Session persistence (default shared; tests inject a temp-file store for isolation).
+    private let store: SessionStore
 
     init(
         makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
@@ -18,12 +20,17 @@ public actor DabSessionBridge {
             return try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
         },
         turnTimeoutOverrideNs: UInt64? = nil,
-        gate: PermissionGate = .shared
+        gate: PermissionGate = .shared,
+        store: SessionStore = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
+        self.store = store
     }
+
+    /// One-shot notice to prepend to the next reply when a stored session failed to resume (F5).
+    private var fallbackNotice: [String: String] = [:]
 
     private var client: ClaudeSidecarClient?
     /// channelId (snowflake string) → sidecar session handle
@@ -114,7 +121,10 @@ public actor DabSessionBridge {
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
-        return try await task.value
+        let reply = try await task.value
+        // F5: prepend the resume-failure notice once, if this turn fell back to a fresh session.
+        if let notice = fallbackNotice.removeValue(forKey: channelId) { return notice + "\n\n" + reply }
+        return reply
     }
 
     private func executeTurn(
@@ -167,28 +177,52 @@ public actor DabSessionBridge {
         if let existing = sessions[channelId] {
             return existing
         }
-        // W11-b1: model/effort from config. W11-c: permMode from config (non-bypass now surfaces
-        // permission_request events, answered via the Discord buttons in onEvent). Env is the fallback.
-        let started = try await client.sessionStart(
-            SessionStartParams(
-                cwd: cwd,
-                guildId: guildId,
-                channelId: channelId,
-                ownerId: ownerId,
-                model: config?.model,
-                effort: config?.effort,
-                permMode: config?.permMode ?? permMode
-            )
+        // W11-f2: resume params reuse the STORED model/effort/permMode (T6) so a reconnect keeps the
+        // original session's settings; live config/env fill in when nothing was persisted.
+        let persisted = await store.binding(channelId: channelId)
+        let model = persisted?.model ?? config?.model
+        let effort = persisted?.effort ?? config?.effort
+        let perm = persisted?.permMode ?? config?.permMode ?? permMode
+        let cwdValue = cwd
+        let params = SessionStartParams(
+            cwd: cwdValue, guildId: guildId, channelId: channelId, ownerId: ownerId,
+            model: model, effort: effort, permMode: perm
         )
+
+        // Resume the stored backend session if we have one; on failure fall back to a fresh start (F5).
+        let started: SessionStartResult
+        if let resumeId = persisted?.backendSessionId {
+            do {
+                started = try await client.sessionResume(params, backendSessionId: resumeId)
+                print("dab: session.resume channel=\(channelId) backend=\(resumeId)")
+            } catch {
+                fallbackNotice[channelId] = sessionFallbackNotice
+                started = try await client.sessionStart(params)
+                print("dab: session.resume failed (\(error)) → start channel=\(channelId)")
+            }
+        } else {
+            started = try await client.sessionStart(params)
+        }
+
         let handle = started.session
         sessions[channelId] = handle
         sessionMeta[handle] = (channelId: channelId, approverId: ownerId)
+        let store = self.store
         client.registerSessionHandlers(
             handle: handle,
-            handlers: SidecarSessionHandlers { [weak self] ev in
-                Task { await self?.onEvent(handle: handle, event: ev) }
-            }
+            handlers: SidecarSessionHandlers(
+                onEvent: { [weak self] ev in Task { await self?.onEvent(handle: handle, event: ev) } },
+                // F7 / T3: Claude's backend id may arrive only after init — persist it when it lands.
+                onBackendId: { backendId in
+                    Task { await persistSession(store: store, backend: .claude, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: model, effort: effort, permMode: perm, backendSessionId: backendId) }
+                }
+            )
         )
+        // F7: if start/resume already gave a backend id, persist it now. If null (T3), the onBackendId
+        // notify above records it later — we do NOT persist a null id here.
+        if let bid = started.backendSessionId {
+            await persistSession(store: store, backend: .claude, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: model, effort: effort, permMode: perm, backendSessionId: bid)
+        }
         print("dab: session.start channel=\(channelId) handle=\(handle)")
         return handle
     }

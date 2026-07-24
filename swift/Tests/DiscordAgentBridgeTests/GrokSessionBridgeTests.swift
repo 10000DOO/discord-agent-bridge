@@ -10,12 +10,14 @@ private actor GateableGrokServer {
     private let gate: TurnGate?
     private let initFails: Bool
     private let fixedChunks: [String]?
+    private let backendIdCapture: LockedBox<[String]>?   // records "new" / "load:<sessionId>"
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, fixedChunks: [String]? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, fixedChunks: [String]? = nil, backendIdCapture: LockedBox<[String]>? = nil) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
         self.fixedChunks = fixedChunks
+        self.backendIdCapture = backendIdCapture
     }
 
     func run() async {
@@ -37,7 +39,12 @@ private actor GateableGrokServer {
                 await writeResult(id, .object(["protocolVersion": .number(1), "serverInfo": .object(["name": .string("fake-grok")])]))
             }
         case "session/new":
+            backendIdCapture?.withLock { $0.append("new") }
             await writeResult(id, .object(["sessionId": .string("s1")]))
+        case "session/load":
+            let sid = msg["params"]?["sessionId"]?.stringValue ?? "?"
+            backendIdCapture?.withLock { $0.append("load:\(sid)") }
+            await writeResult(id, .object([:]))
         case "session/prompt":
             let text = msg["params"]?["prompt"]?.arrayValue?.first?["text"]?.stringValue ?? ""
             Task { await self.completeTurn(id: id, text: text) }   // non-blocking
@@ -83,17 +90,19 @@ private func makeGrokBridge(
     reqTimeoutMs: Int = 5_000,
     configSpy: LockedBox<[SessionConfig?]>? = nil,
     permGate: PermissionGate = .shared,
-    onPermissionSpy: LockedBox<[AcpPermissionHandler?]>? = nil
+    onPermissionSpy: LockedBox<[AcpPermissionHandler?]>? = nil,
+    store: SessionStore? = nil,
+    backendIdCapture: LockedBox<[String]>? = nil
 ) -> (GrokSessionBridge, MadeClients<GrokAcpClient>) {
     let made = MadeClients<GrokAcpClient>()
     let bridge = GrokSessionBridge(makeClient: { cfg, onPermission in
         configSpy?.withLock { $0.append(cfg) }   // Grok bakes model/effort/bypass at spawn from this config
         onPermissionSpy?.withLock { $0.append(onPermission) }
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks)
+        let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture)
         Task { await server.run() }
         return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
-    }, gate: permGate)
+    }, gate: permGate, store: store ?? freshTempStore())
     return (bridge, made)
 }
 
@@ -199,6 +208,20 @@ struct GrokSessionBridgeTests {
         #expect(await gate.resolve(reqKey: prompts.withLock { $0[0].reqKey }, action: .allow, byUserId: "owner-1") == true)
         _ = await t.value
         #expect(decision.withLock { $0 } == .allow)
+    }
+
+    // T2 (Grok): first turn persists sessionId; a fresh bridge sharing the store session/load-s it.
+    @Test func t2_reconnectLoadsSession() async throws {
+        let store = freshTempStore()
+        let (b1, _) = makeGrokBridge(store: store)
+        _ = try await b1.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok))
+        #expect(await store.binding(channelId: "c")?.backendSessionId == "s1")
+
+        let ids = LockedBox<[String]>([])
+        let (b2, _) = makeGrokBridge(store: store, backendIdCapture: ids)   // restart
+        _ = try await b2.runTurn(channelId: "c", text: "again", config: SessionConfig(backend: .grok))
+        #expect(ids.withLock { $0 }.contains("load:s1"))
+        #expect(!ids.withLock { $0 }.contains("new"))
     }
 
     // W11-b1: the bound config reaches the spawn factory (Grok bakes model/effort at spawn).

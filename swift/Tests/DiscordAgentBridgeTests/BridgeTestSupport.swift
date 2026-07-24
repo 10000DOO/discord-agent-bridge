@@ -47,6 +47,15 @@ actor TurnGate {
     }
 }
 
+/// A `SessionStore` backed by a unique temp file — isolates each bridge test from the shared store
+/// and the real state file.
+func freshTempStore() -> SessionStore {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dab-bridge-store-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("swift-state.json", isDirectory: false)
+    return SessionStore(fileURL: url)
+}
+
 /// Records clients built by an injected `makeClient` factory: count (respawn) + last (close/isClosed).
 final class MadeClients<C>: @unchecked Sendable {
     private let box = LockedBox<[C]>([])

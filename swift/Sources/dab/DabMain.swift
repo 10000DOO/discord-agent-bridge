@@ -60,6 +60,21 @@ struct EventHandler: GatewayEventHandler {
         let user = payload.user
         print("ready: username=\(user.username) id=\(user.id) app=\(payload.application.id)")
         await registerAgentCommand(appId: payload.application.id)
+        await restoreSessionBindings()
+    }
+
+    /// G5: on boot, load persisted sessions and repopulate the routing map so prefix-less messages
+    /// reach the saved backend. Does NOT spawn any backend — resume is lazy on the first message.
+    private func restoreSessionBindings() async {
+        await SessionStore.shared.load()
+        let all = await SessionStore.shared.all()
+        for (channelId, ps) in all {
+            await SessionRegistry.shared.bind(
+                channelId: channelId,
+                SessionConfig(backend: ps.backend, model: ps.model, effort: ps.effort, permMode: ps.permMode)
+            )
+        }
+        print("dab: restored \(all.count) session binding(s) from store")
     }
 
     /// Register `/agent`. Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h propagation).
@@ -116,10 +131,17 @@ struct EventHandler: GatewayEventHandler {
             let effort = try? sub.requireOption(named: "effort").requireString()
             let perm = try? sub.requireOption(named: "perm").requireString()
             await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort, permMode: perm))
+            // Persist a routing stub (no backend id yet) so a restart restores this binding; the
+            // first turn's bridge upsert overwrites it with the real backend session id (F7).
+            let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
+            let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
+            let record = PersistedSession(backend: backend, backendSessionId: nil, cwd: stubCwd, guildId: payload.guild_id?.rawValue ?? "dm", ownerId: ownerId, model: model, effort: effort, permMode: perm, updatedAt: ISO8601DateFormatter().string(from: Date()))
+            try? await SessionStore.shared.upsert(channelId: channelId, record)
             let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }].compactMap { $0 }.joined(separator: " ")
             try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다.")
         case "close":
             await SessionRegistry.shared.unbind(channelId: channelId)
+            try? await SessionStore.shared.remove(channelId: channelId)   // don't re-route after restart
             try await respondEphemeral(payload, "이 채널의 세션 바인딩을 해제했습니다.")
         default:
             try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
@@ -176,9 +198,9 @@ struct EventHandler: GatewayEventHandler {
                     config: binding
                 )
             case .codex:
-                reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, text: text, config: binding)
+                reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             case .grok:
-                reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, text: text, config: binding)
+                reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             }
             let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
             _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: body))
