@@ -109,6 +109,42 @@ CODEX_CMD=/path/to/codex swift run --package-path swift dab codex-smoke
 
 Library: `CodexAppServerClient` (JSON-RPC NDJSON over stdio; inject `SidecarTransport` for tests). Not wired to Discord/`AgentMode` yet.
 
+## Deploy (launchd)
+
+Runs `dab` as a per-user macOS LaunchAgent (starts at login, kept alive).
+
+**Deploy unit = the whole repo checkout.** The launcher `cd`s into the repo root so
+the Claude sidecar spawn can find `src/sidecar` / `dist` + `node_modules`. Keep the
+checkout in place (and Node deps installed) — the LaunchAgent points at it by absolute path.
+
+```bash
+# build (release), install to ~/.dab, register + start
+bash swift/scripts/install.sh
+
+# validate only — generate + plutil -lint the plist and run.sh, no build, no load
+bash swift/scripts/install.sh --dry-run
+
+# stop + unregister + remove plist/bin/run.sh (keeps ~/.dab/env and ~/.dab/logs)
+bash swift/scripts/uninstall.sh
+```
+
+What install lays down:
+
+| Path | Role |
+|------|------|
+| `~/.dab/bin/dab` | copied release binary |
+| `~/.dab/env` (0600) | secrets + `DAB_*` (from `swift/deploy/env.example` on first install) |
+| `~/.dab/run.sh` (0755) | launcher: sets PATH (finds node/codex/grok), sources env, `cd` repo root, execs dab |
+| `~/Library/LaunchAgents/com.discord-agent-bridge.plist` (0644) | LaunchAgent; carries **HOME only** — no tokens |
+| `~/.dab/logs/agent.{out,err}.log` | stdout / stderr |
+
+After editing `~/.dab/env`, reload: `launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist && launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist`.
+
+Two launchd traps the launcher solves: launchd hands children a minimal PATH (Homebrew /
+user-local CLIs unfindable) and defaults cwd to `/` (breaks repo-relative sidecar paths).
+If `node` / `codex` / `grok` live outside the baked PATH (e.g. nvm, custom npm prefix), add
+that bin dir to `~/.dab/run.sh`'s PATH export.
+
 ## Layout
 
 | Path | Role |

@@ -270,7 +270,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `todo` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과 | 인터랙티브 승인 실동작 |
 | **W11-d** | G | `todo` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/perm`·`/stop`·`/clear`·`/agent resume·stats` | 세션 조작 |
-| **W11-e** | G | `todo` | launchd·배포·설정 영속화 | 운영 |
+| **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
 | **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
 
 ### 후순위 / 병행 가능 (큐 본선 아님)
@@ -323,6 +323,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-24 | pivot | **전략 확정: 제품은 Swift, TS/npm은 참고용(추후 제거).** 테스트·검증 **Swift 전용**(`verify.sh` = swift build+test+스모크; TS 테스트 미실행). 명령 접두사 `!dab`→`!claude`. 단 **Claude용 얇은 Node 사이드카 1겹은 유지**(Agent SDK가 Node 전용 — 의도된 예외, 제거 안 함). **UX 정정: 접두사는 MVP 임시 — 실제 방식은 `/agent start` 마법사로 백엔드·모델·추론·권한 설정해 채널=세션 생성 후 대화(W11 이식 대상).** |
 | 2026-07-24 | W11-a | 세션 기반 UX 토대. lib `SessionRegistry`(actor, 채널→`SessionConfig`) + 순수 `routeDecision`(접두사 우선 / 바인딩 라우팅 / usage / ignore) + `agentCommandSpec`(`/agent start·close`). DiscordBM 슬래시·인터랙션 네이티브(`onInteractionCreate`, ephemeral, 길드/글로벌 등록). DabMain 라우팅 리팩터(중복 핸들러 제거) + `runTurn(config:)` seam(미소비, W11-b). swift test 71→**79**. |
 | 2026-07-24 | W11-b1 | 브리지 `SessionConfig` model·effort **실소비**: Claude `SessionStartParams(model/effort)`, Codex thread/start model + turn/start effort·model, Grok 팩토리 config-aware(`resolveGrokSpawn(model:effort:)`). `/agent start`에 model(free-text)·effort(choices) 옵션. permMode는 W11-c로 미룸(현 danger 유지). fake transport로 config→params 검증. swift test 79→**83**. |
+| 2026-07-24 | W11-e | 배포/launchd(신규 파일만, Swift 소스 무변경 — c1과 병렬 구현). `swift/scripts/install·uninstall.sh` + `deploy/env.example` + swift/README Deploy 섹션. run.sh 래퍼가 PATH(homebrew/local/grok/cargo)·cwd(repo root, 사이드카 findRepoRoot) 함정 해소, plist는 설치 시점 절대경로, 토큰은 0600 env만(plist 미포함), env 부재 가드로 KeepAlive 루프 방지. release 빌드(118s)·`--dry-run` plutil-lint 검증. |
 | 2026-07-24 | W11-c1 | 권한 lib 토대(신규 파일/고립, 브리지·DabMain 무변경). `PermissionGate` actor(continuation 기반, timeout→deny-by-default, approver=owner 확인, resolve no-op 가드) + 순수 `buildCustomId/parseCustomId`(`perm:<reqKey>:<action>`, reqKey=UUID) + `resolveThreadPolicy`(policy.ts 포팅) + `ClaudeSidecarClient.sessionPermission`(§3.4). 결정론 테스트(sleep 없음). swift test 83→**94**. |
 | 2026-07-24 | test-C | 최상위 `verify.sh` + `npm run verify`(TS typecheck+tests · Swift build+tests · 스모크 best-effort) + README Development 섹션. 한 명령 전체 검증. |
 
