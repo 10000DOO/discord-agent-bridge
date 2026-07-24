@@ -486,7 +486,7 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
   - **모델**: Claude=SDK `supportedModels()` 프로브(15s 타임아웃·실패시 alias opus/sonnet/haiku 폴백·매 호출 재조회·in-flight 디둡). Codex=`~/.codex/models_cache.json`. Grok=`${GROK_HOME}/models_cache.json`. 각 모델에 `supportedEffortLevels` 동반.
   - **추론(effort)**: 백엔드 기본 레벨을 **선택 모델의 `supportedEffortLevels`로 좁힘**. Claude 시작-시엔 max 포함, 런타임(`/effort`)엔 max 제외. Codex/Grok은 모델별, 없으면 폴백.
   - **권한(perm)**: Claude=SDK PermissionMode 전체(default/acceptEdits/bypassPermissions/plan/dontAsk/auto), Codex=**`codex --help` 동적 샌드박스 모드**(현 Swift `CodexPolicy.resolveThreadPolicy`는 매핑만 있음 — 목록 조회는 미포팅), Grok=grok 권한모드.
-- **⚠️ Claude 신규 사이드카 RPC 필요**: 마법사는 세션 생성 전에 모델 목록이 필요. TS는 별도 단명 `query()`로 supportedModels()를 프로브. Swift는 사이드카 너머라 **프로토콜에 `models.list`(또는 `claude.models`) 신설** + 사이드카 핸들러(단명 프로브) + Swift 클라 메서드 + 프로토콜 v 상향. (현 프로토콜엔 없음.)
+- **⚠️ Claude 신규 사이드카 RPC 필요**: 마법사는 세션 생성 전에 모델 목록이 필요. TS는 별도 단명 `query()`로 supportedModels()를 프로브. Swift는 사이드카 너머라 **프로토콜에 `claude.catalog` 메서드 신설**(모델+권한모드+effort 한 왕복으로 실어 Swift에 Claude vocab 하드코딩 0 — Q1 결정) + 사이드카 핸들러(단명 프로브·15s·in-flight 디둡·alias 폴백은 사이드카에, 기존 `providerCatalog.ts` 재사용) + Swift 클라 메서드. **버전: v1 유지·additive**(새 메서드는 비파괴 — 프로토콜 규칙상 v 상향은 깨는 변경만; 구버전 사이드카는 `unsupported`→Swift alias 폴백으로 graceful. Q2 결정, 이전 "v 상향" 표기 정정). Swift·사이드카 이중 폴백.
 - **Swift 기존 조각**: `Codex/CodexPolicy.swift`(permMode→approvalPolicy/sandbox 매핑 + `codexSandboxModes`)만 있음. 모델/추론/권한 목록 조회 계층은 전무.
 - **테스트**: 카탈로그 파싱/폴백/좁힘은 순수 단위테스트(캐시파일 fake, 사이드카 fake), TS의 타임아웃·in-flight 디둡·폴백 동작 미러링.
 
