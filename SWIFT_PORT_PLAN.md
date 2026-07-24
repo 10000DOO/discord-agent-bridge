@@ -19,7 +19,7 @@
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
 | **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
-| **검증** | `bash verify.sh` (**Swift 전용**: `swift test` **156** PASS · 스모크 3종). TS는 참고용 — 테스트 안 함 |
+| **검증** | `bash verify.sh` (**Swift 전용**: `swift test` **163** PASS · 스모크 3종). TS는 참고용 — 테스트 안 함 |
 
 ### 완료 (W1–W10)
 
@@ -269,7 +269,8 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-b2** | G | `todo` | `/agent start` 셀렉트 마법사(옵션 → 인터랙티브 컴포넌트) | 마법사 UI |
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
-| **W11-f** | G | `todo` | **세션 영속·재시작 1:1 재연결(최우선)**: `SessionStore`(원자 tmp+rename·0600) + 채널→{backend,backendSessionId,cwd,…}, backend-id 시점 캡처, lazy resume(start 대신 resume)+실패 폴백. TS 실패모드 F1–F10 대응 | 재시작 시뮬로 동일 세션 resume 증명(T1–T9) |
+| **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
+| **W11-f2** | G | `todo` | **재시작 1:1 재연결 배선(최우선)**: backend-id 시점 캡처(Claude notify/Codex threadStart/Grok sessionNew) + lazy resume(start 대신 resume)+실패 폴백 + 부팅 라우팅 복원 | 재시작 시뮬로 동일 세션 resume 증명(T1–T7,T9) |
 | **W11-d** | G | `todo` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/perm`·`/stop`·`/clear`·`/agent resume·stats` | 세션 조작 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
 | **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
@@ -327,6 +328,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-24 | W11-e | 배포/launchd(신규 파일만, Swift 소스 무변경 — c1과 병렬 구현). `swift/scripts/install·uninstall.sh` + `deploy/env.example` + swift/README Deploy 섹션. run.sh 래퍼가 PATH(homebrew/local/grok/cargo)·cwd(repo root, 사이드카 findRepoRoot) 함정 해소, plist는 설치 시점 절대경로, 토큰은 0600 env만(plist 미포함), env 부재 가드로 KeepAlive 루프 방지. release 빌드(118s)·`--dry-run` plutil-lint 검증. |
 | 2026-07-24 | W11-c1 | 권한 lib 토대(신규 파일/고립, 브리지·DabMain 무변경). `PermissionGate` actor(continuation 기반, timeout→deny-by-default, approver=owner 확인, resolve no-op 가드) + 순수 `buildCustomId/parseCustomId`(`perm:<reqKey>:<action>`, reqKey=UUID) + `resolveThreadPolicy`(policy.ts 포팅) + `ClaudeSidecarClient.sessionPermission`(§3.4). 결정론 테스트(sleep 없음). swift test 83→**94**. |
 | 2026-07-24 | W11-c2 | 권한 Allow/Deny 버튼 **실배선**. `PermissionGate` presenter + 세 백엔드 seam(Claude onEvent→`sessionPermission`, Codex `resolveThreadPolicy`+onApproval, Grok 조건부 `--always-approve`+onPermission), 승인자=세션 owner, `/agent start` perm 옵션. 보안 RV 통과(무승인 실행 경로 없음), nil-approver 하드닝. permMode 라이브 변경(재바인딩)은 W11-f. |
+| 2026-07-24 | W11-f1 | 세션 영속 저장 계층. `SessionStore` actor(원자 tmp+rename·`0600`·**load-merge-save**로 타 키 보존 F3·손상/부재→빈로드 F4) + `PersistedSession`(backend/backendSessionId/cwd/…) + `Backend` Codable. 신규·고립, 브리지/레지스트리 무변경. 단위테스트 T8 +7. swift test 156→**163**. |
 | 2026-07-24 | test-harden | 안정 모듈 P0/P1 테스트 **+56**(클라 timeout/failAll/error-res, NDJSON 프레이밍, parseEnvelope 에러분기, asParams/Result 파싱, AgentEvent 왕복, JSONValue, DiscordToken, clip). 리팩터: NDJSON `splitNDJSON`/`flushNDJSON` 추출, `DiscordText`→라이브러리. swift test 100→**156**. |
 | 2026-07-24 | test-C | 최상위 `verify.sh` + `npm run verify`(TS typecheck+tests · Swift build+tests · 스모크 best-effort) + README Development 섹션. 한 명령 전체 검증. |
 
