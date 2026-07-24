@@ -19,7 +19,7 @@
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
 | **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
-| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **163** PASS. ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
+| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **171** PASS (병렬/직렬 모두). ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
 
 ### 완료 (W1–W10)
 
@@ -39,7 +39,7 @@
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W11** | `doing` | **a·b1·c·e·f1 완료**. **f2(재연결)=`wip/swift-port-w11f2` 브랜치·미완(테스트 hang)**. 남은: f2 수정·마법사(b2)·라이브 슬래시(d, incl. `/clear`). **→ §14 핸드오프 필독** |
+| **W11** | `doing` | **a·b1·c·e·f1·f2 완료**(f2=재시작 1:1 재연결, 데드락 수정 후 병합). 남은: 마법사(b2)·라이브 슬래시(d, incl. `/clear`). **→ §14 핸드오프 필독** |
 | **W12** | `todo` | 레거시 TS 정책, 버전 호환, 루트 README 마이그레이션 가이드 |
 
 ### 의도적으로 아직 없는 것
@@ -72,7 +72,7 @@ swift run --package-path swift dab grok-smoke
 
 ### 다음에 할 일 (우선순위)
 
-1. **W11-f** — 세션 영속·재시작 **1:1 재연결**(최우선; lazy resume + 원자 영속 + 재시작 시뮬 검증)  
+1. ~~**W11-f** 세션 영속·재시작 1:1 재연결~~ ✅ 완료(f2 병합, §14.3)  
 2. **W11-b2** 마법사 UI · **W11-d** 라이브 슬래시(`/model`·`/effort`·`/mode`·`/stop`·`/clear`)  
 3. **W12** — 레거시/문서/호환 매트릭스  
 
@@ -418,7 +418,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` HEAD = **`e10aac5`(W11-f1)**, 원격 푸시됨·워킹트리 clean. W10 + W11-a/b1/c/e/f1 완료. **다음 = W11-f2(재시작 재연결)부터.**
+`plan/swift-port` HEAD = **`385aff6`(W11-f2 병합)**, 로컬 병합 완료·워킹트리 clean(**원격 미푸시**). W10 + W11-a/b1/c/e/f1/**f2** 완료. **다음 = W11-b2(마법사) 또는 W11-d(라이브 슬래시).**
 
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
@@ -429,15 +429,14 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 ```
 (clean f1은 이 방법으로 0.2초에 완주 확인.) `verify.sh`도 이 옵션을 쓰도록 갱신하면 좋다(TODO).
 
-### 14.3 W11-f2 (재시작 1:1 재연결) — 미완, wip 브랜치에 보존
-- 위치: **브랜치 `wip/swift-port-w11f2`** (원격 푸시됨). f1 위에 f2 배선 커밋 1개.
-- 내용: 브리지 backend-id 시점 캡처→SessionStore 저장, lazy resume(start 대신 resume)+실패 폴백, 부팅 라우팅 복원(`Session/SessionPersist.swift` 글루), 세 브리지+DabMain 배선.
-- **미완/버그**: `swift test`(**--scratch-path 격리해도**) **테스트 1건이 데드락 hang** → 인덱서 락과 무관한 **f2 코드 문제**. 의심 지점: resume 경로 또는 폴백에서 continuation이 어떤 분기에서 resume 안 됨(무한 대기). 
-- **다음 액션**: wip 브랜치에서 → (1) hang하는 테스트를 `--scratch-path`+per-test 짧은 타임아웃으로 특정, (2) 해당 브리지 resume/폴백 경로에서 **모든 분기가 continuation을 resume**하는지 점검·수정, (3) T1~T7,T9 통과 확인, (4) `plan/swift-port`에 병합.
-- 설계·검증 상세는 아래 14.5 + §12 큐, 그리고 이 세션의 조사(요지 14.5)에 있음.
+### 14.3 W11-f2 (재시작 1:1 재연결) — ✅ 완료, `plan/swift-port` 병합됨
+- 내용: 브리지 backend-id 시점 캡처→SessionStore 저장, lazy resume(start 대신 resume)+실패 폴백, 부팅 라우팅 복원(`Session/SessionPersist.swift` 글루), 세 브리지+DabMain 배선. wip 커밋 `664af25` + 데드락 수정 `ab67bf7`을 merge `385aff6`으로 병합.
+- **데드락 근본 원인(해결)**: continuation 미재개가 아니라 **`ClaudeSidecarClient`의 레이스**였음. `session.start` 응답 직후 도착하는 `session.backend_id` notify가 `registerSessionHandlers`(응답 수신 후 실행)보다 read 루프에서 먼저 처리되면 핸들러 nil → `onBackendId` 유실 → `backendSessionId` 미영속 → 테스트 t1의 `while ...==nil { await Task.yield() }` 무한 spin. **병렬 실행 시** 이 spin이 협력 스레드풀을 고갈시켜 전 스위트가 정확히 163에서 hang(직렬/단독은 통과 → "플래키"로 보였음, 14.4의 f1 1건 실패도 동일 근본).
+- **수정**: 핸들러 미등록 시 backend id를 `state.pendingBackendIds`에 버퍼링하고 `registerSessionHandlers`에서 replay(실제 사이드카에도 존재하는 레이스이므로 클라이언트 계층 교정). 
+- **검증**: `swift test --scratch-path /tmp/dab-ci` **병렬 5회 연속 171 PASS**(hang 없음, 각 ~0.23s) + `--no-parallel` 171 PASS. T1~T9 전부 통과.
 
 ### 14.4 알려진 이슈
-- **clean f1이 `--scratch-path` 격리 실행 시 테스트 1건 실패** 관측(커밋 e10aac5 시점 shared `.build`에선 163 PASS였음). 플래키/환경 의존 의심 — 다음 세션에서 실패 테스트 특정·확인 필요(f2 hang과 별개).
+- ~~clean f1 격리 실행 시 1건 실패~~ → **해결**: 14.3의 backend_id 레이스와 동일 근본(병렬 스케줄 타이밍 의존). 수정 후 병렬/직렬 모두 171 PASS로 재현 안 됨.
 
 ### 14.5 W11-f2 설계 요지 (재연결 — 재구현/수정 기준)
 - **영속(f1 완료)**: `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드). 채널→`PersistedSession{backend,backendSessionId,cwd,guildId,ownerId,model,effort,permMode}`.
@@ -456,11 +455,11 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. **W11-f2** — 재시작 1:1 재연결 (wip 브랜치 수정·검증·병합, 최우선).
-2. **W11-b2** — `/agent start` 셀렉트 마법사 UI.
-3. **W11-d** — 라이브 슬래시 `/model`·`/effort`·`/mode`·`/perm`·`/stop`·**`/clear`**(14.6).
-4. **W12** — 레거시 TS 정리·호환·README.
-- 부수 TODO: `verify.sh`에 `--scratch-path` 반영, 14.4 f1 1건 실패 확인.
+0. **푸시** — `plan/swift-port`(HEAD `385aff6`) 원격 미푸시. 다음 세션 시작 시 `git push`.
+1. **W11-b2** — `/agent start` 셀렉트 마법사 UI.
+2. **W11-d** — 라이브 슬래시 `/model`·`/effort`·`/mode`·`/perm`·`/stop`·**`/clear`**(14.6).
+3. **W12** — 레거시 TS 정리·호환·README.
+- 부수 TODO: `verify.sh`에 `--scratch-path` 반영.
 
 ### 14.8 병렬 작업 교훈
 신규파일/디스조인트 슬라이스(테스트 하드닝·배포·권한 lib)는 병렬로 잘 됐음. **단 여러 에이전트가 동시에 `swift build/test`를 돌리면 `.build` 락 경합**(+인덱서까지)으로 hang·지연 → 병렬 빌드는 **각자 `--scratch-path` 분리** 필수. 핫파일(브리지/DabMain) 배선은 직렬.
