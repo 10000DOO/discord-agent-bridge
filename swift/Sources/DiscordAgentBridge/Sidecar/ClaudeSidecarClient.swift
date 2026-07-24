@@ -307,6 +307,17 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         )
     }
 
+    /// Tool permission decision (CLAUDE_SIDECAR_PROTOCOL.md §3.4). `requestId` = `permission_request.id`.
+    public func sessionPermission(session: String, requestId: String, behavior: String, message: String? = nil) async throws {
+        var params: [String: JSONValue] = [
+            "session": .string(session),
+            "requestId": .string(requestId),
+            "behavior": .string(behavior),
+        ]
+        if let message { params["message"] = .string(message) }
+        _ = try await request(method: "session.permission", params: params, session: session)
+    }
+
     public func sessionInterrupt(session: String) async throws {
         _ = try await request(
             method: "session.interrupt",
