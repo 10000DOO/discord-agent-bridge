@@ -105,6 +105,7 @@ async function startServer(opts: {
       firstPrompt?: string;
     }>
   >;
+  catalogFn?: () => Promise<unknown>;
 }) {
   const hostToSidecar = new PassThrough();
   const sidecarToHost = new PassThrough();
@@ -117,6 +118,7 @@ async function startServer(opts: {
     ...(opts.listSessionsFn
       ? { listSessionsFn: opts.listSessionsFn as never }
       : { listSessionsFn: async () => [] }),
+    ...(opts.catalogFn ? { catalogFn: opts.catalogFn as never } : {}),
     logger: { debug() {}, info() {}, warn() {}, error() {} },
   });
 
@@ -429,6 +431,35 @@ describe('SidecarServer with fake session factory', () => {
       threadName: '📄 notes.md',
       path: 'notes.md',
     });
+
+    await h.endInput();
+  });
+
+  it('claude.catalog returns injected catalog snapshot', async () => {
+    const snapshot = {
+      models: [
+        { value: 'opus', label: 'Opus', supportedEffortLevels: ['high', 'max'] },
+        { value: 'sonnet', label: 'Sonnet' },
+      ],
+      permissionModes: [
+        { value: 'default', label: 'default' },
+        { value: 'plan', label: 'plan' },
+      ],
+      effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      runtimeEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+      defaultEffort: 'high',
+    };
+    const catalogFn = vi.fn(async () => snapshot);
+
+    const h = await startServer({
+      createSession: makeFakeSessionFactory().createSession,
+      catalogFn,
+    });
+
+    const r = await h.rpc('claude.catalog');
+    expect(r.error).toBeUndefined();
+    expect(r.result).toEqual(snapshot);
+    expect(catalogFn).toHaveBeenCalledTimes(1);
 
     await h.endInput();
   });

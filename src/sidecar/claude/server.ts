@@ -21,6 +21,7 @@ import {
   type SessionFactory,
   type SessionBridgeDeps,
 } from './sessionBridge.js';
+import { getClaudeCatalog } from './catalog.js';
 import type { ListSessionsFn } from '../../modes/claude/index.js';
 
 export interface SidecarServerDeps {
@@ -28,6 +29,8 @@ export interface SidecarServerDeps {
   output: Writable;
   createSession?: SessionFactory;
   listSessionsFn?: ListSessionsFn;
+  /** Injectable Claude catalog assembler (tests inject a fake to avoid a real SDK probe). */
+  catalogFn?: typeof getClaudeCatalog;
   logger?: Logger;
   /** When true (default), emit sidecar.ready on start. */
   announceReady?: boolean;
@@ -150,6 +153,7 @@ export class SidecarServer {
   private readonly output: Writable;
   private readonly bridge: SessionBridge;
   private readonly logger: Logger;
+  private readonly getCatalog: typeof getClaudeCatalog;
   private readonly announceReady: boolean;
   private readonly reverseTimeoutMs: number;
   private readonly reversePending = new Map<string, ReversePending>();
@@ -163,6 +167,7 @@ export class SidecarServer {
     this.input = deps.input;
     this.output = deps.output;
     this.logger = deps.logger ?? stderrLogger;
+    this.getCatalog = deps.catalogFn ?? getClaudeCatalog;
     this.announceReady = deps.announceReady !== false;
     this.reverseTimeoutMs = deps.reverseTimeoutMs ?? 60_000;
     const bridgeDeps: SessionBridgeDeps = {
@@ -411,6 +416,9 @@ export class SidecarServer {
             : undefined;
         return this.bridge.listSessions(cwd, limit);
       }
+      case 'claude.catalog':
+        // Session-scoped: no. No params. Never throws (fallback is internal).
+        return this.getCatalog({ logger: this.logger });
       case 'host.file.attach':
       case 'host.file.share':
         // Reverse-RPC is Host-bound; if Host sends these, reject.

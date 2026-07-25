@@ -346,6 +346,15 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         return try SessionsListResult(from: result)
     }
 
+    /// Claude model/permission/effort catalog snapshot (CLAUDE_SIDECAR_PROTOCOL.md §3.9).
+    /// No params, not session-scoped. The sidecar handler never throws for a probe failure
+    /// (alias fallback is internal); RPC transport/spawn failures surface as thrown errors
+    /// for the caller (DabSessionBridge) to map to a degraded fallback.
+    public func claudeCatalog() async throws -> ClaudeCatalogResult {
+        let result = try await request(method: "claude.catalog")
+        return try ClaudeCatalogResult(from: result)
+    }
+
     private func failAll(_ err: SidecarRpcError) {
         let (all, waiters) = state.withLock { s -> ([PendingRpc], [CheckedContinuation<Void, Never>]) in
             let pending = Array(s.pending.values)

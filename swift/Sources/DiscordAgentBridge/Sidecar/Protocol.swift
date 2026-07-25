@@ -209,6 +209,59 @@ public struct SessionsListResult: Sendable, Equatable {
     }
 }
 
+/// Result of the `claude.catalog` RPC (CLAUDE_SIDECAR_PROTOCOL.md §3.9, additive/v1).
+/// Mirrors the sidecar `ClaudeCatalogResult` (src/sidecar/claude/catalog.ts). `ModelChoice`
+/// is reused from Provider/ProviderCatalog.swift (same target). Missing fields default to
+/// `[]`/`"" ` so a partial response degrades gracefully rather than throwing.
+public struct ClaudeCatalogResult: Sendable, Equatable {
+    public var models: [ModelChoice]
+    public var permissionModes: [ModelChoice]
+    public var effortLevels: [String]
+    public var runtimeEffortLevels: [String]
+    public var defaultEffort: String
+
+    public init(
+        models: [ModelChoice],
+        permissionModes: [ModelChoice],
+        effortLevels: [String],
+        runtimeEffortLevels: [String],
+        defaultEffort: String
+    ) {
+        self.models = models
+        self.permissionModes = permissionModes
+        self.effortLevels = effortLevels
+        self.runtimeEffortLevels = runtimeEffortLevels
+        self.defaultEffort = defaultEffort
+    }
+
+    public init(from result: JSONValue) throws {
+        guard let obj = result.objectValue else {
+            throw SidecarRpcError(code: "invalid_request", message: "claude.catalog result not an object")
+        }
+        func modelChoices(_ key: String, withEffortLevels: Bool) -> [ModelChoice] {
+            guard let arr = obj[key]?.arrayValue else { return [] }
+            return arr.compactMap { item -> ModelChoice? in
+                guard let o = item.objectValue,
+                      let value = o["value"]?.stringValue,
+                      let label = o["label"]?.stringValue
+                else { return nil }
+                let levels = withEffortLevels
+                    ? o["supportedEffortLevels"]?.arrayValue?.compactMap { $0.stringValue }
+                    : nil
+                return ModelChoice(value: value, label: label, supportedEffortLevels: levels)
+            }
+        }
+        func strings(_ key: String) -> [String] {
+            obj[key]?.arrayValue?.compactMap { $0.stringValue } ?? []
+        }
+        self.models = modelChoices("models", withEffortLevels: true)
+        self.permissionModes = modelChoices("permissionModes", withEffortLevels: false)
+        self.effortLevels = strings("effortLevels")
+        self.runtimeEffortLevels = strings("runtimeEffortLevels")
+        self.defaultEffort = obj["defaultEffort"]?.stringValue ?? ""
+    }
+}
+
 // MARK: - Parse / serialize
 
 public enum ProtocolParseError: Error, Equatable, CustomStringConvertible {

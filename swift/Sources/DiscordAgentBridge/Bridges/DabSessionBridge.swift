@@ -96,6 +96,18 @@ public actor DabSessionBridge {
         return c
     }
 
+    /// Live Claude model/permission/effort catalog via the sidecar (W11-h). R4: any sidecar
+    /// failure (not spawned / RPC error / transport) degrades to the alias/degraded fallback
+    /// rather than throwing — the wizard/slash caller always gets a usable snapshot.
+    public func claudeCatalog() async -> ClaudeCatalogSnapshot {
+        do {
+            let c = try await ensureClient()
+            return ClaudeCatalogSnapshot(from: try await c.claudeCatalog())
+        } catch {
+            return .fallback
+        }
+    }
+
     /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
     /// Turns on the same channel are serialized.
     public func runTurn(

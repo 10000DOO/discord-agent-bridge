@@ -84,6 +84,32 @@ actor FakeSidecar {
                 try? await transport.writeLine(out + "\n")
             }
 
+        case "claude.catalog":
+            // No params, not session-scoped. One model advertises effort levels, one doesn't.
+            let result: JSONValue = .object([
+                "models": .array([
+                    .object([
+                        "value": .string("claude-opus-4"),
+                        "label": .string("Opus"),
+                        "supportedEffortLevels": .array([.string("high"), .string("max")]),
+                    ]),
+                    .object([
+                        "value": .string("claude-sonnet-4"),
+                        "label": .string("Sonnet"),
+                    ]),
+                ]),
+                "permissionModes": .array([
+                    .object(["value": .string("default"), "label": .string("default")]),
+                    .object(["value": .string("plan"), "label": .string("plan")]),
+                ]),
+                "effortLevels": .array(["low", "medium", "high", "xhigh", "max"].map { .string($0) }),
+                "runtimeEffortLevels": .array(["low", "medium", "high", "xhigh"].map { .string($0) }),
+                "defaultEffort": .string("high"),
+            ])
+            if let out = try? serializeEnvelope(res(id: id, method: method, result: result)) {
+                try? await transport.writeLine(out + "\n")
+            }
+
         case "host.file.attach", "host.file.share":
             // Should not be sent by client as req TO sidecar in tests
             break
@@ -222,5 +248,60 @@ struct SidecarClientTests {
         await client.close()
         await pair.sidecar.close()
         fakeTask.cancel()
+    }
+
+    @Test func claudeCatalogRoundTrip() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeSidecar(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
+        try await client.connect()
+
+        let cat = try await client.claudeCatalog()
+
+        #expect(cat.models.count == 2)
+        #expect(cat.models[0].value == "claude-opus-4")
+        #expect(cat.models[0].label == "Opus")
+        #expect(cat.models[0].supportedEffortLevels == ["high", "max"])
+        #expect(cat.models[1].value == "claude-sonnet-4")
+        #expect(cat.models[1].label == "Sonnet")
+        #expect(cat.models[1].supportedEffortLevels == nil)
+        #expect(cat.permissionModes == [
+            ModelChoice(value: "default", label: "default"),
+            ModelChoice(value: "plan", label: "plan"),
+        ])
+        #expect(cat.effortLevels == ["low", "medium", "high", "xhigh", "max"])
+        #expect(cat.runtimeEffortLevels == ["low", "medium", "high", "xhigh"])
+        #expect(cat.defaultEffort == "high")
+
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    // MARK: - ClaudeCatalogResult(from:) decoder path (Protocol.swift)
+
+    @Test func catalogResultThrowsWhenNotObject() {
+        #expect(throws: (any Error).self) {
+            try ClaudeCatalogResult(from: .array([]))
+        }
+    }
+
+    @Test func catalogResultDefaultsMissingFields() throws {
+        let r = try ClaudeCatalogResult(from: .object([:]))
+        #expect(r.models.isEmpty)
+        #expect(r.permissionModes.isEmpty)
+        #expect(r.effortLevels.isEmpty)
+        #expect(r.runtimeEffortLevels.isEmpty)
+        #expect(r.defaultEffort == "")
+    }
+
+    @Test func catalogResultModelWithoutEffortLevelsIsNil() throws {
+        let r = try ClaudeCatalogResult(from: .object([
+            "models": .array([.object(["value": .string("m"), "label": .string("M")])]),
+        ]))
+        #expect(r.models.count == 1)
+        #expect(r.models[0].supportedEffortLevels == nil)
     }
 }

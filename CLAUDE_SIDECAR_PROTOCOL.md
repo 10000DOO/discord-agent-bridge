@@ -78,6 +78,7 @@ Host의 `ClaudeMode`는 사이드카 클라이언트일 뿐이며, 다른 모드
 | `session.setModel` | → | 라이브 모델 변경 (optional) | `ModeSession.setModel` |
 | `session.setEffort` | → | 라이브 effort 변경 (optional) | `ModeSession.setEffort` |
 | `sessions.list` | → | cwd 기준 resumable 목록 | `ClaudeMode.listResumable` |
+| `claude.catalog` | → | Claude 모델/권한/effort 카탈로그 스냅샷 (세션 무관, additive) | `providerCatalog` `getClaudeCatalog` |
 | `host.file.attach` | ← notify 또는 역RPC* | attach_file MCP → Discord | `mcpFileTool` sendFile |
 | `host.file.share` | ← notify 또는 역RPC* | share_document MCP | shareDocument |
 
@@ -178,6 +179,30 @@ Sidecar → Host **req**:
 
 Host **res**: `{ "ok": true }` 또는 error.  
 경로는 사이드카가 cwd 가둔 뒤 전달; Host는 채널로 업로드.
+
+### 3.9 `claude.catalog` (additive, v1)
+
+세션 무관, **params 없음**. Claude 모델/권한/effort 목록을 한 번에 반환한다. 값은 전부 사이드카의 SDK-바인딩 `providerCatalog`에서 소싱한다(Swift 하드코딩 아님). 모델 프로브는 15s 타임아웃·in-flight 디둡·alias 폴백을 내장하므로 이 메서드는 **에러를 던지지 않는다** — 사이드카 미기동/전송오류 시의 폴백은 Host(Swift) 측 책임이다.
+
+**result:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `models` | `{ value, label, supportedEffortLevels? }[]` | 라이브 조회 모델 목록 (프로브 실패 시 alias 폴백) |
+| `permissionModes` | `{ value, label }[]` | SDK PermissionMode 목록 |
+| `effortLevels` | `string[]` | 시작-시 effort 목록 (`max` 포함) |
+| `runtimeEffortLevels` | `string[]` | 런타임 `/effort` 목록 (`max` 제외) |
+| `defaultEffort` | string | 기본 effort (`high`) |
+
+```json
+{
+  "models": [{ "value": "opus", "label": "Opus", "supportedEffortLevels": ["high", "max"] }],
+  "permissionModes": [{ "value": "default", "label": "default" }],
+  "effortLevels": ["low", "medium", "high", "xhigh", "max"],
+  "runtimeEffortLevels": ["low", "medium", "high", "xhigh"],
+  "defaultEffort": "high"
+}
+```
 
 ---
 
@@ -302,3 +327,4 @@ permissionModes = SDK PermissionMode 전체
 | v | 날짜 | 메모 |
 |---|------|------|
 | 1 | 2026-07-23 | 초안 고정 (W6) |
+| 1 | 2026-07-25 | `claude.catalog` additive 추가 (v1 유지, 버전 상향 없음) |

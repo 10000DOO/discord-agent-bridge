@@ -51,3 +51,16 @@ func narrowRuntimeEffort(runtimeBase: [String], modelLevels: [String]?) -> [Stri
 func choices(_ values: [String]) -> [ModelChoice] {
     values.map { ModelChoice(value: $0, label: $0, supportedEffortLevels: nil) }
 }
+
+// MARK: - Factory
+
+/// The ONE place a backend id maps to its catalog implementation (R1). Callers pick a catalog
+/// by backend here and then use the `ProviderCatalog` interface — they never branch on the
+/// backend to build a model/permission/effort list themselves.
+public func providerCatalog(for backend: Backend) -> any ProviderCatalog {
+    switch backend {
+    case .claude: return ClaudeCatalog()
+    case .codex: return CodexCatalog()
+    case .grok: return GrokCatalog()
+    }
+}
