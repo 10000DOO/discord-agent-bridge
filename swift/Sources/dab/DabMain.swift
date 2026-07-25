@@ -119,6 +119,21 @@ struct EventHandler: GatewayEventHandler {
               let sub = cmd.options?.first
         else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
+
+        // Deny-by-default authorization gate (W13-a). The interaction path honors Administrator
+        // promotion (R2 — member.permissions is populated here, unlike the gateway message path).
+        // Both start/close are execute-tier `drive` actions (auth.ts ACTION_MIN_TIER). The
+        // permission-button branch above keeps its own approver gate (Q6 — not tier-gated).
+        let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        let decision = await Authorizer(config: .shared).authorize(
+            AuthInput(userId: actorId, roleIds: payload.member?.roles.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false)
+        )
+        guard decision.allowed else {
+            await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: decision.tier?.rawValue ?? "none", guildId: payload.guild_id?.rawValue ?? "dm", channelId: channelId, action: "drive", outcome: decision.reason, status: "denied"))
+            try await respondEphemeral(payload, "권한이 없습니다: \(decision.reason ?? "unauthorized")")
+            return
+        }
+
         switch sub.name {
         case "start":
             guard let raw = try? sub.requireOption(named: "backend").requireString(),
@@ -185,6 +200,23 @@ struct EventHandler: GatewayEventHandler {
     /// Run one turn on the chosen backend's bridge and post the reply (or a ⚠️ notice).
     private func runAndReply(_ backend: Backend, _ payload: Gateway.MessageCreate, text: String, binding: SessionConfig?) async {
         let channelId = payload.channel_id.rawValue
+        let actorId = payload.author?.id.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue ?? "dm"
+
+        // Deny-by-default authorization gate (W13-a). This is the single funnel all four execute
+        // routes (prefix*/bound) converge on (D4). Message path grants NO Administrator promotion
+        // (Q2) — the gateway message event does not carry member.permissions, so isAdministrator
+        // stays false (fail-secure); only role tiers / dmPolicy apply.
+        let decision = await Authorizer(config: .shared).authorize(
+            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: false)
+        )
+        let tier = decision.tier?.rawValue ?? "none"
+        guard decision.allowed else {
+            await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "drive", mode: backend.rawValue, outcome: decision.reason, status: "denied"))
+            _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: "권한이 없습니다: \(decision.reason ?? "unauthorized")"))
+            return
+        }
+
         print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
         do {
             let reply: String
@@ -204,10 +236,12 @@ struct EventHandler: GatewayEventHandler {
             }
             let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
             _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: body))
+            await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
             let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
             print("dab: \(backend.rawValue) turn failed: \(error)")
             _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: msg))
+            await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, outcome: error.localizedDescription, status: "error"))
         }
     }
 }

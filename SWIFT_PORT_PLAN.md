@@ -70,11 +70,17 @@ swift run --package-path swift dab codex-smoke
 swift run --package-path swift dab grok-smoke
 ```
 
-### 다음에 할 일 (우선순위)
+### 다음에 할 일 (우선순위) — 2026-07-25 전수조사 반영
 
-1. ~~**W11-f** 세션 영속·재시작 1:1 재연결~~ ✅ 완료(f2 병합, §14.3)  
-2. **W11-b2** 마법사 UI · **W11-d** 라이브 슬래시(`/model`·`/effort`·`/mode`·`/stop`·`/clear`)  
-3. **W12** — 레거시/문서/호환 매트릭스  
+**전수조사(TS 4영역 A/B/C/D) 결론**: 텍스트 대화 3백엔드는 되나 **보안·정책·렌더·운영 계층이 대거 미포팅**이고 상당수가 문서에도 없던 완전누락. 상세 §15. 사용자 결정(2026-07-25): **TS 파리티 100% 지향** — ①보안 최우선 ②custom 포함 ③3-계층 config TS동일 ④folder 클러스터 전부.
+
+0. ~~**W11-h** provider 카탈로그~~ ✅ 완료(WO-1~7 + §7-1 검증 통과, 커밋 `03d390e`)
+1. **W13 보안 하드닝(P0)** — 인가·allowlist/permMode·confinement·audit. **UX보다 선행**(§6·§15)
+2. **W16-a 답변 청킹**(버그성: 2000자 초과 truncate 유실, 조기) + **W14 라이프사이클**(stop/interrupt/channelDelete)
+3. **W15** 3-계층 config/state 이식(TS동일)
+4. **W11-b2** 마법사(folder 클러스터 전부 포함)·**W11-d** 라이브 슬래시·**W11-g** 패널
+5. **W16** 기능 완전누락(/config·/setup·/doc·custom·도구스레드/diff·상태임베드·auto-update)
+6. **W12** — 레거시/문서/호환 매트릭스  
 
 ---
 
@@ -267,15 +273,42 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-a** | G | `done` | 슬래시 인프라(DiscordBM) + `SessionRegistry` + 순수 `routeDecision` + `/agent start·close` + config seam | `/agent start`로 채널 바인딩 → 접두사 없이 대화 |
 | **W11-b1** | G | `done` | 브리지 model·effort 실소비(config→client params) + `/agent start model·effort` 옵션 | model/effort 세션 반영, fake 검증 |
 | **W11-h** | G | `todo` | **provider 카탈로그 Swift 포팅** (W11-b2 선행). 3백엔드 모델/추론/권한을 **전부 라이브** 조회(하드코딩 고정 금지 — 백엔드만 고정). Claude=사이드카 **`models.list` RPC 신설**(supportedModels 프로브), Codex/Grok=`models_cache.json` 읽기, 추론=모델별 `supportedEffortLevels` 좁힘, 권한=백엔드별(Codex 샌드박스는 `codex --help` 동적). 상세 §14.10 | 카탈로그 라이브 조회 |
-| **W11-b2** | G | `todo` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그를 셀렉트에 주입**, 옵션→인터랙티브 컴포넌트). 설계 `docs/w11b2-agent-start-wizard.md`(모델/추론/권한 섹션은 라이브 카탈로그 기준으로 갱신 필요) | 마법사 UI |
+| **W11-b2** | G | `todo` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그를 셀렉트에 주입**). **folder 클러스터 전부 범위 안**(2026-07-25 확정): 네이티브 피커(`pickFolder`)+디렉토리 브라우저(into/up/here)+새폴더 모달+수동경로 모달. `docs/w11b2-agent-start-wizard.md` | 마법사 UI(folder→backend→model→effort→perm) |
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
 | **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
 | **W11-f2** | G | `done` | 재시작 1:1 재연결: backend-id 캡처 + lazy resume + 폴백 + 부팅 복원. 데드락(backend_id notify 레이스) 수정 후 `plan/swift-port` 병합(§14.3). T1–T9 병렬/직렬 171 PASS | 재연결 검증 완료 |
-| **W11-d** | G | `todo` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/perm`·`/stop`·`/clear`·`/agent resume·stats` | 세션 조작 |
+| **W11-d** | G | `todo` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/perm`·`/stop`·`/clear`·`/agent resume·stats`. **`/mode backend` reconfigure 팝업(model→effort→perm 재선택) 포함**(전수조사 A) | 세션 조작 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
-| **W11-g** | G | `todo` | **사용량/HUD 패널 Swift 포팅**(3백엔드). 브리지가 `context_usage`(+이번턴 도구/서브에이전트) 표면화 → 사용량 한도 조회(Claude 5h+주간+opus/sonnet·Grok 주간·Codex 없음) → 임베드 렌더러+게시. **신선도 불변식**: 모든 필드 렌더 시점 라이브, 캐시 재사용 금지. 상세 §14.9 | 패널 모든 정보 최신 표시 |
+| **W11-g** | G | `todo` | **사용량/HUD 패널 Swift 포팅**(3백엔드). 브리지가 `context_usage`(+이번턴 도구/서브에이전트) 표면화 → 사용량 한도 조회(Claude 5h+주간+opus/sonnet·Grok 주간·Codex 없음) → 임베드 렌더러+게시. **신선도 불변식**: 모든 필드 렌더 시점 라이브, 캐시 재사용 금지. **소품 흡수**(전수조사 B): 완료 라인(`resultLine` 비용/토큰/시간)·완료 시 @멘션(`mentionOnComplete`)·rate_limit 라인(`formatRateLimitLine`)은 이벤트 표면화 배선이 겹치므로 여기 포함. 상세 §14.9 | 패널 모든 정보 최신 표시 |
 | **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
+
+### 신규 WO — 2026-07-25 전수조사 반영 (Phase I~L, 상세 §15)
+
+> 사용자 결정: 보안(W13) 최우선 → 라이프사이클(W14) → config(W15) → 기능누락(W16). 착수 시 각 WO는 개별 작업 문서(`docs/`) 생성.
+
+| ID | Phase | 상태 | 작업 | 완료 조건 |
+|----|-------|------|------|-----------|
+| **W13** | I | `doing` | **보안 하드닝(P0)** — 인가·confinement·audit. UX보다 선행. **범위: a·c·d**(b는 Q5=B로 보류). 설계 `docs/w13-security-hardening.md`(`구현중`) | 프로덕션 안전 |
+| **W13-a** | I | `todo` | 역할-티어 인가(`core/auth.ts`→lib) + `DabMain` msg/interaction 진입점 배선. deny-by-default·Administrator 승격·dmPolicy·projectAuth ACL | 무인가 실행 경로 0 |
+| **W13-b** | I | `보류(Q5=B)` | 툴 allowlist/프로필(`permissionResolver.ts`·`autoAllowClaudeTools`) + Claude 기본 permMode `bypassPermissions`→`default`. **보류**: bypass 기본 유지 시 allowlist 소비처 없음(dead-code) → 사용자가 기본 `default`를 원할 때 재개(`docs/w13-security-hardening.md` 4장 부록) | allowlist 없는 자동승인 제거 |
+| **W13-c** | I | `todo` | 파일 realpath confinement(`sessionOrchestrator.ts:838-875`) **순수 헬퍼+테스트만**(Q4). 배선은 첨부 다운로드 경로 부재로 잠재 — 첨부 파이프라인 착수 시 브리지 send 전단에 결합 | 심링크 탈출 차단(헬퍼 준비) |
+| **W13-d** | I | `todo` | 감사 로그(`auditLog.ts`→append-only JSONL + secret redaction) **turn/denied만**(Q7=A; start/stop은 W14) | who/what 기록 |
+| **W14** | J | `todo` | 라이프사이클 정합 | stop/interrupt/정리 |
+| **W14-a** | J | `todo` | stop/stopAll/interrupt 실경로 — 브리지 `stop`/`interrupt`(라이브 핸들 드롭+백엔드 종료) + 슬래시 `/stop`·`/stop-all`·turn interrupt. **Grok ACP 취소 메서드 신설**. `/agent close` 프로세스 누수 수정 | 백엔드 실제 종료·턴 취소 |
+| **W14-b** | J | `todo` | `channelDelete` 구독 → detach+stop+하드제거(고아 바인딩·프로세스 정리) | 삭제 채널 잔존 0 |
+| **W15** | K | `todo` | 설정/상태 성숙(TS동일) | 3-계층 config |
+| **W15-a** | K | `todo` | 3-계층 config 이식(`ConfigStore`/`configResolver`/`configSchema`) — global→server→binding 레이어, 검증·0600·원자쓰기·corrupt 폴백 | 레이어링 config |
+| **W15-b** | K | `todo` | config/state 마이그레이션 훅 + archived 소프트삭제 + `normalizeModeId`(grok→grok-build) | version 마이그레이션 |
+| **W16** | L | `todo` | 기능 완전누락(전수조사 A/B/D) | UI/명령 파리티 |
+| **W16-a** | L | `todo` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`, 코드펜스 인지) — 현 `DiscordText.clip` truncate **유실 수정(버그성, 조기 착수)** | 2000자 초과 무손실 |
+| **W16-b** | L | `todo` | `/config` 설정 패널(역할 티어 롤셀렉트·기본값 셀렉트·Save·알림/이미지 서브패널). W13-a·W15-a 선행 | 패널 동작 |
+| **W16-c** | L | `todo` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
+| **W16-d** | L | `todo` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
+| **W16-e** | L | `todo` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
+| **W16-f** | L | `todo` | **custom 백엔드**(`Backend` enum+`routeDecision`+persist+`shellEnv.ts` dotfile env 추출 + Claude `prepareSession` env-overlay 훅) | custom UX |
+| **W16-g** | L | `todo` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`) | 도구/상태 가시성 |
+| **W16-h** | L | `todo` | auto-update 승인/무시 버튼(`updateButton`) + 업데이터(설치+재시작). W12 인접 | 자동 업데이트 |
 
 ### 후순위 / 병행 가능 (큐 본선 아님)
 
@@ -491,3 +524,42 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **Swift 기존 조각**: `Codex/CodexPolicy.swift`(permMode→approvalPolicy/sandbox 매핑 + `codexSandboxModes`)만 있음. 모델/추론/권한 목록 조회 계층은 전무.
 - **테스트**: 카탈로그 파싱/폴백/좁힘은 순수 단위테스트(캐시파일 fake, 사이드카 fake), TS의 타임아웃·in-flight 디둡·폴백 동작 미러링.
 
+
+---
+
+## 15. 전수조사 (2026-07-25) — TS→Swift 누락 마스터 목록
+
+TS 4영역(A 인터랙션/위저드 · B 렌더러/HUD · C 코어/권한/config · D 백엔드) 병렬 전수조사. 각 기능을 **TS 근거 → Swift 구현 → 문서 계획** 3축 대조. 사용자 결정(2026-07-25): TS 파리티 100% — ①보안 최우선 ②custom 포함 ③3-계층 config TS동일 ④folder 클러스터 전부.
+
+### 15.1 완전누락 → 신규 WO 매핑 (문서에도 없던 것)
+
+| 누락 (전수조사) | 영역 | 규모 | 신규 WO |
+|---|---|---|---|
+| 역할-티어 인가(deny-by-default·Administrator·dmPolicy·projectAuth) | A·C | L | **W13-a** |
+| 기본 permMode `bypassPermissions`(전툴 자동승인) + 툴 allowlist/프로필 | C·D | M | **W13-b(보류 — Q5=B: bypass 기본 유지, `default` 원할 때 재개)** |
+| 파일 realpath confinement | C | M | **W13-c** |
+| 감사 로그(append+redaction) | C | M | **W13-d** |
+| stop/stopAll 백엔드 미종료(프로세스 누수) + interrupt 실경로(Grok 취소 신설) | C·D | M | **W14-a** |
+| channelDelete 고아 정리 | C | S | **W14-b** |
+| 3-계층 config / 마이그레이션 / archived / normalizeModeId | C | L | **W15-a·b** |
+| 답변 2000자 초과 truncate 유실(**버그성**) | B | S | **W16-a** |
+| `/config` 패널 · `/setup` · `/doc` · `/stop-all` | A | L+M+M+S | **W16-b·c·d** (+`/stop-all`→W14-a) |
+| 권한 Always-Allow 버튼 + 영속 | A·B | S~M | **W16-e** |
+| custom 백엔드(shellEnv dotfile) | D | M | **W16-f** |
+| 도구 스레드+diff·상태 임베드·상태채널 알림 | B | L | **W16-g** |
+| auto-update 버튼+업데이터 | A·B | M | **W16-h** |
+| Capabilities 렌더-게이팅 개념 | D | S | (W16-g 전제로 흡수) |
+
+### 15.2 이미 계획됨 (완전누락 아님)
+- context_usage 생성/렌더·usage 한도·도구/서브에이전트 집계·thinking·progress = **W11-g**(§14.9).
+- `/model`·`/effort`·`/mode`·`/perm`·`/stop`·`/clear`·resume·stats·reconfigure 팝업 = **W11-d**.
+- 마법사(카탈로그 주입·folder 클러스터) = **W11-b2**. 카탈로그 데이터층 = **W11-h(완료)** — 단 소비처가 `DabSessionBridge.claudeCatalog` 하나뿐이라 b2/d 배선 전까지 dead-code.
+
+### 15.3 헛 포팅 방지 (TS 원본에도 없음 → 이식 제외)
+- per-channel FIFO **큐 상한**(`queue.push`만·무한), 감사 로그 **회전**(append-only 영구), `maxSessionsPerUser`(config 필드만·집행 코드 0). ROADMAP.md의 개선 항목이지 현 TS 동작이 아니므로 파리티 대상 아님.
+
+### 15.4 범위밖 defer (문서에 이미 명시 — 갭 아님)
+- 테이블/mermaid→PNG 렌더(S3), Chromium 프로비저닝, fileAttach/fileDiff(§0), streaming 실시간 편집. (folder 클러스터는 §15 결정으로 **범위 안으로 이동** — 더 이상 defer 아님.)
+
+### 15.5 미확정 (착수 전 재확인)
+- preset(pick/save/drafts)·profile(권한 프로파일)·wizard back·새 세션 채널 생성(A4D)+intro·resume 위저드 — folder와 인접하나 사용자 "폴더 전부"에 명시 포함 안 됨. b2 확장 시 범위 포함 여부 결정 필요.
