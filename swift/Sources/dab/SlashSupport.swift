@@ -1,5 +1,7 @@
 import DiscordAgentBridge
 import DiscordBM
+import Foundation
+import NIOCore
 
 /// Translate the library's backend-agnostic `SlashCommandSpec` into DiscordBM's registration
 /// payload. Thin glue (no logic) — the shape/choices are decided and tested in the library.
@@ -55,9 +57,99 @@ func agentCommandPayload() -> Payloads.ApplicationCommandCreate {
     applicationCommandPayload(agentCommandSpec())
 }
 
-/// All commands registered at ready (`/agent`, `/mode`, `/model`, `/effort`, `/stop`, `/clear`, `/stop-all`).
+/// All commands registered at ready (library `allSlashCommandSpecs`, including `/doc` / `/setup`).
 func allCommandPayloads() -> [Payloads.ApplicationCommandCreate] {
     allSlashCommandSpecs().map(applicationCommandPayload)
+}
+
+// MARK: - Document share → DiscordBM (W16-d)
+
+/// Post a markdown file into a `📄` thread on `channelId` (TS shareDocument + wiring.shareDocumentFor).
+/// Resolves cwd from SessionStore (binding) and options from global documentShare config.
+func postDocumentShare(
+    client: any DiscordClient,
+    channelId: String,
+    path: String,
+    cwd: String? = nil,
+    options: DocumentShareOptions? = nil
+) async throws -> ShareResult {
+    let resolvedCwd: String
+    if let cwd {
+        resolvedCwd = cwd
+    } else if let session = await SessionStore.shared.binding(channelId: channelId), !session.archived {
+        resolvedCwd = session.cwd
+    } else if await SessionRegistry.shared.binding(channelId: channelId) != nil {
+        // Registry-only (store not yet written) — fall back to DAB_CWD / home.
+        resolvedCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? NSHomeDirectory()
+    } else {
+        return .noSession
+    }
+
+    let opts: DocumentShareOptions
+    if let options {
+        opts = options
+    } else {
+        let section = try? await ConfigStore.shared.load().documentShare
+        opts = DocumentShareOptions(section: section)
+    }
+
+    let chId = channelId
+    return try await shareDocument(
+        cwd: resolvedCwd,
+        path: path,
+        options: opts,
+        channel: DocumentShareChannel { name in
+            let resp = try await client.createThread(
+                channelId: ChannelSnowflake(chId),
+                payload: Payloads.CreateThreadWithoutMessage(name: name, type: .publicThread)
+            )
+            let thread = try resp.decode()
+            let threadId = thread.id
+            return DocumentShareThread { content, file in
+                var files: [RawFile]?
+                var attachments: [Payloads.Attachment]?
+                if let file {
+                    var buf = ByteBufferAllocator().buffer(capacity: file.data.count)
+                    buf.writeBytes(file.data)
+                    files = [RawFile(data: buf, filename: file.name)]
+                    attachments = [Payloads.Attachment(index: 0, filename: file.name)]
+                }
+                _ = try await client.createMessage(
+                    channelId: threadId,
+                    payload: Payloads.CreateMessage(
+                        content: content,
+                        files: files,
+                        attachments: attachments
+                    )
+                )
+            }
+        }
+    )
+}
+
+/// Localized share outcome for `/doc` ephemeral reply (ko; mirrors TS i18n doc.* keys).
+func formatDocShareReply(path: String, result: ShareResult) -> String {
+    if result.ok {
+        let p = result.path ?? path
+        return "문서를 스레드에 공유했어요: `\(p)`"
+    }
+    guard let code = result.code else {
+        return "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+    }
+    switch code {
+    case .notFound:
+        return "파일을 찾을 수 없어요: `\(path)`"
+    case .escape:
+        return "경로를 공유할 수 없어요."
+    case .tooLarge:
+        let max = result.max ?? "?"
+        return "파일이 너무 커요 (최대 \(max))."
+    case .notMarkdown:
+        return "마크다운(.md)만 공유할 수 있어요."
+    case .notFile:
+        return "파일이 아니에요(디렉터리/바이너리): `\(path)`"
+    }
 }
 
 // MARK: - Usage embed → DiscordBM (W11-g slice2)

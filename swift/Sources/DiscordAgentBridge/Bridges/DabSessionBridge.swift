@@ -278,6 +278,8 @@ public actor DabSessionBridge {
         let store = self.store
         let persistBackend = backend
         let persistModel = model
+        // W16-d: host.file.share reverse RPC → DocumentShareHost (Discord sink wired in dab).
+        let shareChannelId = channelId
         client.registerSessionHandlers(
             handle: handle,
             handlers: SidecarSessionHandlers(
@@ -292,6 +294,9 @@ public actor DabSessionBridge {
                             backendSessionId: backendId
                         )
                     }
+                },
+                onFileShare: { path in
+                    try await DocumentShareHost.shared.share(channelId: shareChannelId, path: path)
                 }
             )
         )

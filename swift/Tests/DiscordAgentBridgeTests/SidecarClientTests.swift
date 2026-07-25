@@ -139,6 +139,19 @@ actor FakeSidecar {
             try? await transport.writeLine(line + "\n")
         }
     }
+
+    /// Simulate host.file.share reverse RPC from sidecar to host.
+    func sendReverseShare(id: String, session: String, path: String) async {
+        let env = req(
+            id: id,
+            method: "host.file.share",
+            params: ["path": .string(path)],
+            session: session
+        )
+        if let line = try? serializeEnvelope(env) {
+            try? await transport.writeLine(line + "\n")
+        }
+    }
 }
 
 @Suite("ClaudeSidecarClient with fake transport")
@@ -248,6 +261,118 @@ struct SidecarClientTests {
         await client.close()
         await pair.sidecar.close()
         fakeTask.cancel()
+    }
+
+    @Test func reverseRpcHostFileShareWired() async throws {
+        // Single consumer on sidecar.lines: answer session.start + capture reverse res.
+        let pair = InMemorySidecarTransport.makePair()
+        let resBox = LockedBox<Envelope?>(nil)
+        let pump = Task {
+            for try await line in pair.sidecar.lines {
+                guard let env = try? parseEnvelope(line) else { continue }
+                if env.type == .req, env.method == "session.start", let id = env.id {
+                    let out = try serializeEnvelope(res(
+                        id: id,
+                        method: "session.start",
+                        result: .object(["session": .string("sess-share"), "backendSessionId": .null])
+                    ))
+                    try await pair.sidecar.writeLine(out + "\n")
+                }
+                if env.type == .res, env.id == "s-share-1" {
+                    resBox.withLock { $0 = env }
+                    break
+                }
+            }
+        }
+
+        if let line = try? serializeEnvelope(notify(method: "sidecar.ready", params: ["v": .number(1)])) {
+            try? await pair.sidecar.writeLine(line + "\n")
+        }
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
+        try await client.connect()
+        let started = try await client.sessionStart(
+            SessionStartParams(cwd: "/tmp", guildId: "g", channelId: "c", permMode: "default")
+        )
+
+        let sharePath = LockedBox<String?>(nil)
+        client.registerSessionHandlers(
+            handle: started.session,
+            handlers: SidecarSessionHandlers(
+                onEvent: { _ in },
+                onFileShare: { path in
+                    sharePath.withLock { $0 = path }
+                    return ShareResult(ok: true, threadName: "📄 note.md", path: path)
+                }
+            )
+        )
+
+        let reverse = req(
+            id: "s-share-1",
+            method: "host.file.share",
+            params: ["path": .string("docs/note.md")],
+            session: started.session
+        )
+        try await pair.sidecar.writeLine(try serializeEnvelope(reverse) + "\n")
+        _ = await pump.result
+
+        #expect(sharePath.withLock { $0 } == "docs/note.md")
+        let env = resBox.withLock { $0 }
+        #expect(env?.result?["ok"]?.boolValue == true)
+        #expect(env?.result?["path"]?.stringValue == "docs/note.md")
+        #expect(env?.result?["threadName"]?.stringValue == "📄 note.md")
+
+        await client.close()
+        await pair.sidecar.close()
+    }
+
+    @Test func reverseRpcHostFileShareUnwired() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let errBox = LockedBox<SidecarError?>(nil)
+        let pump = Task {
+            for try await line in pair.sidecar.lines {
+                guard let env = try? parseEnvelope(line) else { continue }
+                if env.type == .req, env.method == "session.start", let id = env.id {
+                    let out = try serializeEnvelope(res(
+                        id: id,
+                        method: "session.start",
+                        result: .object(["session": .string("sess-unwired"), "backendSessionId": .null])
+                    ))
+                    try await pair.sidecar.writeLine(out + "\n")
+                }
+                if env.type == .res, env.id == "s-share-u" {
+                    errBox.withLock { $0 = env.error }
+                    break
+                }
+            }
+        }
+
+        if let line = try? serializeEnvelope(notify(method: "sidecar.ready", params: ["v": .number(1)])) {
+            try? await pair.sidecar.writeLine(line + "\n")
+        }
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
+        try await client.connect()
+        let started = try await client.sessionStart(
+            SessionStartParams(cwd: "/tmp", guildId: "g", channelId: "c", permMode: "default")
+        )
+        // Handlers without onFileShare → unsupported
+        client.registerSessionHandlers(
+            handle: started.session,
+            handlers: SidecarSessionHandlers(onEvent: { _ in })
+        )
+
+        let reverse = req(
+            id: "s-share-u",
+            method: "host.file.share",
+            params: ["path": .string("x.md")],
+            session: started.session
+        )
+        try await pair.sidecar.writeLine(try serializeEnvelope(reverse) + "\n")
+        _ = await pump.result
+
+        #expect(errBox.withLock { $0 }?.code == "unsupported")
+
+        await client.close()
+        await pair.sidecar.close()
     }
 
     @Test func claudeCatalogRoundTrip() async throws {

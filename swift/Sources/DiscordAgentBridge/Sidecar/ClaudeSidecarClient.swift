@@ -4,13 +4,21 @@ import Foundation
 public struct SidecarSessionHandlers: Sendable {
     public var onEvent: @Sendable (AgentEvent) -> Void
     public var onBackendId: (@Sendable (String) -> Void)?
+    /// host.file.attach — confirmation string for the model.
+    public var onFileAttach: (@Sendable (_ path: String, _ name: String?) async throws -> String)?
+    /// host.file.share — ShareResult for the model-facing mapper.
+    public var onFileShare: (@Sendable (_ path: String) async throws -> ShareResult)?
 
     public init(
         onEvent: @escaping @Sendable (AgentEvent) -> Void,
-        onBackendId: (@Sendable (String) -> Void)? = nil
+        onBackendId: (@Sendable (String) -> Void)? = nil,
+        onFileAttach: (@Sendable (_ path: String, _ name: String?) async throws -> String)? = nil,
+        onFileShare: (@Sendable (_ path: String) async throws -> ShareResult)? = nil
     ) {
         self.onEvent = onEvent
         self.onBackendId = onBackendId
+        self.onFileAttach = onFileAttach
+        self.onFileShare = onFileShare
     }
 }
 
@@ -195,11 +203,80 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
     private func handleReverseRpc(_ env: Envelope) async {
         guard let id = env.id, let method = env.method else { return }
         let session = env.session
-        let error = makeError(code: "unsupported", message: "\(method) not implemented on host")
+        let handlers: SidecarSessionHandlers? = session.flatMap { sid in
+            state.withLock { $0.sessionHandlers[sid] }
+        }
+        let params = env.params ?? [:]
+
         do {
-            try await write(resError(id: id, method: method, error: error, session: session))
+            if method == "host.file.attach" {
+                guard let onFileAttach = handlers?.onFileAttach else {
+                    try await write(resError(
+                        id: id,
+                        method: method,
+                        error: makeError(code: "unsupported", message: "host.file.attach not wired for session"),
+                        session: session
+                    ))
+                    return
+                }
+                guard let path = params["path"]?.stringValue, !path.isEmpty else {
+                    try await write(resError(
+                        id: id,
+                        method: method,
+                        error: makeError(code: "invalid_request", message: "params.path required"),
+                        session: session
+                    ))
+                    return
+                }
+                let name = params["name"]?.stringValue
+                let message = try await onFileAttach(path, name)
+                try await write(res(
+                    id: id,
+                    method: method,
+                    result: .object(["ok": .bool(true), "message": .string(message)]),
+                    session: session
+                ))
+                return
+            }
+
+            if method == "host.file.share" {
+                guard let onFileShare = handlers?.onFileShare else {
+                    try await write(resError(
+                        id: id,
+                        method: method,
+                        error: makeError(code: "unsupported", message: "host.file.share not wired for session"),
+                        session: session
+                    ))
+                    return
+                }
+                guard let path = params["path"]?.stringValue, !path.isEmpty else {
+                    try await write(resError(
+                        id: id,
+                        method: method,
+                        error: makeError(code: "invalid_request", message: "params.path required"),
+                        session: session
+                    ))
+                    return
+                }
+                let shareResult = try await onFileShare(path)
+                try await write(res(id: id, method: method, result: shareResult.asJSONValue(), session: session))
+                return
+            }
+
+            try await write(resError(
+                id: id,
+                method: method,
+                error: makeError(code: "unsupported", message: "\(method) not implemented on host"),
+                session: session
+            ))
         } catch {
-            // ignore write failures on reverse path
+            // Best-effort error res so the sidecar does not hang on the reverse RPC.
+            try? await write(resError(
+                id: id,
+                method: method,
+                error: makeError(code: "internal", message: "\(error)"),
+                session: session
+            ))
         }
     }
 

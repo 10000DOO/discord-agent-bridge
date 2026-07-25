@@ -152,7 +152,24 @@ public func setupCommandSpec() -> SlashCommandSpec {
     )
 }
 
-/// Every slash command the bot registers (W11-d live set + lifecycle + W16-c /setup).
+/// `/doc path:` — share a markdown file into a document thread (drive tier; TS `/doc`).
+/// Free-text path (no autocomplete — avoids per-keystroke FS listing cost).
+public func docCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "doc",
+        description: "Share a markdown document into a thread",
+        options: [
+            .init(
+                name: "path",
+                description: "Path to the markdown file (absolute, or relative to the session folder)",
+                required: true,
+                choices: []
+            ),
+        ]
+    )
+}
+
+/// Every slash command the bot registers (W11-d live set + lifecycle + W16-c /setup + W16-d /doc).
 public func allSlashCommandSpecs() -> [SlashCommandSpec] {
     [
         agentCommandSpec(),
@@ -163,5 +180,6 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         clearCommandSpec(),
         stopAllCommandSpec(),
         setupCommandSpec(),
+        docCommandSpec(),
     ]
 }

@@ -38,6 +38,10 @@ struct DabMain {
         await PermissionGate.shared.setPresenter { prompt in
             await postPermissionButtons(client: client, prompt: prompt)
         }
+        // W16-d: host.file.share reverse RPC + /doc funnel through the same Discord poster.
+        await DocumentShareHost.shared.setShareHandler { channelId, path in
+            try await postDocumentShare(client: client, channelId: channelId, path: path)
+        }
 
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -145,7 +149,7 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
-        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup
+        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup/doc
         // (TS ACTION_TIER: drive except stop-all + setup admin; setup also uses authorizeConfig bootstrap).
         guard let cmd = try? payload.data?.requireApplicationCommand() else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
@@ -359,6 +363,30 @@ struct EventHandler: GatewayEventHandler {
                     payload,
                     "채널을 만들 수 없어요. 봇에 \"채널 관리(Manage Channels)\" 권한이 있는지 확인하세요."
                 )
+            }
+
+        case "doc":
+            // W16-d: share markdown into a 📄 thread (drive tier). Needs a bound session for cwd.
+            guard let docPath = try? cmd.requireOption(named: "path").requireString(), !docPath.isEmpty else {
+                try await respondEphemeral(payload, "path 값이 필요합니다.")
+                return
+            }
+            let regBound = await SessionRegistry.shared.binding(channelId: channelId) != nil
+            let storeSession = await SessionStore.shared.binding(channelId: channelId)
+            let hasBinding = regBound || (storeSession.map { !$0.archived } ?? false)
+            guard hasBinding else {
+                try await respondEphemeral(
+                    payload,
+                    "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                )
+                return
+            }
+            do {
+                let res = try await postDocumentShare(client: client, channelId: channelId, path: docPath)
+                try await respondEphemeral(payload, formatDocShareReply(path: docPath, result: res))
+            } catch {
+                print("dab: /doc failed channel=\(channelId): \(error)")
+                try await respondEphemeral(payload, "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
             }
 
         default:
