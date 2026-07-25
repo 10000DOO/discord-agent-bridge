@@ -49,6 +49,18 @@ private actor GateableSidecar {
             counter += 1
             if let m = env.params?["model"]?.stringValue { capture?.withLock { $0["model"] = m } }
             if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
+            // W16-f: custom overlay keys appear under params.env
+            if let envObj = env.params?["env"]?.objectValue {
+                if let base = envObj["ANTHROPIC_BASE_URL"]?.stringValue {
+                    capture?.withLock { $0["env.ANTHROPIC_BASE_URL"] = base }
+                }
+                if let model = envObj["ANTHROPIC_MODEL"]?.stringValue {
+                    capture?.withLock { $0["env.ANTHROPIC_MODEL"] = model }
+                }
+                capture?.withLock { $0["env.present"] = "1" }
+            } else {
+                capture?.withLock { $0["env.present"] = "0" }
+            }
             if method == "session.resume" {
                 reqCapture?.withLock { $0.append("resume:\(env.params?["backendSessionId"]?.stringValue ?? "?")") }
             } else {
@@ -141,17 +153,29 @@ private func makeDabBridge(
     emitsBackendId: String? = nil,
     reqCapture: LockedBox<[String]>? = nil,
     resumeFails: Bool = false,
-    emitContextAndRateLimit: Bool = false
+    emitContextAndRateLimit: Bool = false,
+    resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
-    let bridge = DabSessionBridge(makeClient: {
-        let pair = InMemorySidecarTransport.makePair()
-        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm, emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails, emitContextAndRateLimit: emitContextAndRateLimit)
-        Task { await server.run() }
-        return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
-    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore(),
-       configStore: configStore ?? ConfigStore(baseDir: FileManager.default.temporaryDirectory
-            .appendingPathComponent("dab-cfg-missing-\(UUID().uuidString)", isDirectory: true)))
+    let bridge = DabSessionBridge(
+        makeClient: {
+            let pair = InMemorySidecarTransport.makePair()
+            let server = GateableSidecar(
+                transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText,
+                capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm,
+                emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails,
+                emitContextAndRateLimit: emitContextAndRateLimit
+            )
+            Task { await server.run() }
+            return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
+        },
+        turnTimeoutOverrideNs: timeoutNs,
+        gate: permGate,
+        store: store ?? freshTempStore(),
+        configStore: configStore ?? ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-cfg-missing-\(UUID().uuidString)", isDirectory: true)),
+        resolveCustomEnvFn: resolveCustomEnvFn ?? { resolveCustomEnv() }
+    )
     return (bridge, made)
 }
 
@@ -405,6 +429,45 @@ struct DabSessionBridgeTests {
         let got = capture.withLock { $0 }
         #expect(got["model"] == "claude-x")
         #expect(got["effort"] == "high")
+        // plain claude does not inject session.env
+        #expect(got["env.present"] == "0")
+    }
+
+    // W16-f: custom backend injects shell-env overlay + prefers ANTHROPIC_MODEL.
+    @Test func customBackendInjectsEnvAndPrefersAnthropicModel() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let store = freshTempStore()
+        let (bridge, _) = makeDabBridge(
+            capture: capture,
+            store: store,
+            emitsBackendId: "custom-sess-1",
+            resolveCustomEnvFn: {
+                CustomEnvResult(
+                    env: [
+                        "ANTHROPIC_MODEL": "kimi-k2.7-code",
+                        "ANTHROPIC_BASE_URL": "https://api.example.com",
+                    ],
+                    hasDangerousFlag: false,
+                    source: ".zshrc"
+                )
+            }
+        )
+        let reply = try await bridge.runTurn(
+            channelId: "c", guildId: "g", ownerId: "o", text: "hi",
+            config: SessionConfig(backend: .custom, model: "opus", effort: "high")
+        )
+        #expect(reply.text == "ok:hi")
+        let got = capture.withLock { $0 }
+        #expect(got["model"] == "kimi-k2.7-code")
+        #expect(got["env.present"] == "1")
+        #expect(got["env.ANTHROPIC_BASE_URL"] == "https://api.example.com")
+        #expect(got["env.ANTHROPIC_MODEL"] == "kimi-k2.7-code")
+        // Persist as custom, not claude (backend_id notify is async).
+        while await store.binding(channelId: "c")?.backendSessionId == nil { await Task.yield() }
+        let persisted = await store.binding(channelId: "c")
+        #expect(persisted?.backend == .custom)
+        #expect(persisted?.backendSessionId == "custom-sess-1")
+        #expect(persisted?.model == "kimi-k2.7-code")
     }
 
     // W14: stop drops the live session handle (maps empty); interrupt keeps it.

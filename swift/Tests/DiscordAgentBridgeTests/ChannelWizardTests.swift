@@ -385,7 +385,8 @@ struct ChannelWizardTests {
         }
         let src = await loadWizardOptionSource { b in
             switch b {
-            case .claude:
+            case .claude, .custom:
+                // custom reuses Claude catalog vocabulary.
                 return FixedCatalog(
                     m: [ModelChoice(value: "opus", label: "opus", supportedEffortLevels: ["high"])],
                     p: [ModelChoice(value: "default", label: "default")],
@@ -408,6 +409,8 @@ struct ChannelWizardTests {
                 )
             }
         }
+        #expect(src.backends.contains(.custom))
+        #expect(src.models(for: .custom).map(\.value) == ["opus"])
         #expect(src.backends == Backend.allCases)
         #expect(src.models(for: .claude).map(\.value) == ["opus"])
         #expect(src.efforts(for: .claude, model: "opus").map(\.value) == ["high"])

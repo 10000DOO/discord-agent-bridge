@@ -79,7 +79,11 @@ public func modeCommandSpec() -> SlashCommandSpec {
                         name: "backend",
                         description: "Backend to switch to",
                         required: true,
-                        choices: Backend.allCases.map { .init(name: $0.rawValue, value: $0.rawValue) }
+                        choices: Backend.allCases.map {
+                            // custom: dynamic model name when resolvable (TS buildSlashCommands).
+                            let name = $0 == .custom ? customBackendLabel() : $0.rawValue
+                            return .init(name: name, value: $0.rawValue)
+                        }
                     ),
                 ]
             ),

@@ -14,6 +14,8 @@ public actor DabSessionBridge {
     private let store: SessionStore
     /// Global config (autoAllowClaudeTools). Tests inject a temp-dir store.
     private let configStore: ConfigStore
+    /// Custom-backend shell env (default = real dotfile scan; tests inject fixed result).
+    private let resolveCustomEnvFn: @Sendable () -> CustomEnvResult
 
     init(
         makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
@@ -24,13 +26,15 @@ public actor DabSessionBridge {
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
-        configStore: ConfigStore = .shared
+        configStore: ConfigStore = .shared,
+        resolveCustomEnvFn: @escaping @Sendable () -> CustomEnvResult = { resolveCustomEnv() }
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
         self.configStore = configStore
+        self.resolveCustomEnvFn = resolveCustomEnvFn
     }
 
     /// One-shot notice to prepend to the next reply when a stored session failed to resume (F5).
@@ -206,10 +210,38 @@ public actor DabSessionBridge {
         // W11-f2: resume params reuse the STORED model/effort/permMode (T6) so a reconnect keeps the
         // original session's settings; live config/env fill in when nothing was persisted.
         let persisted = await store.binding(channelId: channelId)
-        let model = persisted?.model ?? config?.model
+        // custom runs on the Claude sidecar path with shell-env overlay (TS CustomMode).
+        let backend: Backend = {
+            if let b = config?.backend { return b }
+            if let b = persisted?.backend, b == .custom || b == .claude { return b }
+            return .claude
+        }()
+        var model = persisted?.model ?? config?.model
         let effort = persisted?.effort ?? config?.effort
         let perm = persisted?.permMode ?? config?.permMode ?? permMode
         let cwdValue = cwd
+
+        // W16-f: prepareSession for custom — merge process env + allow-listed dotfile keys;
+        // prefer ANTHROPIC_MODEL over wizard/ctx model (TS prepareCustomSession).
+        var sessionEnv: [String: String?]?
+        if backend == .custom {
+            let resolved = resolveCustomEnvFn()
+            if resolved.hasDangerousFlag, perm != "bypassPermissions" {
+                print(
+                    "dab: custom backend alias contains --dangerously-skip-permissions but permMode is not bypassPermissions source=\(resolved.source ?? "?")"
+                )
+            }
+            var merged = ProcessInfo.processInfo.environment
+            for (k, v) in resolved.env { merged[k] = v }
+            sessionEnv = merged.mapValues { Optional.some($0) }
+            if let m = resolved.env["ANTHROPIC_MODEL"], !m.isEmpty {
+                model = m
+            }
+            print(
+                "dab: custom backend env resolved source=\(resolved.source ?? "nil") keys=\(resolved.env.keys.sorted())"
+            )
+        }
+
         // Thread global autoAllowClaudeTools into the sidecar so makeCanUseTool skips known-safe tools
         // without a Discord prompt (TS session.start config.autoAllowClaudeTools).
         let autoAllow = await configStore.autoAllowClaudeTools()
@@ -217,7 +249,7 @@ public actor DabSessionBridge {
             autoAllow.isEmpty ? nil : .init(autoAllowClaudeTools: autoAllow)
         let params = SessionStartParams(
             cwd: cwdValue, guildId: guildId, channelId: channelId, ownerId: ownerId,
-            model: model, effort: effort, permMode: perm, config: sessionCfg
+            model: model, effort: effort, permMode: perm, config: sessionCfg, env: sessionEnv
         )
 
         // Resume the stored backend session if we have one; on failure fall back to a fresh start (F5).
@@ -244,20 +276,34 @@ public actor DabSessionBridge {
         sessions[channelId] = handle
         sessionMeta[handle] = (channelId: channelId, approverId: ownerId)
         let store = self.store
+        let persistBackend = backend
+        let persistModel = model
         client.registerSessionHandlers(
             handle: handle,
             handlers: SidecarSessionHandlers(
                 onEvent: { [weak self] ev in Task { await self?.onEvent(handle: handle, event: ev) } },
                 // F7 / T3: Claude's backend id may arrive only after init — persist it when it lands.
                 onBackendId: { backendId in
-                    Task { await persistSession(store: store, backend: .claude, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: model, effort: effort, permMode: perm, backendSessionId: backendId) }
+                    Task {
+                        await persistSession(
+                            store: store, backend: persistBackend, channelId: channelId,
+                            guildId: guildId, ownerId: ownerId, cwd: cwdValue,
+                            model: persistModel, effort: effort, permMode: perm,
+                            backendSessionId: backendId
+                        )
+                    }
                 }
             )
         )
         // F7: if start/resume already gave a backend id, persist it now. If null (T3), the onBackendId
         // notify above records it later — we do NOT persist a null id here.
         if let bid = started.backendSessionId {
-            await persistSession(store: store, backend: .claude, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: model, effort: effort, permMode: perm, backendSessionId: bid)
+            await persistSession(
+                store: store, backend: persistBackend, channelId: channelId,
+                guildId: guildId, ownerId: ownerId, cwd: cwdValue,
+                model: persistModel, effort: effort, permMode: perm,
+                backendSessionId: bid
+            )
         }
         if (stopEpoch[channelId] ?? 0) != epoch {
             sessions[channelId] = nil

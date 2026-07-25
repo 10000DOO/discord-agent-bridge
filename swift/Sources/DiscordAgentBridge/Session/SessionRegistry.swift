@@ -1,10 +1,12 @@
 import Foundation
 
 /// Which coding-agent backend handles a channel's session.
+/// `custom` is Claude + shell-dotfile env overlay (TS `CustomMode`).
 public enum Backend: String, Sendable, CaseIterable, Equatable {
     case claude
     case codex
     case grok
+    case custom
 }
 
 /// Per-channel session settings. W11-a binds `backend` only; model/effort/permMode are the seam
@@ -53,6 +55,7 @@ public enum RouteDecision: Sendable, Equatable {
     case prefixClaude(String)   // "!claude <prompt>"
     case prefixCodex(String)    // "!codex <prompt>"
     case prefixGrok(String)     // "!grok <prompt>"
+    case prefixCustom(String)   // "!custom <prompt>" — Claude path + shell-env overlay
     case bound(Backend, String) // no prefix, channel is bound → route full text to that backend
     case usage(String)          // a known prefix with an empty prompt → show "Usage: `<label> …`"
     case ignore                 // nothing to do
@@ -67,6 +70,7 @@ public func routeDecision(content: String, binding: SessionConfig?) -> RouteDeci
     if let p = strip("!claude ") { return p.isEmpty ? .usage("!claude") : .prefixClaude(p) }
     if let p = strip("!codex ")  { return p.isEmpty ? .usage("!codex")  : .prefixCodex(p) }
     if let p = strip("!grok ")   { return p.isEmpty ? .usage("!grok")   : .prefixGrok(p) }
+    if let p = strip("!custom ") { return p.isEmpty ? .usage("!custom") : .prefixCustom(p) }
     if let binding {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty { return .bound(binding.backend, text) }

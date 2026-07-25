@@ -59,7 +59,9 @@ func choices(_ values: [String]) -> [ModelChoice] {
 /// backend to build a model/permission/effort list themselves.
 public func providerCatalog(for backend: Backend) -> any ProviderCatalog {
     switch backend {
-    case .claude: return ClaudeCatalog()
+    case .claude, .custom:
+        // custom reuses Claude SDK vocabulary (TS CustomMode.catalog === claudeCatalog).
+        return ClaudeCatalog()
     case .codex: return CodexCatalog()
     case .grok: return GrokCatalog()
     }

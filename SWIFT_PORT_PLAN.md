@@ -49,7 +49,7 @@
 - `/mode backend` reconfigure 마법사 팝업 (W11-b2) · HUD(W11-g)
 - interrupt **버튼 UI**(lib interrupt API는 W14 완료)
 - host.file.* 실제 Discord 업로드 (Swift; TS 사이드카 경로는 구현됨)
-- custom 백엔드 · 렌더/도구스레드 · `/config` 패널 등 (W16 잔여)
+- 렌더/도구스레드 · `/config` 패널 등 (W16 잔여; custom 백엔드는 W16-f 완료)
 - 기존 npm 봇 기능 100% 패리티 (목표 지향, 진행 중)
 
 ### 빠른 실행
@@ -310,7 +310,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W16-c** | L | `todo` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
 | **W16-d** | L | `todo` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
-| **W16-f** | L | `todo` | **custom 백엔드**(`Backend` enum+`routeDecision`+persist+`shellEnv.ts` dotfile env 추출 + Claude `prepareSession` env-overlay 훅) | custom UX |
+| **W16-f** | L | `done` | **custom 백엔드**(`Backend.custom`+`!custom` route+persist+`ShellEnv` dotfile env + Claude path env-overlay; wizard/slash 포함) | custom UX |
 | **W16-g** | L | `todo` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`) | 도구/상태 가시성 |
 | **W16-h** | L | `todo` | auto-update 승인/무시 버튼(`updateButton`) + 업데이터(설치+재시작). W12 인접 | 자동 업데이트 |
 
@@ -378,6 +378,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W11-b2 slice2 | pure `DirectoryBrowser`(TS parity: into/up/here·goTo·dot-last sort·cap25·allowedRoots confine/unbounded) + `ChannelWizard` first step=`folder`(dir:here→backend). DabMain 브라우저 start=`DAB_CWD`/home unbounded. button `disabled` for dir:up. 모달/native/panel/create/resume/A4D/preset 미포함(ponytail). 단위테스트 DirectoryBrowser+wizard folder. |
 | 2026-07-26 | W11-b2 slice3 | folder 클러스터 완성: `FolderPanel`(osascript choose folder·escapeAppleScript·injectable `PanelRunner`·timeout SIGKILL·FolderPanelBusy) + `DirectoryBrowser` dir:create/manual/[panel] 버튼·`createChild`+`isSafeFolderName` + DabMain showModal(dir:create/manual)·modalSubmit mkdir/goTo·dir:panel defer+native pick. **잔여**: resume·A4D channel·preset·reconfigure. 단위테스트 FolderPanel+create/goTo. |
 | 2026-07-26 | W16-e | Always-Allow 3버튼(Allow/Always-Allow/Deny) + `perm:<reqKey>:always` + `PermissionDecision.always`(`backendBehavior`→allow). DabMain peek→`addAutoAllowClaudeTool` 영속·audit. 3 브리지 host-side auto-allow skip + Claude `session.start`에 `autoAllowClaudeTools` 전달. 단위테스트 AlwaysAllow+gate+bridge. swift test **435** PASS. |
+| 2026-07-26 | W16-f | **custom 백엔드** TS 파리티: `Backend.custom` + `routeDecision` `!custom` + `ShellEnv`(`shellEnv.ts` 1:1 regex allow-list) + `DabSessionBridge` prepareSession env-overlay(`ANTHROPIC_MODEL` 우선·dangerous flag 경고) + SessionStore persist `.custom` + wizard/slash `Backend.allCases`·`customBackendLabel`. catalog=Claude. swift test **480** PASS. |
 
 ---
 

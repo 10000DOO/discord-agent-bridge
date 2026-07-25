@@ -28,19 +28,23 @@ struct RouteDecisionTests {
         #expect(routeDecision(content: "!claude hi", binding: nil) == .prefixClaude("hi"))
         #expect(routeDecision(content: "!codex do x", binding: nil) == .prefixCodex("do x"))
         #expect(routeDecision(content: "!grok yo", binding: nil) == .prefixGrok("yo"))
+        #expect(routeDecision(content: "!custom kimi", binding: nil) == .prefixCustom("kimi"))
         // prefix wins even when a (different) binding exists
         #expect(routeDecision(content: "!codex hi", binding: SessionConfig(backend: .claude)) == .prefixCodex("hi"))
+        #expect(routeDecision(content: "!custom x", binding: SessionConfig(backend: .codex)) == .prefixCustom("x"))
     }
 
     @Test func emptyPromptIsUsage() {
         #expect(routeDecision(content: "!claude ", binding: nil) == .usage("!claude"))
         #expect(routeDecision(content: "!codex    ", binding: nil) == .usage("!codex"))
         #expect(routeDecision(content: "!grok ", binding: SessionConfig(backend: .codex)) == .usage("!grok"))
+        #expect(routeDecision(content: "!custom ", binding: nil) == .usage("!custom"))
     }
 
     @Test func boundRoutesPlainText() {
         #expect(routeDecision(content: "hello there", binding: SessionConfig(backend: .grok)) == .bound(.grok, "hello there"))
         #expect(routeDecision(content: "  padded  ", binding: SessionConfig(backend: .claude)) == .bound(.claude, "padded"))
+        #expect(routeDecision(content: "via custom", binding: SessionConfig(backend: .custom)) == .bound(.custom, "via custom"))
     }
 
     @Test func ignoreWhenNoPrefixNoBinding() {

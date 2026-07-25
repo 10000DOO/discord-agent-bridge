@@ -701,6 +701,8 @@ struct EventHandler: GatewayEventHandler {
             await runAndReply(.codex, payload, text: text, binding: nil)
         case .prefixGrok(let text):
             await runAndReply(.grok, payload, text: text, binding: nil)
+        case .prefixCustom(let text):
+            await runAndReply(.custom, payload, text: text, binding: nil)
         case .bound(let backend, let text):
             await runAndReply(backend, payload, text: text, binding: binding)
         }
@@ -730,13 +732,15 @@ struct EventHandler: GatewayEventHandler {
         do {
             let turn: TurnResult
             switch backend {
-            case .claude:
+            case .claude, .custom:
+                // custom: Claude sidecar path + shell-env overlay inside DabSessionBridge (W16-f).
+                let cfg = binding ?? SessionConfig(backend: backend)
                 turn = try await DabSessionBridge.shared.runTurn(
                     channelId: channelId,
                     guildId: payload.guild_id?.rawValue ?? "dm",
                     ownerId: payload.author?.id.rawValue,
                     text: text,
-                    config: binding
+                    config: cfg
                 )
             case .codex:
                 turn = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
@@ -761,7 +765,8 @@ struct EventHandler: GatewayEventHandler {
             }
             // W11-g slice2: rate_limit notice (event fields; enrich with Claude usage snapshot if any).
             if let rl = turn.rateLimit {
-                let usageSnap = backend == .claude ? await ClaudeUsageService.shared.getUsage() : nil
+                let usageSnap = (backend == .claude || backend == .custom)
+                    ? await ClaudeUsageService.shared.getUsage() : nil
                 let line = formatRateLimitLine(rl, usage: usageSnap)
                 _ = try? await client.createMessage(
                     channelId: payload.channel_id,

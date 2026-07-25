@@ -103,7 +103,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         if n == "grok-build" { return .grok }
         if let b = Backend(rawValue: n) { return b }
         if let b = Backend(rawValue: mode) { return b }
-        // Unknown id: fall back to raw decode path — should not happen for our three backends.
+        // Unknown id: fall back to claude (should not happen for known backends incl. custom).
         return .claude
     }
 }

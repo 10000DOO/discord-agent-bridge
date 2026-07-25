@@ -458,7 +458,8 @@ public final class ChannelWizard: @unchecked Sendable {
                 selectId: "backend",
                 options: options.backends.map { b in
                     WizardSelectOption(
-                        label: b.rawValue,
+                        // custom label names the operator's ANTHROPIC_MODEL when set (TS customBackendLabel).
+                        label: b == .custom ? customBackendLabel() : b.rawValue,
                         value: b.rawValue,
                         isDefault: b == (pending.backend ?? selection.backend)
                     )
