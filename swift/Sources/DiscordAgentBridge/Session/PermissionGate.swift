@@ -1,7 +1,7 @@
 import Foundation
 
-/// A pending tool-permission ask surfaced to Discord (dab renders Allow/Deny buttons + matches the
-/// reply back via `reqKey`).
+/// A pending tool-permission ask surfaced to Discord (dab renders Allow / Always-Allow / Deny
+/// buttons + matches the reply back via `reqKey`).
 public struct PermissionPrompt: Sendable, Equatable {
     public var reqKey: String
     public var channelId: String
@@ -18,13 +18,24 @@ public struct PermissionPrompt: Sendable, Equatable {
     }
 }
 
-/// Discord-agnostic sink: the dab layer posts Allow/Deny buttons for a prompt. Lives on the gate so
-/// the library never imports DiscordBM.
+/// Discord-agnostic sink: the dab layer posts Allow / Always-Allow / Deny buttons for a prompt.
+/// Lives on the gate so the library never imports DiscordBM.
 public typealias PermissionPresenter = @Sendable (PermissionPrompt) async -> Void
 
+/// Button / resolve action. `always` allows the tool **and** signals the host to persist the tool
+/// into the global auto-allow set (TS `perm:<reqId>:always` + `addAutoAllowClaudeTool`).
 public enum PermissionDecision: String, Sendable, Equatable {
     case allow
+    case always
     case deny
+
+    /// Backend sessionPermission / approval behavior (`always` → allow for the current ask).
+    public var backendBehavior: String { self == .deny ? "deny" : "allow" }
+
+    /// Whether the tool may proceed (allow and always both grant).
+    public var isAllowing: Bool { self != .deny }
+
+    public var isAlways: Bool { self == .always }
 }
 
 /// Deny-by-default permission gate. A backend `await`s a decision keyed by `reqKey`; the Discord
@@ -36,6 +47,7 @@ public actor PermissionGate {
     private struct Pending {
         let continuation: CheckedContinuation<PermissionDecision, Never>
         let approverId: String?
+        let toolName: String
         let timeoutTask: Task<Void, Never>
     }
     private var pending: [String: Pending] = [:]
@@ -49,6 +61,12 @@ public actor PermissionGate {
         self.presenter = presenter
     }
 
+    /// The tool name of a still-pending request, or nil once resolved/expired.
+    /// Lets the host peek the tool for always-allow persistence **before** `resolve` removes the entry.
+    public func peekToolName(_ reqKey: String) -> String? {
+        pending[reqKey]?.toolName
+    }
+
     /// Suspend until `resolve` (or the timeout) settles this `reqKey`. Deny-by-default on timeout.
     /// Registers BEFORE presenting so a fast button click can never race ahead of registration.
     public func await(prompt: PermissionPrompt, timeoutNs: UInt64) async -> PermissionDecision {
@@ -60,7 +78,12 @@ public actor PermissionGate {
                 guard !Task.isCancelled else { return }
                 await self?.settle(reqKey: key, decision: .deny)
             }
-            pending[key] = Pending(continuation: cont, approverId: prompt.approverId, timeoutTask: timeoutTask)
+            pending[key] = Pending(
+                continuation: cont,
+                approverId: prompt.approverId,
+                toolName: prompt.toolName,
+                timeoutTask: timeoutTask
+            )
             if let presenter { Task { await presenter(prompt) } }
         }
     }
@@ -68,6 +91,9 @@ public actor PermissionGate {
     /// Resolve a pending ask. Returns whether it was accepted: an unknown `reqKey` is a no-op
     /// (false); when `approverId` was set, a `byUserId` mismatch is ignored (false) so a bystander
     /// cannot answer. First valid resolve wins.
+    ///
+    /// `always` is accepted like `allow` for the waiting backend (via `backendBehavior`); the host
+    /// persists the tool name (peeked before this call) into `autoAllowClaudeTools`.
     @discardableResult
     public func resolve(reqKey: String, action: PermissionDecision, byUserId: String? = nil) -> Bool {
         guard let entry = pending[reqKey] else { return false }
@@ -97,6 +123,7 @@ public actor PermissionGate {
 // MARK: - Discord component custom_id (≤100 chars)
 
 /// `perm:<reqKey>:<action>` — the button's custom_id, round-tripped by `parseCustomId`.
+/// action ∈ allow | always | deny (TS permissionButtons).
 public func buildCustomId(reqKey: String, action: PermissionDecision) -> String {
     "perm:\(reqKey):\(action.rawValue)"
 }
@@ -108,4 +135,17 @@ public func parseCustomId(_ customId: String) -> (reqKey: String, action: Permis
           !parts[1].isEmpty, let action = PermissionDecision(rawValue: parts[2])
     else { return nil }
     return (parts[1], action)
+}
+
+// MARK: - Auto-allow lookup (host-side)
+
+/// True when `toolName` is in the global `autoAllowClaudeTools` set. Missing/corrupt config → false
+/// (fail-closed: still prompt). Used by bridges to skip the button when the tool is always-allowed.
+public func isAutoAllowedClaudeTool(_ toolName: String, store: ConfigStore = .shared) async -> Bool {
+    do {
+        let cfg = try await store.load()
+        return cfg.autoAllowClaudeTools.contains(toolName)
+    } catch {
+        return false
+    }
 }

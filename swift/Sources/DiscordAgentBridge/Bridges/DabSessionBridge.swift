@@ -12,6 +12,8 @@ public actor DabSessionBridge {
     private let gate: PermissionGate
     /// Session persistence (default shared; tests inject a temp-file store for isolation).
     private let store: SessionStore
+    /// Global config (autoAllowClaudeTools). Tests inject a temp-dir store.
+    private let configStore: ConfigStore
 
     init(
         makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
@@ -21,12 +23,14 @@ public actor DabSessionBridge {
         },
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
-        store: SessionStore = .shared
+        store: SessionStore = .shared,
+        configStore: ConfigStore = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
+        self.configStore = configStore
     }
 
     /// One-shot notice to prepend to the next reply when a stored session failed to resume (F5).
@@ -199,9 +203,14 @@ public actor DabSessionBridge {
         let effort = persisted?.effort ?? config?.effort
         let perm = persisted?.permMode ?? config?.permMode ?? permMode
         let cwdValue = cwd
+        // Thread global autoAllowClaudeTools into the sidecar so makeCanUseTool skips known-safe tools
+        // without a Discord prompt (TS session.start config.autoAllowClaudeTools).
+        let autoAllow = await configStore.autoAllowClaudeTools()
+        let sessionCfg: SessionStartParams.SessionConfig? =
+            autoAllow.isEmpty ? nil : .init(autoAllowClaudeTools: autoAllow)
         let params = SessionStartParams(
             cwd: cwdValue, guildId: guildId, channelId: channelId, ownerId: ownerId,
-            model: model, effort: effort, permMode: perm
+            model: model, effort: effort, permMode: perm, config: sessionCfg
         )
 
         // Resume the stored backend session if we have one; on failure fall back to a fresh start (F5).
@@ -280,19 +289,31 @@ public actor DabSessionBridge {
         case .permissionRequest(let id, let toolName, let input):
             // Ask the owner via Discord buttons; deny-by-default on timeout. Answer the sidecar with
             // the decision so the tool proceeds/aborts. Does not touch the turn accumulator.
+            // W16-e: tools in global autoAllowClaudeTools auto-allow without a button (mid-session
+            // always-allow takes effect immediately on the host even if the sidecar list is stale).
             let meta = sessionMeta[handle]
-            let prompt = PermissionPrompt(
-                reqKey: UUID().uuidString,
-                channelId: meta?.channelId ?? "",
-                toolName: toolName,
-                detail: permissionDetail(input),
-                approverId: meta?.approverId
-            )
             let timeout = permGateTimeoutNs
             let client = self.client
+            let configStore = self.configStore
+            let gate = self.gate
             Task {
-                let decision = await self.gate.await(prompt: prompt, timeoutNs: timeout)
-                try? await client?.sessionPermission(session: handle, requestId: id, behavior: decision.rawValue)
+                if await isAutoAllowedClaudeTool(toolName, store: configStore) {
+                    try? await client?.sessionPermission(session: handle, requestId: id, behavior: "allow")
+                    return
+                }
+                let prompt = PermissionPrompt(
+                    reqKey: UUID().uuidString,
+                    channelId: meta?.channelId ?? "",
+                    toolName: toolName,
+                    detail: permissionDetail(input),
+                    approverId: meta?.approverId
+                )
+                let decision = await gate.await(prompt: prompt, timeoutNs: timeout)
+                try? await client?.sessionPermission(
+                    session: handle,
+                    requestId: id,
+                    behavior: decision.backendBehavior
+                )
             }
         default:
             break

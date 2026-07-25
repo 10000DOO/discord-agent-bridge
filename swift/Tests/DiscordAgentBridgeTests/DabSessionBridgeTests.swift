@@ -121,6 +121,7 @@ private func makeDabBridge(
     emitsPermission: Bool = false,
     capturePerm: LockedBox<[String: String]>? = nil,
     store: SessionStore? = nil,
+    configStore: ConfigStore? = nil,
     emitsBackendId: String? = nil,
     reqCapture: LockedBox<[String]>? = nil,
     resumeFails: Bool = false
@@ -131,8 +132,23 @@ private func makeDabBridge(
         let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm, emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails)
         Task { await server.run() }
         return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
-    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore())
+    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore(),
+       configStore: configStore ?? ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-cfg-missing-\(UUID().uuidString)", isDirectory: true)))
     return (bridge, made)
+}
+
+/// Temp ConfigStore with a valid config.json (for always-allow tests).
+private func freshTempConfigStore(autoAllow: [String] = ["Read", "Glob", "Grep"]) async throws -> ConfigStore {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dab-cfg-\(UUID().uuidString)", isDirectory: true)
+    let store = ConfigStore(baseDir: dir)
+    try await store.save(AppConfig(
+        discord: DiscordSecrets(token: "t", clientId: "c"),
+        auth: .empty,
+        autoAllowClaudeTools: autoAllow
+    ))
+    return store
 }
 
 private func run(_ b: DabSessionBridge, _ text: String, channel: String = "c") async throws -> String {
@@ -262,6 +278,46 @@ struct DabSessionBridgeTests {
         let reply = try await t.value
         #expect(reply == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "deny")
+    }
+
+    // W16-e: Always button → session.permission behavior "allow" (backendBehavior mapping).
+    @Test func alwaysAllowAnswersSidecarAsAllow() async throws {
+        let gate = PermissionGate()
+        let prompts = LockedBox<[PermissionPrompt]>([])
+        await gate.setPresenter { p in prompts.withLock { $0.append(p) } }
+        let capturePerm = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(permGate: gate, emitsPermission: true, capturePerm: capturePerm)
+
+        let t = Task { try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
+                                                config: SessionConfig(backend: .claude, permMode: "plan")) }
+        while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
+        let prompt = prompts.withLock { $0[0] }
+        #expect(prompt.toolName == "Bash")
+        #expect(await gate.resolve(reqKey: prompt.reqKey, action: .always, byUserId: "owner-1") == true)
+        let reply = try await t.value
+        #expect(reply == "ok:hi")
+        #expect(capturePerm.withLock { $0["behavior"] } == "allow")   // always → allow for sidecar
+    }
+
+    // W16-e: tool already in autoAllowClaudeTools → no Discord prompt; sidecar gets allow.
+    @Test func autoAllowedToolSkipsPermissionPrompt() async throws {
+        let gate = PermissionGate()
+        let prompts = LockedBox<[PermissionPrompt]>([])
+        await gate.setPresenter { p in prompts.withLock { $0.append(p) } }
+        let capturePerm = LockedBox<[String: String]>([:])
+        // Fake sidecar still emits permission_request for "Bash"; host must auto-allow via config.
+        let cfg = try await freshTempConfigStore(autoAllow: ["Bash", "Read"])
+        let (bridge, _) = makeDabBridge(
+            permGate: gate, emitsPermission: true, capturePerm: capturePerm, configStore: cfg
+        )
+
+        let reply = try await bridge.runTurn(
+            channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
+            config: SessionConfig(backend: .claude, permMode: "plan")
+        )
+        #expect(reply == "ok:hi")
+        #expect(prompts.withLock { $0.isEmpty })                    // no button prompt
+        #expect(capturePerm.withLock { $0["behavior"] } == "allow")
     }
 
     // T1 (core): backend id captured on notify → persisted → a fresh bridge sharing the store RESUMES

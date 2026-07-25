@@ -209,6 +209,7 @@ struct ConfigStoreTests {
         #expect(try await store.addAutoAllowClaudeTool("Bash") == true)
         #expect(try await store.load().autoAllowClaudeTools.contains("Bash"))
         #expect(try await store.addAutoAllowClaudeTool("Bash") == false)
+        #expect(await store.autoAllowClaudeTools().contains("Bash"))
     }
 
     @Test func normalizeModeIdFreeFunction() {

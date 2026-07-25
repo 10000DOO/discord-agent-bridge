@@ -32,8 +32,8 @@ struct DabMain {
         print("dab: connecting to Discord gateway…")
         print("dab: !claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
-        // Wire the permission-button presenter once: the gate (library) posts Allow/Deny to the
-        // prompt's channel via the Discord client. Set before events flow.
+        // Wire the permission-button presenter once: the gate (library) posts Allow / Always-Allow /
+        // Deny to the prompt's channel via the Discord client. Set before events flow.
         let client = bot.client
         await PermissionGate.shared.setPresenter { prompt in
             await postPermissionButtons(client: client, prompt: prompt)
@@ -103,14 +103,31 @@ struct EventHandler: GatewayEventHandler {
         // (A) Message components: permission buttons + agent-start wizard selects/buttons.
         if let comp = try? payload.data?.requireMessageComponent() {
             // (A1) Permission button click → resolve the gate. Only the session approver may decide.
+            // W16-e: Always-Allow peeks the tool BEFORE resolve (entry is removed on settle), then
+            // persists into global autoAllowClaudeTools (best-effort; turn is already allowed).
             if let (reqKey, action) = parseCustomId(comp.custom_id) {
                 let userId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
+                let alwaysTool = action == .always ? await PermissionGate.shared.peekToolName(reqKey) : nil
                 let accepted = await PermissionGate.shared.resolve(reqKey: reqKey, action: action, byUserId: userId)
                 if accepted {
+                    if action == .always, let tool = alwaysTool, !tool.isEmpty {
+                        await persistAlwaysAllow(
+                            tool: tool,
+                            actorId: userId ?? "",
+                            guildId: payload.guild_id?.rawValue ?? "dm",
+                            channelId: payload.channel_id?.rawValue ?? ""
+                        )
+                    }
+                    let label: String
+                    switch action {
+                    case .allow: label = "ALLOW"
+                    case .always: label = "ALWAYS-ALLOW"
+                    case .deny: label = "DENY"
+                    }
                     // Replace the buttons with the outcome (idempotent, removes the buttons).
                     _ = try? await client.createInteractionResponse(
                         id: payload.id, token: payload.token,
-                        payload: .updateMessage(.init(content: "🔐 \(action.rawValue.uppercased()) — <@\(userId ?? "")>", components: []))
+                        payload: .updateMessage(.init(content: "🔐 \(label) — <@\(userId ?? "")>", components: []))
                     )
                 } else {
                     _ = try? await client.createInteractionResponse(
@@ -728,12 +745,20 @@ struct EventHandler: GatewayEventHandler {
 
 // MARK: - permission buttons
 
-/// The gate's presenter sink: post Allow/Deny buttons to the prompt's channel. custom_id carries the
-/// reqKey so the click routes back to the same pending ask (`parseCustomId` → `gate.resolve`).
+/// The gate's presenter sink: post Allow / Always-Allow / Deny (TS permissionButtons 3-button row).
+/// custom_id carries the reqKey so the click routes back to the same pending ask.
 func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) async {
-    let allow = Interaction.ActionRow.Button(style: .primary, label: "Allow", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .allow))
-    let deny = Interaction.ActionRow.Button(style: .danger, label: "Deny", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .deny))
-    let row: Interaction.ActionRow = [.button(allow), .button(deny)]
+    // TS styles: allow=success, always=primary, deny=danger.
+    let allow = Interaction.ActionRow.Button(
+        style: .success, label: "Allow", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .allow)
+    )
+    let always = Interaction.ActionRow.Button(
+        style: .primary, label: "Always-Allow", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .always)
+    )
+    let deny = Interaction.ActionRow.Button(
+        style: .danger, label: "Deny", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .deny)
+    )
+    let row: Interaction.ActionRow = [.button(allow), .button(always), .button(deny)]
     let detail = prompt.detail.map { ": `\($0)`" } ?? ""
     let mention = prompt.approverId.map { " <@\($0)>" } ?? ""
     let content = "🔐 권한 요청\(mention): **\(prompt.toolName)**\(detail)"
@@ -741,6 +766,25 @@ func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) 
         channelId: ChannelSnowflake(prompt.channelId),
         payload: .init(content: content, components: [row])
     )
+}
+
+/// Persist an Always-Allow grant into global `autoAllowClaudeTools` + audit (TS wiring onAlwaysAllow).
+/// Best-effort: config write failure must not break the interaction (turn is already allowed).
+func persistAlwaysAllow(tool: String, actorId: String, guildId: String, channelId: String) async {
+    await AuditLog.shared.record(AuditEntry(
+        actorId: actorId,
+        roleTier: "execute",
+        guildId: guildId,
+        channelId: channelId,
+        action: "always-allow",
+        tool: tool,
+        status: "allowed"
+    ))
+    do {
+        _ = try await ConfigStore.shared.addAutoAllowClaudeTool(tool)
+    } catch {
+        fputs("dab: failed to persist always-allow tool \(tool): \(error)\n", stderr)
+    }
 }
 
 // MARK: - codex-smoke

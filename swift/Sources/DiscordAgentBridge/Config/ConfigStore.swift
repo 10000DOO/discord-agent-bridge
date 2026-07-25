@@ -136,13 +136,21 @@ public actor ConfigStore {
 
     // MARK: - Nice-to-have (cheap; presets deferred to W16-b)
 
-    /// Append tool to global autoAllowClaudeTools. Returns whether config changed.
+    /// Append tool to global autoAllowClaudeTools (§7A/§8.1 always-allow). Idempotent: a tool
+    /// already present is a no-op. Returns whether the config was changed.
     public func addAutoAllowClaudeTool(_ toolName: String) throws -> Bool {
+        let trimmed = toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
         var config = try load()
-        if config.autoAllowClaudeTools.contains(toolName) { return false }
-        config.autoAllowClaudeTools.append(toolName)
+        if config.autoAllowClaudeTools.contains(trimmed) { return false }
+        config.autoAllowClaudeTools.append(trimmed)
         try save(config)
         return true
+    }
+
+    /// Current global auto-allow list, or empty when config is missing/unreadable (fail-closed).
+    public func autoAllowClaudeTools() -> [String] {
+        (try? load())?.autoAllowClaudeTools ?? []
     }
 
     public func setRenderEnabled(_ enabled: Bool) throws {

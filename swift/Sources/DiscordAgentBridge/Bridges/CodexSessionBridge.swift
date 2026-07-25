@@ -20,6 +20,8 @@ public actor CodexSessionBridge {
     private let gate: PermissionGate
     /// Session persistence (default shared; tests inject a temp-file store).
     private let store: SessionStore
+    /// Global config (autoAllowClaudeTools host-side check for Always-Allow).
+    private let configStore: ConfigStore
 
     init(
         makeClient: @escaping @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient = { onApproval in
@@ -29,12 +31,14 @@ public actor CodexSessionBridge {
         },
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
-        store: SessionStore = .shared
+        store: SessionStore = .shared,
+        configStore: ConfigStore = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
+        self.configStore = configStore
     }
 
     /// One-shot resume-failure notice to prepend to the next reply (F5).
@@ -199,17 +203,23 @@ public actor CodexSessionBridge {
         if isAutoApprovePolicy(policy) {
             onApproval = nil   // auto-approve: no Discord prompt needed
         } else {
+            let configStore = self.configStore
             onApproval = { req in
+                let toolName = codexApprovalToolName(req)
+                // W16-e: always-allowed tools skip the Discord button.
+                if await isAutoAllowedClaudeTool(toolName, store: configStore) {
+                    return .accept
+                }
                 let decision = await gate.await(
                     prompt: PermissionPrompt(
                         reqKey: UUID().uuidString,
                         channelId: channelId,
-                        toolName: codexApprovalToolName(req),
+                        toolName: toolName,
                         approverId: ownerId
                     ),
                     timeoutNs: gateTimeout
                 )
-                return decision == .allow ? .accept : .decline   // deny-by-default via gate timeout
+                return decision.isAllowing ? .accept : .decline   // always|allow → accept; deny-by-default
             }
         }
         let client = try makeClient(onApproval)

@@ -21,6 +21,41 @@ struct PermissionGateTests {
         }
     }
 
+    // W16-e: Always-Allow settles the waiter with `.always` (backend maps via backendBehavior → allow).
+    @Test func resolveAlwaysReturnsAlwaysDecision() async {
+        let gate = PermissionGate()
+        let t = Task {
+            await gate.await(
+                prompt: .init(reqKey: "k", channelId: "c", toolName: "Bash", approverId: "owner"),
+                timeoutNs: bigTimeout
+            )
+        }
+        await waitRegistered(gate)
+        #expect(await gate.peekToolName("k") == "Bash")
+        #expect(await gate.resolve(reqKey: "k", action: .always, byUserId: "owner") == true)
+        let decision = await t.value
+        #expect(decision == .always)
+        #expect(decision.isAllowing == true)
+        #expect(decision.backendBehavior == "allow")
+        #expect(decision.isAlways == true)
+        #expect(await gate.peekToolName("k") == nil)   // cleared after settle
+    }
+
+    @Test func peekToolNameWhilePending() async {
+        let gate = PermissionGate()
+        let t = Task {
+            await gate.await(
+                prompt: .init(reqKey: "r1", channelId: "c", toolName: "WebFetch", approverId: "owner"),
+                timeoutNs: bigTimeout
+            )
+        }
+        await waitRegistered(gate)
+        #expect(await gate.peekToolName("r1") == "WebFetch")
+        #expect(await gate.peekToolName("missing") == nil)
+        #expect(await gate.resolve(reqKey: "r1", action: .allow, byUserId: "owner") == true)
+        _ = await t.value
+    }
+
     @Test func timeoutDeniesByDefault() async {
         let gate = PermissionGate()
         let decision = await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 50_000_000) // 50ms
@@ -73,6 +108,10 @@ struct PermissionCustomIdTests {
         #expect(parseCustomId("perm:abc:allow")?.reqKey == "abc")
         #expect(parseCustomId("perm:abc:allow")?.action == .allow)
         #expect(parseCustomId("perm:xy:deny")?.action == .deny)
+        // W16-e Always-Allow custom_id
+        #expect(buildCustomId(reqKey: "abc", action: .always) == "perm:abc:always")
+        #expect(parseCustomId("perm:abc:always")?.action == .always)
+        #expect(parseCustomId("perm:abc:always")?.reqKey == "abc")
     }
 
     @Test func rejectsGarbage() {
@@ -81,6 +120,15 @@ struct PermissionCustomIdTests {
         #expect(parseCustomId("other:abc:allow") == nil)        // wrong prefix
         #expect(parseCustomId("perm::allow") == nil)            // empty reqKey
         #expect(parseCustomId("perm:abc:maybe") == nil)         // unknown action
+    }
+
+    @Test func backendBehaviorMapping() {
+        #expect(PermissionDecision.allow.backendBehavior == "allow")
+        #expect(PermissionDecision.always.backendBehavior == "allow")
+        #expect(PermissionDecision.deny.backendBehavior == "deny")
+        #expect(PermissionDecision.allow.isAllowing)
+        #expect(PermissionDecision.always.isAllowing)
+        #expect(!PermissionDecision.deny.isAllowing)
     }
 }
 

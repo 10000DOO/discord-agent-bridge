@@ -309,7 +309,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W16-b** | L | `todo` | `/config` 설정 패널(역할 티어 롤셀렉트·기본값 셀렉트·Save·알림/이미지 서브패널). W13-a·W15-a 선행 | 패널 동작 |
 | **W16-c** | L | `todo` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
 | **W16-d** | L | `todo` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
-| **W16-e** | L | `todo` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
+| **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
 | **W16-f** | L | `todo` | **custom 백엔드**(`Backend` enum+`routeDecision`+persist+`shellEnv.ts` dotfile env 추출 + Claude `prepareSession` env-overlay 훅) | custom UX |
 | **W16-g** | L | `todo` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`) | 도구/상태 가시성 |
 | **W16-h** | L | `todo` | auto-update 승인/무시 버튼(`updateButton`) + 업데이터(설치+재시작). W12 인접 | 자동 업데이트 |
@@ -377,6 +377,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W11-b2 slice1 | `/agent start` **셀렉트 마법사**(folder 없음). lib pure `ChannelWizard` SM(select=pending, Next=commit; applyBackend 리셋; effort skip; Back/Cancel) + `loadWizardOptionSource`←라이브 `providerCatalog` + `WizardRegistry` + DabMain 에페메럴 embed/StringSelect/버튼·owner gate·done 시 registry+store bind. cwd=`DAB_CWD` else home. 슬래시 start 옵션 제거(wizard-only). 잔여: DirectoryBrowser·모달·A4D 채널·preset·reconfigure. |
 | 2026-07-26 | W11-b2 slice2 | pure `DirectoryBrowser`(TS parity: into/up/here·goTo·dot-last sort·cap25·allowedRoots confine/unbounded) + `ChannelWizard` first step=`folder`(dir:here→backend). DabMain 브라우저 start=`DAB_CWD`/home unbounded. button `disabled` for dir:up. 모달/native/panel/create/resume/A4D/preset 미포함(ponytail). 단위테스트 DirectoryBrowser+wizard folder. |
 | 2026-07-26 | W11-b2 slice3 | folder 클러스터 완성: `FolderPanel`(osascript choose folder·escapeAppleScript·injectable `PanelRunner`·timeout SIGKILL·FolderPanelBusy) + `DirectoryBrowser` dir:create/manual/[panel] 버튼·`createChild`+`isSafeFolderName` + DabMain showModal(dir:create/manual)·modalSubmit mkdir/goTo·dir:panel defer+native pick. **잔여**: resume·A4D channel·preset·reconfigure. 단위테스트 FolderPanel+create/goTo. |
+| 2026-07-26 | W16-e | Always-Allow 3버튼(Allow/Always-Allow/Deny) + `perm:<reqKey>:always` + `PermissionDecision.always`(`backendBehavior`→allow). DabMain peek→`addAutoAllowClaudeTool` 영속·audit. 3 브리지 host-side auto-allow skip + Claude `session.start`에 `autoAllowClaudeTools` 전달. 단위테스트 AlwaysAllow+gate+bridge. swift test **435** PASS. |
 
 ---
 

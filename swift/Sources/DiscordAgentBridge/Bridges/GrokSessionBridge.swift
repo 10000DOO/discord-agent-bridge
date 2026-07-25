@@ -19,6 +19,8 @@ public actor GrokSessionBridge {
     private let makeClient: @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient
     /// Permission gate (default shared; tests inject a fresh gate for isolation).
     private let gate: PermissionGate
+    /// Global config (autoAllowClaudeTools host-side check for Always-Allow).
+    private let configStore: ConfigStore
 
     init(
         makeClient: @escaping @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient = { config, onPermission in
@@ -32,11 +34,13 @@ public actor GrokSessionBridge {
             return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000, onPermission: onPermission)
         },
         gate: PermissionGate = .shared,
-        store: SessionStore = .shared
+        store: SessionStore = .shared,
+        configStore: ConfigStore = .shared
     ) {
         self.makeClient = makeClient
         self.gate = gate
         self.store = store
+        self.configStore = configStore
     }
 
     /// Session persistence (default shared; tests inject a temp-file store).
@@ -127,17 +131,23 @@ public actor GrokSessionBridge {
         if grokBypassPermMode(config?.permMode) {
             onPermission = nil   // `--always-approve`: grok never asks
         } else {
+            let configStore = self.configStore
             onPermission = { req in
+                let toolName = req.toolName ?? "tool"
+                // W16-e: always-allowed tools skip the Discord button.
+                if await isAutoAllowedClaudeTool(toolName, store: configStore) {
+                    return .allow
+                }
                 let decision = await gate.await(
                     prompt: PermissionPrompt(
                         reqKey: UUID().uuidString,
                         channelId: channelId,
-                        toolName: req.toolName ?? "tool",
+                        toolName: toolName,
                         approverId: ownerId
                     ),
                     timeoutNs: gateTimeout
                 )
-                return decision == .allow ? .allow : .deny   // deny-by-default via gate timeout
+                return decision.isAllowing ? .allow : .deny   // always|allow → allow; deny-by-default
             }
         }
         let client = try makeClient(config, onPermission)
