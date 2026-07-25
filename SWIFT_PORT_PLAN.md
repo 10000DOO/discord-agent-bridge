@@ -19,7 +19,7 @@
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
 | **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
-| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **356** PASS. ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
+| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **370** PASS. ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
 
 ### 완료 (W1–W10)
 
@@ -39,13 +39,14 @@
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W11** | `doing` | **a·b1·c·e·f1·f2 완료**(f2=재시작 1:1 재연결, 데드락 수정 후 병합). 남은: 마법사(b2)·라이브 슬래시(d, incl. `/clear`). **→ §14 핸드오프 필독** |
+| **W11** | `doing` | **a·b1·c·d·e·f1·f2·h 완료**. 남은: 마법사(b2)·HUD(g). **→ §14 핸드오프 필독** |
 | **W12** | `todo` | 레거시 TS 정책, 버전 호환, 루트 README 마이그레이션 가이드 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
 - 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 중)
-- 라이브 슬래시 `/mode`·`/model`·`/clear` 등 (W11-d) · 마법사(W11-b2) · HUD(W11-g)
+- Claude 라이브 `session.setModel`/`setEffort` RPC 배선 (W11-d는 바인딩 레이어만; 옵션 B 후속)
+- `/mode backend` reconfigure 마법사 팝업 (W11-b2) · HUD(W11-g)
 - interrupt **버튼 UI**(lib interrupt API는 W14 완료)
 - host.file.* 실제 Discord 업로드 (Swift; TS 사이드카 경로는 구현됨)
 - custom 백엔드 · 렌더/도구스레드 · `/config` 패널 등 (W16 잔여)
@@ -80,9 +81,10 @@ swift run --package-path swift dab grok-smoke
 2. ~~**W16-a 답변 청킹**~~ ✅ 완료(`DiscordText.chunkMessage` + 성공/에러 다중 `createMessage`)
 3. ~~**W14 라이프사이클**(stop/interrupt/channelDelete)~~ ✅ 완료(a·b: bridges stop/interrupt + SessionLifecycle + `/stop`·`/stop-all`·`/agent close` + channelDelete)
 4. ~~**W15** 3-계층 config + state migration/archived~~ ✅ 완료(a+b)
-5. **W11-b2** 마법사(folder 클러스터 전부 포함)·**W11-d** 라이브 슬래시·**W11-g** 패널
-6. **W16** 기능 완전누락(/config·/setup·/doc·custom·도구스레드/diff·상태임베드·auto-update)
-7. **W12** — 레거시/문서/호환 매트릭스
+5. ~~**W11-d** 라이브 슬래시~~ ✅ 완료(`/model`·`/effort`·`/mode`·`/clear`·`/agent resume·stats`; reconfigure 팝업은 b2)
+6. **W11-b2** 마법사(folder 클러스터 전부 포함)·**W11-g** 패널
+7. **W16** 기능 완전누락(/config·/setup·/doc·custom·도구스레드/diff·상태임베드·auto-update)
+8. **W12** — 레거시/문서/호환 매트릭스
 
 ---
 
@@ -280,7 +282,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
 | **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
 | **W11-f2** | G | `done` | 재시작 1:1 재연결: backend-id 캡처 + lazy resume + 폴백 + 부팅 복원. 데드락(backend_id notify 레이스) 수정 후 `plan/swift-port` 병합(§14.3). T1–T9 병렬/직렬 171 PASS | 재연결 검증 완료 |
-| **W11-d** | G | `todo` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/perm`·`/stop`·`/clear`·`/agent resume·stats`. **`/mode backend` reconfigure 팝업(model→effort→perm 재선택) 포함**(전수조사 A) | 세션 조작 |
+| **W11-d** | G | `done` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/mode perm`·`/stop`·`/clear`·`/agent resume·stats`. 바인딩 레이어(registry+store)·`clearChannel`(§14.6). reconfigure 팝업은 **W11-b2**. Claude 라이브 setModel RPC 미포함 | 세션 조작 슬래시 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
 | **W11-g** | G | `todo` | **사용량/HUD 패널 Swift 포팅**(3백엔드). 브리지가 `context_usage`(+이번턴 도구/서브에이전트) 표면화 → 사용량 한도 조회(Claude 5h+주간+opus/sonnet·Grok 주간·Codex 없음) → 임베드 렌더러+게시. **신선도 불변식**: 모든 필드 렌더 시점 라이브, 캐시 재사용 금지. **소품 흡수**(전수조사 B): 완료 라인(`resultLine` 비용/토큰/시간)·완료 시 @멘션(`mentionOnComplete`)·rate_limit 라인(`formatRateLimitLine`)은 이벤트 표면화 배선이 겹치므로 여기 포함. 상세 §14.9 | 패널 모든 정보 최신 표시 |
 | **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
@@ -451,7 +453,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 | `swift/Sources/DiscordAgentBridge/Codex/` | Codex app-server 클라이언트 골격 |
 | `swift/Sources/DiscordAgentBridge/Grok/` | Grok ACP 클라이언트 골격 |
 | `swift/Sources/DiscordAgentBridge/Bridges/` | Dab/Codex/Grok 세션 브리지 |
-| `swift/Sources/DiscordAgentBridge/Session/` | SessionRegistry·PermissionGate·CodexPolicy·SlashCommandSpec·**SessionStore(f1)** |
+| `swift/Sources/DiscordAgentBridge/Session/` | SessionRegistry·SessionLifecycle·BindingUpdate·SlashCommandSpec·**SessionStore**·Auth/Audit/Confinement |
 | `swift/scripts/`, `swift/deploy/` | launchd 배포(W11-e) |
 
 ---
@@ -459,7 +461,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` HEAD = **`a1829d9`**(W11-f2 병합 `385aff6` + 문서 갱신), **원격 푸시됨**·워킹트리 clean. W10 + W11-a/b1/c/e/f1/**f2** 완료. **다음(문서 순서) = W11-h(카탈로그, b2 선행) → W11-b2(마법사) → W11-d(라이브 슬래시) → W11-g(패널) → W12.**
+`plan/swift-port` **W11-d 완료**(라이브 슬래시 바인딩 레이어). W10 + W11-a/b1/c/d/e/f1/f2/h + W13/W14/W15/W16-a 완료. **다음 = W11-b2(마법사) → W11-g(패널) → W16 잔여 → W12.**
 
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
@@ -497,11 +499,10 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. **W11-h** — provider 카탈로그 Swift 포팅 (3백엔드 모델/추론/권한 라이브, 상세 §14.10). ← **다음 착수 (b2 선행)**
-2. **W11-b2** — `/agent start` 셀렉트 마법사 UI (W11-h 카탈로그 주입).
-3. **W11-d** — 라이브 슬래시 `/model`·`/effort`·`/mode`·`/perm`·`/stop`·**`/clear`**(14.6). (W11-h 카탈로그 재사용)
-4. **W11-g** — 사용량/HUD 패널 Swift 포팅 + 정보 최신화 (상세 §14.9). W11-d 이후 권장.
-5. **W12** — 레거시 TS 정리·호환·README.
+1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ (바인딩 레이어; reconfigure 팝업·Claude setModel RPC 후속)
+2. **W11-b2** — `/agent start` 셀렉트 마법사 UI (W11-h 카탈로그 주입). ← **다음 착수**
+3. **W11-g** — 사용량/HUD 패널 Swift 포팅 + 정보 최신화 (상세 §14.9).
+4. **W12** — 레거시 TS 정리·호환·README.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영.
 
 ### 14.8 병렬 작업 교훈

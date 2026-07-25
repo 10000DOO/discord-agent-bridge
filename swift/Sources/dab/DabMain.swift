@@ -78,7 +78,7 @@ struct EventHandler: GatewayEventHandler {
         print("dab: restored \(active.count) session binding(s) from store")
     }
 
-    /// Register `/agent`, `/stop`, `/stop-all`. Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h).
+    /// Register slash commands (W11-d set). Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h).
     private func registerAgentCommand(appId: ApplicationSnowflake) async {
         let cmds = allCommandPayloads()
         do {
@@ -115,12 +115,11 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
-        // (B) Slash command — `/agent` (subcommands), `/stop` (drive), `/stop-all` (admin).
+        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all (TS ACTION_TIER; drive except stop-all).
         guard let cmd = try? payload.data?.requireApplicationCommand() else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-        // TS ACTION_TIER: stop-all → admin; stop / agent.* → drive (helpers.ts).
         let authAction: AuthAction = cmd.name == "stop-all" ? .admin : .drive
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
@@ -146,18 +145,99 @@ struct EventHandler: GatewayEventHandler {
             return
         }
         let tier = decision.tier?.rawValue ?? "execute"
+        let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
+        let life = SessionLifecycle.shared
 
         switch cmd.name {
         case "stop":
-            _ = await SessionLifecycle.shared.stopChannel(
+            _ = await life.stopChannel(
                 channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
             )
             try await respondEphemeral(payload, "세션을 종료했습니다.")
+
         case "stop-all":
-            let count = await SessionLifecycle.shared.stopAll(
-                actorId: actorId, guildId: guildId, roleTier: tier
-            )
+            let count = await life.stopAll(actorId: actorId, guildId: guildId, roleTier: tier)
             try await respondEphemeral(payload, "세션 \(count)개를 모두 종료했습니다.")
+
+        case "clear":
+            // PLAN §14.6: keep config, wipe backendSessionId + live bridges (not full unbind).
+            let ok = await life.clearChannel(
+                channelId: channelId, actorId: actorId, guildId: guildId,
+                roleTier: tier, defaultCwd: stubCwd
+            )
+            try await respondEphemeral(
+                payload,
+                ok ? "대화 컨텍스트를 초기화했습니다. (설정 유지, 다음 메시지부터 새 세션)"
+                   : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+            )
+
+        case "model":
+            guard let value = try? cmd.requireOption(named: "value").requireString(), !value.isEmpty else {
+                try await respondEphemeral(payload, "model 값이 필요합니다.")
+                return
+            }
+            let ok = await life.updateBinding(
+                channelId: channelId, patch: BindingPatch(model: value),
+                actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
+            )
+            try await respondEphemeral(
+                payload,
+                ok ? "모델을 `\(value)`(으)로 바꿨습니다. (다음 턴/ensure에 적용)"
+                   : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+            )
+
+        case "effort":
+            guard let value = try? cmd.requireOption(named: "value").requireString(), !value.isEmpty else {
+                try await respondEphemeral(payload, "effort 값이 필요합니다.")
+                return
+            }
+            let ok = await life.updateBinding(
+                channelId: channelId, patch: BindingPatch(effort: value),
+                actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
+            )
+            try await respondEphemeral(
+                payload,
+                ok ? "추론 강도를 `\(value)`(으)로 바꿨습니다. (다음 턴/ensure에 적용)"
+                   : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+            )
+
+        case "mode":
+            guard let sub = cmd.options?.first else { return }
+            switch sub.name {
+            case "backend":
+                guard let raw = try? sub.requireOption(named: "backend").requireString(),
+                      let backend = Backend(rawValue: raw)
+                else {
+                    try await respondEphemeral(payload, "알 수 없는 backend")
+                    return
+                }
+                let ok = await life.rebindBackend(
+                    channelId: channelId, backend: backend,
+                    actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
+                )
+                try await respondEphemeral(
+                    payload,
+                    ok ? "백엔드를 \(backend.rawValue)(으)로 전환했습니다. (컨텍스트 초기화)"
+                       : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                )
+            case "perm":
+                guard let value = try? sub.requireOption(named: "value").requireString(), !value.isEmpty else {
+                    try await respondEphemeral(payload, "perm 값이 필요합니다.")
+                    return
+                }
+                let ok = await life.updateBinding(
+                    channelId: channelId, patch: BindingPatch(permMode: value),
+                    actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
+                )
+                try await respondEphemeral(
+                    payload,
+                    ok ? "권한 모드를 `\(value)`(으)로 바꿨습니다."
+                       : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                )
+            default:
+                try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
+            }
+
         case "agent":
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
@@ -171,21 +251,47 @@ struct EventHandler: GatewayEventHandler {
                 let model = try? sub.requireOption(named: "model").requireString()
                 let effort = try? sub.requireOption(named: "effort").requireString()
                 let perm = try? sub.requireOption(named: "perm").requireString()
-                await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort, permMode: perm))
+                await SessionRegistry.shared.bind(
+                    channelId: channelId,
+                    SessionConfig(backend: backend, model: model, effort: effort, permMode: perm)
+                )
                 // Persist a routing stub (no backend id yet) so a restart restores this binding; the
                 // first turn's bridge upsert overwrites it with the real backend session id (F7).
-                let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
-                let record = PersistedSession(backend: backend, backendSessionId: nil, cwd: stubCwd, guildId: guildId, ownerId: ownerId, model: model, effort: effort, permMode: perm, updatedAt: ISO8601DateFormatter().string(from: Date()))
+                let record = PersistedSession(
+                    backend: backend, backendSessionId: nil, cwd: stubCwd, guildId: guildId,
+                    ownerId: ownerId, model: model, effort: effort, permMode: perm,
+                    updatedAt: ISO8601DateFormatter().string(from: Date())
+                )
                 try? await SessionStore.shared.upsert(channelId: channelId, record)
-                let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }].compactMap { $0 }.joined(separator: " ")
-                try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다.")
+                let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }]
+                    .compactMap { $0 }.joined(separator: " ")
+                try await respondEphemeral(
+                    payload,
+                    "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다."
+                )
             case "close":
                 // W14: real stop (backend + unbind) — was unbind-only and leaked processes.
-                _ = await SessionLifecycle.shared.stopChannel(
+                _ = await life.stopChannel(
                     channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
                 )
                 try await respondEphemeral(payload, "이 채널의 세션을 종료하고 바인딩을 해제했습니다.")
+            case "resume":
+                // W11-d minimal: re-bind registry from non-archived store row (no wizard).
+                if let cfg = await life.resumeBinding(channelId: channelId) {
+                    try await respondEphemeral(
+                        payload,
+                        "저장된 \(cfg.backend.rawValue) 세션을 다시 바인딩했습니다."
+                    )
+                } else {
+                    try await respondEphemeral(payload, "이 채널에 재개할 세션이 없습니다.")
+                }
+            case "stats":
+                let lines = formatStatsLines(bindings: await life.listActiveBindings())
+                try await respondEphemeral(
+                    payload,
+                    "**활성 세션** (\(lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count))\n" + lines.joined(separator: "\n")
+                )
             default:
                 try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
             }

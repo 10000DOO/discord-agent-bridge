@@ -1,9 +1,9 @@
 import Foundation
 
 /// Thin orchestration over the three bridges + SessionRegistry + SessionStore for stop /
-/// interrupt / stopAll (W14). Mirrors `sessionOrchestrator.ts` stop/interrupt/stopAll without
-/// pulling Discord into the library. Bridges only drop live backend state; this type owns the
-/// registry/store unbind for hard-stop paths.
+/// interrupt / stopAll / clear / rebind / field updates (W14 + W11-d). Mirrors
+/// `sessionOrchestrator.ts` stop/interrupt/stopAll + slash binding ops without pulling Discord
+/// into the library. Bridges only drop live backend state; this type owns registry/store policy.
 ///
 /// Injectable bridge callbacks keep unit tests off the shared singletons when needed; production
 /// uses the default shared-bridge closures.
@@ -20,6 +20,7 @@ public struct SessionLifecycle: Sendable {
     private let interruptClaude: InterruptOp
     private let interruptCodex: InterruptOp
     private let interruptGrok: InterruptOp
+    private let now: @Sendable () -> String
 
     public init(
         registry: SessionRegistry = .shared,
@@ -30,7 +31,9 @@ public struct SessionLifecycle: Sendable {
         stopGrok: @escaping ChannelOp = { await GrokSessionBridge.shared.stop(channelId: $0) },
         interruptClaude: @escaping InterruptOp = { await DabSessionBridge.shared.interrupt(channelId: $0) },
         interruptCodex: @escaping InterruptOp = { await CodexSessionBridge.shared.interrupt(channelId: $0) },
-        interruptGrok: @escaping InterruptOp = { await GrokSessionBridge.shared.interrupt(channelId: $0) }
+        interruptGrok: @escaping InterruptOp = { await GrokSessionBridge.shared.interrupt(channelId: $0) },
+        // Default cannot call internal `iso8601Now` from a public default-arg expression.
+        now: (@Sendable () -> String)? = nil
     ) {
         self.registry = registry
         self.store = store
@@ -41,6 +44,7 @@ public struct SessionLifecycle: Sendable {
         self.interruptClaude = interruptClaude
         self.interruptCodex = interruptCodex
         self.interruptGrok = interruptGrok
+        self.now = now ?? { iso8601Now() }
     }
 
     /// Process-wide default used by `dab` (same pattern as bridges/registry).
@@ -60,9 +64,7 @@ public struct SessionLifecycle: Sendable {
     ) async -> Bool {
         // Always all three — binding/store may name the wrong backend or be empty while a
         // prefix-spawned process is still live (RV: process leak).
-        await stopClaude(channelId)
-        await stopCodex(channelId)
-        await stopGrok(channelId)
+        await stopAllBridges(channelId: channelId)
 
         let backend = await resolveBackend(channelId: channelId)
         let hadReg = await registry.binding(channelId: channelId) != nil
@@ -133,10 +135,175 @@ public struct SessionLifecycle: Sendable {
         return ids.count
     }
 
+    // MARK: - W11-d binding ops
+
+    /// `/clear`: stop live bridges, wipe `backendSessionId`, **keep** registry+store config
+    /// (PLAN §14.6). Next turn fresh-starts with the same model/effort/perm/cwd.
+    @discardableResult
+    public func clearChannel(
+        channelId: String,
+        actorId: String,
+        guildId: String,
+        roleTier: String = "execute",
+        defaultCwd: String = NSHomeDirectory()
+    ) async -> Bool {
+        await stopAllBridges(channelId: channelId)
+        guard var session = await resolveSession(
+            channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
+        ) else { return false }
+
+        session.backendSessionId = nil
+        session.updatedAt = now()
+        try? await store.upsert(channelId: channelId, session)
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+        await audit.record(AuditEntry(
+            actorId: actorId,
+            roleTier: roleTier,
+            guildId: guildId,
+            channelId: channelId,
+            action: "clear",
+            mode: session.backend.rawValue,
+            status: "ok"
+        ))
+        return true
+    }
+
+    /// `/mode backend`: stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.
+    /// Cross-backend drops model/effort (backend-specific); same-backend keeps them.
+    @discardableResult
+    public func rebindBackend(
+        channelId: String,
+        backend: Backend,
+        actorId: String,
+        guildId: String,
+        roleTier: String = "execute",
+        defaultCwd: String = NSHomeDirectory()
+    ) async -> Bool {
+        guard var session = await resolveSession(
+            channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
+        ) else { return false }
+
+        await stopAllBridges(channelId: channelId)
+
+        let same = session.backend == backend
+        session.backend = backend
+        session.backendSessionId = nil
+        if !same {
+            session.model = nil
+            session.effort = nil
+        }
+        session.updatedAt = now()
+        try? await store.upsert(channelId: channelId, session)
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+        await audit.record(AuditEntry(
+            actorId: actorId,
+            roleTier: roleTier,
+            guildId: guildId,
+            channelId: channelId,
+            action: "mode.backend",
+            mode: backend.rawValue,
+            status: "ok"
+        ))
+        return true
+    }
+
+    /// Patch model/effort/permMode on registry+store without stopping the live session.
+    /// Returns false when no binding exists (TS `router.noSession`).
+    @discardableResult
+    public func updateBinding(
+        channelId: String,
+        patch: BindingPatch,
+        actorId: String,
+        guildId: String,
+        roleTier: String = "execute",
+        defaultCwd: String = NSHomeDirectory()
+    ) async -> Bool {
+        guard var session = await resolveSession(
+            channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
+        ) else { return false }
+
+        // Field patches must not wipe the resume id unless explicitly requested.
+        session = applyPatch(to: session, patch, now: now())
+        try? await store.upsert(channelId: channelId, session)
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+
+        let action: String
+        if patch.model != nil { action = "model" }
+        else if patch.effort != nil { action = "effort" }
+        else if patch.permMode != nil { action = "mode.perm" }
+        else { action = "binding" }
+
+        await audit.record(AuditEntry(
+            actorId: actorId,
+            roleTier: roleTier,
+            guildId: guildId,
+            channelId: channelId,
+            action: action,
+            mode: session.backend.rawValue,
+            permMode: session.permMode,
+            status: "ok"
+        ))
+        return true
+    }
+
+    /// `/agent resume` minimal: re-register registry from a non-archived store row.
+    /// Returns the rebound config, or nil when none.
+    public func resumeBinding(channelId: String) async -> SessionConfig? {
+        guard let session = await store.binding(channelId: channelId), !session.archived else {
+            return nil
+        }
+        let config = sessionConfig(from: session)
+        await registry.bind(channelId: channelId, config)
+        return config
+    }
+
+    /// Active bindings for `/agent stats` (registry ∪ non-archived store; registry wins on model).
+    public func listActiveBindings() async -> [(channelId: String, backend: Backend, model: String?)] {
+        var out: [String: (Backend, String?)] = [:]
+        for (id, ps) in await store.active() {
+            out[id] = (ps.backend, ps.model)
+        }
+        for (id, cfg) in await registry.list() {
+            out[id] = (cfg.backend, cfg.model)
+        }
+        return out.keys.sorted().map { id in
+            let v = out[id]!
+            return (channelId: id, backend: v.0, model: v.1)
+        }
+    }
+
     // MARK: - private
+
+    private func stopAllBridges(channelId: String) async {
+        await stopClaude(channelId)
+        await stopCodex(channelId)
+        await stopGrok(channelId)
+    }
 
     private func resolveBackend(channelId: String) async -> Backend? {
         if let b = await registry.binding(channelId: channelId)?.backend { return b }
         return await store.binding(channelId: channelId)?.backend
+    }
+
+    /// Prefer store row; fall back to registry-only stub so clear/mode/patch still work after
+    /// `/agent start` before the first turn writes store (or if store load failed).
+    private func resolveSession(
+        channelId: String,
+        guildId: String,
+        defaultCwd: String
+    ) async -> PersistedSession? {
+        if let s = await store.binding(channelId: channelId) { return s }
+        guard let cfg = await registry.binding(channelId: channelId) else { return nil }
+        return PersistedSession(
+            backend: cfg.backend,
+            backendSessionId: nil,
+            cwd: defaultCwd,
+            guildId: guildId,
+            ownerId: nil,
+            model: cfg.model,
+            effort: cfg.effort,
+            permMode: cfg.permMode,
+            updatedAt: now()
+        )
     }
 }

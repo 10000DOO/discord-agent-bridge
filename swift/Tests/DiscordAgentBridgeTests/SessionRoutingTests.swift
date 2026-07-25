@@ -77,7 +77,7 @@ struct AgentCommandSpecTests {
     @Test func startHasRequiredBackendWithAllChoices() {
         let spec = agentCommandSpec()
         #expect(spec.name == "agent")
-        #expect(spec.subcommands.map(\.name) == ["start", "close"])
+        #expect(spec.subcommands.map(\.name) == ["start", "close", "resume", "stats"])
 
         let start = spec.subcommands.first { $0.name == "start" }
         let backend = start?.options.first { $0.name == "backend" }

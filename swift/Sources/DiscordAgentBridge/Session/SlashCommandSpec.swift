@@ -1,8 +1,8 @@
 import Foundation
 
 /// Backend-agnostic description of a slash command. The library owns the shape (testable); `dab`
-/// translates it to `DiscordBM`'s `Payloads.ApplicationCommandCreate` (thin glue, no logic). Kept
-/// to exactly what `/agent` needs — subcommands with string options + choices.
+/// translates it to `DiscordBM`'s `Payloads.ApplicationCommandCreate` (thin glue, no logic).
+/// Supports subcommands **or** top-level string options (leaf commands like `/model value:…`).
 public struct SlashCommandSpec: Sendable, Equatable {
     public struct Choice: Sendable, Equatable {
         public var name: String
@@ -28,14 +28,23 @@ public struct SlashCommandSpec: Sendable, Equatable {
     }
     public var name: String
     public var description: String
+    /// Top-level options when the command has no subcommands (e.g. `/model`, `/effort`).
+    public var options: [Option]
     public var subcommands: [Subcommand]
-    public init(name: String, description: String, subcommands: [Subcommand]) {
-        self.name = name; self.description = description; self.subcommands = subcommands
+    public init(
+        name: String,
+        description: String,
+        options: [Option] = [],
+        subcommands: [Subcommand] = []
+    ) {
+        self.name = name
+        self.description = description
+        self.options = options
+        self.subcommands = subcommands
     }
 }
 
-/// `/agent start backend:<claude|codex|grok>` and `/agent close`. (resume/stats/mode/model/effort
-/// are later slices.)
+/// `/agent start|close|resume|stats`.
 public func agentCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "agent",
@@ -71,21 +80,91 @@ public func agentCommandSpec() -> SlashCommandSpec {
             ),
             // W14: close is a real stop (backend + unbind), not unbind-only.
             .init(name: "close", description: "Stop and unbind this channel's session", options: []),
+            // W11-d: minimal re-bind from store (full resume wizard later).
+            .init(name: "resume", description: "Re-bind this channel's stored session", options: []),
+            .init(name: "stats", description: "List active session bindings", options: []),
+        ]
+    )
+}
+
+/// `/mode backend` + `/mode perm` (TS parity; drive tier).
+public func modeCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "mode",
+        description: "Switch the backend or permission mode",
+        subcommands: [
+            .init(
+                name: "backend",
+                description: "Switch the agent backend (starts a fresh context)",
+                options: [
+                    .init(
+                        name: "backend",
+                        description: "Backend to switch to",
+                        required: true,
+                        choices: Backend.allCases.map { .init(name: $0.rawValue, value: $0.rawValue) }
+                    ),
+                ]
+            ),
+            .init(
+                name: "perm",
+                description: "Switch the permission mode (session kept)",
+                options: [
+                    .init(name: "value", description: "Permission mode", required: true, choices: []),
+                ]
+            ),
+        ]
+    )
+}
+
+/// `/model value:<id>` — update binding model (next turn / next ensure uses it).
+public func modelCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "model",
+        description: "Switch the model for this session",
+        options: [
+            .init(name: "value", description: "Model to switch to", required: true, choices: []),
+        ]
+    )
+}
+
+/// `/effort value:<level>` — update binding effort.
+public func effortCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "effort",
+        description: "Switch the reasoning effort for this session",
+        options: [
+            .init(name: "value", description: "Reasoning effort to switch to", required: true, choices: []),
         ]
     )
 }
 
 /// Top-level `/stop` — hard-stop the current channel (drive tier; TS ACTION_TIER.stop).
 public func stopCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(name: "stop", description: "Stop this channel's agent session", subcommands: [])
+    SlashCommandSpec(name: "stop", description: "Stop this channel's agent session")
+}
+
+/// `/clear` — drop live sessions, keep config, wipe backendSessionId (PLAN §14.6).
+public func clearCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "clear",
+        description: "Clear conversation context (fresh session, same folder/settings)"
+    )
 }
 
 /// Top-level `/stop-all` — hard-stop every bound session (admin tier; TS ACTION_TIER['stop-all']).
 public func stopAllCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(name: "stop-all", description: "Stop all agent sessions", subcommands: [])
+    SlashCommandSpec(name: "stop-all", description: "Stop all agent sessions")
 }
 
-/// Every slash command the bot registers (agent + lifecycle).
+/// Every slash command the bot registers (W11-d live set + lifecycle).
 public func allSlashCommandSpecs() -> [SlashCommandSpec] {
-    [agentCommandSpec(), stopCommandSpec(), stopAllCommandSpec()]
+    [
+        agentCommandSpec(),
+        modeCommandSpec(),
+        modelCommandSpec(),
+        effortCommandSpec(),
+        stopCommandSpec(),
+        clearCommandSpec(),
+        stopAllCommandSpec(),
+    ]
 }

@@ -175,6 +175,170 @@ struct SessionLifecycleTests {
         #expect(await store.binding(channelId: "c") == nil)
     }
 
+    // MARK: - W11-d clear / rebind / update
+
+    @Test func clearKeepsConfigWipesBackendSessionIdAndStopsBridges() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        await reg.bind(
+            channelId: "c1",
+            SessionConfig(backend: .claude, model: "sonnet", effort: "high", permMode: "plan")
+        )
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B-OLD", cwd: "/proj", guildId: "g",
+                model: "sonnet", effort: "high", permMode: "plan", updatedAt: "t0"
+            )
+        )
+        let stopped = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: reg,
+            store: store,
+            audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { $0.append("claude:\(ch)") } },
+            stopCodex: { ch in stopped.withLock { $0.append("codex:\(ch)") } },
+            stopGrok: { ch in stopped.withLock { $0.append("grok:\(ch)") } },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false },
+            now: { "T-clear" }
+        )
+        #expect(await life.clearChannel(channelId: "c1", actorId: "u", guildId: "g") == true)
+        // T-clear-1: config preserved, backendSessionId gone.
+        let s = await store.binding(channelId: "c1")
+        #expect(s?.backendSessionId == nil)
+        #expect(s?.model == "sonnet")
+        #expect(s?.effort == "high")
+        #expect(s?.permMode == "plan")
+        #expect(s?.cwd == "/proj")
+        #expect(s?.backend == .claude)
+        #expect(s?.updatedAt == "T-clear")
+        // Registry still bound with same config (not unbound).
+        #expect(await reg.binding(channelId: "c1") == SessionConfig(
+            backend: .claude, model: "sonnet", effort: "high", permMode: "plan"
+        ))
+        #expect(stopped.withLock { $0 } == ["claude:c1", "codex:c1", "grok:c1"])
+    }
+
+    @Test func clearNoBindingReturnsFalse() async {
+        let life = SessionLifecycle(
+            registry: SessionRegistry(),
+            store: freshTempStore(),
+            audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        #expect(await life.clearChannel(channelId: "none", actorId: "u", guildId: "g") == false)
+    }
+
+    @Test func updateBindingPatchesModelWithoutStopping() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .codex, backendSessionId: "t1", cwd: "/x", guildId: "g",
+                model: "old", effort: "low", permMode: "default", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .codex, model: "old", effort: "low"))
+        let stopped = LockedBox(0)
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in stopped.withLock { $0 += 1 } },
+            stopCodex: { _ in stopped.withLock { $0 += 1 } },
+            stopGrok: { _ in stopped.withLock { $0 += 1 } },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-model" }
+        )
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: BindingPatch(model: "new-model"),
+            actorId: "u", guildId: "g"
+        ) == true)
+        #expect(stopped.withLock { $0 } == 0)
+        #expect(await store.binding(channelId: "c1")?.model == "new-model")
+        #expect(await store.binding(channelId: "c1")?.backendSessionId == "t1")
+        #expect(await store.binding(channelId: "c1")?.effort == "low")
+        #expect(await reg.binding(channelId: "c1")?.model == "new-model")
+    }
+
+    @Test func rebindBackendSameKeepsModelDifferentDrops() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B", cwd: "/x", guildId: "g",
+                model: "sonnet", effort: "high", permMode: "plan", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude, model: "sonnet", effort: "high", permMode: "plan"))
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-mode" }
+        )
+        // Same backend: keep model/effort, clear session id.
+        #expect(await life.rebindBackend(channelId: "c1", backend: .claude, actorId: "u", guildId: "g") == true)
+        #expect(await store.binding(channelId: "c1")?.backendSessionId == nil)
+        #expect(await store.binding(channelId: "c1")?.model == "sonnet")
+        #expect(await store.binding(channelId: "c1")?.effort == "high")
+
+        // Restore id for second switch.
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B2", cwd: "/x", guildId: "g",
+                model: "sonnet", effort: "high", permMode: "plan", updatedAt: "t1"
+            )
+        )
+        #expect(await life.rebindBackend(channelId: "c1", backend: .codex, actorId: "u", guildId: "g") == true)
+        let s = await store.binding(channelId: "c1")
+        #expect(s?.backend == .codex)
+        #expect(s?.backendSessionId == nil)
+        #expect(s?.model == nil)
+        #expect(s?.effort == nil)
+        #expect(s?.permMode == "plan")
+        #expect(await reg.binding(channelId: "c1")?.backend == .codex)
+    }
+
+    @Test func resumeBindingFromStore() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .grok, backendSessionId: "s1", cwd: "/x", guildId: "g",
+                model: "g1", updatedAt: "t"
+            )
+        )
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        #expect(await life.resumeBinding(channelId: "missing") == nil)
+        let cfg = await life.resumeBinding(channelId: "c1")
+        #expect(cfg?.backend == .grok)
+        #expect(cfg?.model == "g1")
+        #expect(await reg.binding(channelId: "c1")?.backend == .grok)
+    }
+
+    @Test func resumeSkipsArchived() async throws {
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(backend: .claude, cwd: "/x", guildId: "g", updatedAt: "t", archived: true)
+        )
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        #expect(await life.resumeBinding(channelId: "c1") == nil)
+    }
 }
 
 @Suite("SessionRegistry.list")
@@ -190,16 +354,45 @@ struct SessionRegistryListTests {
     }
 }
 
-@Suite("stop/stop-all slash specs")
-struct StopSlashSpecTests {
-    @Test func stopAndStopAllAreLeafCommands() {
-        let stop = stopCommandSpec()
-        let stopAll = stopAllCommandSpec()
-        #expect(stop.name == "stop")
-        #expect(stop.subcommands.isEmpty)
-        #expect(stopAll.name == "stop-all")
-        #expect(stopAll.subcommands.isEmpty)
+@Suite("W11-d slash specs")
+struct LiveSlashSpecTests {
+    @Test func stopClearAndStopAllAreLeafCommands() {
+        #expect(stopCommandSpec().subcommands.isEmpty)
+        #expect(stopCommandSpec().options.isEmpty)
+        #expect(clearCommandSpec().name == "clear")
+        #expect(clearCommandSpec().subcommands.isEmpty)
+        #expect(stopAllCommandSpec().name == "stop-all")
+    }
+
+    @Test func modelAndEffortHaveTopLevelValueOption() {
+        let model = modelCommandSpec()
+        #expect(model.name == "model")
+        #expect(model.subcommands.isEmpty)
+        #expect(model.options.map(\.name) == ["value"])
+        #expect(model.options[0].required == true)
+        #expect(model.options[0].choices.isEmpty)
+
+        let effort = effortCommandSpec()
+        #expect(effort.name == "effort")
+        #expect(effort.options.map(\.name) == ["value"])
+    }
+
+    @Test func modeHasBackendAndPermSubcommands() {
+        let mode = modeCommandSpec()
+        #expect(mode.name == "mode")
+        #expect(mode.subcommands.map(\.name) == ["backend", "perm"])
+        #expect(mode.subcommands[0].options.map(\.name) == ["backend"])
+        #expect(mode.subcommands[1].options.map(\.name) == ["value"])
+        #expect(Set(mode.subcommands[0].options[0].choices.map(\.value)) == Set(Backend.allCases.map(\.rawValue)))
+    }
+
+    @Test func agentHasStartCloseResumeStats() {
+        let names = agentCommandSpec().subcommands.map(\.name)
+        #expect(names == ["start", "close", "resume", "stats"])
+    }
+
+    @Test func allSpecsOrder() {
         let names = allSlashCommandSpecs().map(\.name)
-        #expect(names == ["agent", "stop", "stop-all"])
+        #expect(names == ["agent", "mode", "model", "effort", "stop", "clear", "stop-all"])
     }
 }
