@@ -115,7 +115,7 @@ struct EventHandler: GatewayEventHandler {
                 }
                 return
             }
-            // (A2) W11-b2 slice1 wizard components (owner-gated).
+            // (A2) W11-b2 wizard components (folder browser + select steps; owner-gated).
             if isWizardCustomId(comp.custom_id) {
                 try await handleWizardComponent(payload, comp: comp)
                 return
@@ -250,14 +250,16 @@ struct EventHandler: GatewayEventHandler {
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
             case "start":
-                // W11-b2 slice1: open select wizard (backend→model→effort→perm). cwd = DAB_CWD else home.
+                // W11-b2 slice2: folder browser → backend→model→effort→perm.
+                // Browser starts at DAB_CWD else home; unbounded (no allowedRoots) like TS default.
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
                 let optionSource = await loadWizardOptionSource()
+                let browser = DirectoryBrowser(startPath: stubCwd)
                 let wizard = ChannelWizard(
                     guildId: guildId,
                     channelId: channelId,
                     ownerId: ownerId,
-                    cwd: stubCwd,
+                    browser: browser,
                     options: optionSource
                 )
                 await WizardRegistry.shared.put(wizard, channelId: channelId)
@@ -323,7 +325,7 @@ struct EventHandler: GatewayEventHandler {
         )
     }
 
-    /// W11-b2 slice1: drive the channel's agent-start wizard from a select/button click.
+    /// W11-b2: drive the channel's agent-start wizard from a select/button click (dir:* + choice steps).
     /// Owner gate: only the user who opened the wizard may advance it.
     private func handleWizardComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
         let channelId = payload.channel_id?.rawValue ?? ""

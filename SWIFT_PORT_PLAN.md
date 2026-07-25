@@ -277,7 +277,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-a** | G | `done` | 슬래시 인프라(DiscordBM) + `SessionRegistry` + 순수 `routeDecision` + `/agent start·close` + config seam | `/agent start`로 채널 바인딩 → 접두사 없이 대화 |
 | **W11-b1** | G | `done` | 브리지 model·effort 실소비(config→client params) + `/agent start model·effort` 옵션 | model/effort 세션 반영, fake 검증 |
 | **W11-h** | G | `done` | **provider 카탈로그 Swift 포팅** (W11-b2 선행). 3백엔드 모델/추론/권한을 **전부 라이브** 조회(하드코딩 고정 금지 — 백엔드만 고정). Claude=사이드카 **`claude.catalog` RPC**, Codex/Grok=`models_cache.json` 읽기, 추론=모델별 `supportedEffortLevels` 좁힘, 권한=백엔드별(Codex 샌드박스는 `codex --help` 동적). 상세 §14.10 | 카탈로그 라이브 조회 |
-| **W11-b2** | G | `partial` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그 주입**). **slice1 ✅**(2026-07-26): pure `ChannelWizard` SM(backend→model→[effort]→perm) + 라이브 카탈로그 셀렉트 + DabMain 배선 + cwd=`DAB_CWD`/home. **잔여(slice2+)**: folder 클러스터 전부 — `pickFolder`+디렉토리 브라우저(into/up/here)+새폴더/수동경로 모달·A4D 채널 생성·preset·reconfigure | 마법사 UI(folder→backend→model→effort→perm) |
+| **W11-b2** | G | `partial` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그 주입**). **slice1 ✅**: pure SM(backend→model→[effort]→perm)+카탈로그. **slice2 ✅**(2026-07-26): pure `DirectoryBrowser`(into/up/here·dot-last 정렬·cap25·optional allowedRoots)+`ChannelWizard` first=`folder`·dir:* owner gate·`goTo` API. **잔여(slice3+)**: pickFolder native·dir:manual/create 모달·resume 버튼·A4D 채널 생성·preset·reconfigure | 마법사 UI(folder→backend→model→effort→perm) |
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
 | **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
@@ -375,6 +375,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W14 | 라이프사이클: 3-bridge `stop`/`interrupt`(Claude session.stop/interrupt · Codex turn/interrupt+activeTurnId · Grok dropClient=TS), `SessionLifecycle` stop/interrupt/stopAll, `/stop`·`/stop-all`(admin)·`/agent close` 실 stop, `onChannelDelete` guild-only. Grok ACP session/cancel 미존재 → TS dropClient. swift test **316** PASS. |
 | 2026-07-26 | W14 RV | stopChannel/interruptChannel **항상 3 브리지** (prefix/rebind 누수 수정). Codex turnGen으로 late turn/start 좀비 activeTurnId 차단. ensure mid-stop epoch(Claude/Codex/Grok). stopAll guildId←store. swift test **320** PASS. |
 | 2026-07-26 | W11-b2 slice1 | `/agent start` **셀렉트 마법사**(folder 없음). lib pure `ChannelWizard` SM(select=pending, Next=commit; applyBackend 리셋; effort skip; Back/Cancel) + `loadWizardOptionSource`←라이브 `providerCatalog` + `WizardRegistry` + DabMain 에페메럴 embed/StringSelect/버튼·owner gate·done 시 registry+store bind. cwd=`DAB_CWD` else home. 슬래시 start 옵션 제거(wizard-only). 잔여: DirectoryBrowser·모달·A4D 채널·preset·reconfigure. |
+| 2026-07-26 | W11-b2 slice2 | pure `DirectoryBrowser`(TS parity: into/up/here·goTo·dot-last sort·cap25·allowedRoots confine/unbounded) + `ChannelWizard` first step=`folder`(dir:here→backend). DabMain 브라우저 start=`DAB_CWD`/home unbounded. button `disabled` for dir:up. 모달/native/panel/create/resume/A4D/preset 미포함(ponytail). 단위테스트 DirectoryBrowser+wizard folder. |
 
 ---
 
@@ -454,7 +455,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 | `swift/Sources/DiscordAgentBridge/Codex/` | Codex app-server 클라이언트 골격 |
 | `swift/Sources/DiscordAgentBridge/Grok/` | Grok ACP 클라이언트 골격 |
 | `swift/Sources/DiscordAgentBridge/Bridges/` | Dab/Codex/Grok 세션 브리지 |
-| `swift/Sources/DiscordAgentBridge/Session/` | SessionRegistry·SessionLifecycle·BindingUpdate·SlashCommandSpec·**SessionStore**·**ChannelWizard**(b2 slice1)·Auth/Audit/Confinement |
+| `swift/Sources/DiscordAgentBridge/Session/` | SessionRegistry·SessionLifecycle·BindingUpdate·SlashCommandSpec·**SessionStore**·**ChannelWizard**+**DirectoryBrowser**(b2 slice2)·Auth/Audit/Confinement |
 | `swift/scripts/`, `swift/deploy/` | launchd 배포(W11-e) |
 
 ---
@@ -462,7 +463,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` **W11-b2 slice1 완료**(셀렉트 마법사, folder 제외). W10 + W11-a/b1/c/d/e/f1/f2/h + W13/W14/W15/W16-a 완료. **다음 = W11-b2 slice2(folder 클러스터) → W11-g(패널) → W16 잔여 → W12.**
+`plan/swift-port` **W11-b2 slice2 완료**(DirectoryBrowser + folder 스텝). W10 + W11-a/b1/c/d/e/f1/f2/h + W13/W14/W15/W16-a 완료. **다음 = W11-b2 slice3(모달·native·A4D·preset·reconfigure) → W11-g(패널) → W16 잔여 → W12.**
 
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
@@ -500,8 +501,8 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1**~~ ✅ (backend→model→effort→perm 셀렉트·cwd env; folder 없음)
-2. **W11-b2 slice2** — folder 클러스터(브라우저·모달·A4D 채널)·preset·reconfigure. ← **다음 착수**
+1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1**~~ ✅ · ~~**W11-b2 slice2**~~ ✅ (DirectoryBrowser·folder→backend…)
+2. **W11-b2 slice3** — dir:manual/create 모달·pickFolder native·resume·A4D 채널·preset·reconfigure. ← **다음 착수**
 3. **W11-g** — 사용량/HUD 패널 Swift 포팅 + 정보 최신화 (상세 §14.9).
 4. **W12** — 레거시 TS 정리·호환·README.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영.

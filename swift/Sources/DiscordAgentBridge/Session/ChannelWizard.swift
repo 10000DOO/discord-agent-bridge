@@ -1,19 +1,22 @@
 import Foundation
 
-// MARK: - W11-b2 slice1: `/agent start` select wizard (no folder browser)
+// MARK: - W11-b2: `/agent start` select wizard
 //
-// Pure state machine — no Discord types. Steps:
-//   backend → model → [effort if any] → perm → done | cancelled
+// Pure state machine — no Discord types. Steps (slice2):
+//   folder → backend → model → [effort if any] → perm → done | cancelled
 //
-// Select onChange writes PENDING only (re-render); the step's Next/Start button commits
-// and advances (Discord does not re-fire a select for the already-selected option).
+// Folder: dir:into / dir:up navigate immediately; dir:here commits cwd → backend.
+// Choice steps: select onChange writes PENDING only; Next/Start commits and advances
+// (Discord does not re-fire a select for the already-selected option).
 // Option lists are injected at open from live `providerCatalog(for:)` — never hardcoded
 // model/effort/perm vocabularies (Backend.allCases is the only fixed list).
-// cwd is fixed at construction (DAB_CWD else home) until the folder cluster lands.
+//
+// ponytail: preset step · reconfigure entry · dir:manual modal · A4D channel create → later slices.
 
 // MARK: Types
 
 public enum WizardStep: String, Sendable, Equatable {
+    case folder
     case backend
     case model
     case effort
@@ -142,7 +145,7 @@ public enum WizardButtonStyle: String, Sendable, Equatable {
 
 public enum WizardComponent: Sendable, Equatable {
     case select(customId: String, placeholder: String, options: [WizardSelectOption])
-    case button(customId: String, label: String, style: WizardButtonStyle)
+    case button(customId: String, label: String, style: WizardButtonStyle, disabled: Bool)
 }
 
 public struct WizardRow: Sendable, Equatable {
@@ -163,8 +166,9 @@ public struct WizardView: Sendable, Equatable {
 
 // MARK: Component id recognition (for DabMain routing)
 
-/// Custom ids owned by the agent-start wizard (slice1). Distinct from `perm:<req>:<action>`.
+/// Custom ids owned by the agent-start wizard (folder + select steps). Distinct from `perm:<req>:<action>`.
 public func isWizardCustomId(_ customId: String) -> Bool {
+    if isDirectoryBrowserCustomId(customId) { return true }
     switch customId {
     case "backend", "backend.next",
          "model", "model.next",
@@ -243,14 +247,15 @@ public struct WizardSelection: Sendable, Equatable {
     public var permMode: String
 }
 
-/// Pure `/agent start` wizard (slice1: no folder/preset/reconfigure).
+/// Pure `/agent start` wizard (slice2: folder → backend → model → effort → perm).
 public final class ChannelWizard: @unchecked Sendable {
     public let guildId: String
     public let channelId: String
     public let ownerId: String
     private let options: WizardOptionSource
-    private let firstStep: WizardStep = .backend
-    private var step: WizardStep = .backend
+    private let browser: DirectoryBrowser
+    private let firstStep: WizardStep = .folder
+    private var step: WizardStep = .folder
     private var selection: WizardSelection
     private var pending: Pending = Pending()
     /// Set when step becomes `.done` (perm.start committed).
@@ -267,16 +272,17 @@ public final class ChannelWizard: @unchecked Sendable {
         guildId: String,
         channelId: String,
         ownerId: String,
-        cwd: String,
+        browser: DirectoryBrowser,
         options: WizardOptionSource
     ) {
         self.guildId = guildId
         self.channelId = channelId
         self.ownerId = ownerId
+        self.browser = browser
         self.options = options
         let d = options.defaults
         self.selection = WizardSelection(
-            cwd: cwd,
+            cwd: browser.cwd(),
             backend: d.backend,
             model: d.model,
             effort: d.effort,
@@ -284,9 +290,34 @@ public final class ChannelWizard: @unchecked Sendable {
         )
     }
 
+    /// Convenience: start browser at `cwd` (unbounded unless roots provided).
+    public convenience init(
+        guildId: String,
+        channelId: String,
+        ownerId: String,
+        cwd: String,
+        options: WizardOptionSource,
+        allowedRoots: [String] = []
+    ) {
+        self.init(
+            guildId: guildId,
+            channelId: channelId,
+            ownerId: ownerId,
+            browser: DirectoryBrowser(allowedRoots: allowedRoots, startPath: cwd),
+            options: options
+        )
+    }
+
     public func currentStep() -> WizardStep { step }
 
     public func current() -> WizardSelection { selection }
+
+    /// Folder currently in the browser (read-only; for future create/resume flows).
+    public func browserCwd() -> String { browser.cwd() }
+
+    /// Jump browser to absolute path (manual-path / tests). false → no view change.
+    @discardableResult
+    public func browserGoTo(_ absPath: String) -> Bool { browser.goTo(absPath) }
 
     /// Advance by one select/button input. Unknown ids for the current step are ignored.
     @discardableResult
@@ -300,6 +331,7 @@ public final class ChannelWizard: @unchecked Sendable {
             return step
         }
         switch step {
+        case .folder: handleFolder(input)
         case .backend: handleBackend(input)
         case .model: handleModel(input)
         case .effort: handleEffort(input)
@@ -313,6 +345,8 @@ public final class ChannelWizard: @unchecked Sendable {
         if step == firstStep { return }
         pending = Pending()
         switch step {
+        case .backend:
+            step = .folder
         case .model:
             step = .backend
         case .effort:
@@ -321,6 +355,18 @@ public final class ChannelWizard: @unchecked Sendable {
             step = hasEffortStep() ? .effort : .model
         default:
             break
+        }
+    }
+
+    /// Folder nav: into/up re-render only; dir:here commits cwd → backend.
+    private func handleFolder(_ input: WizardInput) {
+        if input.id == "dir:into", let v = input.value, v != "__none__", !v.isEmpty {
+            _ = browser.into(v)
+        } else if input.id == "dir:up" {
+            _ = browser.up()
+        } else if input.id == "dir:here" {
+            selection.cwd = browser.select()
+            step = .backend
         }
     }
 
@@ -396,6 +442,8 @@ public final class ChannelWizard: @unchecked Sendable {
     public func render() -> WizardView {
         let title = "에이전트 세션 시작"
         switch step {
+        case .folder:
+            return browser.render()
         case .backend:
             return choiceStep(
                 title: title,
@@ -410,7 +458,7 @@ public final class ChannelWizard: @unchecked Sendable {
                 },
                 confirmId: "backend.next",
                 confirmLabel: "다음",
-                showBack: false
+                showBack: true
             )
         case .model:
             let selected = pending.model ?? selection.model
@@ -452,9 +500,9 @@ public final class ChannelWizard: @unchecked Sendable {
                 ]))
             }
             let buttons: [WizardComponent] = [
-                .button(customId: "perm.start", label: "시작", style: .success),
-                .button(customId: "wizard.back", label: "이전", style: .secondary),
-                .button(customId: "cancel", label: "취소", style: .secondary),
+                .button(customId: "perm.start", label: "시작", style: .success, disabled: false),
+                .button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false),
+                .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
             ]
             rows.append(WizardRow(components: buttons))
             return WizardView(title: title, description: "권한 모드를 선택하고 시작하세요", rows: rows)
@@ -486,12 +534,12 @@ public final class ChannelWizard: @unchecked Sendable {
             ]))
         }
         var buttons: [WizardComponent] = [
-            .button(customId: confirmId, label: confirmLabel, style: .primary),
+            .button(customId: confirmId, label: confirmLabel, style: .primary, disabled: false),
         ]
         if showBack {
-            buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary))
+            buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false))
         }
-        buttons.append(.button(customId: "cancel", label: "취소", style: .secondary))
+        buttons.append(.button(customId: "cancel", label: "취소", style: .secondary, disabled: false))
         rows.append(WizardRow(components: buttons))
         return WizardView(title: title, description: description, rows: rows)
     }

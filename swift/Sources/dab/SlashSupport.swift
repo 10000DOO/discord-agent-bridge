@@ -69,7 +69,7 @@ func discordPayload(from view: WizardView) -> (embeds: [Embed], components: [Int
                     options: opts,
                     placeholder: placeholder
                 ))
-            case .button(let customId, let label, let style):
+            case .button(let customId, let label, let style, let disabled):
                 let s: Interaction.ActionRow.Button.NonLinkStyle = {
                     switch style {
                     case .primary: return .primary
@@ -78,7 +78,12 @@ func discordPayload(from view: WizardView) -> (embeds: [Embed], components: [Int
                     case .danger: return .danger
                     }
                 }()
-                return .button(Interaction.ActionRow.Button(style: s, label: label, custom_id: customId))
+                return .button(Interaction.ActionRow.Button(
+                    style: s,
+                    label: label,
+                    custom_id: customId,
+                    disabled: disabled ? true : nil
+                ))
             }
         }
         return Interaction.ActionRow(components: comps)
