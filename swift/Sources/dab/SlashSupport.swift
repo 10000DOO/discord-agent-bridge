@@ -48,6 +48,19 @@ func allCommandPayloads() -> [Payloads.ApplicationCommandCreate] {
     allSlashCommandSpecs().map(applicationCommandPayload)
 }
 
+// MARK: - Usage embed → DiscordBM (W11-g slice2)
+
+/// Map pure `UsageEmbedSpec` to DiscordBM `Embed`.
+func discordEmbed(from spec: UsageEmbedSpec) -> Embed {
+    Embed(
+        title: spec.title,
+        description: spec.description,
+        color: DiscordColor(value: spec.color) ?? DiscordColor(value: DiscordColors.idle),
+        footer: spec.footer.map { Embed.Footer(text: $0) },
+        fields: spec.fields.map { Embed.Field(name: $0.name, value: $0.value, inline: $0.inline) }
+    )
+}
+
 // MARK: - Wizard → DiscordBM components (W11-b2 slice1)
 
 /// Map pure `WizardView` rows to Discord embeds + action rows (select menus + buttons).

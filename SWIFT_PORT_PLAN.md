@@ -284,7 +284,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-f2** | G | `done` | 재시작 1:1 재연결: backend-id 캡처 + lazy resume + 폴백 + 부팅 복원. 데드락(backend_id notify 레이스) 수정 후 `plan/swift-port` 병합(§14.3). T1–T9 병렬/직렬 171 PASS | 재연결 검증 완료 |
 | **W11-d** | G | `done` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/mode perm`·`/stop`·`/clear`·`/agent resume·stats`. 바인딩 레이어(registry+store)·`clearChannel`(§14.6). reconfigure 팝업은 **W11-b2**. Claude 라이브 setModel RPC 미포함 | 세션 조작 슬래시 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
-| **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1 ✅**: 순수 `formatTokens`/`formatDuration`/`buildResultLine`/`DiscordColors` + 3-bridge `runTurn`→`TurnResult{text,usage?}` (Claude result 메트릭·Codex turn/completed tokens·Grok prompt `_meta`/legacy usage) + DabMain 답변 후 완료 라인 푸터 + `/agent stats` model·effort. **잔여(slice2+)**: usage 한도 조회(Claude 5h+주간·Grok 주간)·usageEmbed 패널·context_usage 게시·도구/서브에이전트 집계·mentionOnComplete·rate_limit 라인·사이드카 setModel displayName 재해석. 상세 §14.9 | 패널 모든 정보 최신 표시 |
+| **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1 ✅**: 순수 포맷터 + TurnResult usage + 완료 라인 + stats model·effort. **slice2 ✅**: `mentionOnComplete`·`formatRateLimitLine`/`formatUsageWindows`·`ClaudeUsageService`(OAuth file+keychain·mock HTTP)·`buildUsageEmbed`·Claude `context_usage`/`rate_limit` 캡처→TurnResult→DabMain 라인·`/agent stats` Claude usage 임베드. **잔여(slice3+)**: Grok 주간 한도·tools/subagent 집계·라이브 HUD 스트림 임베드·사이드카 setModel displayName 재해석. 상세 §14.9 | 패널 모든 정보 최신 표시 |
 | **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
 
 ### 신규 WO — 2026-07-25 전수조사 반영 (Phase I~L, 상세 §15)
@@ -465,7 +465,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` **W11-g slice1 완료**(완료 라인·토큰 포맷·TurnResult usage 표면화). W10 + W11-a/b1/c/d/e/f1/f2/h + W11-b2 folder slice1–3 + W13/W14/W15/W16-a/e 완료. **W11-g 잔여** = usage 한도 조회·usageEmbed·context_usage 패널·mention/rate_limit. **W11-b2 잔여** = resume·A4D channel·preset·reconfigure. **다음 = W11-g slice2 또는 b2 잔여 → W16 잔여 → W12.**
+`plan/swift-port` **W11-g slice2 완료**(mention·rateLimit·Claude usage 조회·usageEmbed·context_usage 캡처). W10 + W11-a/b1/c/d/e/f1/f2/h + W11-b2 folder slice1–3 + W13/W14/W15/W16-a/e 완료. **W11-g 잔여** = Grok 주간 한도·tools/subagent HUD·라이브 스트림 임베드·setModel displayName. **W11-b2 잔여** = resume·A4D channel·preset·reconfigure. **다음 = W11-g slice3 또는 b2 잔여 → W16 잔여 → W12.**
 
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
@@ -503,8 +503,8 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1**~~ ✅ (완료 라인·TurnResult usage)
-2. **W11-g slice2** — usage 한도 조회·usageEmbed·context_usage 패널·mention/rate_limit (상세 §14.9).
+1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1**~~ ✅ · ~~**W11-g slice2**~~ ✅ (mention·rateLimit·Claude usage·usageEmbed·context_usage)
+2. **W11-g slice3+** — Grok 주간 한도·tools/subagent 집계·라이브 HUD 임베드·setModel displayName (상세 §14.9).
 3. **W11-b2 잔여** — dir:resume·A4D 채널 생성·preset·reconfigure (folder 클러스터 외).
 4. **W12** — 레거시 TS 정리·호환·README.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영.
@@ -515,8 +515,8 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 ### 14.9 (기록) W11-g 사용량/HUD 패널 Swift 포팅 + 정보 최신화 — 까먹지 말 것
 사용자 요구(2026-07-24): **Swift 포팅 패널에서 3백엔드(claude/codex/grok) 모두 모델 포함 모든 정보가 항상 최신**으로 표시. (TS는 참고용이라 TS 패널은 손대지 않음.)
 
-- **현재 상태 (slice1 후)**: 순수 포맷터(`UsageFormat.swift`: `formatTokens`/`formatDuration`/`buildResultLine`/`DiscordColors`) + 3-bridge `runTurn`→`TurnResult` (Claude `result` cost/tokens/duration, Codex `turn/completed` tokens, Grok prompt `_meta`/legacy usage) + DabMain 답변 청크 뒤 **완료 라인 푸터** + `/agent stats`에 model·effort. `AgentEvent.contextUsage`는 여전히 브리지에서 drop(패널 미배선). usage 한도 API·usageEmbed 미포팅.
-- **slice1 잔여(slice2+)**: (1) 브리지가 `context_usage` + 이번 턴 도구/서브에이전트 집계를 DabMain으로 **표면화**, (2) 사용량 **한도 조회**(Claude=5h+주간+opus/sonnet, Grok=주간만, Codex=없음), (3) **임베드 렌더러**(usageEmbed 포팅, 이모지 바) + DiscordBM 게시, (4) `mentionOnComplete`·`formatRateLimitLine`, (5) 사이드카 `setModel` displayName 재해석 버그 수정.
+- **현재 상태 (slice2 후)**: slice1 포맷터 + `TurnResult{text,usage?,contextUsage?,rateLimit?}` + Claude 브리지가 `context_usage`/`rate_limit` 캡처 + DabMain 완료라인·컨텍스트라인·rate_limit라인·`mentionOnComplete` + `ClaudeUsageService`(file+keychain OAuth, mock HTTP 테스트) + 순수 `buildUsageEmbed`/`formatRateLimitLine` + `/agent stats` Claude usage 임베드. Codex=`codexUsageUnavailable()`.
+- **slice2 잔여(slice3+)**: (1) 이번 턴 도구/서브에이전트 집계 표면화, (2) Grok 주간 한도, (3) 라이브 HUD 스트림 임베드(턴 중 갱신), (4) 사이드카 `setModel` displayName 재해석 버그 수정.
 - **신선도 불변식(핵심)**: 모든 필드를 **렌더 시점 라이브 상태**에서 계산. 설정 변경 시 캐시된 값 재사용 금지(= TS의 래치 버그를 구조적으로 차단). 도구/서브에이전트 집계는 턴마다 리셋, git branch·경과시간도 매번 계산.
 - **백엔드별 모델/컨텍스트 소스 차이(주의)**:
   - **Claude**: `context_usage.model`/`modelDisplayName`을 **영구 Node 사이드카의 `ClaudeSession`(`src/modes/claude/session.ts`)이 생성**(사이드카 서버 `src/sidecar/claude/sessionBridge.ts`가 재사용). ⚠️ **알려진 버그**: `setModel`이 `modelDisplayName`을 init 때 래치(`modelDisplayNameRequested`)로 **1회만** 해석 → `/model` 변경 후에도 옛 표시명 유지. **slice2에서 사이드카 쪽 교정**: `setModel`에서 `this.modelDisplayName=null; this.modelDisplayNameRequested=false; this.captureModelDisplayName()`로 재해석. (Swift `/model`이 사이드카 `session.setModel`을 실제 호출해야 발현 — 라이브 setModel RPC 아직 미포함.)

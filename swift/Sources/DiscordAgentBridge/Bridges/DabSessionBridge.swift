@@ -51,6 +51,8 @@ public actor DabSessionBridge {
     private struct TurnBox {
         var text = ""
         var usage: TurnUsage?
+        var contextUsage: ContextUsageInfo?
+        var rateLimit: RateLimitInfo?
         var done = false
         var continuation: CheckedContinuation<TurnResult, Error>?
         var timeoutTask: Task<Void, Never>?
@@ -288,7 +290,29 @@ public actor DabSessionBridge {
             }
             turns[handle] = box
             let out = box.text.isEmpty ? "(empty result)" : box.text
-            finishTurnUnlocked(handle: handle, result: TurnResult(text: out, usage: box.usage))
+            finishTurnUnlocked(
+                handle: handle,
+                result: TurnResult(
+                    text: out,
+                    usage: box.usage,
+                    contextUsage: box.contextUsage,
+                    rateLimit: box.rateLimit
+                )
+            )
+        case .contextUsage:
+            // W11-g slice2: keep latest context_usage for the turn result / panel.
+            if let info = ContextUsageInfo.from(event: event) {
+                box.contextUsage = info
+                turns[handle] = box
+            }
+        case .rateLimit(let resetAt, let rateLimitType, let utilization):
+            // W11-g slice2: capture rate_limit for a post-turn notice line.
+            box.rateLimit = RateLimitInfo(
+                resetAt: resetAt,
+                rateLimitType: rateLimitType,
+                utilization: utilization
+            )
+            turns[handle] = box
         case .error(let message, _):
             finishTurnUnlocked(
                 handle: handle,
@@ -325,7 +349,7 @@ public actor DabSessionBridge {
                 )
             }
         default:
-            // context_usage / thinking / tool_* etc. — full HUD is W11-g slice2.
+            // thinking / tool_* / progress / subagent — full HUD tools panel is later slice.
             break
         }
     }
@@ -350,7 +374,12 @@ public actor DabSessionBridge {
             } else {
                 finishTurnUnlocked(
                     handle: handle,
-                    result: TurnResult(text: box.text + "\n…(timeout)", usage: box.usage)
+                    result: TurnResult(
+                        text: box.text + "\n…(timeout)",
+                        usage: box.usage,
+                        contextUsage: box.contextUsage,
+                        rateLimit: box.rateLimit
+                    )
                 )
             }
         }
@@ -367,7 +396,14 @@ public actor DabSessionBridge {
         if let error {
             cont?.resume(throwing: error)
         } else {
-            cont?.resume(returning: result ?? TurnResult(text: box.text, usage: box.usage))
+            cont?.resume(
+                returning: result ?? TurnResult(
+                    text: box.text,
+                    usage: box.usage,
+                    contextUsage: box.contextUsage,
+                    rateLimit: box.rateLimit
+                )
+            )
         }
     }
 
@@ -402,7 +438,15 @@ public actor DabSessionBridge {
         try? await client?.sessionInterrupt(session: handle)
         if let box = turns[handle], !box.done {
             let partial = box.text.isEmpty ? "(interrupted)" : box.text
-            finishTurnUnlocked(handle: handle, result: TurnResult(text: partial, usage: box.usage))
+            finishTurnUnlocked(
+                handle: handle,
+                result: TurnResult(
+                    text: partial,
+                    usage: box.usage,
+                    contextUsage: box.contextUsage,
+                    rateLimit: box.rateLimit
+                )
+            )
         }
         return true
     }

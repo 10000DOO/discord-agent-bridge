@@ -38,15 +38,182 @@ public struct TurnUsage: Sendable, Equatable {
     }
 }
 
-/// Bridge `runTurn` return: reply text + optional usage for the done-line footer.
+/// Latest `context_usage` AgentEvent fields captured on a turn (W11-g slice2).
+public struct ContextUsageInfo: Sendable, Equatable {
+    public var totalTokens: Int
+    public var maxTokens: Int
+    public var percentage: Double
+    public var model: String?
+    public var modelDisplayName: String?
+    public var clearableTokens: Int?
+    public var memoryFileCount: Int?
+    public var mcpServerCount: Int?
+
+    public init(
+        totalTokens: Int,
+        maxTokens: Int,
+        percentage: Double,
+        model: String? = nil,
+        modelDisplayName: String? = nil,
+        clearableTokens: Int? = nil,
+        memoryFileCount: Int? = nil,
+        mcpServerCount: Int? = nil
+    ) {
+        self.totalTokens = totalTokens
+        self.maxTokens = maxTokens
+        self.percentage = percentage
+        self.model = model
+        self.modelDisplayName = modelDisplayName
+        self.clearableTokens = clearableTokens
+        self.memoryFileCount = memoryFileCount
+        self.mcpServerCount = mcpServerCount
+    }
+
+    public static func from(event: AgentEvent) -> ContextUsageInfo? {
+        guard case .contextUsage(
+            let total, let max, let pct, let model, let display,
+            let clearable, let mem, let mcp
+        ) = event else { return nil }
+        return ContextUsageInfo(
+            totalTokens: total,
+            maxTokens: max,
+            percentage: pct,
+            model: model,
+            modelDisplayName: display,
+            clearableTokens: clearable,
+            memoryFileCount: mem,
+            mcpServerCount: mcp
+        )
+    }
+}
+
+/// Latest `rate_limit` AgentEvent fields captured on a turn (W11-g slice2).
+public struct RateLimitInfo: Sendable, Equatable {
+    public var resetAt: String?
+    public var rateLimitType: String?
+    public var utilization: Double?
+
+    public init(resetAt: String? = nil, rateLimitType: String? = nil, utilization: Double? = nil) {
+        self.resetAt = resetAt
+        self.rateLimitType = rateLimitType
+        self.utilization = utilization
+    }
+}
+
+/// Bridge `runTurn` return: reply text + optional usage / context / rate-limit (W11-g).
 public struct TurnResult: Sendable, Equatable {
     public var text: String
     public var usage: TurnUsage?
+    public var contextUsage: ContextUsageInfo?
+    public var rateLimit: RateLimitInfo?
 
-    public init(text: String, usage: TurnUsage? = nil) {
+    public init(
+        text: String,
+        usage: TurnUsage? = nil,
+        contextUsage: ContextUsageInfo? = nil,
+        rateLimit: RateLimitInfo? = nil
+    ) {
         self.text = text
         self.usage = usage
+        self.contextUsage = contextUsage
+        self.rateLimit = rateLimit
     }
+}
+
+// MARK: - mentionOnComplete (TS mentionOnComplete.ts)
+
+/// Content for the post-turn owner ping. Nil when ownerId is empty (skip broken `<@>`).
+public func mentionOnCompleteContent(ownerId: String) -> String? {
+    guard !ownerId.isEmpty else { return nil }
+    return "<@\(ownerId)>"
+}
+
+// MARK: - context_usage line
+
+/// One-line context summary after a turn (surface TurnResult.contextUsage).
+public func formatContextUsageLine(_ ctx: ContextUsageInfo) -> String {
+    var parts: [String] = ["📊 컨텍스트 \(Int(ctx.percentage.rounded()))%"]
+    parts.append("\(formatTokens(ctx.totalTokens))/\(formatTokens(ctx.maxTokens))")
+    if let name = ctx.modelDisplayName ?? ctx.model, !name.isEmpty {
+        parts.append(name)
+    }
+    return parts.joined(separator: " · ")
+}
+
+// MARK: - rate_limit line (TS renderers/index.ts formatRateLimitLine)
+
+/// Human-readable label for SDK rateLimitType codes. Unknown types pass through verbatim.
+public func rateLimitTypeLabel(_ type: String) -> String {
+    switch type {
+    case "five_hour": return "5시간 한도"
+    case "seven_day": return "주간 한도"
+    case "seven_day_opus": return "주간 한도 (Opus)"
+    case "seven_day_sonnet": return "주간 한도 (Sonnet)"
+    case "overage": return "추가 사용량"
+    default: return type
+    }
+}
+
+/// Format a window's reset time: HH:mm when today, else M/d HH:mm (ko-KR 24h).
+public func formatResetTime(_ resetsAt: String?, now: Date = Date()) -> String? {
+    guard let resetsAt, let date = parseISODate(resetsAt) else { return nil }
+    let cal = Calendar.current
+    let fmt = DateFormatter()
+    fmt.locale = Locale(identifier: "ko_KR")
+    if cal.isDate(date, inSameDayAs: now) {
+        fmt.dateFormat = "HH:mm"
+    } else {
+        fmt.dateFormat = "M/d HH:mm"
+    }
+    return fmt.string(from: date)
+}
+
+/// Render every present usage window as `라벨 {util}% (리셋 …)` segments, or nil.
+public func formatUsageWindows(_ usage: UsageResult?) -> String? {
+    guard let usage, case .snapshot(let snap) = usage else { return nil }
+    return formatUsageWindows(snapshot: snap)
+}
+
+public func formatUsageWindows(snapshot: UsageSnapshot) -> String? {
+    var segments: [String] = []
+    func add(_ limit: UsageLimit?, _ label: String) {
+        guard let limit else { return }
+        let reset = formatResetTime(limit.resetsAt)
+        segments.append("\(label) \(Int(limit.utilization.rounded()))%\(reset.map { " (리셋 \($0))" } ?? "")")
+    }
+    add(snapshot.fiveHour, "5시간")
+    add(snapshot.sevenDay, "주간")
+    add(snapshot.sevenDayOpus, "주간(Opus)")
+    add(snapshot.sevenDaySonnet, "주간(Sonnet)")
+    return segments.isEmpty ? nil : segments.joined(separator: " · ")
+}
+
+/// One-line rate_limit summary. Snapshot windows win over event fields (TS parity).
+public func formatRateLimitLine(_ ev: RateLimitInfo, usage: UsageResult? = nil) -> String {
+    if let windows = formatUsageWindows(usage) {
+        return "📊 사용량 한도 알림 · \(windows)"
+    }
+
+    var line = "📊 사용량 한도 알림"
+    if let t = ev.rateLimitType { line += " · \(rateLimitTypeLabel(t))" }
+    if let u = ev.utilization { line += " · 사용량 \(Int(u.rounded()))%" }
+    if let r = ev.resetAt, let date = parseISODate(r) {
+        // Event path: HH:mm only (TS toLocaleTimeString hour/minute, 24h).
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "ko_KR")
+        fmt.dateFormat = "HH:mm"
+        line += " · 리셋 \(fmt.string(from: date))"
+    }
+    return line
+}
+
+func parseISODate(_ s: String) -> Date? {
+    let f1 = ISO8601DateFormatter()
+    f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let d = f1.date(from: s) { return d }
+    let f2 = ISO8601DateFormatter()
+    f2.formatOptions = [.withInternetDateTime]
+    return f2.date(from: s)
 }
 
 /// Compact token count (1234 → "1.2K", 2_000_000 → "2.0M"). TS `formatTokens`.

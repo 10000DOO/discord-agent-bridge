@@ -314,10 +314,16 @@ struct EventHandler: GatewayEventHandler {
                 }
             case "stats":
                 let lines = formatStatsLines(bindings: await life.listActiveBindings())
-                try await respondEphemeral(
-                    payload,
-                    "**활성 세션** (\(lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count))\n" + lines.joined(separator: "\n")
-                )
+                let count = lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count
+                let content =
+                    "**활성 세션** (\(count))\n" + lines.joined(separator: "\n")
+                // W11-g slice2: Claude usage embed when OAuth credentials are available.
+                let usage = await ClaudeUsageService.shared.getUsage()
+                if let spec = buildUsageEmbed(usage: usage, ctxUsage: nil) {
+                    try await respondEphemeral(payload, content, embeds: [discordEmbed(from: spec)])
+                } else {
+                    try await respondEphemeral(payload, content)
+                }
             default:
                 try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
             }
@@ -340,12 +346,24 @@ struct EventHandler: GatewayEventHandler {
         print("dab: channelDelete → stop channel=\(channelId) guild=\(guildId.rawValue)")
     }
 
-    private func respondEphemeral(_ payload: Interaction, _ text: String) async throws {
+    private func respondEphemeral(
+        _ payload: Interaction,
+        _ text: String,
+        embeds: [Embed]? = nil
+    ) async throws {
         _ = try await client.createInteractionResponse(
             id: payload.id,
             token: payload.token,
-            payload: .channelMessageWithSource(.init(content: text, flags: [.ephemeral]))
+            payload: .channelMessageWithSource(.init(content: text, embeds: embeds, flags: [.ephemeral]))
         )
+    }
+
+    /// Prefer persisted session ownerId; fall back to the message author (drive path).
+    private func resolveOwnerId(channelId: String, messageAuthorId: String) async -> String {
+        if let o = await SessionStore.shared.binding(channelId: channelId)?.ownerId, !o.isEmpty {
+            return o
+        }
+        return messageAuthorId
     }
 
     /// W11-b2: drive the channel's agent-start wizard from a select/button click (dir:* + choice steps).
@@ -733,6 +751,30 @@ struct EventHandler: GatewayEventHandler {
             // W11-g slice1: optional done-line footer (cost/tokens/duration) after answer chunks.
             if let usage = turn.usage, let line = buildResultLine(usage) {
                 _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: line))
+            }
+            // W11-g slice2: context_usage summary line when the bridge captured one.
+            if let ctx = turn.contextUsage {
+                _ = try? await client.createMessage(
+                    channelId: payload.channel_id,
+                    payload: .init(content: formatContextUsageLine(ctx))
+                )
+            }
+            // W11-g slice2: rate_limit notice (event fields; enrich with Claude usage snapshot if any).
+            if let rl = turn.rateLimit {
+                let usageSnap = backend == .claude ? await ClaudeUsageService.shared.getUsage() : nil
+                let line = formatRateLimitLine(rl, usage: usageSnap)
+                _ = try? await client.createMessage(
+                    channelId: payload.channel_id,
+                    payload: .init(content: line)
+                )
+            }
+            // W11-g slice2: mentionOnComplete — ping session owner (binding) or message author.
+            let ownerId = await resolveOwnerId(channelId: channelId, messageAuthorId: actorId)
+            if let mention = mentionOnCompleteContent(ownerId: ownerId) {
+                _ = try? await client.createMessage(
+                    channelId: payload.channel_id,
+                    payload: .init(content: mention)
+                )
             }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {

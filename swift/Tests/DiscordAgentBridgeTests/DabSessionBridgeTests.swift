@@ -15,10 +15,11 @@ private actor GateableSidecar {
     private let emitsBackendId: String?                 // emit session.backend_id notify with this id
     private let reqCapture: LockedBox<[String]>?        // records "start" / "resume:<backendId>"
     private let resumeFails: Bool                       // session.resume → error (forces fallback)
+    private let emitContextAndRateLimit: Bool           // W11-g slice2: context_usage + rate_limit before result
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -28,6 +29,7 @@ private actor GateableSidecar {
         self.emitsBackendId = emitsBackendId
         self.reqCapture = reqCapture
         self.resumeFails = resumeFails
+        self.emitContextAndRateLimit = emitContextAndRateLimit
     }
 
     func run() async {
@@ -97,6 +99,20 @@ private actor GateableSidecar {
             await emit(session: session, event: .error(message: m, retryable: false))
             return
         }
+        if emitContextAndRateLimit {
+            await emit(
+                session: session,
+                event: .contextUsage(
+                    totalTokens: 10, maxTokens: 100, percentage: 10,
+                    model: "claude-x", modelDisplayName: "Claude X",
+                    clearableTokens: nil, memoryFileCount: nil, mcpServerCount: nil
+                )
+            )
+            await emit(
+                session: session,
+                event: .rateLimit(resetAt: nil, rateLimitType: "five_hour", utilization: 50)
+            )
+        }
         await emit(session: session, event: .text(text: "ok:\(text)", delta: true))
         let resultText: String? = resultEchoesText ? "ok:\(text)" : nil
         await emit(session: session, event: .result(text: resultText, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
@@ -124,12 +140,13 @@ private func makeDabBridge(
     configStore: ConfigStore? = nil,
     emitsBackendId: String? = nil,
     reqCapture: LockedBox<[String]>? = nil,
-    resumeFails: Bool = false
+    resumeFails: Bool = false,
+    emitContextAndRateLimit: Bool = false
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
     let bridge = DabSessionBridge(makeClient: {
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm, emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails)
+        let server = GateableSidecar(transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText, capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm, emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails, emitContextAndRateLimit: emitContextAndRateLimit)
         Task { await server.run() }
         return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
     }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore(),
@@ -160,6 +177,16 @@ struct DabSessionBridgeTests {
     @Test func happyPath() async throws {
         let (bridge, _) = makeDabBridge()
         #expect(try await run(bridge, "hi") == "ok:hi")
+    }
+
+    @Test func capturesContextUsageAndRateLimitOnTurn() async throws {
+        let (bridge, _) = makeDabBridge(emitContextAndRateLimit: true)
+        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        #expect(turn.text == "ok:hi")
+        #expect(turn.contextUsage?.percentage == 10)
+        #expect(turn.contextUsage?.model == "claude-x")
+        #expect(turn.rateLimit?.rateLimitType == "five_hour")
+        #expect(turn.rateLimit?.utilization == 50)
     }
 
     @Test func resultTextDedup() async throws {
