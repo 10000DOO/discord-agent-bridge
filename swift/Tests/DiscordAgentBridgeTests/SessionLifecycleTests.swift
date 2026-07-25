@@ -393,7 +393,7 @@ struct LiveSlashSpecTests {
 
     @Test func allSpecsOrder() {
         let names = allSlashCommandSpecs().map(\.name)
-        #expect(names == ["agent", "mode", "model", "effort", "stop", "clear", "stop-all", "setup", "doc"])
+        #expect(names == ["agent", "mode", "model", "effort", "stop", "clear", "stop-all", "setup", "doc", "config"])
     }
 
     @Test func docIsLeafWithPathOption() {

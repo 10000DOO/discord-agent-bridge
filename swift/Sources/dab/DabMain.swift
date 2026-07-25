@@ -146,16 +146,22 @@ struct EventHandler: GatewayEventHandler {
                 try await handleWizardComponent(payload, comp: comp)
                 return
             }
+            // (A3) W16-b /config panel components (role/string selects + Save; owner-gated).
+            if isConfigPanelId(comp.custom_id) {
+                try await handleConfigComponent(payload, comp: comp)
+                return
+            }
             return
         }
 
-        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup/doc
-        // (TS ACTION_TIER: drive except stop-all + setup admin; setup also uses authorizeConfig bootstrap).
+        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup/doc/config
+        // (TS ACTION_TIER: drive except stop-all + setup + config admin).
         guard let cmd = try? payload.data?.requireApplicationCommand() else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-        let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup") ? .admin : .drive
+        let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup" || cmd.name == "config")
+            ? .admin : .drive
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
                 userId: actorId,
@@ -365,6 +371,71 @@ struct EventHandler: GatewayEventHandler {
                 )
             }
 
+        case "config":
+            // W16-b: ephemeral settings panel (role tiers + defaults + dmPolicy). Admin only.
+            guard let realGuildId = payload.guild_id?.rawValue else {
+                try await respondEphemeral(payload, "권한이 없습니다: DM")
+                return
+            }
+            let store = ConfigStore.shared
+            let global: AppConfig
+            do {
+                global = try await store.load()
+            } catch {
+                try await respondEphemeral(
+                    payload,
+                    "config.json을 읽을 수 없어요. 설정 파일을 확인하세요: \(error)"
+                )
+                return
+            }
+            let server = await store.loadServerConfig(guildId: realGuildId)
+            let defaults = configPanelDefaults(global: global, server: server)
+            // File-facing mode may be grok-build; select options use Backend raw values.
+            var panelDefaults = defaults
+            if panelDefaults.backend == "grok-build" {
+                panelDefaults.backend = Backend.grok.rawValue
+            }
+            let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+            let backends = Backend.allCases.map(\.rawValue)
+            // Minimal perm list (Claude vocabulary). Full catalog probing is deferred.
+            let permModes: [ModelChoice] = [
+                .init(value: "default", label: "default"),
+                .init(value: "acceptEdits", label: "acceptEdits"),
+                .init(value: "plan", label: "plan"),
+                .init(value: "bypassPermissions", label: "bypassPermissions"),
+                .init(value: "dontAsk", label: "dontAsk"),
+                .init(value: "auto", label: "auto"),
+            ]
+            let panel = ConfigPanel(options: ConfigPanelOptions(
+                guildId: realGuildId,
+                ownerId: ownerId,
+                configStore: store,
+                defaults: panelDefaults,
+                backends: backends,
+                isKnownBackend: { Backend(rawValue: $0) != nil },
+                permModes: permModes
+            ))
+            await ConfigPanelRegistry.shared.put(panel, guildId: realGuildId, channelId: channelId)
+            let view = panel.render()
+            let (embeds, roleRows, defaultRows) = discordPayload(from: view)
+            _ = try await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "설정 패널을 열었습니다. 역할은 Save로 저장, 기본값/DM은 선택 즉시 저장됩니다.",
+                    embeds: embeds,
+                    flags: [.ephemeral],
+                    components: roleRows
+                ))
+            )
+            if !defaultRows.isEmpty {
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(components: defaultRows, flags: [.ephemeral])
+                )
+            }
+
         case "doc":
             // W16-d: share markdown into a 📄 thread (drive tier). Needs a bound session for cwd.
             guard let docPath = try? cmd.requireOption(named: "path").requireString(), !docPath.isEmpty else {
@@ -426,6 +497,76 @@ struct EventHandler: GatewayEventHandler {
             return o
         }
         return messageAuthorId
+    }
+
+    /// W16-b: drive the open `/config` panel. Owner-gated. Roles batch until Save;
+    /// backend/permMode/dmPolicy auto-save. Ack: deferUpdate on pending, ephemeral reply on save.
+    private func handleConfigComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue
+        let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        guard let guildId else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            return
+        }
+        // Admin gate (same as /config open). Discord Administrator always widens.
+        let decision = await Authorizer(config: .shared).authorize(
+            AuthInput(
+                userId: clicker,
+                roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                action: .admin,
+                guildId: guildId,
+                channelId: channelId,
+                isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
+            )
+        )
+        guard decision.allowed else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "권한이 없습니다: \(decision.reason ?? "unauthorized")",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+        guard let panel = await ConfigPanelRegistry.shared.get(guildId: guildId, channelId: channelId),
+              panel.ownerId == clicker
+        else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            return
+        }
+
+        let input = ConfigPanelInput(
+            id: comp.custom_id,
+            value: comp.values?.first,
+            values: comp.values
+        )
+        let result = await panel.handle(input)
+        switch result {
+        case .saved(let summary):
+            await ConfigPanelRegistry.shared.remove(guildId: guildId, channelId: channelId)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(content: summary, flags: [.ephemeral]))
+            )
+        case .autosaved(let notice):
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(content: notice, flags: [.ephemeral]))
+            )
+        case .pending, .ignored:
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+        }
     }
 
     /// W11-b2: drive the channel's agent-start wizard from a select/button click (dir:* + choice steps).

@@ -169,7 +169,16 @@ public func docCommandSpec() -> SlashCommandSpec {
     )
 }
 
-/// Every slash command the bot registers (W11-d live set + lifecycle + W16-c /setup + W16-d /doc).
+/// `/config` — role tiers + defaults panel (admin; TS `setDefaultMemberPermissions(Administrator)`).
+public func configCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "config",
+        description: "Configure role tiers and defaults for this server",
+        requiresAdministrator: true
+    )
+}
+
+/// Every slash command the bot registers (W11-d + lifecycle + W16-c/d/b /setup /doc /config).
 public func allSlashCommandSpecs() -> [SlashCommandSpec] {
     [
         agentCommandSpec(),
@@ -181,5 +190,6 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         stopAllCommandSpec(),
         setupCommandSpec(),
         docCommandSpec(),
+        configCommandSpec(),
     ]
 }

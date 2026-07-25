@@ -208,3 +208,65 @@ func discordPayload(from view: WizardView) -> (embeds: [Embed], components: [Int
     return ([embed], rows)
 }
 
+// MARK: - Config panel → DiscordBM (W16-b)
+
+/// Map pure `ConfigPanelView` rows to Discord embeds + action rows (role/string selects + buttons).
+func discordPayload(from view: ConfigPanelView) -> (
+    embeds: [Embed],
+    roleRows: [Interaction.ActionRow],
+    defaultRows: [Interaction.ActionRow]
+) {
+    let embed = Embed(title: view.title, description: view.description)
+    return (
+        [embed],
+        view.roleRows.map(configPanelActionRow),
+        view.defaultRows.map(configPanelActionRow)
+    )
+}
+
+private func configPanelActionRow(_ row: ConfigPanelRow) -> Interaction.ActionRow {
+    let comps: [Interaction.ActionRow.Component] = row.components.map { c in
+        switch c {
+        case .roleSelect(let customId, let placeholder, let defaultRoleIds, let minValues, let maxValues):
+            let defaults: [Interaction.ActionRow.DefaultValue]? = defaultRoleIds.isEmpty
+                ? nil
+                : defaultRoleIds.map { Interaction.ActionRow.DefaultValue(id: RoleSnowflake($0)) }
+            return .roleSelect(Interaction.ActionRow.SelectMenu(
+                custom_id: customId,
+                placeholder: placeholder,
+                default_values: defaults,
+                min_values: minValues,
+                max_values: maxValues
+            ))
+        case .select(let customId, let placeholder, let options):
+            let opts = options.map {
+                Interaction.ActionRow.StringSelectMenu.Option(
+                    label: $0.label,
+                    value: $0.value,
+                    default: $0.isDefault
+                )
+            }
+            return .stringSelect(Interaction.ActionRow.StringSelectMenu(
+                custom_id: customId,
+                options: opts,
+                placeholder: placeholder
+            ))
+        case .button(let customId, let label, let style):
+            let s: Interaction.ActionRow.Button.NonLinkStyle = {
+                switch style {
+                case .primary: return .primary
+                case .secondary: return .secondary
+                case .success: return .success
+                case .danger: return .danger
+                }
+            }()
+            return .button(Interaction.ActionRow.Button(
+                style: s,
+                label: label,
+                custom_id: customId
+            ))
+        }
+    }
+    return Interaction.ActionRow(components: comps)
+}
+
