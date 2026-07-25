@@ -311,7 +311,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W16-d** | L | `done` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
 | **W16-f** | L | `done` | **custom 백엔드**(`Backend.custom`+`!custom` route+persist+`ShellEnv` dotfile env + Claude path env-overlay; wizard/slash 포함) | custom UX |
-| **W16-g** | L | `todo` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`) | 도구/상태 가시성 |
+| **W16-g** | L | `done` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`). **shipped**: pure formatters + TurnThreadRegistry/ToolThreadHandler/DiffViewHandler(fakes) + ToolActivityHost→DabSessionBridge mid-turn + DabMain createThread/statusEmbed/SessionNotifier. **잔여**: Codex/Grok mid-turn tool events (Claude path only), pin status embed, capabilities gating UI | 도구/상태 가시성 |
 | **W16-h** | L | `todo` | auto-update 승인/무시 버튼(`updateButton`) + 업데이터(설치+재시작). W12 인접 | 자동 업데이트 |
 
 ### 후순위 / 병행 가능 (큐 본선 아님)

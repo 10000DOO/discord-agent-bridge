@@ -4,11 +4,18 @@
 /// Swift `Character` (extended grapheme) count.
 public enum DiscordText {
     public static let maxLen = 2000
+    /// Discord thread name hard cap (TS `THREAD_NAME_LIMIT`).
+    public static let threadNameLimit = 100
 
     public static func clip(_ s: String, limit: Int = maxLen) -> String {
         if utf16Len(s) <= limit { return s }
         // TS: text.slice(0, max - 1) + '…'  (slice is UTF-16)
         return utf16Slice(s, 0, max(0, limit - 1)) + "…"
+    }
+
+    /// TS `truncate` — alias of `clip` (embed previews / thread names).
+    public static func truncate(_ text: String, _ max: Int) -> String {
+        clip(text, limit: max)
     }
 
     /// Split text into Discord-message-sized chunks (TS `chunkMessage`).

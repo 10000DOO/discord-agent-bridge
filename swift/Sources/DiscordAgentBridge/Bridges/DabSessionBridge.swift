@@ -399,8 +399,14 @@ public actor DabSessionBridge {
                     behavior: decision.backendBehavior
                 )
             }
+        case .toolUse, .toolResult:
+            // W16-g: tool activity → Discord work threads + diffs (fire-and-forget).
+            if let channelId = sessionMeta[handle]?.channelId {
+                let ev = event
+                Task { await ToolActivityHost.shared.handle(channelId: channelId, event: ev) }
+            }
         default:
-            // thinking / tool_* / progress / subagent — full HUD tools panel is later slice.
+            // thinking / progress / subagent — full HUD tools panel is later slice.
             break
         }
     }
@@ -444,6 +450,10 @@ public actor DabSessionBridge {
         box.continuation = nil
         box.timeoutTask = nil
         turns[handle] = box
+        // W16-g: turn boundary for tool threads (in-flight posts keep their captured thread).
+        if let channelId = sessionMeta[handle]?.channelId {
+            Task { await ToolActivityHost.shared.resetTurn(channelId: channelId) }
+        }
         if let error {
             cont?.resume(throwing: error)
         } else {
@@ -467,6 +477,7 @@ public actor DabSessionBridge {
         stopEpoch[channelId, default: 0] += 1
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
+        await ToolActivityHost.shared.dispose(channelId: channelId)
         guard let handle = sessions.removeValue(forKey: channelId) else { return }
         sessionMeta[handle] = nil
         // Unblock a waiter before the RPC so stop is never stuck on a hung turn.

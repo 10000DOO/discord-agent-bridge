@@ -42,6 +42,10 @@ struct DabMain {
         await DocumentShareHost.shared.setShareHandler { channelId, path in
             try await postDocumentShare(client: client, channelId: channelId, path: path)
         }
+        // W16-g: tool_use / tool_result → Discord work threads (+ diffs) via createThread.
+        await ToolActivityHost.shared.setChannelFactory { channelId in
+            turnThreadChannel(client: client, channelId: channelId)
+        }
 
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -657,9 +661,18 @@ struct EventHandler: GatewayEventHandler {
                 let text = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
                     + (extra.isEmpty ? "" : " (\(extra))")
                     + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
+                // W16-g: optional session status embed on bind (TS buildStatusEmbed after start).
+                let status = SessionStatus(
+                    mode: p.backend.rawValue,
+                    cwd: p.cwd,
+                    sessionId: nil,
+                    permMode: p.permMode.isEmpty ? "default" : p.permMode,
+                    usagePanel: backendSupportsUsagePanel(p.backend)
+                )
+                let statusEmbed = discordEmbed(from: buildStatusEmbed(status))
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(content: text, embeds: [], components: []))
+                    payload: .updateMessage(.init(content: text, embeds: [statusEmbed], components: []))
                 )
             } else {
                 _ = try? await client.createInteractionResponse(
@@ -984,6 +997,25 @@ struct EventHandler: GatewayEventHandler {
                     payload: .init(content: mention)
                 )
             }
+            // W16-g: status-channel notification (result + rate_limit when present).
+            let resultEv = AgentEvent.result(
+                text: turn.text,
+                costUsd: turn.usage?.costUsd,
+                tokensIn: turn.usage?.tokensIn,
+                tokensOut: turn.usage?.tokensOut,
+                durationMs: turn.usage?.durationMs
+            )
+            await postStatusNotification(
+                client: client, guildId: guildId, sessionChannelId: channelId, event: resultEv, backend: backend
+            )
+            if let rl = turn.rateLimit {
+                let rlEv = AgentEvent.rateLimit(
+                    resetAt: rl.resetAt, rateLimitType: rl.rateLimitType, utilization: rl.utilization
+                )
+                await postStatusNotification(
+                    client: client, guildId: guildId, sessionChannelId: channelId, event: rlEv, backend: backend
+                )
+            }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
             // Same chunking on error path so huge error text is not truncated.
@@ -992,6 +1024,11 @@ struct EventHandler: GatewayEventHandler {
             for chunk in DiscordText.chunkMessage(msg) {
                 _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: chunk))
             }
+            // W16-g: status-channel error notification.
+            let errEv = AgentEvent.error(message: error.localizedDescription, retryable: true)
+            await postStatusNotification(
+                client: client, guildId: guildId, sessionChannelId: channelId, event: errEv, backend: backend
+            )
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, outcome: error.localizedDescription, status: "error"))
         }
     }

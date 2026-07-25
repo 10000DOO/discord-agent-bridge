@@ -165,6 +165,69 @@ func discordEmbed(from spec: UsageEmbedSpec) -> Embed {
     )
 }
 
+/// Map pure `StatusEmbedSpec` to DiscordBM `Embed` (W16-g).
+func discordEmbed(from spec: StatusEmbedSpec) -> Embed {
+    Embed(
+        title: spec.title,
+        color: DiscordColor(value: spec.color) ?? DiscordColor(value: DiscordColors.idle),
+        footer: spec.footer.map { Embed.Footer(text: $0) },
+        fields: spec.fields.map { Embed.Field(name: $0.name, value: $0.value, inline: $0.inline) }
+    )
+}
+
+// MARK: - Tool activity threads (W16-g)
+
+/// DiscordBM-backed TurnThreadChannel for tool_use / tool_result work threads.
+func turnThreadChannel(client: any DiscordClient, channelId: String) -> TurnThreadChannel {
+    TurnThreadChannel { name in
+        let resp = try await client.createThread(
+            channelId: ChannelSnowflake(channelId),
+            payload: Payloads.CreateThreadWithoutMessage(name: name, type: .publicThread)
+        )
+        let thread = try resp.decode()
+        let threadId = thread.id
+        return TurnThreadMessage(id: threadId.rawValue) { content in
+            _ = try await client.createMessage(
+                channelId: threadId,
+                payload: Payloads.CreateMessage(content: content)
+            )
+        }
+    }
+}
+
+/// Post a compact status-channel notification when server notifications are enabled (W16-g).
+func postStatusNotification(
+    client: any DiscordClient,
+    guildId: String,
+    sessionChannelId: String,
+    event: AgentEvent,
+    backend: Backend
+) async {
+    guard guildId != "dm", !guildId.isEmpty else { return }
+    let server = await ConfigStore.shared.loadServerConfig(guildId: guildId)
+    let resolved = resolveNotifications(server)
+    guard resolved.enabled, let statusId = resolved.channelId, !statusId.isEmpty else { return }
+    let sink = NotificationSink { content in
+        _ = try await client.createMessage(
+            channelId: ChannelSnowflake(statusId),
+            payload: Payloads.CreateMessage(content: content)
+        )
+    }
+    let getUsage: (@Sendable () async -> UsageResult?)? = {
+        if backend == .claude || backend == .custom {
+            return { await ClaudeUsageService.shared.getUsage() }
+        }
+        return nil
+    }()
+    let notifier = SessionNotifier(
+        statusChannel: sink,
+        sessionChannelId: sessionChannelId,
+        events: resolved.events,
+        getUsage: getUsage
+    )
+    await notifier.notify(event)
+}
+
 // MARK: - Wizard → DiscordBM components (W11-b2 slice1)
 
 /// Map pure `WizardView` rows to Discord embeds + action rows (select menus + buttons).
