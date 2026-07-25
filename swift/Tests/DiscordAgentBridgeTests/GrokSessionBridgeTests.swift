@@ -111,13 +111,13 @@ struct GrokSessionBridgeTests {
     @Test func happyPath() async throws {
         let (bridge, _) = makeGrokBridge()
         let reply = try await bridge.runTurn(channelId: "c", text: "hi")
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
     }
 
     @Test func multiChunkSyncFold() async throws {
         let (bridge, _) = makeGrokBridge(fixedChunks: ["Hel", "lo"])
         let reply = try await bridge.runTurn(channelId: "c", text: "hi")
-        #expect(reply == "Hello")   // session/update chunks folded before sessionPrompt returns
+        #expect(reply.text == "Hello")   // session/update chunks folded before sessionPrompt returns
     }
 
     @Test func serializationReentrancyIsolation() async throws {
@@ -136,19 +136,19 @@ struct GrokSessionBridgeTests {
         let rb = try await tB.value
         let rc = try await tC.value
 
-        #expect(ra == "ok:A")
-        #expect(rb == "ok:B")
-        #expect(rc == "ok:C")
+        #expect(ra.text == "ok:A")
+        #expect(rb.text == "ok:B")
+        #expect(rc.text == "ok:C")
         #expect(await gate.maxConcurrent == 1)
     }
 
     @Test func respawnAfterClose() async throws {
         let (bridge, made) = makeGrokBridge()
         let r1 = try await bridge.runTurn(channelId: "c", text: "one")
-        #expect(r1 == "ok:one")
+        #expect(r1.text == "ok:one")
         await made.last()?.close()
         let r2 = try await bridge.runTurn(channelId: "c", text: "two")
-        #expect(r2 == "ok:two")
+        #expect(r2.text == "ok:two")
         #expect(made.count == 2)
     }
 
@@ -242,7 +242,7 @@ struct GrokSessionBridgeTests {
     // W14: stop closes + drops live map; interrupt dropClient but store keeps resume id for reload.
     @Test func stopClosesAndDropsChannel() async throws {
         let (bridge, made) = makeGrokBridge()
-        #expect(try await bridge.runTurn(channelId: "c", text: "hi") == "ok:hi")
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi").text == "ok:hi")
         #expect(await bridge.isLive(channelId: "c") == true)
         await bridge.stop(channelId: "c")
         #expect(await bridge.isLive(channelId: "c") == false)
@@ -252,7 +252,7 @@ struct GrokSessionBridgeTests {
     @Test func interruptDropsClientKeepsResumeCapability() async throws {
         let store = freshTempStore()
         let (bridge, made) = makeGrokBridge(store: store)
-        #expect(try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok)) == "ok:hi")
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok)).text == "ok:hi")
         #expect(await store.binding(channelId: "c")?.backendSessionId == "s1")
         #expect(await bridge.interrupt(channelId: "c") == true)
         #expect(await bridge.isLive(channelId: "c") == false)

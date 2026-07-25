@@ -46,12 +46,13 @@ public actor DabSessionBridge {
     /// channelId → epoch bumped on `stop` so sessionHandle that races mid-await drops the orphan.
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent send on same session).
-    private var channelGates: [String: Task<String, Error>] = [:]
+    private var channelGates: [String: Task<TurnResult, Error>] = [:]
 
     private struct TurnBox {
         var text = ""
+        var usage: TurnUsage?
         var done = false
-        var continuation: CheckedContinuation<String, Error>?
+        var continuation: CheckedContinuation<TurnResult, Error>?
         var timeoutTask: Task<Void, Never>?
     }
 
@@ -115,19 +116,20 @@ public actor DabSessionBridge {
     }
 
     /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
-    /// Turns on the same channel are serialized.
+    /// Turns on the same channel are serialized. Usage (cost/tokens/duration) from the result
+    /// event is returned when present (W11-g slice1).
     public func runTurn(
         channelId: String,
         guildId: String,
         ownerId: String?,
         text: String,
         config: SessionConfig? = nil
-    ) async throws -> String {
+    ) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session. The previous turn is awaited INSIDE the task — that
         // is where serialization happens.
         let prev = channelGates[channelId]
-        let task = Task { () -> String in
+        let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
             return try await self.executeTurn(
                 channelId: channelId,
@@ -139,10 +141,12 @@ public actor DabSessionBridge {
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
-        let reply = try await task.value
+        var result = try await task.value
         // F5: prepend the resume-failure notice once, if this turn fell back to a fresh session.
-        if let notice = fallbackNotice.removeValue(forKey: channelId) { return notice + "\n\n" + reply }
-        return reply
+        if let notice = fallbackNotice.removeValue(forKey: channelId) {
+            result.text = notice + "\n\n" + result.text
+        }
+        return result
     }
 
     private func executeTurn(
@@ -151,7 +155,7 @@ public actor DabSessionBridge {
         ownerId: String?,
         text: String,
         config: SessionConfig?
-    ) async throws -> String {
+    ) async throws -> TurnResult {
         let client = try await ensureClient()
         let handle = try await sessionHandle(
             client: client,
@@ -162,7 +166,7 @@ public actor DabSessionBridge {
         )
 
         let timeoutNs = turnTimeoutNs
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
             let timeoutTask = Task {
                 try? await Task.sleep(nanoseconds: timeoutNs)
                 guard !Task.isCancelled else { return }
@@ -170,6 +174,7 @@ public actor DabSessionBridge {
             }
             turns[handle] = TurnBox(
                 text: "",
+                usage: nil,
                 done: false,
                 continuation: cont,
                 timeoutTask: timeoutTask
@@ -269,7 +274,7 @@ public actor DabSessionBridge {
         case .text(let t, _):
             box.text += t
             turns[handle] = box
-        case .result(let t, _, _, _, _):
+        case .result(let t, let costUsd, let tokensIn, let tokensOut, let durationMs):
             if let t, !t.isEmpty {
                 if box.text.isEmpty {
                     box.text = t
@@ -277,9 +282,13 @@ public actor DabSessionBridge {
                     box.text += t
                 }
             }
+            // Capture metrics for the done-line footer (W11-g slice1).
+            if let u = turnUsage(fromResult: costUsd, tokensIn: tokensIn, tokensOut: tokensOut, durationMs: durationMs) {
+                box.usage = u
+            }
             turns[handle] = box
             let out = box.text.isEmpty ? "(empty result)" : box.text
-            finishTurnUnlocked(handle: handle, result: out)
+            finishTurnUnlocked(handle: handle, result: TurnResult(text: out, usage: box.usage))
         case .error(let message, _):
             finishTurnUnlocked(
                 handle: handle,
@@ -316,6 +325,7 @@ public actor DabSessionBridge {
                 )
             }
         default:
+            // context_usage / thinking / tool_* etc. — full HUD is W11-g slice2.
             break
         }
     }
@@ -338,12 +348,15 @@ public actor DabSessionBridge {
                     )
                 )
             } else {
-                finishTurnUnlocked(handle: handle, result: box.text + "\n…(timeout)")
+                finishTurnUnlocked(
+                    handle: handle,
+                    result: TurnResult(text: box.text + "\n…(timeout)", usage: box.usage)
+                )
             }
         }
     }
 
-    private func finishTurnUnlocked(handle: String, result: String?, error: Error? = nil) {
+    private func finishTurnUnlocked(handle: String, result: TurnResult?, error: Error? = nil) {
         guard var box = turns[handle], !box.done else { return }
         box.done = true
         box.timeoutTask?.cancel()
@@ -354,7 +367,7 @@ public actor DabSessionBridge {
         if let error {
             cont?.resume(throwing: error)
         } else {
-            cont?.resume(returning: result ?? box.text)
+            cont?.resume(returning: result ?? TurnResult(text: box.text, usage: box.usage))
         }
     }
 
@@ -389,7 +402,7 @@ public actor DabSessionBridge {
         try? await client?.sessionInterrupt(session: handle)
         if let box = turns[handle], !box.done {
             let partial = box.text.isEmpty ? "(interrupted)" : box.text
-            finishTurnUnlocked(handle: handle, result: partial)
+            finishTurnUnlocked(handle: handle, result: TurnResult(text: partial, usage: box.usage))
         }
         return true
     }

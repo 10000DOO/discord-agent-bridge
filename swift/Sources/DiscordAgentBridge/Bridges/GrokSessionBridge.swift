@@ -57,7 +57,7 @@ public actor GrokSessionBridge {
     /// channelId → epoch bumped on `stop` so ensureChannel that races mid-await closes the orphan.
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent sessionPrompt on the same session).
-    private var channelGates: [String: Task<String, Error>] = [:]
+    private var channelGates: [String: Task<TurnResult, Error>] = [:]
 
     // env rules copied from CodexSessionBridge (B/"sibling bridge": no forced sharing).
     private var cwd: String {
@@ -74,24 +74,27 @@ public actor GrokSessionBridge {
     }
 
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
-    /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> String {
+    /// Turns on the same channel are serialized. Cost/tokens from the prompt response are
+    /// returned when present (W11-g slice1).
+    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
-        let task = Task { () -> String in
+        let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
             return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
-        let reply = try await task.value
-        if let notice = fallbackNotice.removeValue(forKey: channelId) { return notice + "\n\n" + reply }
-        return reply
+        var result = try await task.value
+        if let notice = fallbackNotice.removeValue(forKey: channelId) {
+            result.text = notice + "\n\n" + result.text
+        }
+        return result
     }
 
-    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> String {
+    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> TurnResult {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
@@ -104,9 +107,10 @@ public actor GrokSessionBridge {
         }
         defer { unsub() }
 
-        _ = try await channel.client.sessionPrompt(prompt: text)
+        let promptResult = try await channel.client.sessionPrompt(prompt: text)
         let out = buf.withLock { $0 }
-        return out.isEmpty ? "(no text)" : out
+        let textOut = out.isEmpty ? "(no text)" : out
+        return TurnResult(text: textOut, usage: turnUsage(fromGrokPromptResult: promptResult))
     }
 
     private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?, guildId: String) async throws -> Channel {

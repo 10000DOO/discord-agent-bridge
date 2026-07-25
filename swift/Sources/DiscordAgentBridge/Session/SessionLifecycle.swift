@@ -257,18 +257,18 @@ public struct SessionLifecycle: Sendable {
         return config
     }
 
-    /// Active bindings for `/agent stats` (registry ∪ non-archived store; registry wins on model).
-    public func listActiveBindings() async -> [(channelId: String, backend: Backend, model: String?)] {
-        var out: [String: (Backend, String?)] = [:]
+    /// Active bindings for `/agent stats` (registry ∪ non-archived store; registry wins on model/effort).
+    public func listActiveBindings() async -> [(channelId: String, backend: Backend, model: String?, effort: String?)] {
+        var out: [String: (Backend, String?, String?)] = [:]
         for (id, ps) in await store.active() {
-            out[id] = (ps.backend, ps.model)
+            out[id] = (ps.backend, ps.model, ps.effort)
         }
         for (id, cfg) in await registry.list() {
-            out[id] = (cfg.backend, cfg.model)
+            out[id] = (cfg.backend, cfg.model, cfg.effort)
         }
         return out.keys.sorted().map { id in
             let v = out[id]!
-            return (channelId: id, backend: v.0, model: v.1)
+            return (channelId: id, backend: v.0, model: v.1, effort: v.2)
         }
     }
 

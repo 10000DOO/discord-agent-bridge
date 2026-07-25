@@ -47,15 +47,17 @@ struct BindingUpdateTests {
     @Test func formatStatsLinesEmptyAndFilled() {
         #expect(formatStatsLines(bindings: []) == ["(none)"])
         let lines = formatStatsLines(bindings: [
-            (channelId: "c1", backend: .claude, model: "sonnet"),
-            (channelId: "c2", backend: .codex, model: nil),
+            (channelId: "c1", backend: .claude, model: "sonnet", effort: "high"),
+            (channelId: "c2", backend: .codex, model: nil, effort: nil),
         ])
         #expect(lines.count == 2)
         #expect(lines[0].contains("c1"))
         #expect(lines[0].contains("claude"))
         #expect(lines[0].contains("sonnet"))
+        #expect(lines[0].contains("effort=high"))
         #expect(lines[1].contains("c2"))
         #expect(lines[1].contains("codex"))
         #expect(!lines[1].contains("`"))
+        #expect(!lines[1].contains("effort="))
     }
 }

@@ -57,12 +57,15 @@ public func sessionConfig(from session: PersistedSession) -> SessionConfig {
 }
 
 /// Ephemeral `/agent stats` lines from active bindings (pure formatter).
+/// Includes model and effort when set (W11-g slice1).
 public func formatStatsLines(
-    bindings: [(channelId: String, backend: Backend, model: String?)]
+    bindings: [(channelId: String, backend: Backend, model: String?, effort: String?)]
 ) -> [String] {
     if bindings.isEmpty { return ["(none)"] }
     return bindings.map { b in
-        let m = b.model.map { " · `\($0)`" } ?? ""
-        return "<#\(b.channelId)> · \(b.backend.rawValue)\(m)"
+        var line = "<#\(b.channelId)> · \(b.backend.rawValue)"
+        if let m = b.model { line += " · `\(m)`" }
+        if let e = b.effort { line += " · effort=\(e)" }
+        return line
     }
 }

@@ -61,12 +61,13 @@ public actor CodexSessionBridge {
     /// channelId → epoch bumped on `stop` so ensureChannel that races mid-await closes the orphan.
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent turn/start on the same thread).
-    private var channelGates: [String: Task<String, Error>] = [:]
+    private var channelGates: [String: Task<TurnResult, Error>] = [:]
 
     private struct TurnBox {
         var text = ""
+        var usage: TurnUsage?
         var done = false
-        var continuation: CheckedContinuation<String, Error>?
+        var continuation: CheckedContinuation<TurnResult, Error>?
         var timeoutTask: Task<Void, Never>?
     }
 
@@ -87,27 +88,30 @@ public actor CodexSessionBridge {
     private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
 
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
-    /// Turns on the same channel are serialized.
-    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> String {
+    /// Turns on the same channel are serialized. Token usage from `turn/completed` is returned
+    /// when present (W11-g slice1).
+    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
-        let task = Task { () -> String in
+        let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
             return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
-        let reply = try await task.value
-        if let notice = fallbackNotice.removeValue(forKey: channelId) { return notice + "\n\n" + reply }
-        return reply
+        var result = try await task.value
+        if let notice = fallbackNotice.removeValue(forKey: channelId) {
+            result.text = notice + "\n\n" + result.text
+        }
+        return result
     }
 
-    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> String {
+    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> TurnResult {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
         let timeoutNs = turnTimeoutNs
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
             let timeoutTask = Task {
                 try? await Task.sleep(nanoseconds: timeoutNs)
                 guard !Task.isCancelled else { return }
@@ -115,6 +119,7 @@ public actor CodexSessionBridge {
             }
             turns[channelId] = TurnBox(
                 text: "",
+                usage: nil,
                 done: false,
                 continuation: cont,
                 timeoutTask: timeoutTask
@@ -290,8 +295,10 @@ public actor CodexSessionBridge {
                 box.text = text
                 turns[channelId] = box
             }
-        case .finished:
-            finishTurnUnlocked(channelId: channelId, result: box.text.isEmpty ? "(empty result)" : box.text)
+        case .finished(let usage):
+            if let usage { box.usage = usage; turns[channelId] = box }
+            let text = box.text.isEmpty ? "(empty result)" : box.text
+            finishTurnUnlocked(channelId: channelId, result: TurnResult(text: text, usage: box.usage))
         case .failed(let message):
             finishTurnUnlocked(channelId: channelId, result: nil, error: AppServerError(message))
         case .ignore:
@@ -313,12 +320,15 @@ public actor CodexSessionBridge {
                     error: AppServerError("codex turn timeout (no text)")
                 )
             } else {
-                finishTurnUnlocked(channelId: channelId, result: box.text + "\n…(timeout)")
+                finishTurnUnlocked(
+                    channelId: channelId,
+                    result: TurnResult(text: box.text + "\n…(timeout)", usage: box.usage)
+                )
             }
         }
     }
 
-    private func finishTurnUnlocked(channelId: String, result: String?, error: Error? = nil) {
+    private func finishTurnUnlocked(channelId: String, result: TurnResult?, error: Error? = nil) {
         guard var box = turns[channelId], !box.done else { return }
         box.done = true
         box.timeoutTask?.cancel()
@@ -330,7 +340,7 @@ public actor CodexSessionBridge {
         if let error {
             cont?.resume(throwing: error)
         } else {
-            cont?.resume(returning: result ?? box.text)
+            cont?.resume(returning: result ?? TurnResult(text: box.text, usage: box.usage))
         }
     }
 
@@ -370,7 +380,7 @@ public actor CodexSessionBridge {
         }
         if let box = turns[channelId], !box.done {
             let partial = box.text.isEmpty ? "(interrupted)" : box.text
-            finishTurnUnlocked(channelId: channelId, result: partial)
+            finishTurnUnlocked(channelId: channelId, result: TurnResult(text: partial, usage: box.usage))
         } else {
             activeTurnIds[channelId] = nil
         }

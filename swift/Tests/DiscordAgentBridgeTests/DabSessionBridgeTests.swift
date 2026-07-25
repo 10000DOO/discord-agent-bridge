@@ -152,7 +152,7 @@ private func freshTempConfigStore(autoAllow: [String] = ["Read", "Glob", "Grep"]
 }
 
 private func run(_ b: DabSessionBridge, _ text: String, channel: String = "c") async throws -> String {
-    try await b.runTurn(channelId: channel, guildId: "g", ownerId: nil, text: text)
+    try await b.runTurn(channelId: channel, guildId: "g", ownerId: nil, text: text).text
 }
 
 @Suite("DabSessionBridge")
@@ -256,7 +256,7 @@ struct DabSessionBridgeTests {
         // Owner approves → sidecar receives behavior "allow" → turn completes.
         #expect(await gate.resolve(reqKey: prompt.reqKey, action: .allow, byUserId: "owner-1") == true)
         let reply = try await t.value
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")
     }
 
@@ -276,7 +276,7 @@ struct DabSessionBridgeTests {
         #expect(capturePerm.withLock { $0["behavior"] } == nil)                                   // not answered yet
         #expect(await gate.resolve(reqKey: key, action: .deny, byUserId: "owner-1") == true)       // owner decides
         let reply = try await t.value
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "deny")
     }
 
@@ -295,7 +295,7 @@ struct DabSessionBridgeTests {
         #expect(prompt.toolName == "Bash")
         #expect(await gate.resolve(reqKey: prompt.reqKey, action: .always, byUserId: "owner-1") == true)
         let reply = try await t.value
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")   // always → allow for sidecar
     }
 
@@ -315,7 +315,7 @@ struct DabSessionBridgeTests {
             channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
             config: SessionConfig(backend: .claude, permMode: "plan")
         )
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
         #expect(prompts.withLock { $0.isEmpty })                    // no button prompt
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")
     }
@@ -351,8 +351,8 @@ struct DabSessionBridgeTests {
         let reqs = LockedBox<[String]>([])
         let (b, _) = makeDabBridge(store: store, reqCapture: reqs, resumeFails: true)
         let reply = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
-        #expect(reply.contains("이전 세션 복구 실패"))
-        #expect(reply.hasSuffix("ok:hi"))
+        #expect(reply.text.contains("이전 세션 복구 실패"))
+        #expect(reply.text.hasSuffix("ok:hi"))
         #expect(reqs.withLock { $0 }.contains("resume-fail"))
         #expect(reqs.withLock { $0 }.contains("start"))   // fell back to a fresh start
     }
@@ -374,7 +374,7 @@ struct DabSessionBridgeTests {
         let (bridge, _) = makeDabBridge(capture: capture)
         let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi",
                                              config: SessionConfig(backend: .claude, model: "claude-x", effort: "high"))
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
         let got = capture.withLock { $0 }
         #expect(got["model"] == "claude-x")
         #expect(got["effort"] == "high")

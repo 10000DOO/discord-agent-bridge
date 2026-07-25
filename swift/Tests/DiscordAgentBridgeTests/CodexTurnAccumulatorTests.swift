@@ -14,7 +14,7 @@ private struct TurnAccumulator {
         switch codexTurnStep(method: method, params: params) {
         case .appendText(let d): text += d
         case .fullText(let t): if text.isEmpty { text = t }
-        case .finished: done = text.isEmpty ? "(empty result)" : text
+        case .finished: done = text.isEmpty ? "(empty result)" : text  // usage unused in text fold
         case .failed(let m): failed = m
         case .ignore: break
         }
@@ -27,7 +27,7 @@ struct CodexTurnStepTests {
         #expect(codexTurnStep(method: "item/agentMessage/delta", params: .object(["delta": .string("hi")])) == .appendText("hi"))
         // empty delta ignored (eventMapper.ts:80)
         #expect(codexTurnStep(method: "item/agentMessage/delta", params: .object(["delta": .string("")])) == .ignore)
-        #expect(codexTurnStep(method: "turn/completed", params: nil) == .finished)
+        #expect(codexTurnStep(method: "turn/completed", params: nil) == .finished(nil))
         // unknown / non-text notifications ignored
         #expect(codexTurnStep(method: "turn/started", params: nil) == .ignore)
     }

@@ -126,13 +126,13 @@ struct CodexSessionBridgeTests {
     @Test func happyPath() async throws {
         let (bridge, _) = makeCodexBridge()
         let reply = try await bridge.runTurn(channelId: "c", text: "hi")
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
     }
 
     @Test func fullTextFallbackAccumulation() async throws {
         let (bridge, _) = makeCodexBridge(completion: .fullText)
         let reply = try await bridge.runTurn(channelId: "c", text: "hi")
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
     }
 
     @Test func serializationReentrancyIsolation() async throws {
@@ -151,19 +151,19 @@ struct CodexSessionBridgeTests {
         let rb = try await tB.value
         let rc = try await tC.value
 
-        #expect(ra == "ok:A")
-        #expect(rb == "ok:B")   // each turn returns its OWN text → no buffer cross-talk
-        #expect(rc == "ok:C")
+        #expect(ra.text == "ok:A")
+        #expect(rb.text == "ok:B")   // each turn returns its OWN text → no buffer cross-talk
+        #expect(rc.text == "ok:C")
         #expect(await gate.maxConcurrent == 1)      // never two turn/start on one session
     }
 
     @Test func respawnAfterClose() async throws {
         let (bridge, made) = makeCodexBridge()
         let r1 = try await bridge.runTurn(channelId: "c", text: "one")
-        #expect(r1 == "ok:one")
+        #expect(r1.text == "ok:one")
         await made.last()?.close()                  // client dies
         let r2 = try await bridge.runTurn(channelId: "c", text: "two")
-        #expect(r2 == "ok:two")
+        #expect(r2.text == "ok:two")
         #expect(made.count == 2)                    // makeClient re-invoked
     }
 
@@ -267,7 +267,7 @@ struct CodexSessionBridgeTests {
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeCodexBridge(capture: capture)
         let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex, model: "gpt-5-codex", effort: "high"))
-        #expect(reply == "ok:hi")
+        #expect(reply.text == "ok:hi")
         let got = capture.withLock { $0 }
         #expect(got["threadModel"] == "gpt-5-codex")
         #expect(got["turnEffort"] == "high")
@@ -277,7 +277,7 @@ struct CodexSessionBridgeTests {
     // W14: stop closes client + drops channel map; interrupt keeps map and sends turn/interrupt.
     @Test func stopClosesAndDropsChannel() async throws {
         let (bridge, made) = makeCodexBridge()
-        #expect(try await bridge.runTurn(channelId: "c", text: "hi") == "ok:hi")
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi").text == "ok:hi")
         #expect(await bridge.isLive(channelId: "c") == true)
         await bridge.stop(channelId: "c")
         #expect(await bridge.isLive(channelId: "c") == false)
@@ -302,12 +302,12 @@ struct CodexSessionBridgeTests {
         #expect(got["interruptThread"] == "t1")
         #expect(got["interruptTurn"] == "u1")
         let reply = try await t.value
-        #expect(reply == "(interrupted)")
+        #expect(reply.text == "(interrupted)")
     }
 
     @Test func interruptIdleIsTrueWhenLive() async throws {
         let (bridge, _) = makeCodexBridge()
-        #expect(try await bridge.runTurn(channelId: "c", text: "hi") == "ok:hi")
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi").text == "ok:hi")
         #expect(await bridge.interrupt(channelId: "c") == true)
         #expect(await bridge.isLive(channelId: "c") == true)
         #expect(await bridge.interrupt(channelId: "missing") == false)
@@ -328,7 +328,7 @@ struct CodexSessionBridgeTests {
         for _ in 0..<200 { await Task.yield() }
         #expect(await bridge.activeTurnId(channelId: "c") == nil)
         let reply = try await t.value
-        #expect(reply == "(interrupted)")
+        #expect(reply.text == "(interrupted)")
         // interrupt-time and/or late noteTurnStarted must have sent turn/interrupt once turnId existed.
         for _ in 0..<50 where capture.withLock({ $0["interruptTurn"] }) == nil {
             await Task.yield()
@@ -356,7 +356,7 @@ struct CodexSessionBridgeTests {
         let reg = SessionRegistry()
         let store = freshTempStore()
         let (codex, made) = makeCodexBridge(store: store)
-        #expect(try await codex.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex)) == "ok:hi")
+        #expect(try await codex.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex)).text == "ok:hi")
         #expect(await codex.isLive(channelId: "c") == true)
 
         await reg.bind(channelId: "c", SessionConfig(backend: .claude))

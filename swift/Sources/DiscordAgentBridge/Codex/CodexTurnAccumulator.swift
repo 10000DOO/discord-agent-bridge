@@ -9,7 +9,7 @@ import Foundation
 public enum CodexTurnStep: Equatable {
     case appendText(String)   // item/agentMessage/delta → params.delta
     case fullText(String)     // item/completed agentMessage → item.text (fallback when no deltas)
-    case finished             // turn/completed
+    case finished(TurnUsage?) // turn/completed (+ optional token usage)
     case failed(String)       // turn/failed | thread/failed | error
     case ignore
 }
@@ -32,8 +32,8 @@ public func codexTurnStep(method: String, params: JSONValue?) -> CodexTurnStep {
         return .ignore
 
     case "turn/completed":
-        // eventMapper.ts:109-135
-        return .finished
+        // eventMapper.ts:109-135 — surface tokensIn/Out when present (W11-g slice1).
+        return .finished(turnUsage(fromCodexCompleted: params))
 
     case "turn/failed", "thread/failed", "error":
         // eventMapper.ts:137-152

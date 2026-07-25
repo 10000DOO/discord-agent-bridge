@@ -710,10 +710,10 @@ struct EventHandler: GatewayEventHandler {
 
         print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
         do {
-            let reply: String
+            let turn: TurnResult
             switch backend {
             case .claude:
-                reply = try await DabSessionBridge.shared.runTurn(
+                turn = try await DabSessionBridge.shared.runTurn(
                     channelId: channelId,
                     guildId: payload.guild_id?.rawValue ?? "dm",
                     ownerId: payload.author?.id.rawValue,
@@ -721,14 +721,18 @@ struct EventHandler: GatewayEventHandler {
                     config: binding
                 )
             case .codex:
-                reply = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
+                turn = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             case .grok:
-                reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
+                turn = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             }
             // W16-a: multi-message chunking (TS chunkMessage) — never truncate long replies.
-            let body = reply.isEmpty ? "(no text)" : reply
+            let body = turn.text.isEmpty ? "(no text)" : turn.text
             for chunk in DiscordText.chunkMessage(body) {
                 _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: chunk))
+            }
+            // W11-g slice1: optional done-line footer (cost/tokens/duration) after answer chunks.
+            if let usage = turn.usage, let line = buildResultLine(usage) {
+                _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: line))
             }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
