@@ -74,30 +74,13 @@ struct BootRestoreTests {
 
 @Suite("agentCommandSpec")
 struct AgentCommandSpecTests {
-    @Test func startHasRequiredBackendWithAllChoices() {
+    @Test func startIsWizardOnlyNoSlashOptions() {
+        // W11-b2 slice1: /agent start opens the select wizard; no free-text backend/model options.
         let spec = agentCommandSpec()
         #expect(spec.name == "agent")
         #expect(spec.subcommands.map(\.name) == ["start", "close", "resume", "stats"])
-
         let start = spec.subcommands.first { $0.name == "start" }
-        let backend = start?.options.first { $0.name == "backend" }
-        #expect(backend?.required == true)
-        #expect(backend?.choices.map(\.value) == Backend.allCases.map(\.rawValue))
-        #expect(backend?.choices.map(\.value) == ["claude", "codex", "grok"])
-    }
-
-    @Test func startHasOptionalModelEffortPerm() {
-        let start = agentCommandSpec().subcommands.first { $0.name == "start" }
-        let model = start?.options.first { $0.name == "model" }
-        let effort = start?.options.first { $0.name == "effort" }
-        let perm = start?.options.first { $0.name == "perm" }
-        #expect(model?.required == false)
-        #expect(model?.choices.isEmpty == true)   // free text
-        #expect(effort?.required == false)
-        #expect(effort?.choices.map(\.value) == ["minimal", "low", "medium", "high"])
-        // W11-c: perm option with the common permission modes
-        #expect(perm?.required == false)
-        #expect(perm?.choices.map(\.value) == ["default", "plan", "acceptEdits", "bypassPermissions"])
+        #expect(start?.options.isEmpty == true)
     }
 
     @Test func closeHasNoOptions() {

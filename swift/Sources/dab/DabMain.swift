@@ -95,22 +95,30 @@ struct EventHandler: GatewayEventHandler {
     }
 
     func onInteractionCreate(_ payload: Interaction) async throws {
-        // (A) Permission button click → resolve the gate. Only the session approver may decide.
-        if let comp = try? payload.data?.requireMessageComponent(),
-           let (reqKey, action) = parseCustomId(comp.custom_id) {
-            let userId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
-            let accepted = await PermissionGate.shared.resolve(reqKey: reqKey, action: action, byUserId: userId)
-            if accepted {
-                // Replace the buttons with the outcome (idempotent, removes the buttons).
-                _ = try? await client.createInteractionResponse(
-                    id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(content: "🔐 \(action.rawValue.uppercased()) — <@\(userId ?? "")>", components: []))
-                )
-            } else {
-                _ = try? await client.createInteractionResponse(
-                    id: payload.id, token: payload.token,
-                    payload: .channelMessageWithSource(.init(content: "이 결정은 세션 승인자만 할 수 있어요 (또는 이미 처리됨/만료).", flags: [.ephemeral]))
-                )
+        // (A) Message components: permission buttons + agent-start wizard selects/buttons.
+        if let comp = try? payload.data?.requireMessageComponent() {
+            // (A1) Permission button click → resolve the gate. Only the session approver may decide.
+            if let (reqKey, action) = parseCustomId(comp.custom_id) {
+                let userId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
+                let accepted = await PermissionGate.shared.resolve(reqKey: reqKey, action: action, byUserId: userId)
+                if accepted {
+                    // Replace the buttons with the outcome (idempotent, removes the buttons).
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .updateMessage(.init(content: "🔐 \(action.rawValue.uppercased()) — <@\(userId ?? "")>", components: []))
+                    )
+                } else {
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .channelMessageWithSource(.init(content: "이 결정은 세션 승인자만 할 수 있어요 (또는 이미 처리됨/만료).", flags: [.ephemeral]))
+                    )
+                }
+                return
+            }
+            // (A2) W11-b2 slice1 wizard components (owner-gated).
+            if isWizardCustomId(comp.custom_id) {
+                try await handleWizardComponent(payload, comp: comp)
+                return
             }
             return
         }
@@ -242,33 +250,26 @@ struct EventHandler: GatewayEventHandler {
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
             case "start":
-                guard let raw = try? sub.requireOption(named: "backend").requireString(),
-                      let backend = Backend(rawValue: raw)
-                else {
-                    try await respondEphemeral(payload, "알 수 없는 backend")
-                    return
-                }
-                let model = try? sub.requireOption(named: "model").requireString()
-                let effort = try? sub.requireOption(named: "effort").requireString()
-                let perm = try? sub.requireOption(named: "perm").requireString()
-                await SessionRegistry.shared.bind(
+                // W11-b2 slice1: open select wizard (backend→model→effort→perm). cwd = DAB_CWD else home.
+                let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+                let optionSource = await loadWizardOptionSource()
+                let wizard = ChannelWizard(
+                    guildId: guildId,
                     channelId: channelId,
-                    SessionConfig(backend: backend, model: model, effort: effort, permMode: perm)
+                    ownerId: ownerId,
+                    cwd: stubCwd,
+                    options: optionSource
                 )
-                // Persist a routing stub (no backend id yet) so a restart restores this binding; the
-                // first turn's bridge upsert overwrites it with the real backend session id (F7).
-                let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
-                let record = PersistedSession(
-                    backend: backend, backendSessionId: nil, cwd: stubCwd, guildId: guildId,
-                    ownerId: ownerId, model: model, effort: effort, permMode: perm,
-                    updatedAt: ISO8601DateFormatter().string(from: Date())
-                )
-                try? await SessionStore.shared.upsert(channelId: channelId, record)
-                let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }]
-                    .compactMap { $0 }.joined(separator: " ")
-                try await respondEphemeral(
-                    payload,
-                    "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다."
+                await WizardRegistry.shared.put(wizard, channelId: channelId)
+                let (embeds, components) = discordPayload(from: wizard.render())
+                _ = try await client.createInteractionResponse(
+                    id: payload.id,
+                    token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        embeds: embeds,
+                        flags: [.ephemeral],
+                        components: components
+                    ))
                 )
             case "close":
                 // W14: real stop (backend + unbind) — was unbind-only and leaked processes.
@@ -320,6 +321,97 @@ struct EventHandler: GatewayEventHandler {
             token: payload.token,
             payload: .channelMessageWithSource(.init(content: text, flags: [.ephemeral]))
         )
+    }
+
+    /// W11-b2 slice1: drive the channel's agent-start wizard from a select/button click.
+    /// Owner gate: only the user who opened the wizard may advance it.
+    private func handleWizardComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        guard let wizard = await WizardRegistry.shared.get(channelId: channelId) else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+        guard wizard.ownerId == clicker else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "이 마법사는 연 사람만 조작할 수 있어요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+
+        let value = comp.values?.first
+        let step = wizard.handle(WizardInput(id: comp.custom_id, value: value))
+
+        switch step {
+        case .done:
+            await WizardRegistry.shared.remove(channelId: channelId)
+            if let p = wizard.startParams {
+                await bindFromWizard(p)
+                let extra = [
+                    p.model.isEmpty ? nil : "model=\(p.model)",
+                    p.effort.isEmpty ? nil : "effort=\(p.effort)",
+                    p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
+                ].compactMap { $0 }.joined(separator: " ")
+                let text = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
+                    + (extra.isEmpty ? "" : " (\(extra))")
+                    + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .updateMessage(.init(content: text, embeds: [], components: []))
+                )
+            } else {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .updateMessage(.init(content: "시작 실패 (선택 없음).", embeds: [], components: []))
+                )
+            }
+        case .cancelled:
+            await WizardRegistry.shared.remove(channelId: channelId)
+            let (embeds, _) = discordPayload(from: wizard.render())
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: []))
+            )
+        default:
+            let (embeds, components) = discordPayload(from: wizard.render())
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: components))
+            )
+        }
+    }
+
+    /// Registry bind + store upsert (same shape as the pre-wizard `/agent start` path).
+    private func bindFromWizard(_ p: WizardStartParams) async {
+        let model = p.model.isEmpty ? nil : p.model
+        let effort = p.effort.isEmpty ? nil : p.effort
+        let perm = p.permMode.isEmpty ? nil : p.permMode
+        await SessionRegistry.shared.bind(
+            channelId: p.channelId,
+            SessionConfig(backend: p.backend, model: model, effort: effort, permMode: perm)
+        )
+        let record = PersistedSession(
+            backend: p.backend,
+            backendSessionId: nil,
+            cwd: p.cwd,
+            guildId: p.guildId,
+            ownerId: p.ownerId.isEmpty ? nil : p.ownerId,
+            model: model,
+            effort: effort,
+            permMode: perm,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try? await SessionStore.shared.upsert(channelId: p.channelId, record)
     }
 
     func onMessageCreate(_ payload: Gateway.MessageCreate) async throws {

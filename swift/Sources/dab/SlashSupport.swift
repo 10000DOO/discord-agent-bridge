@@ -47,3 +47,42 @@ func agentCommandPayload() -> Payloads.ApplicationCommandCreate {
 func allCommandPayloads() -> [Payloads.ApplicationCommandCreate] {
     allSlashCommandSpecs().map(applicationCommandPayload)
 }
+
+// MARK: - Wizard → DiscordBM components (W11-b2 slice1)
+
+/// Map pure `WizardView` rows to Discord embeds + action rows (select menus + buttons).
+func discordPayload(from view: WizardView) -> (embeds: [Embed], components: [Interaction.ActionRow]) {
+    let embed = Embed(title: view.title, description: view.description)
+    let rows: [Interaction.ActionRow] = view.rows.map { row in
+        let comps: [Interaction.ActionRow.Component] = row.components.map { c in
+            switch c {
+            case .select(let customId, let placeholder, let options):
+                let opts = options.map {
+                    Interaction.ActionRow.StringSelectMenu.Option(
+                        label: $0.label,
+                        value: $0.value,
+                        default: $0.isDefault
+                    )
+                }
+                return .stringSelect(Interaction.ActionRow.StringSelectMenu(
+                    custom_id: customId,
+                    options: opts,
+                    placeholder: placeholder
+                ))
+            case .button(let customId, let label, let style):
+                let s: Interaction.ActionRow.Button.NonLinkStyle = {
+                    switch style {
+                    case .primary: return .primary
+                    case .secondary: return .secondary
+                    case .success: return .success
+                    case .danger: return .danger
+                    }
+                }()
+                return .button(Interaction.ActionRow.Button(style: s, label: label, custom_id: customId))
+            }
+        }
+        return Interaction.ActionRow(components: comps)
+    }
+    return ([embed], rows)
+}
+

@@ -50,33 +50,11 @@ public func agentCommandSpec() -> SlashCommandSpec {
         name: "agent",
         description: "Manage this channel's agent session",
         subcommands: [
+            // W11-b2 slice1: wizard-only start (backend→model→effort→perm selects). No free-text options.
             .init(
                 name: "start",
-                description: "Start and bind an agent session in this channel",
-                options: [
-                    .init(
-                        name: "backend",
-                        description: "Which agent backend to use",
-                        required: true,
-                        choices: Backend.allCases.map { .init(name: $0.rawValue, value: $0.rawValue) }
-                    ),
-                    // model: free text (backend-specific, catalogs are dynamic) — blank = backend default.
-                    .init(name: "model", description: "Model id (blank = backend default)", required: false, choices: []),
-                    // effort: common union across backends.
-                    .init(
-                        name: "effort",
-                        description: "Reasoning effort",
-                        required: false,
-                        choices: ["minimal", "low", "medium", "high"].map { .init(name: $0, value: $0) }
-                    ),
-                    // perm: common permission modes (Codex maps via resolveThreadPolicy; Grok = bypass or not).
-                    .init(
-                        name: "perm",
-                        description: "Permission mode",
-                        required: false,
-                        choices: ["default", "plan", "acceptEdits", "bypassPermissions"].map { .init(name: $0, value: $0) }
-                    ),
-                ]
+                description: "Start and bind an agent session in this channel (wizard)",
+                options: []
             ),
             // W14: close is a real stop (backend + unbind), not unbind-only.
             .init(name: "close", description: "Stop and unbind this channel's session", options: []),
