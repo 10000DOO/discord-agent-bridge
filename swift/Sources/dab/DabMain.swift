@@ -95,6 +95,11 @@ struct EventHandler: GatewayEventHandler {
     }
 
     func onInteractionCreate(_ payload: Interaction) async throws {
+        // (A0) Modal submits (dir:create / dir:manual) — owner-gated, re-renders folder step.
+        if let modal = try? payload.data?.requireModalSubmit() {
+            try await handleWizardModal(payload, modal: modal)
+            return
+        }
         // (A) Message components: permission buttons + agent-start wizard selects/buttons.
         if let comp = try? payload.data?.requireMessageComponent() {
             // (A1) Permission button click → resolve the gate. Only the session approver may decide.
@@ -250,11 +255,12 @@ struct EventHandler: GatewayEventHandler {
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
             case "start":
-                // W11-b2 slice2: folder browser → backend→model→effort→perm.
+                // W11-b2: folder browser → backend→model→effort→perm.
                 // Browser starts at DAB_CWD else home; unbounded (no allowedRoots) like TS default.
+                // nativePanel: package is macOS-only → always wire host picker (dir:panel).
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
                 let optionSource = await loadWizardOptionSource()
-                let browser = DirectoryBrowser(startPath: stubCwd)
+                let browser = DirectoryBrowser(startPath: stubCwd, nativePanel: true)
                 let wizard = ChannelWizard(
                     guildId: guildId,
                     channelId: channelId,
@@ -327,6 +333,7 @@ struct EventHandler: GatewayEventHandler {
 
     /// W11-b2: drive the channel's agent-start wizard from a select/button click (dir:* + choice steps).
     /// Owner gate: only the user who opened the wizard may advance it.
+    /// dir:create / dir:manual open modals (showModal = ack). dir:panel defers then native pick.
     private func handleWizardComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
         let channelId = payload.channel_id?.rawValue ?? ""
         let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
@@ -349,6 +356,51 @@ struct EventHandler: GatewayEventHandler {
                 ))
             )
             return
+        }
+
+        // Modal openers must NOT be preceded by deferUpdate (showModal is the ack).
+        switch comp.custom_id {
+        case "dir:create":
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .modal(.init(
+                    custom_id: "dir:create",
+                    title: "새 폴더 만들기",
+                    textInputs: [
+                        .init(
+                            custom_id: "name",
+                            style: .short,
+                            label: "폴더 이름",
+                            required: true,
+                            placeholder: "예: my-project"
+                        ),
+                    ]
+                ))
+            )
+            return
+        case "dir:manual":
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .modal(.init(
+                    custom_id: "dir:manual",
+                    title: "경로 직접 입력",
+                    textInputs: [
+                        .init(
+                            custom_id: "path",
+                            style: .short,
+                            label: "절대 경로",
+                            required: true,
+                            placeholder: "예: /Volumes/SourceCode/MyProject"
+                        ),
+                    ]
+                ))
+            )
+            return
+        case "dir:panel":
+            try await handleFolderPanel(payload, wizard: wizard, channelId: channelId)
+            return
+        default:
+            break
         }
 
         let value = comp.values?.first
@@ -389,6 +441,183 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .updateMessage(.init(embeds: embeds, components: components))
+            )
+        }
+    }
+
+    /// dir:panel — deferUpdate, open host osascript picker, jump browser, re-render.
+    private func handleFolderPanel(
+        _ payload: Interaction,
+        wizard: ChannelWizard,
+        channelId: String
+    ) async throws {
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
+        guard await FolderPanelBusy.shared.tryBegin(channelId) else {
+            _ = try? await client.createFollowupMessage(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: "이미 폴더 선택 창이 열려 있어요. Mac 화면을 확인하세요.", flags: [.ephemeral])
+            )
+            return
+        }
+        defer {
+            Task { await FolderPanelBusy.shared.end(channelId) }
+        }
+        _ = try? await client.createFollowupMessage(
+            appId: payload.application_id,
+            token: payload.token,
+            payload: .init(
+                content: "🖥️ Mac 화면에 폴더 선택 창을 열었어요. Mac에서 폴더를 선택하세요… (2분 내)",
+                flags: [.ephemeral]
+            )
+        )
+        do {
+            let picked = try await openMacFolderPanel(startDir: wizard.browserCwd())
+            if picked == nil {
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: "폴더 선택을 취소했어요.", flags: [.ephemeral])
+                )
+                return
+            }
+            guard let path = picked, wizard.browserGoTo(path) else {
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(
+                        content: "이동할 수 없는 경로예요: `\(picked ?? "")` (존재하지 않거나, 폴더가 아니거나, 허용 범위 밖).",
+                        flags: [.ephemeral]
+                    )
+                )
+                return
+            }
+            let (embeds, components) = discordPayload(from: wizard.render())
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(embeds: embeds, components: components)
+            )
+            _ = try? await client.createFollowupMessage(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(
+                    content: "경로로 이동했어요: `\(wizard.browserCwd())`\n`✅ 이 폴더로 시작`을 눌러 이 폴더에서 세션을 시작하세요.",
+                    flags: [.ephemeral]
+                )
+            )
+        } catch let err as FolderPanelError {
+            let text: String
+            switch err {
+            case .timeout:
+                text = "폴더 선택 창을 2분이 지나 닫았어요. Mac 앞에 있을 때 사용하세요."
+            case .failed(let msg):
+                text = "폴더 선택 창을 열지 못했어요: \(msg)"
+            }
+            _ = try? await client.createFollowupMessage(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: text, flags: [.ephemeral])
+            )
+        } catch {
+            _ = try? await client.createFollowupMessage(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: "폴더 선택 창을 열지 못했어요: \(error)", flags: [.ephemeral])
+            )
+        }
+    }
+
+    /// Modal submits for dir:create (mkdir+into) and dir:manual (goTo).
+    private func handleWizardModal(_ payload: Interaction, modal: Interaction.ModalSubmit) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        guard let wizard = await WizardRegistry.shared.get(channelId: channelId),
+              wizard.ownerId == clicker
+        else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+
+        switch modal.custom_id {
+        case "dir:create":
+            let name = (try? modal.components.requireComponent(customId: "name").requireTextInput().value)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            switch wizard.browserCreate(name, enter: true) {
+            case .ok:
+                let (embeds, components) = discordPayload(from: wizard.render())
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "폴더를 만들었어요: \(name)",
+                        embeds: embeds,
+                        flags: [.ephemeral],
+                        components: components
+                    ))
+                )
+            case .invalidName, .escaped:
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "폴더 이름이 올바르지 않아요. `/`, `..`, 절대 경로는 쓸 수 없어요.",
+                        flags: [.ephemeral]
+                    ))
+                )
+            case .failed(let err):
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "폴더를 만들지 못했어요: \(err)",
+                        flags: [.ephemeral]
+                    ))
+                )
+            }
+        case "dir:manual":
+            let input = (try? modal.components.requireComponent(customId: "path").requireTextInput().value)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if input.isEmpty || !(input as NSString).isAbsolutePath {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "절대 경로를 입력하세요 (예: `/Users/...` 또는 `/Volumes/...`).",
+                        flags: [.ephemeral]
+                    ))
+                )
+                return
+            }
+            if !wizard.browserGoTo(input) {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "이동할 수 없는 경로예요: `\(input)` (존재하지 않거나, 폴더가 아니거나, 허용 범위 밖).",
+                        flags: [.ephemeral]
+                    ))
+                )
+                return
+            }
+            let (embeds, components) = discordPayload(from: wizard.render())
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "경로로 이동했어요: `\(wizard.browserCwd())`\n`✅ 이 폴더로 시작`을 눌러 이 폴더에서 세션을 시작하세요.",
+                    embeds: embeds,
+                    flags: [.ephemeral],
+                    components: components
+                ))
+            )
+        default:
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(content: "알 수 없는 모달입니다.", flags: [.ephemeral]))
             )
         }
     }

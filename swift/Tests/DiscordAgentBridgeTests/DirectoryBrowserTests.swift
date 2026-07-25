@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import DiscordAgentBridge
 
-@Suite("DirectoryBrowser (W11-b2 slice2)")
+@Suite("DirectoryBrowser (W11-b2 folder)")
 struct DirectoryBrowserTests {
     private func makeTempTree() throws -> URL {
         let root = FileManager.default.temporaryDirectory
@@ -149,7 +149,7 @@ struct DirectoryBrowserTests {
         #expect(!b.up())
     }
 
-    @Test func renderHasIntoUpHereCancel() throws {
+    @Test func renderHasIntoUpHereCreateManualCancel() throws {
         let root = try makeTempTree()
         defer { cleanup(root) }
         let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
@@ -166,9 +166,10 @@ struct DirectoryBrowserTests {
         #expect(ids.contains("dir:into"))
         #expect(ids.contains("dir:up"))
         #expect(ids.contains("dir:here"))
+        #expect(ids.contains("dir:create"))
+        #expect(ids.contains("dir:manual"))
         #expect(ids.contains("cancel"))
-        #expect(!ids.contains("dir:panel"))
-        #expect(!ids.contains("dir:manual"))
+        #expect(!ids.contains("dir:panel")) // nativePanel default off
 
         // up disabled at root boundary
         let upDisabled = view.rows.flatMap(\.components).contains { c in
@@ -185,6 +186,97 @@ struct DirectoryBrowserTests {
         #expect(upEnabled)
     }
 
+    @Test func renderShowsPanelWhenNativePanelEnabled() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path, nativePanel: true)
+        let ids = b.render().rows.flatMap { row in
+            row.components.map { c -> String in
+                switch c {
+                case .select(let id, _, _): return id
+                case .button(let id, _, _, _): return id
+                }
+            }
+        }
+        #expect(ids.contains("dir:panel"))
+        #expect(ids.contains("dir:manual"))
+    }
+
+    @Test func createChildMkdirAndEnter() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        switch b.createChild("new-folder", enter: true) {
+        case .ok(let path):
+            #expect(path == root.appendingPathComponent("new-folder").path)
+            #expect(b.cwd() == path)
+            var isDir: ObjCBool = false
+            #expect(FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue)
+        default:
+            Issue.record("expected ok")
+        }
+    }
+
+    @Test func createChildWithoutEnterStaysAtParent() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        switch b.createChild("stays", enter: false) {
+        case .ok(let path):
+            #expect(path == root.appendingPathComponent("stays").path)
+            #expect(b.cwd() == root.path)
+            #expect(b.listChildren().contains("stays"))
+        default:
+            Issue.record("expected ok")
+        }
+    }
+
+    @Test func createChildRejectsTraversalAndAbsolute() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        for bad in ["..", "a/b", "a\\b", "/etc", ".", ""] {
+            #expect(b.createChild(bad) == .invalidName, "should reject \(bad)")
+        }
+        #expect(b.cwd() == root.path)
+    }
+
+    @Test func createChildConfinedUnderAllowedRoot() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let sub = root.appendingPathComponent("sub").path
+        let b = DirectoryBrowser(allowedRoots: [sub], startPath: sub)
+        // Safe name still lands under sub — confine ok.
+        switch b.createChild("ok", enter: true) {
+        case .ok(let path):
+            #expect(path.hasPrefix(sub))
+        default:
+            Issue.record("expected ok under sub")
+        }
+    }
+
+    @Test func isSafeFolderNameRules() {
+        #expect(isSafeFolderName("my-project"))
+        #expect(isSafeFolderName("a"))
+        #expect(!isSafeFolderName(""))
+        #expect(!isSafeFolderName("."))
+        #expect(!isSafeFolderName(".."))
+        #expect(!isSafeFolderName("a/b"))
+        #expect(!isSafeFolderName("a\\b"))
+        #expect(!isSafeFolderName("/abs"))
+    }
+
+    @Test func goToAbsoluteWithinRoots() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let nested = root.appendingPathComponent("sub").appendingPathComponent("nested").path
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        #expect(b.goTo(nested))
+        #expect(b.cwd() == nested)
+        #expect(!b.goTo("/no/such/path-\(UUID().uuidString)"))
+        #expect(b.cwd() == nested)
+    }
+
     @Test func emptyFolderSelectHasSentinel() throws {
         let root = try makeTempTree()
         defer { cleanup(root) }
@@ -199,15 +291,13 @@ struct DirectoryBrowserTests {
     }
 
     @Test func recognizesDirCustomIds() {
-        let into = isDirectoryBrowserCustomId("dir:into")
-        let up = isDirectoryBrowserCustomId("dir:up")
-        let here = isDirectoryBrowserCustomId("dir:here")
-        let manual = isDirectoryBrowserCustomId("dir:manual")
-        let backend = isDirectoryBrowserCustomId("backend")
-        #expect(into)
-        #expect(up)
-        #expect(here)
-        #expect(!manual)
-        #expect(!backend)
+        #expect(isDirectoryBrowserCustomId("dir:into"))
+        #expect(isDirectoryBrowserCustomId("dir:up"))
+        #expect(isDirectoryBrowserCustomId("dir:here"))
+        #expect(isDirectoryBrowserCustomId("dir:create"))
+        #expect(isDirectoryBrowserCustomId("dir:manual"))
+        #expect(isDirectoryBrowserCustomId("dir:panel"))
+        #expect(!isDirectoryBrowserCustomId("backend"))
+        #expect(!isDirectoryBrowserCustomId("dir:resume")) // residual
     }
 }

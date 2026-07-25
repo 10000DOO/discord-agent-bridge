@@ -303,6 +303,8 @@ struct ChannelWizardTests {
         let ids = componentIds(w)
         #expect(ids.contains("dir:into"))
         #expect(ids.contains("dir:here"))
+        #expect(ids.contains("dir:create"))
+        #expect(ids.contains("dir:manual"))
         #expect(ids.contains("cancel"))
         pastFolder(w)
         let ids2 = componentIds(w)
@@ -318,6 +320,9 @@ struct ChannelWizardTests {
         #expect(isWizardCustomId("dir:here"))
         #expect(isWizardCustomId("dir:into"))
         #expect(isWizardCustomId("dir:up"))
+        #expect(isWizardCustomId("dir:create"))
+        #expect(isWizardCustomId("dir:manual"))
+        #expect(isWizardCustomId("dir:panel"))
         #expect(!isWizardCustomId("perm:abc:allow"))
     }
 
@@ -329,6 +334,30 @@ struct ChannelWizardTests {
         #expect(w.browserCwd() == project)
         #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
         #expect(w.current().cwd == project)
+    }
+
+    @Test func browserCreateMkdirAndEnter() throws {
+        let (w, root) = try makeWizard()
+        defer { try? FileManager.default.removeItem(at: root) }
+        switch w.browserCreate("spawned", enter: true) {
+        case .ok(let path):
+            #expect(w.browserCwd() == path)
+            #expect(path == root.appendingPathComponent("spawned").path)
+        default:
+            Issue.record("expected create ok")
+        }
+        // Create/manual do not advance the SM.
+        #expect(w.currentStep() == .folder)
+        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(w.current().cwd == root.appendingPathComponent("spawned").path)
+    }
+
+    @Test func browserCreateRejectsUnsafeNames() throws {
+        let (w, root) = try makeWizard()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.browserCreate("..") == .invalidName)
+        #expect(w.browserCreate("a/b") == .invalidName)
+        #expect(w.browserCwd() == root.path)
     }
 
     @Test func wizardDefaultCwdUsesDabCwdThenHome() {

@@ -2,16 +2,18 @@ import Foundation
 
 // MARK: - W11-b2: `/agent start` select wizard
 //
-// Pure state machine — no Discord types. Steps (slice2):
+// Pure state machine — no Discord types. Steps:
 //   folder → backend → model → [effort if any] → perm → done | cancelled
 //
 // Folder: dir:into / dir:up navigate immediately; dir:here commits cwd → backend.
+// dir:create / dir:manual / dir:panel are handled outside the SM (modals / native panel
+// in DabMain) via browserGoTo / browserCreate; they do not advance the wizard step.
 // Choice steps: select onChange writes PENDING only; Next/Start commits and advances
 // (Discord does not re-fire a select for the already-selected option).
 // Option lists are injected at open from live `providerCatalog(for:)` — never hardcoded
 // model/effort/perm vocabularies (Backend.allCases is the only fixed list).
 //
-// ponytail: preset step · reconfigure entry · dir:manual modal · A4D channel create → later slices.
+// ponytail: preset · reconfigure · dir:resume · A4D channel create → residual.
 
 // MARK: Types
 
@@ -312,12 +314,17 @@ public final class ChannelWizard: @unchecked Sendable {
 
     public func current() -> WizardSelection { selection }
 
-    /// Folder currently in the browser (read-only; for future create/resume flows).
+    /// Folder currently in the browser (manual/create/panel/resume).
     public func browserCwd() -> String { browser.cwd() }
 
-    /// Jump browser to absolute path (manual-path / tests). false → no view change.
+    /// Jump browser to absolute path (manual modal / native panel / tests).
     @discardableResult
     public func browserGoTo(_ absPath: String) -> Bool { browser.goTo(absPath) }
+
+    /// Create a child folder under the browsed cwd (create modal). Optionally enter it.
+    public func browserCreate(_ name: String, enter: Bool = true) -> DirCreateResult {
+        browser.createChild(name, enter: enter)
+    }
 
     /// Advance by one select/button input. Unknown ids for the current step are ignored.
     @discardableResult

@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - W11-b2 slice2: pure filesystem folder browser (TS directoryBrowser.ts parity)
+// MARK: - W11-b2: pure filesystem folder browser (TS directoryBrowser.ts parity)
 //
 // List dirs, go up/into, select cwd. No Discord types. Optional allowedRoots confine;
 // when omitted/empty the browser is unbounded (navigate to filesystem root '/').
@@ -10,10 +10,12 @@ import Foundation
 //   dir:into   string-select value = child folder name
 //   dir:up     button — parent
 //   dir:here   button — commit cwd / advance wizard
+//   dir:create button — open create-folder modal (handled in DabMain)
+//   dir:manual button — open absolute-path modal (handled in DabMain)
+//   dir:panel  button — native host picker when `nativePanel` (handled in DabMain)
 //   cancel     button — cancel wizard
 //
-// ponytail: dir:resume / dir:create / dir:manual / dir:panel omitted in slice2 UI.
-//   goTo(_:) is available for tests + future manual-path modal; pickFolder = slice3.
+// ponytail: dir:resume omitted (resume wizard residual).
 
 private let maxSelectOptions = 25
 private let maxLabelLength = 95
@@ -116,7 +118,7 @@ public final class DirectoryBrowser: @unchecked Sendable {
         return true
     }
 
-    /// Jump to absolute path (manual path / tests). Same confinement as into/up.
+    /// Jump to absolute path (manual path / native panel / tests). Same confinement as into/up.
     @discardableResult
     public func goTo(_ target: String) -> Bool {
         let resolved = Self.resolvePath(target)
@@ -126,10 +128,30 @@ public final class DirectoryBrowser: @unchecked Sendable {
         return true
     }
 
+    /// Create a direct child folder under cwd (modal submit). Safe name + confine; optional enter.
+    public func createChild(_ name: String, enter: Bool = true) -> DirCreateResult {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isSafeFolderName(trimmed) else { return .invalidName }
+        let parent = current
+        let target = (parent as NSString).appendingPathComponent(trimmed)
+        // Defense in depth: parent of target must still be current (no separator tricks).
+        guard (target as NSString).deletingLastPathComponent == parent else { return .invalidName }
+        guard Self.confine(target, roots: roots) else { return .escaped }
+        do {
+            try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
+        } catch {
+            return .failed(String(describing: error))
+        }
+        if enter {
+            _ = into(trimmed)
+        }
+        return .ok(path: target)
+    }
+
     /// Select current folder as session cwd.
     public func select() -> String { current }
 
-    /// Folder-step UI (select + up/here/cancel). Pure data → DiscordBM via discordPayload.
+    /// Folder-step UI (select + up/here/create/cancel + manual/[panel]). Pure data → DiscordBM.
     public func render() -> WizardView {
         let children = listChildren()
         let title = "폴더 선택"
@@ -151,9 +173,8 @@ public final class DirectoryBrowser: @unchecked Sendable {
                 options: options
             ),
         ])
-        // slice2: into/up/here/cancel only.
-        // ponytail: dir:resume · dir:create · dir:manual · dir:panel → slice3+ (modal/native).
-        let buttons: [WizardComponent] = [
+        // Row1 ≤5: up · here · create · cancel (resume residual). Row2: manual · optional panel.
+        let actionButtons: [WizardComponent] = [
             .button(
                 customId: "dir:up",
                 label: "⬆ 상위",
@@ -161,13 +182,21 @@ public final class DirectoryBrowser: @unchecked Sendable {
                 disabled: !canGoUp()
             ),
             .button(customId: "dir:here", label: "✅ 이 폴더로 시작", style: .success, disabled: false),
+            .button(customId: "dir:create", label: "📁 폴더 만들기", style: .secondary, disabled: false),
             .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
         ]
-        // nativePanel reserved; button not rendered until slice3 pickFolder wiring.
-        _ = nativePanel
+        var pathButtons: [WizardComponent] = [
+            .button(customId: "dir:manual", label: "📝 경로 직접 입력", style: .secondary, disabled: false),
+        ]
+        if nativePanel {
+            pathButtons.append(
+                .button(customId: "dir:panel", label: "🖥️ Mac에서 폴더 선택", style: .secondary, disabled: false)
+            )
+        }
         return WizardView(title: title, description: description, rows: [
             selectRow,
-            WizardRow(components: buttons),
+            WizardRow(components: actionButtons),
+            WizardRow(components: pathButtons),
         ])
     }
 
@@ -212,10 +241,30 @@ public final class DirectoryBrowser: @unchecked Sendable {
     }
 }
 
-/// custom_ids owned by the folder browser (wizard routing).
+/// Result of `createChild` (modal mkdir).
+public enum DirCreateResult: Equatable, Sendable {
+    case ok(path: String)
+    case invalidName
+    case escaped
+    case failed(String)
+}
+
+/// True when `name` is a safe single path segment for 📁 create (TS `isSafeFolderName`).
+public func isSafeFolderName(_ name: String) -> Bool {
+    if name.isEmpty { return false }
+    if name == "." || name == ".." { return false }
+    if name.contains("/") || name.contains("\\") { return false }
+    if (name as NSString).isAbsolutePath { return false }
+    // basename must match exactly (no trailing separators / weird segments).
+    if (name as NSString).lastPathComponent != name { return false }
+    return true
+}
+
+/// custom_ids owned by the folder browser (wizard routing + DabMain modal/panel).
 public func isDirectoryBrowserCustomId(_ customId: String) -> Bool {
     switch customId {
-    case "dir:into", "dir:up", "dir:here":
+    case "dir:into", "dir:up", "dir:here",
+         "dir:create", "dir:manual", "dir:panel":
         return true
     default:
         return false
