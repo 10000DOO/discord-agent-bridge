@@ -1,0 +1,229 @@
+import Foundation
+
+// Load/save GLOBAL config.json and per-server servers/<guildId>.json (§8).
+// baseDir: ctor > DAB_HOME > ~/.discord-agent-bridge/. Atomic write + 0600.
+// Mirrors src/core/config.ts. Authorizer uses loadAuth() fail-secure (never throws).
+
+public enum ConfigStoreError: Error, CustomStringConvertible, Sendable {
+    case notFound(String)
+    case invalidObject(String)
+    case validation(String)
+
+    public var description: String {
+        switch self {
+        case .notFound(let p): return "Config file not found at \(p). Run the setup wizard first."
+        case .invalidObject(let p): return "Invalid config file at \(p): expected a JSON object."
+        case .validation(let m): return m
+        }
+    }
+}
+
+public actor ConfigStore {
+    public static let shared = ConfigStore()
+
+    private let baseDir: URL
+
+    public init(baseDir: URL? = nil) {
+        self.baseDir = baseDir ?? Self.defaultBaseDir()
+    }
+
+    /// Test helper: directory containing config.json (parent of a file URL).
+    public init(configFileURL: URL) {
+        self.baseDir = configFileURL.deletingLastPathComponent()
+    }
+
+    private static func defaultBaseDir() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if let home = env["DAB_HOME"], !home.isEmpty {
+            return URL(fileURLWithPath: home, isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".discord-agent-bridge", isDirectory: true)
+    }
+
+    public var dir: URL { baseDir }
+
+    public var configPath: URL {
+        baseDir.appendingPathComponent("config.json", isDirectory: false)
+    }
+
+    public func serverConfigPath(guildId: String) -> URL {
+        baseDir
+            .appendingPathComponent("servers", isDirectory: true)
+            .appendingPathComponent("\(guildId).json", isDirectory: false)
+    }
+
+    public func exists() -> Bool {
+        FileManager.default.fileExists(atPath: configPath.path)
+    }
+
+    // MARK: - Global
+
+    /// Load config.json with defaults + validate. Missing/invalid → throws (TS strict).
+    public func load() throws -> AppConfig {
+        let path = configPath
+        guard FileManager.default.fileExists(atPath: path.path) else {
+            throw ConfigStoreError.notFound(path.path)
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: path)
+        } catch {
+            throw ConfigStoreError.notFound(path.path)
+        }
+        let json: Any
+        do {
+            json = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw ConfigStoreError.invalidObject(path.path)
+        }
+        guard let raw = json as? [String: Any] else {
+            throw ConfigStoreError.invalidObject(path.path)
+        }
+        return try Self.decodeAppConfig(applyDefaults(raw))
+    }
+
+    /// Validate then write config.json atomically (tmp + rename); 0600.
+    public func save(_ config: AppConfig) throws {
+        try validateAppConfig(config)
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        try Self.writeSecureJSON(to: configPath, value: config)
+    }
+
+    /// Fail-secure auth read for Authorizer. Missing/corrupt/invalid → `.empty` (never throws).
+    public func loadAuth() -> GlobalAuth {
+        do {
+            let cfg = try load()
+            return cfg.auth
+        } catch {
+            // Partial-tolerant path: try decoding only the auth block (W13 behavior).
+            return Self.loadAuthPartial(from: configPath)
+        }
+    }
+
+    // MARK: - Server
+
+    /// Fail-safe: missing/corrupt/schema-fail → nil (no throw). normalizeModeId on defaults.mode.
+    public func loadServerConfig(guildId: String) -> ServerConfig? {
+        let path = serverConfigPath(guildId: guildId)
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: path)
+            let cfg = try JSONDecoder().decode(ServerConfig.self, from: data)
+            try validateServerConfig(cfg)
+            var out = cfg
+            if let mode = out.defaults?.mode {
+                if out.defaults == nil { out.defaults = ServerDefaultsPartial() }
+                out.defaults?.mode = normalizeModeId(mode)
+            }
+            return out
+        } catch {
+            // Loud warning like TS console.warn — use fputs so tests stay quiet-friendly.
+            fputs("[config] ignoring corrupt server config \(path.path); falling back to global: \(error)\n", stderr)
+            return nil
+        }
+    }
+
+    public func saveServerConfig(_ config: ServerConfig) throws {
+        try validateServerConfig(config)
+        let path = serverConfigPath(guildId: config.guildId)
+        try FileManager.default.createDirectory(
+            at: path.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Self.writeSecureJSON(to: path, value: config)
+    }
+
+    // MARK: - Nice-to-have (cheap; presets deferred to W16-b)
+
+    /// Append tool to global autoAllowClaudeTools. Returns whether config changed.
+    public func addAutoAllowClaudeTool(_ toolName: String) throws -> Bool {
+        var config = try load()
+        if config.autoAllowClaudeTools.contains(toolName) { return false }
+        config.autoAllowClaudeTools.append(toolName)
+        try save(config)
+        return true
+    }
+
+    public func setRenderEnabled(_ enabled: Bool) throws {
+        var config = try load()
+        config.render = RenderSection(enabled: enabled)
+        try save(config)
+    }
+
+    public func setChromiumDecision(_ decision: String) throws {
+        var config = try load()
+        config.chromium = ChromiumSection(decision: decision)
+        try save(config)
+    }
+
+    // MARK: - Decode / disk
+
+    private static func decodeAppConfig(_ dict: [String: Any]) throws -> AppConfig {
+        // Malformed nested sections (array/primitive) → JSONSerialization keeps them → decode fails.
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: dict)
+        } catch {
+            throw ConfigStoreError.validation("config is not a JSON object tree")
+        }
+        let cfg: AppConfig
+        do {
+            cfg = try JSONDecoder().decode(AppConfig.self, from: data)
+        } catch {
+            throw ConfigStoreError.validation(String(describing: error))
+        }
+        do {
+            try validateAppConfig(cfg)
+        } catch {
+            throw ConfigStoreError.validation(String(describing: error))
+        }
+        var out = cfg
+        out.defaults.mode = normalizeModeId(out.defaults.mode)
+        return out
+    }
+
+    /// W13-compatible partial auth read when full load fails.
+    private static func loadAuthPartial(from url: URL) -> GlobalAuth {
+        guard let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(AuthOnlyFile.self, from: data),
+              let auth = file.auth else {
+            return .empty
+        }
+        return GlobalAuth(
+            adminRoleIds: auth.adminRoleIds ?? [],
+            executeRoleIds: auth.executeRoleIds ?? [],
+            readOnlyRoleIds: auth.readOnlyRoleIds ?? [],
+            dmPolicy: auth.dmPolicy ?? "deny"
+        )
+    }
+
+    private struct AuthOnlyFile: Decodable {
+        var auth: AuthBlock?
+    }
+    private struct AuthBlock: Decodable {
+        var adminRoleIds: [String]?
+        var executeRoleIds: [String]?
+        var readOnlyRoleIds: [String]?
+        var dmPolicy: String?
+    }
+
+    /// Atomic write (tmp + rename), 0600. Matches SessionStore.writeFile + TS writeSecure.
+    static func writeSecureJSON<T: Encodable>(to url: URL, value: T) throws {
+        let dir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        var data = try encoder.encode(value)
+        // Trailing newline (TS always `\n`).
+        if data.last != UInt8(ascii: "\n") {
+            data.append(UInt8(ascii: "\n"))
+        }
+        let tmp = url.appendingPathExtension("tmp")
+        try data.write(to: tmp, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        // Final path must be 0600 (secrets live here). Hard-fail if chmod fails.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}

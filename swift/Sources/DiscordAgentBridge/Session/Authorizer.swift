@@ -7,11 +7,8 @@ import Foundation
 // Tier capability nests: admin ⊇ execute ⊇ read-only. A per-project ACL (projectAuth)
 // NARROWS access (intersect). DM traffic (no guild) honors dmPolicy.
 //
-// W13 divergences from TS (decided 2026-07-25):
-//  - No server layer (global config only — D2/Q1=A). W15-a folds AuthConfigStore into
-//    the full ConfigStore without changing this signature.
-//  - projectAuth arrives as a CALL ARGUMENT (Q3=B hook — DabMain always passes nil),
-//    not via a ChannelRegistry lookup. Real ACL storage/edit is W16.
+// W15-a: Authorizer reads via ConfigStore (global + server auth layer). loadAuth() is
+// fail-secure; loadServerConfig is null-safe. projectAuth remains a call-arg hook.
 
 public enum RoleTier: String, Sendable {
     case admin
@@ -49,8 +46,8 @@ public struct AuthInput: Sendable {
     public var channelId: String?
     // True when the actor holds the Discord Administrator permission on this guild. A Discord
     // admin is granted the admin tier UNCONDITIONALLY — regardless of the role allowlists — so
-    // whoever set the bot up can never lock themselves out. Only ever WIDENS access. In W13 this
-    // is filled only on the interaction path (message path fixed false — Q2, fail-secure).
+    // whoever set the bot up can never lock themselves out. Only ever WIDENS access. Message
+    // path fixed false — Q2, fail-secure.
     public var isAdministrator: Bool
 
     public init(userId: String, roleIds: [String], action: AuthAction, guildId: String? = nil, channelId: String? = nil, isAdministrator: Bool = false) {
@@ -77,7 +74,8 @@ public struct AuthResult: Sendable, Equatable {
 
 // Per-project access control carried on a binding (narrows only). R4 hook — DabMain passes
 // nil; real ACL storage/edit lands in W16. Mirrors channelRegistry.ts ProjectAuth.
-public struct ProjectAuth: Sendable, Equatable {
+// Codable so SessionStore can persist projectAuth on bindings (W15-b).
+public struct ProjectAuth: Codable, Sendable, Equatable {
     public var allowedRoleIds: [String]
     public var allowedUserIds: [String]
 
@@ -88,14 +86,14 @@ public struct ProjectAuth: Sendable, Equatable {
 }
 
 public struct Authorizer: Sendable {
-    private let config: AuthConfigStore
+    private let config: ConfigStore
 
-    public init(config: AuthConfigStore) {
+    public init(config: ConfigStore) {
         self.config = config
     }
 
     public func authorize(_ input: AuthInput, projectAuth: ProjectAuth? = nil) async -> AuthResult {
-        let global = await config.load()
+        let global = await config.loadAuth()
 
         // No guild → DM. Deny unless dmPolicy explicitly allows (deny-by-default, §7.1). The
         // Administrator flag does NOT rescue a denied DM — dmPolicy stays authoritative.
@@ -103,12 +101,26 @@ public struct Authorizer: Sendable {
             if global.dmPolicy != "allow" {
                 return AuthResult(allowed: false, reason: "DMs are not permitted (dmPolicy=deny).")
             }
-            // DM allowed: global-only allowlists, no per-project ACL.
+            // DM allowed: global-only allowlists, no server layer, no per-project ACL.
             return decide(global, input, nil)
         }
 
-        // Guild context. No server layer in W13 (D2); projectAuth is the caller's hook.
-        return decide(global, input, projectAuth)
+        // Guild context: layer server auth over global (per-tier replace when present).
+        let server = await config.loadServerConfig(guildId: input.guildId!)
+        let effective = Self.effectiveAuth(global: global, server: server)
+        return decide(effective, input, projectAuth)
+    }
+
+    /// Layer server auth over global. Present server list REPLACES that tier (may widen).
+    /// dmPolicy is global-only.
+    public static func effectiveAuth(global: GlobalAuth, server: ServerConfig?) -> GlobalAuth {
+        let s = server?.auth
+        return GlobalAuth(
+            adminRoleIds: s?.adminRoleIds ?? global.adminRoleIds,
+            executeRoleIds: s?.executeRoleIds ?? global.executeRoleIds,
+            readOnlyRoleIds: s?.readOnlyRoleIds ?? global.readOnlyRoleIds,
+            dmPolicy: global.dmPolicy
+        )
     }
 
     // Resolve the actor's highest tier, then check it clears the action's minimum tier and
