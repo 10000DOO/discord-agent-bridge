@@ -238,4 +238,36 @@ struct GrokSessionBridgeTests {
         #expect(spawn.args.contains("-m") && spawn.args.contains("grok-4"))
         #expect(spawn.args.contains("--reasoning-effort") && spawn.args.contains("high"))
     }
+
+    // W14: stop closes + drops live map; interrupt dropClient but store keeps resume id for reload.
+    @Test func stopClosesAndDropsChannel() async throws {
+        let (bridge, made) = makeGrokBridge()
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi") == "ok:hi")
+        #expect(await bridge.isLive(channelId: "c") == true)
+        await bridge.stop(channelId: "c")
+        #expect(await bridge.isLive(channelId: "c") == false)
+        #expect(made.last()?.isClosed == true)
+    }
+
+    @Test func interruptDropsClientKeepsResumeCapability() async throws {
+        let store = freshTempStore()
+        let (bridge, made) = makeGrokBridge(store: store)
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok)) == "ok:hi")
+        #expect(await store.binding(channelId: "c")?.backendSessionId == "s1")
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.isLive(channelId: "c") == false)
+        #expect(made.last()?.isClosed == true)
+        // Store still has resume id (lifecycle did not remove it) → next turn session/loads.
+        #expect(await store.binding(channelId: "c")?.backendSessionId == "s1")
+
+        let ids = LockedBox<[String]>([])
+        let (b2, _) = makeGrokBridge(store: store, backendIdCapture: ids)
+        _ = try await b2.runTurn(channelId: "c", text: "again", config: SessionConfig(backend: .grok))
+        #expect(ids.withLock { $0 }.contains("load:s1"))
+    }
+
+    @Test func interruptWhenIdleReturnsFalse() async throws {
+        let (bridge, _) = makeGrokBridge()
+        #expect(await bridge.interrupt(channelId: "c") == false)
+    }
 }

@@ -1,7 +1,7 @@
 # Discord Agent Bridge — Swift 포팅 & 슬림화 설계
 
 > 브랜치: `plan/swift-port`  
-> 문서 갱신: **2026-07-24**  
+> 문서 갱신: **2026-07-26**  
 > 대상: `discord-agent-bridge` (TypeScript / Node 20+ + Swift 병행)  
 > 목표: **봇 본체 = Swift**, Claude Code만 얇은 **Node(TS) 사이드카**, 포팅 전에 TS **과설계 제거**
 
@@ -19,7 +19,7 @@
 | **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
 | **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
 | **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
-| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **171** PASS (병렬/직렬 모두). ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
+| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **356** PASS. ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
 
 ### 완료 (W1–W10)
 
@@ -42,13 +42,14 @@
 | **W11** | `doing` | **a·b1·c·e·f1·f2 완료**(f2=재시작 1:1 재연결, 데드락 수정 후 병합). 남은: 마법사(b2)·라이브 슬래시(d, incl. `/clear`). **→ §14 핸드오프 필독** |
 | **W12** | `todo` | 레거시 TS 정책, 버전 호환, 루트 README 마이그레이션 가이드 |
 
-### 의도적으로 아직 없는 것
+### 의도적으로 아직 없는 것 / 부분
 
-- 풀 SessionOrchestrator / ChannelRegistry Swift 포팅  
-- Codex·Grok Discord 연동 및 멀티 백엔드 `/mode`  
-- 권한 Allow/Deny 버튼 (Swift `!claude` 기본 `bypassPermissions`)  
-- host.file.* 실제 Discord 업로드 (Swift 쪽; TS 사이드카 경로는 구현됨)  
-- 기존 npm 봇 기능 100% 패리티  
+- 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 중)
+- 라이브 슬래시 `/mode`·`/model`·`/clear` 등 (W11-d) · 마법사(W11-b2) · HUD(W11-g)
+- interrupt **버튼 UI**(lib interrupt API는 W14 완료)
+- host.file.* 실제 Discord 업로드 (Swift; TS 사이드카 경로는 구현됨)
+- custom 백엔드 · 렌더/도구스레드 · `/config` 패널 등 (W16 잔여)
+- 기존 npm 봇 기능 100% 패리티 (목표 지향, 진행 중)
 
 ### 빠른 실행
 
@@ -75,12 +76,13 @@ swift run --package-path swift dab grok-smoke
 **전수조사(TS 4영역 A/B/C/D) 결론**: 텍스트 대화 3백엔드는 되나 **보안·정책·렌더·운영 계층이 대거 미포팅**이고 상당수가 문서에도 없던 완전누락. 상세 §15. 사용자 결정(2026-07-25): **TS 파리티 100% 지향** — ①보안 최우선 ②custom 포함 ③3-계층 config TS동일 ④folder 클러스터 전부.
 
 0. ~~**W11-h** provider 카탈로그~~ ✅ 완료(WO-1~7 + §7-1 검증 통과, 커밋 `03d390e`)
-1. **W13 보안 하드닝(P0)** — 인가·allowlist/permMode·confinement·audit. **UX보다 선행**(§6·§15)
-2. **W16-a 답변 청킹**(버그성: 2000자 초과 truncate 유실, 조기) + **W14 라이프사이클**(stop/interrupt/channelDelete)
-3. **W15** 3-계층 config/state 이식(TS동일)
-4. **W11-b2** 마법사(folder 클러스터 전부 포함)·**W11-d** 라이브 슬래시·**W11-g** 패널
-5. **W16** 기능 완전누락(/config·/setup·/doc·custom·도구스레드/diff·상태임베드·auto-update)
-6. **W12** — 레거시/문서/호환 매트릭스  
+1. ~~**W13 보안 하드닝(P0)**~~ ✅ 완료(a·c·d, b=Q5=B 보류, 커밋 `a004311`)
+2. ~~**W16-a 답변 청킹**~~ ✅ 완료(`DiscordText.chunkMessage` + 성공/에러 다중 `createMessage`)
+3. ~~**W14 라이프사이클**(stop/interrupt/channelDelete)~~ ✅ 완료(a·b: bridges stop/interrupt + SessionLifecycle + `/stop`·`/stop-all`·`/agent close` + channelDelete)
+4. ~~**W15** 3-계층 config + state migration/archived~~ ✅ 완료(a+b)
+5. **W11-b2** 마법사(folder 클러스터 전부 포함)·**W11-d** 라이브 슬래시·**W11-g** 패널
+6. **W16** 기능 완전누락(/config·/setup·/doc·custom·도구스레드/diff·상태임베드·auto-update)
+7. **W12** — 레거시/문서/호환 매트릭스
 
 ---
 
@@ -289,19 +291,19 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 
 | ID | Phase | 상태 | 작업 | 완료 조건 |
 |----|-------|------|------|-----------|
-| **W13** | I | `doing` | **보안 하드닝(P0)** — 인가·confinement·audit. UX보다 선행. **범위: a·c·d**(b는 Q5=B로 보류). 설계 `docs/w13-security-hardening.md`(`구현중`) | 프로덕션 안전 |
-| **W13-a** | I | `todo` | 역할-티어 인가(`core/auth.ts`→lib) + `DabMain` msg/interaction 진입점 배선. deny-by-default·Administrator 승격·dmPolicy·projectAuth ACL | 무인가 실행 경로 0 |
+| **W13** | I | `done` | **보안 하드닝(P0)** — 인가·confinement·audit. **범위: a·c·d**(b는 Q5=B로 보류). 커밋 `a004311` | 프로덕션 안전 |
+| **W13-a** | I | `done` | 역할-티어 인가(`core/auth.ts`→lib) + `DabMain` msg/interaction 진입점 배선. deny-by-default·Administrator 승격·dmPolicy·projectAuth ACL | 무인가 실행 경로 0 |
 | **W13-b** | I | `보류(Q5=B)` | 툴 allowlist/프로필(`permissionResolver.ts`·`autoAllowClaudeTools`) + Claude 기본 permMode `bypassPermissions`→`default`. **보류**: bypass 기본 유지 시 allowlist 소비처 없음(dead-code) → 사용자가 기본 `default`를 원할 때 재개(`docs/w13-security-hardening.md` 4장 부록) | allowlist 없는 자동승인 제거 |
-| **W13-c** | I | `todo` | 파일 realpath confinement(`sessionOrchestrator.ts:838-875`) **순수 헬퍼+테스트만**(Q4). 배선은 첨부 다운로드 경로 부재로 잠재 — 첨부 파이프라인 착수 시 브리지 send 전단에 결합 | 심링크 탈출 차단(헬퍼 준비) |
-| **W13-d** | I | `todo` | 감사 로그(`auditLog.ts`→append-only JSONL + secret redaction) **turn/denied만**(Q7=A; start/stop은 W14) | who/what 기록 |
-| **W14** | J | `todo` | 라이프사이클 정합 | stop/interrupt/정리 |
-| **W14-a** | J | `todo` | stop/stopAll/interrupt 실경로 — 브리지 `stop`/`interrupt`(라이브 핸들 드롭+백엔드 종료) + 슬래시 `/stop`·`/stop-all`·turn interrupt. **Grok ACP 취소 메서드 신설**. `/agent close` 프로세스 누수 수정 | 백엔드 실제 종료·턴 취소 |
-| **W14-b** | J | `todo` | `channelDelete` 구독 → detach+stop+하드제거(고아 바인딩·프로세스 정리) | 삭제 채널 잔존 0 |
-| **W15** | K | `todo` | 설정/상태 성숙(TS동일) | 3-계층 config |
-| **W15-a** | K | `todo` | 3-계층 config 이식(`ConfigStore`/`configResolver`/`configSchema`) — global→server→binding 레이어, 검증·0600·원자쓰기·corrupt 폴백 | 레이어링 config |
-| **W15-b** | K | `todo` | config/state 마이그레이션 훅 + archived 소프트삭제 + `normalizeModeId`(grok→grok-build) | version 마이그레이션 |
+| **W13-c** | I | `done` | 파일 realpath confinement(`sessionOrchestrator.ts:838-875`) **순수 헬퍼+테스트만**(Q4). 배선은 첨부 다운로드 경로 부재로 잠재 — 첨부 파이프라인 착수 시 브리지 send 전단에 결합 | 심링크 탈출 차단(헬퍼 준비) |
+| **W13-d** | I | `done` | 감사 로그(`auditLog.ts`→append-only JSONL + secret redaction) **turn/denied만**(Q7=A; start/stop은 W14) | who/what 기록 |
+| **W14** | J | `done` | 라이프사이클 정합 — SessionLifecycle + 3-bridge stop/interrupt + slash + channelDelete | stop/interrupt/정리 |
+| **W14-a** | J | `done` | stop/stopAll/interrupt 실경로 — Claude `session.stop`/`session.interrupt`·Codex `turn/interrupt`(activeTurnId)·Grok dropClient(TS 1:1, ACP에 session/cancel 없음). `/stop`·`/stop-all`(admin)·`/agent close` 실 stop. 감사 action stop/interrupt | 백엔드 실제 종료·턴 취소 |
+| **W14-b** | J | `done` | `onChannelDelete` → SessionLifecycle.stopChannel (guild only, DM skip; no binding → no-op) | 삭제 채널 잔존 0 |
+| **W15** | K | `done` | 설정/상태 성숙(TS동일) | 3-계층 config |
+| **W15-a** | K | `done` | 3-계층 config 이식(`ConfigStore`/`ConfigResolver`/`ConfigSchema`) — global→server→binding, 검증·0600·원자쓰기·corrupt→null, Authorizer server auth, `normalizeModeId` | 레이어링 config |
+| **W15-b** | K | `done` | SessionStore ordered migrations(STATE_VERSION=2) + `archived`/`markArchived` + load `normalizeModeId` aliases + optional profile/projectAuth/createdAt; stop hard-remove 유지; restore/stopAll skip archived | version 마이그레이션 |
 | **W16** | L | `todo` | 기능 완전누락(전수조사 A/B/D) | UI/명령 파리티 |
-| **W16-a** | L | `todo` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`, 코드펜스 인지) — 현 `DiscordText.clip` truncate **유실 수정(버그성, 조기 착수)** | 2000자 초과 무손실 |
+| **W16-a** | L | `done` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`→`DiscordText.chunkMessage`, 코드펜스 인지) + `DabMain` 성공/에러 순차 `createMessage`. `clip` 유지(단일 메시지 호출처용) | 2000자 초과 무손실 |
 | **W16-b** | L | `todo` | `/config` 설정 패널(역할 티어 롤셀렉트·기본값 셀렉트·Save·알림/이미지 서브패널). W13-a·W15-a 선행 | 패널 동작 |
 | **W16-c** | L | `todo` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
 | **W16-d** | L | `todo` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
@@ -366,6 +368,10 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-24 | W11-f1 | 세션 영속 저장 계층. `SessionStore` actor(원자 tmp+rename·`0600`·**load-merge-save**로 타 키 보존 F3·손상/부재→빈로드 F4) + `PersistedSession`(backend/backendSessionId/cwd/…) + `Backend` Codable. 신규·고립, 브리지/레지스트리 무변경. 단위테스트 T8 +7. swift test 156→**163**. |
 | 2026-07-24 | test-harden | 안정 모듈 P0/P1 테스트 **+56**(클라 timeout/failAll/error-res, NDJSON 프레이밍, parseEnvelope 에러분기, asParams/Result 파싱, AgentEvent 왕복, JSONValue, DiscordToken, clip). 리팩터: NDJSON `splitNDJSON`/`flushNDJSON` 추출, `DiscordText`→라이브러리. swift test 100→**156**. |
 | 2026-07-24 | test-C | 최상위 `verify.sh` + `npm run verify`(TS typecheck+tests · Swift build+tests · 스모크 best-effort) + README Development 섹션. 한 명령 전체 검증. |
+| 2026-07-25 | W13 | 보안 하드닝 a·c·d (`a004311`): Authorizer+AuthConfigStore, AuditLog(turn/denied), Confinement 헬퍼. b=Q5=B 보류. swift test **294** PASS. |
+| 2026-07-26 | W16-a | `DiscordText.chunkMessage` (TS `format.ts` 1:1 — newline 우선 분할·코드펜스 close/reopen·fence-free join 동일). `DabMain` 성공/에러 경로 순차 다중 `createMessage`. `clip` 유지. 단위테스트 +6. |
+| 2026-07-26 | W14 | 라이프사이클: 3-bridge `stop`/`interrupt`(Claude session.stop/interrupt · Codex turn/interrupt+activeTurnId · Grok dropClient=TS), `SessionLifecycle` stop/interrupt/stopAll, `/stop`·`/stop-all`(admin)·`/agent close` 실 stop, `onChannelDelete` guild-only. Grok ACP session/cancel 미존재 → TS dropClient. swift test **316** PASS. |
+| 2026-07-26 | W14 RV | stopChannel/interruptChannel **항상 3 브리지** (prefix/rebind 누수 수정). Codex turnGen으로 late turn/start 좀비 activeTurnId 차단. ensure mid-stop epoch(Claude/Codex/Grok). stopAll guildId←store. swift test **320** PASS. |
 
 ---
 

@@ -49,6 +49,13 @@ public actor CodexSessionBridge {
     private var channels: [String: Channel] = [:]
     /// channelId → in-flight turn accumulator
     private var turns: [String: TurnBox] = [:]
+    /// channelId → turn id from the latest `turn/start` (needed for `turn/interrupt`; W14).
+    private var activeTurnIds: [String: String] = [:]
+    /// channelId → generation bumped on interrupt/stop so a late `turn/start` result cannot
+    /// re-stamp a zombie activeTurnId (W14 RV).
+    private var turnGens: [String: UInt64] = [:]
+    /// channelId → epoch bumped on `stop` so ensureChannel that races mid-await closes the orphan.
+    private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent turn/start on the same thread).
     private var channelGates: [String: Task<String, Error>] = [:]
 
@@ -118,14 +125,57 @@ public actor CodexSessionBridge {
             if let effort = config?.effort, !effort.isEmpty { input["effort"] = .string(effort) }
             if let model = config?.model, !model.isEmpty { input["model"] = .string(model) }
 
+            // Generation tokens this turnStart; interrupt/stop bump so a late result cannot zombie-stamp.
+            let gen = (turnGens[channelId] ?? 0) + 1
+            turnGens[channelId] = gen
+            let threadId = channel.threadId
+            let client = channel.client
             Task {
                 do {
-                    _ = try await channel.client.turnStart(params: .object(input))
+                    let turnId = try await client.turnStart(params: .object(input))
+                    await self.noteTurnStarted(
+                        channelId: channelId,
+                        gen: gen,
+                        turnId: turnId,
+                        threadId: threadId,
+                        client: client
+                    )
                 } catch {
-                    self.finishTurn(channelId: channelId, error: error)
+                    await self.noteTurnStartFailed(channelId: channelId, gen: gen, error: error)
                 }
             }
         }
+    }
+
+    /// Apply a turn/start id only if this generation is still current and the turn is live;
+    /// otherwise best-effort `turn/interrupt` so a late id after interrupt does not leave a zombie.
+    private func noteTurnStarted(
+        channelId: String,
+        gen: UInt64,
+        turnId: String,
+        threadId: String,
+        client: CodexAppServerClient
+    ) async {
+        guard turnGens[channelId] == gen else {
+            _ = try? await client.turnInterrupt(params: .object([
+                "threadId": .string(threadId),
+                "turnId": .string(turnId),
+            ]))
+            return
+        }
+        guard let box = turns[channelId], !box.done else {
+            _ = try? await client.turnInterrupt(params: .object([
+                "threadId": .string(threadId),
+                "turnId": .string(turnId),
+            ]))
+            return
+        }
+        activeTurnIds[channelId] = turnId
+    }
+
+    private func noteTurnStartFailed(channelId: String, gen: UInt64, error: Error) {
+        guard turnGens[channelId] == gen else { return }
+        finishTurn(channelId: channelId, error: error)
     }
 
     private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?, guildId: String) async throws -> Channel {
@@ -138,9 +188,7 @@ public actor CodexSessionBridge {
             await existing.client.close()
             channels[channelId] = nil
         }
-        // ponytail: channel당 codex 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
-        // W11에서 세션 수명 배선 시 close() + channels 제거로 업그레이드.
-
+        let epoch = stopEpoch[channelId] ?? 0
         // W11-c: permMode → approvalPolicy/sandbox (resolveThreadPolicy). Default bypassPermissions
         // (danger) preserved when no permMode bound. A non-auto policy routes Codex approval requests
         // through the Discord permission gate; an auto policy needs no handler (nil).
@@ -197,6 +245,12 @@ public actor CodexSessionBridge {
             throw error
         }
 
+        // stop raced mid-ensure → close orphan, do not publish.
+        if (stopEpoch[channelId] ?? 0) != epoch {
+            await client.close()
+            throw AppServerError("session stopped")
+        }
+
         client.onNotification { [weak self] method, params in
             Task { await self?.onNotification(channelId: channelId, method: method, params: params) }
         }
@@ -204,6 +258,12 @@ public actor CodexSessionBridge {
         channels[channelId] = channel
         // F7: capture the thread id (= backend session) + live context.
         await persistSession(store: store, backend: .codex, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: threadId)
+        // stop during persist → drop the just-published channel.
+        if (stopEpoch[channelId] ?? 0) != epoch {
+            channels[channelId] = nil
+            await client.close()
+            throw AppServerError("session stopped")
+        }
         print("dab: codex thread channel=\(channelId) thread=\(threadId)")
         return channel
     }
@@ -256,11 +316,70 @@ public actor CodexSessionBridge {
         box.continuation = nil
         box.timeoutTask = nil
         turns[channelId] = box
+        activeTurnIds[channelId] = nil
         if let error {
             cont?.resume(throwing: error)
         } else {
             cont?.resume(returning: result ?? box.text)
         }
+    }
+
+    // MARK: - Lifecycle (W14)
+
+    /// Kill the channel's codex app-server child and drop maps (TS CodexSession.stop / dropClient).
+    /// Does NOT touch SessionRegistry / SessionStore.
+    public func stop(channelId: String) async {
+        stopEpoch[channelId, default: 0] += 1
+        turnGens[channelId, default: 0] += 1
+        channelGates[channelId]?.cancel()
+        channelGates[channelId] = nil
+        if let box = turns[channelId], !box.done {
+            finishTurnUnlocked(
+                channelId: channelId,
+                result: nil,
+                error: AppServerError("session stopped")
+            )
+        }
+        turns[channelId] = nil
+        activeTurnIds[channelId] = nil
+        guard let ch = channels.removeValue(forKey: channelId) else { return }
+        await ch.client.close()
+    }
+
+    /// Cancel the in-flight turn via `turn/interrupt` without closing the client/thread
+    /// (TS CodexSession.interrupt). Returns `true` when a live channel session existed.
+    /// Bumps turn generation so a late turn/start result cannot re-stamp activeTurnId.
+    public func interrupt(channelId: String) async -> Bool {
+        guard let ch = channels[channelId] else { return false }
+        turnGens[channelId, default: 0] += 1
+        if let turnId = activeTurnIds[channelId] {
+            _ = try? await ch.client.turnInterrupt(params: .object([
+                "threadId": .string(ch.threadId),
+                "turnId": .string(turnId),
+            ]))
+        }
+        if let box = turns[channelId], !box.done {
+            let partial = box.text.isEmpty ? "(interrupted)" : box.text
+            finishTurnUnlocked(channelId: channelId, result: partial)
+        } else {
+            activeTurnIds[channelId] = nil
+        }
+        return true
+    }
+
+    /// Test/inspection: whether this channel still holds a live codex client.
+    public func isLive(channelId: String) -> Bool {
+        channels[channelId] != nil
+    }
+
+    /// Test/inspection: turn id from the latest `turn/start` (nil when idle).
+    public func activeTurnId(channelId: String) -> String? {
+        activeTurnIds[channelId]
+    }
+
+    /// Test/inspection: current turn generation (bumped on interrupt/stop).
+    public func turnGeneration(channelId: String) -> UInt64 {
+        turnGens[channelId] ?? 0
     }
 }
 

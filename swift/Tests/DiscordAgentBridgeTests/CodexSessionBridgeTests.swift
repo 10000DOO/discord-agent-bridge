@@ -59,6 +59,8 @@ private actor GateableCodexServer {
             await writeResult(id, .object(["turn": .object(["id": .string("u1")])]))
             Task { await self.completeTurn(text: text) }   // non-blocking: read loop keeps counting
         case "turn/interrupt":
+            if let tid = msg["params"]?["threadId"]?.stringValue { capture?.withLock { $0["interruptThread"] = tid } }
+            if let uid = msg["params"]?["turnId"]?.stringValue { capture?.withLock { $0["interruptTurn"] = uid } }
             await writeResult(id, .object([:]))
         default:
             await writeError(id, "method not found: \(method)")
@@ -270,5 +272,117 @@ struct CodexSessionBridgeTests {
         #expect(got["threadModel"] == "gpt-5-codex")
         #expect(got["turnEffort"] == "high")
         #expect(got["turnModel"] == "gpt-5-codex")
+    }
+
+    // W14: stop closes client + drops channel map; interrupt keeps map and sends turn/interrupt.
+    @Test func stopClosesAndDropsChannel() async throws {
+        let (bridge, made) = makeCodexBridge()
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi") == "ok:hi")
+        #expect(await bridge.isLive(channelId: "c") == true)
+        await bridge.stop(channelId: "c")
+        #expect(await bridge.isLive(channelId: "c") == false)
+        #expect(made.last()?.isClosed == true)
+    }
+
+    @Test func interruptKeepsChannelAndCallsTurnInterrupt() async throws {
+        let gate = TurnGate()
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, made) = makeCodexBridge(gate: gate, capture: capture)
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "long") }
+        await gate.waitReceived(1)
+        // turn/start response may still be hopping onto the actor after the fake parks on the gate.
+        for _ in 0..<200 where await bridge.activeTurnId(channelId: "c") == nil {
+            await Task.yield()
+        }
+        #expect(await bridge.activeTurnId(channelId: "c") == "u1")
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.isLive(channelId: "c") == true)
+        #expect(made.last()?.isClosed == false)
+        let got = capture.withLock { $0 }
+        #expect(got["interruptThread"] == "t1")
+        #expect(got["interruptTurn"] == "u1")
+        let reply = try await t.value
+        #expect(reply == "(interrupted)")
+    }
+
+    @Test func interruptIdleIsTrueWhenLive() async throws {
+        let (bridge, _) = makeCodexBridge()
+        #expect(try await bridge.runTurn(channelId: "c", text: "hi") == "ok:hi")
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.isLive(channelId: "c") == true)
+        #expect(await bridge.interrupt(channelId: "missing") == false)
+    }
+
+    /// W14 RV: interrupt before/around turnId must not leave a zombie activeTurnId; late
+    /// turn/start results either interrupt the backend turn or are ignored after gen bump.
+    @Test func interruptBeforeTurnIdNoZombieActiveTurnId() async throws {
+        let gate = TurnGate()
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeCodexBridge(gate: gate, capture: capture)
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "long") }
+        await gate.waitReceived(1)
+        // Interrupt immediately — may race with activeTurnIds assignment.
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.activeTurnId(channelId: "c") == nil)
+        // Drain late turnStart hops onto the actor.
+        for _ in 0..<200 { await Task.yield() }
+        #expect(await bridge.activeTurnId(channelId: "c") == nil)
+        let reply = try await t.value
+        #expect(reply == "(interrupted)")
+        // interrupt-time and/or late noteTurnStarted must have sent turn/interrupt once turnId existed.
+        for _ in 0..<50 where capture.withLock({ $0["interruptTurn"] }) == nil {
+            await Task.yield()
+        }
+        #expect(capture.withLock { $0["interruptTurn"] } == "u1")
+        #expect(capture.withLock { $0["interruptThread"] } == "t1")
+    }
+
+    @Test func lateTurnIdAfterInterruptDoesNotRestamp() async throws {
+        let gate = TurnGate()
+        let (bridge, _) = makeCodexBridge(gate: gate)
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "long") }
+        await gate.waitReceived(1)
+        let genBefore = await bridge.turnGeneration(channelId: "c")
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.turnGeneration(channelId: "c") == genBefore + 1)
+        for _ in 0..<100 { await Task.yield() }
+        #expect(await bridge.activeTurnId(channelId: "c") == nil)
+        #expect(await bridge.isLive(channelId: "c") == true)
+        _ = try await t.value
+    }
+
+    /// RV: codex live + registry/store backend=claude → SessionLifecycle still kills codex.
+    @Test func lifecycleStopKillsCodexWhenBindingSaysClaude() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let (codex, made) = makeCodexBridge(store: store)
+        #expect(try await codex.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex)) == "ok:hi")
+        #expect(await codex.isLive(channelId: "c") == true)
+
+        await reg.bind(channelId: "c", SessionConfig(backend: .claude))
+        try await store.upsert(
+            channelId: "c",
+            PersistedSession(backend: .claude, cwd: "/x", guildId: "g", updatedAt: "t")
+        )
+
+        let auditURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-audit-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("audit.jsonl", isDirectory: false)
+        let life = SessionLifecycle(
+            registry: reg,
+            store: store,
+            audit: AuditLog(fileURL: auditURL, now: { "T" }),
+            stopClaude: { _ in },
+            stopCodex: { ch in await codex.stop(channelId: ch) },
+            stopGrok: { _ in },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false }
+        )
+        #expect(await life.stopChannel(channelId: "c", actorId: "u", guildId: "g") == true)
+        #expect(await codex.isLive(channelId: "c") == false)
+        #expect(made.last()?.isClosed == true)
+        #expect(await reg.binding(channelId: "c") == nil)
+        #expect(await store.binding(channelId: "c") == nil)
     }
 }

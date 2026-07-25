@@ -65,28 +65,29 @@ struct EventHandler: GatewayEventHandler {
 
     /// G5: on boot, load persisted sessions and repopulate the routing map so prefix-less messages
     /// reach the saved backend. Does NOT spawn any backend — resume is lazy on the first message.
+    /// Skips archived bindings (TS resumeAll filters `archived == true`).
     private func restoreSessionBindings() async {
         await SessionStore.shared.load()
-        let all = await SessionStore.shared.all()
-        for (channelId, ps) in all {
+        let active = await SessionStore.shared.active()
+        for (channelId, ps) in active {
             await SessionRegistry.shared.bind(
                 channelId: channelId,
                 SessionConfig(backend: ps.backend, model: ps.model, effort: ps.effort, permMode: ps.permMode)
             )
         }
-        print("dab: restored \(all.count) session binding(s) from store")
+        print("dab: restored \(active.count) session binding(s) from store")
     }
 
-    /// Register `/agent`. Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h propagation).
+    /// Register `/agent`, `/stop`, `/stop-all`. Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h).
     private func registerAgentCommand(appId: ApplicationSnowflake) async {
-        let cmd = agentCommandPayload()
+        let cmds = allCommandPayloads()
         do {
             if let g = ProcessInfo.processInfo.environment["DAB_DEV_GUILD_ID"], !g.isEmpty {
-                _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(g), payload: [cmd])
-                print("dab: registered /agent to guild \(g)")
+                _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(g), payload: cmds)
+                print("dab: registered \(cmds.map(\.name).joined(separator: ", ")) to guild \(g)")
             } else {
-                _ = try await client.bulkSetApplicationCommands(appId: appId, payload: [cmd])
-                print("dab: registered /agent globally (propagation ~1h)")
+                _ = try await client.bulkSetApplicationCommands(appId: appId, payload: cmds)
+                print("dab: registered \(cmds.map(\.name).joined(separator: ", ")) globally (propagation ~1h)")
             }
         } catch {
             print("dab: slash register failed: \(error)")
@@ -114,53 +115,97 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
-        // (B) Slash command.
-        guard let cmd = try? payload.data?.requireApplicationCommand(), cmd.name == "agent",
-              let sub = cmd.options?.first
-        else { return }
+        // (B) Slash command — `/agent` (subcommands), `/stop` (drive), `/stop-all` (admin).
+        guard let cmd = try? payload.data?.requireApplicationCommand() else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
-
-        // Deny-by-default authorization gate (W13-a). The interaction path honors Administrator
-        // promotion (R2 — member.permissions is populated here, unlike the gateway message path).
-        // Both start/close are execute-tier `drive` actions (auth.ts ACTION_MIN_TIER). The
-        // permission-button branch above keeps its own approver gate (Q6 — not tier-gated).
+        let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        // TS ACTION_TIER: stop-all → admin; stop / agent.* → drive (helpers.ts).
+        let authAction: AuthAction = cmd.name == "stop-all" ? .admin : .drive
         let decision = await Authorizer(config: .shared).authorize(
-            AuthInput(userId: actorId, roleIds: payload.member?.roles.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false)
+            AuthInput(
+                userId: actorId,
+                roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                action: authAction,
+                guildId: payload.guild_id?.rawValue,
+                channelId: channelId,
+                isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
+            )
         )
         guard decision.allowed else {
-            await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: decision.tier?.rawValue ?? "none", guildId: payload.guild_id?.rawValue ?? "dm", channelId: channelId, action: "drive", outcome: decision.reason, status: "denied"))
+            await AuditLog.shared.record(AuditEntry(
+                actorId: actorId,
+                roleTier: decision.tier?.rawValue ?? "none",
+                guildId: guildId,
+                channelId: channelId,
+                action: authAction.rawValue,
+                outcome: decision.reason,
+                status: "denied"
+            ))
             try await respondEphemeral(payload, "권한이 없습니다: \(decision.reason ?? "unauthorized")")
             return
         }
+        let tier = decision.tier?.rawValue ?? "execute"
 
-        switch sub.name {
-        case "start":
-            guard let raw = try? sub.requireOption(named: "backend").requireString(),
-                  let backend = Backend(rawValue: raw)
-            else {
-                try await respondEphemeral(payload, "알 수 없는 backend")
-                return
+        switch cmd.name {
+        case "stop":
+            _ = await SessionLifecycle.shared.stopChannel(
+                channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
+            )
+            try await respondEphemeral(payload, "세션을 종료했습니다.")
+        case "stop-all":
+            let count = await SessionLifecycle.shared.stopAll(
+                actorId: actorId, guildId: guildId, roleTier: tier
+            )
+            try await respondEphemeral(payload, "세션 \(count)개를 모두 종료했습니다.")
+        case "agent":
+            guard let sub = cmd.options?.first else { return }
+            switch sub.name {
+            case "start":
+                guard let raw = try? sub.requireOption(named: "backend").requireString(),
+                      let backend = Backend(rawValue: raw)
+                else {
+                    try await respondEphemeral(payload, "알 수 없는 backend")
+                    return
+                }
+                let model = try? sub.requireOption(named: "model").requireString()
+                let effort = try? sub.requireOption(named: "effort").requireString()
+                let perm = try? sub.requireOption(named: "perm").requireString()
+                await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort, permMode: perm))
+                // Persist a routing stub (no backend id yet) so a restart restores this binding; the
+                // first turn's bridge upsert overwrites it with the real backend session id (F7).
+                let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
+                let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
+                let record = PersistedSession(backend: backend, backendSessionId: nil, cwd: stubCwd, guildId: guildId, ownerId: ownerId, model: model, effort: effort, permMode: perm, updatedAt: ISO8601DateFormatter().string(from: Date()))
+                try? await SessionStore.shared.upsert(channelId: channelId, record)
+                let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }].compactMap { $0 }.joined(separator: " ")
+                try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다.")
+            case "close":
+                // W14: real stop (backend + unbind) — was unbind-only and leaked processes.
+                _ = await SessionLifecycle.shared.stopChannel(
+                    channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
+                )
+                try await respondEphemeral(payload, "이 채널의 세션을 종료하고 바인딩을 해제했습니다.")
+            default:
+                try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
             }
-            let model = try? sub.requireOption(named: "model").requireString()
-            let effort = try? sub.requireOption(named: "effort").requireString()
-            let perm = try? sub.requireOption(named: "perm").requireString()
-            await SessionRegistry.shared.bind(channelId: channelId, SessionConfig(backend: backend, model: model, effort: effort, permMode: perm))
-            // Persist a routing stub (no backend id yet) so a restart restores this binding; the
-            // first turn's bridge upsert overwrites it with the real backend session id (F7).
-            let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
-            let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
-            let record = PersistedSession(backend: backend, backendSessionId: nil, cwd: stubCwd, guildId: payload.guild_id?.rawValue ?? "dm", ownerId: ownerId, model: model, effort: effort, permMode: perm, updatedAt: ISO8601DateFormatter().string(from: Date()))
-            try? await SessionStore.shared.upsert(channelId: channelId, record)
-            let extra = [model.map { "model=\($0)" }, effort.map { "effort=\($0)" }, perm.map { "perm=\($0)" }].compactMap { $0 }.joined(separator: " ")
-            try await respondEphemeral(payload, "이 채널이 \(backend.rawValue) 세션에 바인딩됨\(extra.isEmpty ? "" : " (\(extra))"). 이제 접두사 없이 메시지를 보내면 됩니다.")
-        case "close":
-            await SessionRegistry.shared.unbind(channelId: channelId)
-            try? await SessionStore.shared.remove(channelId: channelId)   // don't re-route after restart
-            try await respondEphemeral(payload, "이 채널의 세션 바인딩을 해제했습니다.")
         default:
-            try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
+            return
         }
+    }
+
+    /// W14-b: guild channel delete → same hard-stop path as `/stop` (skip DMs; no binding → no-op).
+    func onChannelDelete(_ payload: DiscordChannel) async throws {
+        // Guild channels only (DM channels host no session) — TS client.ts isDMBased skip.
+        guard let guildId = payload.guild_id else { return }
+        let channelId = payload.id.rawValue
+        _ = await SessionLifecycle.shared.stopChannel(
+            channelId: channelId,
+            actorId: "system",
+            guildId: guildId.rawValue,
+            roleTier: "execute"
+        )
+        print("dab: channelDelete → stop channel=\(channelId) guild=\(guildId.rawValue)")
     }
 
     private func respondEphemeral(_ payload: Interaction, _ text: String) async throws {
@@ -234,13 +279,19 @@ struct EventHandler: GatewayEventHandler {
             case .grok:
                 reply = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             }
-            let body = DiscordText.clip(reply.isEmpty ? "(no text)" : reply)
-            _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: body))
+            // W16-a: multi-message chunking (TS chunkMessage) — never truncate long replies.
+            let body = reply.isEmpty ? "(no text)" : reply
+            for chunk in DiscordText.chunkMessage(body) {
+                _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: chunk))
+            }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
-            let msg = DiscordText.clip("⚠️ \(error.localizedDescription)")
+            // Same chunking on error path so huge error text is not truncated.
+            let msg = "⚠️ \(error.localizedDescription)"
             print("dab: \(backend.rawValue) turn failed: \(error)")
-            _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: msg))
+            for chunk in DiscordText.chunkMessage(msg) {
+                _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: chunk))
+            }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, outcome: error.localizedDescription, status: "error"))
         }
     }

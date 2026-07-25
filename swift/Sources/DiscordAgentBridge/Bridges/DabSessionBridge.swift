@@ -39,6 +39,8 @@ public actor DabSessionBridge {
     private var sessionMeta: [String: (channelId: String, approverId: String?)] = [:]
     /// handle → in-flight turn accumulator
     private var turns: [String: TurnBox] = [:]
+    /// channelId → epoch bumped on `stop` so sessionHandle that races mid-await drops the orphan.
+    private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent send on same session).
     private var channelGates: [String: Task<String, Error>] = [:]
 
@@ -189,6 +191,7 @@ public actor DabSessionBridge {
         if let existing = sessions[channelId] {
             return existing
         }
+        let epoch = stopEpoch[channelId] ?? 0
         // W11-f2: resume params reuse the STORED model/effort/permMode (T6) so a reconnect keeps the
         // original session's settings; live config/env fill in when nothing was persisted.
         let persisted = await store.binding(channelId: channelId)
@@ -217,6 +220,11 @@ public actor DabSessionBridge {
         }
 
         let handle = started.session
+        // stop raced mid-start → drop orphan session on the shared sidecar.
+        if (stopEpoch[channelId] ?? 0) != epoch {
+            try? await client.sessionStop(session: handle)
+            throw SidecarRpcError(code: "interrupted", message: "session stopped")
+        }
         sessions[channelId] = handle
         sessionMeta[handle] = (channelId: channelId, approverId: ownerId)
         let store = self.store
@@ -234,6 +242,13 @@ public actor DabSessionBridge {
         // notify above records it later — we do NOT persist a null id here.
         if let bid = started.backendSessionId {
             await persistSession(store: store, backend: .claude, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: model, effort: effort, permMode: perm, backendSessionId: bid)
+        }
+        if (stopEpoch[channelId] ?? 0) != epoch {
+            sessions[channelId] = nil
+            sessionMeta[handle] = nil
+            client.unregisterSessionHandlers(handle: handle)
+            try? await client.sessionStop(session: handle)
+            throw SidecarRpcError(code: "interrupted", message: "session stopped")
         }
         print("dab: session.start channel=\(channelId) handle=\(handle)")
         return handle
@@ -320,6 +335,47 @@ public actor DabSessionBridge {
         } else {
             cont?.resume(returning: result ?? box.text)
         }
+    }
+
+    // MARK: - Lifecycle (W14)
+
+    /// Hard-stop one channel's Claude session: cancel in-flight turn, `session.stop` RPC, drop
+    /// session maps. Shared sidecar process stays up (other channels may still use it). Does NOT
+    /// touch SessionRegistry / SessionStore — `SessionLifecycle` owns that.
+    public func stop(channelId: String) async {
+        stopEpoch[channelId, default: 0] += 1
+        channelGates[channelId]?.cancel()
+        channelGates[channelId] = nil
+        guard let handle = sessions.removeValue(forKey: channelId) else { return }
+        sessionMeta[handle] = nil
+        // Unblock a waiter before the RPC so stop is never stuck on a hung turn.
+        if let box = turns[handle], !box.done {
+            finishTurnUnlocked(
+                handle: handle,
+                result: nil,
+                error: SidecarRpcError(code: "interrupted", message: "session stopped")
+            )
+        }
+        turns[handle] = nil
+        try? await client?.sessionStop(session: handle)
+        client?.unregisterSessionHandlers(handle: handle)
+    }
+
+    /// Cancel the in-flight turn only (`session.interrupt`); keep the session handle so the next
+    /// message continues. Returns `true` when a live session existed (TS orchestrator.interrupt).
+    public func interrupt(channelId: String) async -> Bool {
+        guard let handle = sessions[channelId] else { return false }
+        try? await client?.sessionInterrupt(session: handle)
+        if let box = turns[handle], !box.done {
+            let partial = box.text.isEmpty ? "(interrupted)" : box.text
+            finishTurnUnlocked(handle: handle, result: partial)
+        }
+        return true
+    }
+
+    /// Test/inspection: whether this channel still holds a live sidecar session handle.
+    public func isLive(channelId: String) -> Bool {
+        sessions[channelId] != nil
     }
 }
 

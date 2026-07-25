@@ -50,6 +50,8 @@ public actor GrokSessionBridge {
 
     /// channelId (snowflake string) → grok client (holds its own sessionId)
     private var channels: [String: Channel] = [:]
+    /// channelId → epoch bumped on `stop` so ensureChannel that races mid-await closes the orphan.
+    private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent sessionPrompt on the same session).
     private var channelGates: [String: Task<String, Error>] = [:]
 
@@ -113,8 +115,7 @@ public actor GrokSessionBridge {
             await existing.client.close()
             channels[channelId] = nil
         }
-        // ponytail: channel당 grok 자식 프로세스가 상주하고 정리 경로가 없음(무한 증가 ceiling).
-        // W11에서 세션 수명 배선 시 close() + channels 제거로 업그레이드.
+        let epoch = stopEpoch[channelId] ?? 0
         // ponytail: model/effort/bypass are baked at spawn from the FIRST turn's config (TS parity —
         // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
 
@@ -163,12 +164,50 @@ public actor GrokSessionBridge {
             throw error
         }
 
+        if (stopEpoch[channelId] ?? 0) != epoch {
+            await client.close()
+            throw AcpClientError("session stopped")
+        }
+
         let channel = Channel(client: client)
         channels[channelId] = channel
         // F7: capture the grok session id + live context.
         await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: client.sessionId)
+        if (stopEpoch[channelId] ?? 0) != epoch {
+            channels[channelId] = nil
+            await client.close()
+            throw AcpClientError("session stopped")
+        }
         print("dab: grok session channel=\(channelId) sid=\(client.sessionId ?? "?")")
         return channel
+    }
+
+    // MARK: - Lifecycle (W14)
+
+    /// Hard-stop: close the grok child and drop the live channel entry (TS GrokAcpSession.stop).
+    /// SessionStore resume id is left for `SessionLifecycle` to remove. Does NOT touch registry/store.
+    public func stop(channelId: String) async {
+        stopEpoch[channelId, default: 0] += 1
+        channelGates[channelId]?.cancel()
+        channelGates[channelId] = nil
+        guard let ch = channels.removeValue(forKey: channelId) else { return }
+        await ch.client.close()
+    }
+
+    /// Cancel the current turn by dropping the client process while keeping SessionStore's resume
+    /// id so the next turn `session/load`s the same conversation (TS GrokAcpSession.interrupt =
+    /// dropClient; ACP wire has no session/cancel — do not invent one).
+    /// Returns `true` when a live client existed.
+    public func interrupt(channelId: String) async -> Bool {
+        guard let ch = channels.removeValue(forKey: channelId) else { return false }
+        // Closing fails any in-flight session/prompt so the gate task unblocks.
+        await ch.client.close()
+        return true
+    }
+
+    /// Test/inspection: whether this channel still holds a live grok client.
+    public func isLive(channelId: String) -> Bool {
+        channels[channelId] != nil
     }
 }
 

@@ -84,6 +84,8 @@ private actor GateableSidecar {
             await completeTurn(session: env.session ?? "", text: lastText)   // tool proceeds → finish turn
         case "session.stop":
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
+        case "session.interrupt":
+            await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
         default:
             await writeEnv(resError(id: id, method: method, error: makeError(code: "unsupported", message: method)))
         }
@@ -320,5 +322,39 @@ struct DabSessionBridgeTests {
         let got = capture.withLock { $0 }
         #expect(got["model"] == "claude-x")
         #expect(got["effort"] == "high")
+    }
+
+    // W14: stop drops the live session handle (maps empty); interrupt keeps it.
+    @Test func stopDropsSessionMap() async throws {
+        let (bridge, _) = makeDabBridge()
+        #expect(try await run(bridge, "hi") == "ok:hi")
+        #expect(await bridge.isLive(channelId: "c") == true)
+        await bridge.stop(channelId: "c")
+        #expect(await bridge.isLive(channelId: "c") == false)
+    }
+
+    @Test func interruptKeepsSessionMap() async throws {
+        let gate = TurnGate()
+        let (bridge, _) = makeDabBridge(gate: gate)
+        let t = Task { try await run(bridge, "long") }
+        await gate.waitReceived(1)
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.isLive(channelId: "c") == true)
+        let reply = try await t.value
+        #expect(reply == "(interrupted)" || reply.hasPrefix("ok:"))
+        // Idle interrupt still reports live session present.
+        #expect(await bridge.interrupt(channelId: "c") == true)
+        #expect(await bridge.interrupt(channelId: "missing") == false)
+        await gate.release() // release any leftover (harmless if already finished)
+    }
+
+    @Test func stopUnblocksInFlightTurn() async throws {
+        let gate = TurnGate()
+        let (bridge, _) = makeDabBridge(gate: gate)
+        let t = Task { try await run(bridge, "held") }
+        await gate.waitReceived(1)
+        await bridge.stop(channelId: "c")
+        await #expect(throws: (any Error).self) { _ = try await t.value }
+        #expect(await bridge.isLive(channelId: "c") == false)
     }
 }

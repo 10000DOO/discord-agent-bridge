@@ -69,7 +69,23 @@ public func agentCommandSpec() -> SlashCommandSpec {
                     ),
                 ]
             ),
-            .init(name: "close", description: "Unbind this channel's session", options: []),
+            // W14: close is a real stop (backend + unbind), not unbind-only.
+            .init(name: "close", description: "Stop and unbind this channel's session", options: []),
         ]
     )
+}
+
+/// Top-level `/stop` — hard-stop the current channel (drive tier; TS ACTION_TIER.stop).
+public func stopCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(name: "stop", description: "Stop this channel's agent session", subcommands: [])
+}
+
+/// Top-level `/stop-all` — hard-stop every bound session (admin tier; TS ACTION_TIER['stop-all']).
+public func stopAllCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(name: "stop-all", description: "Stop all agent sessions", subcommands: [])
+}
+
+/// Every slash command the bot registers (agent + lifecycle).
+public func allSlashCommandSpecs() -> [SlashCommandSpec] {
+    [agentCommandSpec(), stopCommandSpec(), stopAllCommandSpec()]
 }

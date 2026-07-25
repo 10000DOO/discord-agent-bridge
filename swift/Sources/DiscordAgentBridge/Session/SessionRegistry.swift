@@ -43,6 +43,9 @@ public actor SessionRegistry {
     public func unbind(channelId: String) {
         bindings[channelId] = nil
     }
+
+    /// Snapshot of every bound channel (for `/stop-all` + lifecycle enumeration).
+    public func list() -> [String: SessionConfig] { bindings }
 }
 
 /// Where a Discord channel message should go. Pure decision (no I/O) so it is unit-testable.
