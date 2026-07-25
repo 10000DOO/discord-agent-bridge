@@ -307,7 +307,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W16** | L | `todo` | 기능 완전누락(전수조사 A/B/D) | UI/명령 파리티 |
 | **W16-a** | L | `done` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`→`DiscordText.chunkMessage`, 코드펜스 인지) + `DabMain` 성공/에러 순차 `createMessage`. `clip` 유지(단일 메시지 호출처용) | 2000자 초과 무손실 |
 | **W16-b** | L | `todo` | `/config` 설정 패널(역할 티어 롤셀렉트·기본값 셀렉트·Save·알림/이미지 서브패널). W13-a·W15-a 선행 | 패널 동작 |
-| **W16-c** | L | `todo` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
+| **W16-c** | L | `done` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
 | **W16-d** | L | `todo` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
 | **W16-f** | L | `done` | **custom 백엔드**(`Backend.custom`+`!custom` route+persist+`ShellEnv` dotfile env + Claude path env-overlay; wizard/slash 포함) | custom UX |

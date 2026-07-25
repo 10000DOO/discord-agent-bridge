@@ -31,16 +31,21 @@ public struct SlashCommandSpec: Sendable, Equatable {
     /// Top-level options when the command has no subcommands (e.g. `/model`, `/effort`).
     public var options: [Option]
     public var subcommands: [Subcommand]
+    /// When true, register with Discord `default_member_permissions = Administrator`
+    /// (TS `/setup` / `/config` gate — hides the command from non-admins in the client UI).
+    public var requiresAdministrator: Bool
     public init(
         name: String,
         description: String,
         options: [Option] = [],
-        subcommands: [Subcommand] = []
+        subcommands: [Subcommand] = [],
+        requiresAdministrator: Bool = false
     ) {
         self.name = name
         self.description = description
         self.options = options
         self.subcommands = subcommands
+        self.requiresAdministrator = requiresAdministrator
     }
 }
 
@@ -138,7 +143,16 @@ public func stopAllCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(name: "stop-all", description: "Stop all agent sessions")
 }
 
-/// Every slash command the bot registers (W11-d live set + lifecycle).
+/// `/setup` — A4D guild channel structure (admin; TS `setDefaultMemberPermissions(Administrator)`).
+public func setupCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "setup",
+        description: "Create the agent control channel and sessions category (unnecessary if the channels already exist)",
+        requiresAdministrator: true
+    )
+}
+
+/// Every slash command the bot registers (W11-d live set + lifecycle + W16-c /setup).
 public func allSlashCommandSpecs() -> [SlashCommandSpec] {
     [
         agentCommandSpec(),
@@ -148,5 +162,6 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         stopCommandSpec(),
         clearCommandSpec(),
         stopAllCommandSpec(),
+        setupCommandSpec(),
     ]
 }

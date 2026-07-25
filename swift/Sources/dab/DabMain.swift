@@ -145,12 +145,13 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
-        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all (TS ACTION_TIER; drive except stop-all).
+        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup
+        // (TS ACTION_TIER: drive except stop-all + setup admin; setup also uses authorizeConfig bootstrap).
         guard let cmd = try? payload.data?.requireApplicationCommand() else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-        let authAction: AuthAction = cmd.name == "stop-all" ? .admin : .drive
+        let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup") ? .admin : .drive
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
                 userId: actorId,
@@ -327,6 +328,39 @@ struct EventHandler: GatewayEventHandler {
             default:
                 try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
             }
+
+        case "setup":
+            // W16-c: A4D channel structure (control + status + sessions category). Admin only.
+            // alreadyDone: skip create when all four stored ids still exist.
+            guard let realGuildId = payload.guild_id?.rawValue else {
+                try await respondEphemeral(payload, "권한이 없습니다: DM")
+                return
+            }
+            let provisioner = resolveGuildProvisioner(client: client, guildId: realGuildId)
+            let store = ConfigStore.shared
+            let existing = await store.loadServerConfig(guildId: realGuildId)?.channels
+            if await isGuildChannelsAlreadyDone(existing: existing, provisioner: provisioner) {
+                let control = existing?.controlChannelId ?? ""
+                try await respondEphemeral(
+                    payload,
+                    "이미 채널 구성이 모두 되어 있어요. <#\(control)> 에서 `/agent start` 로 세션을 시작하세요."
+                )
+                return
+            }
+            do {
+                let channels = try await ensureGuildChannels(provisioner: provisioner, configStore: store)
+                try await respondEphemeral(
+                    payload,
+                    "채널 구성을 완료했어요. <#\(channels.controlChannelId)> 에서 `/agent start` 로 세션을 시작하세요."
+                )
+            } catch {
+                print("dab: /setup failed guild=\(realGuildId): \(error)")
+                try await respondEphemeral(
+                    payload,
+                    "채널을 만들 수 없어요. 봇에 \"채널 관리(Manage Channels)\" 권한이 있는지 확인하세요."
+                )
+            }
+
         default:
             return
         }

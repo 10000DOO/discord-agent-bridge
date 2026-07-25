@@ -7,6 +7,7 @@ import DiscordBM
 /// - Empty `subcommands` + non-empty `options` → top-level string options (`/model`, `/effort`).
 /// - Non-empty `subcommands` → subcommand group (`/agent`, `/mode`).
 func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.ApplicationCommandCreate {
+    let adminPerms: [Permission]? = spec.requiresAdministrator ? [.administrator] : nil
     if !spec.subcommands.isEmpty {
         let subs: [ApplicationCommand.Option] = spec.subcommands.map { sub in
             ApplicationCommand.Option(
@@ -16,16 +17,27 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
                 options: sub.options.map(stringOption)
             )
         }
-        return Payloads.ApplicationCommandCreate(name: spec.name, description: spec.description, options: subs)
+        return Payloads.ApplicationCommandCreate(
+            name: spec.name,
+            description: spec.description,
+            options: subs,
+            default_member_permissions: adminPerms
+        )
     }
     if !spec.options.isEmpty {
         return Payloads.ApplicationCommandCreate(
             name: spec.name,
             description: spec.description,
-            options: spec.options.map(stringOption)
+            options: spec.options.map(stringOption),
+            default_member_permissions: adminPerms
         )
     }
-    return Payloads.ApplicationCommandCreate(name: spec.name, description: spec.description, options: nil)
+    return Payloads.ApplicationCommandCreate(
+        name: spec.name,
+        description: spec.description,
+        options: nil,
+        default_member_permissions: adminPerms
+    )
 }
 
 private func stringOption(_ opt: SlashCommandSpec.Option) -> ApplicationCommand.Option {
