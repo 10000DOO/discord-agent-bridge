@@ -65,7 +65,7 @@
 | **G-P1-04** | `todo` | **/mode perm 프로필 해석** | `switchPerm` config.profiles 이름 → profile | raw string 위주 | 프로필 이름이면 profile, 아니면 permMode · 테스트 |
 | **G-P1-05** | `todo` | **`/agent resume` 깊이** | re-attach + intro | store→registry 최소 re-bind | TS에 가깝게: intro/status · 라이브 세션 재연결 시도 |
 | **G-P1-06** | `done` | **favorites → browseRoots** | `app.ts` browseRoots: config.favorites | schema 보존만 · 위자드 unbounded | DirectoryBrowser/ChannelWizard에 favorites allowedRoots 주입 |
-| **G-P1-07** | `todo` | **autoProvisionGuild** | Ready/GuildCreate 자동 채널 구조 | 수동 `/setup`만 | ready 또는 guild create 시 ensure (권한 있을 때) |
+| **G-P1-07** | `done` | **autoProvisionGuild** | Ready/GuildCreate 자동 채널 구조 | 수동 `/setup`만 | ready 또는 guild create 시 ensure (권한 있을 때) |
 | **G-P1-08** | `todo` | **i18n en** | `i18n.ts` ko/en + locale | 한국어 하드코딩 위주 | locale=en 시 주요 슬래시/에러 문자열 en |
 | **G-P1-09** | `todo` | **Codex usage 패널** | `CodexUsageService` rate limits | unsupported 취급 | 가능하면 app-server rate limit 조회 · 아니면 명시적 unavailable 라인 통일 |
 | **G-P1-10** | `todo` | **usage HUD extras** | context_usage: clearableTokens, memoryFileCount, mcpServerCount, modelDisplayName | 부분 반영 | Claude 이벤트 필드 → usage embed 필드 |
@@ -95,6 +95,7 @@
 | 2026-07-26 | G-P0-05 | `feat(swift-port): G-P0-05 projectAuth 인가 배선` | DabMain authorize←store.projectAuth · persistSession/resume/start 보존 · Authorizer store-row 테스트 |
 | 2026-07-26 | G-P0-04 | `feat(swift-port): G-P0-04 close 시 세션 채널 삭제` | `shouldDeleteSessionChannelOnClose` · `deleteSessionChannel` · close 응답 후 provisioner 삭제 · 컨트롤/상태/카테고리 보호 |
 | 2026-07-26 | G-P1-06 | `feat(swift-port): G-P1-06 favorites browseRoots` | `browseRoots(fromFavorites:)` · `/agent start`·reconfigure에 ConfigStore.favorites → allowedRoots · empty=unbounded · 단위 테스트 |
+| 2026-07-26 | G-P1-07 | `feat(swift-port): G-P1-07 autoProvisionGuild` | Ready→bot id · GuildCreate→`autoProvisionGuild` (Manage Channels) · best-effort log |
 
 ---
 

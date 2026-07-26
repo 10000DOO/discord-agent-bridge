@@ -86,10 +86,25 @@ struct EventHandler: GatewayEventHandler {
     func onReady(_ payload: Gateway.Ready) async throws {
         let user = payload.user
         print("ready: username=\(user.username) id=\(user.id) app=\(payload.application.id)")
+        // G-P1-07: remember bot user id for Manage Channels checks on subsequent GuildCreate.
+        // READY only carries UnavailableGuild stubs; full guilds arrive as GuildCreate (boot + join).
+        await BotGatewayIdentity.shared.setUserId(user.id.rawValue)
+        print("dab: auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id)
         await restoreSessionBindings()
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
         await startAutoUpdater(client: client)
+    }
+
+    /// G-P1-07: auto-provision channel structure on every guild the bot is in (fires after Ready
+    /// for existing guilds, and again when the bot is invited). Manage-Channels-guarded + non-throwing.
+    func onGuildCreate(_ payload: Gateway.GuildCreate) async throws {
+        if payload.unavailable == true { return }
+        let guildId = payload.id.rawValue
+        let botId = await BotGatewayIdentity.shared.getUserId()
+        let canManage = botCanManageChannels(guild: payload, botUserId: botId)
+        // Never throws — autoProvisionGuild swallows create failures so one guild never kills ready.
+        await runAutoProvisionGuild(client: client, guildId: guildId, manageChannels: canManage)
     }
 
     /// G5: on boot, load persisted sessions and repopulate the routing map so prefix-less messages

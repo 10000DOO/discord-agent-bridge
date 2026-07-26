@@ -106,3 +106,49 @@ func resolveGuildProvisioner(
 ) -> DiscordGuildChannelProvisioner {
     DiscordGuildChannelProvisioner(client: client, guildId: guildId, manageChannels: manageChannels)
 }
+
+// MARK: - G-P1-07 auto-provision wiring (gateway Ready / GuildCreate)
+
+/// Bot user id from READY — used to resolve Manage Channels on GuildCreate.
+actor BotGatewayIdentity {
+    static let shared = BotGatewayIdentity()
+    private var userId: String?
+
+    func setUserId(_ id: String) { userId = id }
+    func getUserId() -> String? { userId }
+}
+
+/// Resolve Manage Channels for the bot from a full GuildCreate payload.
+/// Missing bot member → false (skip auto-provision with warning, matching TS `members.me` absent).
+func botCanManageChannels(guild: Gateway.GuildCreate, botUserId: String?) -> Bool {
+    let userId: UserSnowflake
+    if let botUserId, !botUserId.isEmpty {
+        userId = UserSnowflake(botUserId)
+    } else if let bot = guild.members.first(where: { $0.user?.bot == true }),
+              let id = bot.user?.id {
+        userId = id
+    } else {
+        return false
+    }
+    return guild.userHasGuildPermission(userId: userId, permission: .manageChannels)
+}
+
+/// Best-effort auto-provision one guild (never throws). Reuses pure `autoProvisionGuild`.
+func runAutoProvisionGuild(
+    client: any DiscordClient,
+    guildId: String,
+    manageChannels: Bool
+) async {
+    let provisioner = resolveGuildProvisioner(
+        client: client,
+        guildId: guildId,
+        manageChannels: manageChannels
+    )
+    _ = await autoProvisionGuild(
+        provisioner: provisioner,
+        configStore: ConfigStore.shared,
+        log: { level, msg in
+            print("dab: [\(level)] \(msg)")
+        }
+    )
+}
