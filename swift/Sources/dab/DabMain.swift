@@ -7,6 +7,17 @@ import NIOCore
 struct DabMain {
     static func main() async {
         let args = Array(CommandLine.arguments.dropFirst())
+        // C12: CLI entry points, mirroring src/cli.ts's `--version`/`--setup` (`service <sub>`
+        // is out of scope here — C13). Checked via `args.first` like the smoke-test
+        // subcommands below, since argv[1] doubles as the fallback token position.
+        if args.first == "--version" {
+            print(readAppVersion())
+            return
+        }
+        if args.first == "--setup" {
+            printSetupGuidance()
+            return
+        }
         if args.first == "sidecar-smoke" {
             await runSidecarSmoke()
             return
@@ -24,7 +35,10 @@ struct DabMain {
             return
         }
 
-        guard let token = DiscordToken.resolve() else {
+        // C12: config.json's discord.token is a lowest-priority fallback (below env/argv) —
+        // was a dead field (schema-only, never read) before this.
+        let configToken = try? await ConfigStore.shared.load().discord.token
+        guard let token = DiscordToken.resolve(configToken: configToken) else {
             fputs(DiscordToken.usage + "\n", stderr)
             exit(1)
         }
@@ -93,6 +107,21 @@ struct DabMain {
             }
         }
     }
+}
+
+// C12: `dab --setup`. This build has no interactive terminal wizard (unlike the Node
+// CLI's `@inquirer/prompts` flow) — the actual Swift deployment story is env-file based
+// (see swift/scripts/install.sh), so this only points at the ways to provide a token
+// instead of inventing a new config-writing subsystem. Never boots the bot afterward.
+func printSetupGuidance() {
+    print("""
+    dab setup
+      This build has no interactive terminal wizard. Configure the bot token one of these ways, then run `dab` again:
+        1. export DISCORD_BOT_TOKEN=your_bot_token
+        2. Edit config.json → discord.token (~/.discord-agent-bridge/config.json, or $DAB_HOME)
+        3. Pass the token as the first CLI argument: dab <token>
+      Client ID / role setup happens later in Discord via /config.
+    """)
 }
 
 struct EventHandler: GatewayEventHandler {

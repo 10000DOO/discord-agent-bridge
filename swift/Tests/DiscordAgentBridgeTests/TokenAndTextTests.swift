@@ -36,6 +36,31 @@ struct DiscordTokenTests {
         // Empty arg is not a token.
         #expect(DiscordToken.resolve(environment: [:], arguments: ["dab", ""]) == nil)
     }
+
+    // C12: config.json discord.token as the lowest-priority fallback.
+    @Test func fallsBackToConfigTokenWhenEnvAndArgvAbsent() {
+        let t = DiscordToken.resolve(environment: [:], arguments: ["dab"], configToken: "cfg-token")
+        #expect(t == "cfg-token")
+    }
+
+    @Test func emptyConfigTokenIsNotATokenEither() {
+        #expect(DiscordToken.resolve(environment: [:], arguments: ["dab"], configToken: "") == nil)
+        #expect(DiscordToken.resolve(environment: [:], arguments: ["dab"], configToken: nil) == nil)
+    }
+
+    @Test func argvStillWinsOverConfigToken() {
+        let t = DiscordToken.resolve(environment: [:], arguments: ["dab", "argtoken"], configToken: "cfg-token")
+        #expect(t == "argtoken")
+    }
+
+    @Test func envStillWinsOverConfigToken() {
+        let t = DiscordToken.resolve(
+            environment: ["DISCORD_TOKEN": "plain"],
+            arguments: ["dab"],
+            configToken: "cfg-token"
+        )
+        #expect(t == "plain")
+    }
 }
 
 @Suite("DiscordText.clip")
