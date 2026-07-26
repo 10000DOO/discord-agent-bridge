@@ -89,6 +89,41 @@ struct I18nTests {
         #expect(I18n.getLocale() == .ko)
     }
 
+    @Test func modeUnavailableInterpolatesBackend() {
+        withLocale(.ko) {
+            #expect(
+                I18n.t("cmd.mode.unavailable", ["backend": "grok"])
+                    == "`grok` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요."
+            )
+        }
+        withLocale(.en) {
+            #expect(
+                I18n.t("cmd.mode.unavailable", ["backend": "grok"])
+                    == "The `grok` backend is unavailable. Kept the current session unchanged."
+            )
+        }
+    }
+
+    @Test func directoryPanelPromptHasKoAndEnValues() {
+        #expect(I18n.t("dir.panel.prompt", locale: .ko) == "Discord 세션 프로젝트 폴더 선택")
+        #expect(I18n.t("dir.panel.prompt", locale: .en) == "Choose the project folder for the Discord session")
+    }
+
+    @Test func usageFiveHourLabelHasKoAndEnValues() {
+        #expect(I18n.t("usage.fiveHour", locale: .ko) == "5시간")
+        #expect(I18n.t("usage.fiveHour", locale: .en) == "5-hour")
+    }
+
+    @Test func configPanelTitleHasKoAndEnValues() {
+        #expect(I18n.t("config.title", locale: .ko) == "역할·기본값 설정")
+        #expect(I18n.t("config.title", locale: .en) == "Roles & defaults settings")
+    }
+
+    @Test func wizardStepFolderHasKoAndEnValues() {
+        #expect(I18n.t("wizard.step.folder", locale: .ko) == "1/5단계 · 폴더")
+        #expect(I18n.t("wizard.step.folder", locale: .en) == "Step 1/5 · Folder")
+    }
+
     @Test func labelEnumsFollowActiveLocale() {
         withLocale(.en) {
             #expect(StreamEmbedLabels.thinking == "Thinking…")

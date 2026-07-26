@@ -54,7 +54,7 @@
 | H9 | 텍스트/생각 디바운스 간격 통일됨(TS는 다름) | ✅ 완료 (빌드+테스트 확인) |
 | H10 | 턴 중간 사용량/레이트리밋 이벤트 소실 | ✅ 완료 (Dab만 해당 — Codex/Grok 제외, 빌드+전체테스트 확인) |
 | H11 | Capabilities 8→4 축소 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
-| H12 | i18n 240개 중 102개만 포팅, 방향 깨짐 | ⏳ 대기 (WO-P32, 마지막) |
+| H12 | i18n 240개 중 102개만 포팅, 방향 깨짐 | 🔶 진행중 (WO-P32 1단계 완료: 누락 키 130개 ko/en 추가 · 2단계 대기: 하드코딩 배선) |
 | H13 | ChannelWizard 동시 상호작용 직렬화 큐 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H14 | 프리셋 삭제 optimistic 저장 정합성 | ✅ 완료 (빌드+전체테스트 확인) |
 | H15 | DM 구조적 차단 가드 없음 | ✅ 완료 (빌드+테스트 확인) |
@@ -212,6 +212,8 @@
 ### i18n / UI 텍스트
 
 - **H12. 번역 키가 240개 중 102개만 포팅됨, 그마저 방향이 반대로 깨져있음.** 위저드(`ChannelWizard.swift:610-723`)·폴더브라우저(`DirectoryBrowser.swift:156-200`)·재개화면(`ResumeWizard.swift:166-224`)·폴더패널(`FolderPanel.swift:16`)은 한국어 하드코딩 — 로케일을 영어로 바꿔도 이 화면들은 그대로 한국어. 반대로 `ConfigPanel.swift:311-399`는 영어 하드코딩 — 한국어로 바꿔도 그대로 영어. `I18n.swift`엔 대응되는 `wizard.*`/`resume.*` 키가 이미 존재하는데(`:166-175`, `:304-307`) 그냥 안 불림. `cmd.mode.unavailable` 키도 없어서 알 수 없는 backend 응답이 `"알 수 없는 backend"` 하드코딩.
+  - **1단계 완료 (WO-P32 1단계, 2026-07-27):** TS `ko`/`en` 카탈로그 대조로 확인된 누락 키 130개(`backend.*`/`boot.*`/`cmd.mode.unavailable`/`cmd.start.launched`/`config.*`/`dir.*`/`file.*`/`preset.*`/`render.setup.installing`/`result.*`/`resume.step.*`·`resume.select.placeholder`·`resume.time.*`/`router.turn.queued`/`setup.*`/`stats.bindings`·`stats.more`·`stats.usage*`/`usage.*`/`wizard.confirm`·`wizard.profile.advanced`·`wizard.recfg.step.*`·`wizard.step.*`)을 `I18n.swift`의 `ko`/`en` 카탈로그 양쪽에 모두 채워 넣음(112→242개, 기존 키 순서/접두사 그룹핑 관례를 따라 `wizard`/`dir`/`config`/`preset`/`resume`/`usage`/`stats` 등 그룹 옆에 삽입). TS에 영어값이 없는 키는 기존 관례(H1/H2/H6)대로 자연스러운 영어를 새로 작성. `boot.noConfig`의 `node dist/cli.js --setup`은 Swift 바인너리 실체에 맞춰 `dab --setup`으로 치환(기존 `update.installFailed`/`Token.swift`가 이미 같은 방식으로 명령어를 적응시킨 선례를 따름). `I18nTests.swift`에 대표 키 5건(`cmd.mode.unavailable` 보간, `dir.panel.prompt`/`usage.fiveHour`/`config.title`/`wizard.step.folder` ko·en) 회귀 테스트 추가. **화면 코드(`ChannelWizard`/`DirectoryBrowser`/`ResumeWizard`/`FolderPanel`/`ConfigPanel`)를 이 키들로 배선하는 2단계는 아직 미착수** — 카탈로그만 채워진 상태라 위 하드코딩 문제 자체는 그대로 남아있음.
+    - **1단계 최종 확인**: TS `ko` 237개 키 전수 대조 결과 Swift 누락 0건(직접 재확인), `swift build --package-path swift` 성공, `swift test --filter I18nTests` 14건 전부 통과, 전체 스위트 1091개 중 H10의 기존 기록된 간헐적 타이밍 이슈 1건 제외 전부 통과.
 
 ### 동시성/일관성
 
@@ -340,7 +342,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 29 | WO-P29: 스트림 임베드 정보 손실 + 디바운스 간격 + 중간 사용량 이벤트 [완료: 2장 H8/H9/H10 참고] | H8, H9, H10 | `Render/StreamEmbed.swift`, `Render/StreamStatusHost.swift`, `dab/DabMain.swift`(+ 신규 `Render/UsageActivityHost.swift`) | 스트리밍 세부 3건 묶음 |
 | 30 | WO-P30: 부팅 안전망(`installGlobalSafetyNet`) + PID 파일 [완료: 2장 H17 참고 — 안전망은 조사 후 코드변경 없음 결정] | H17 | `dab/DabMain.swift` | 독립 |
 | 31 | WO-P31: Codex 앱서버 실패 원인 분류 [완료: 2장 H24 참고] | H24 | `Codex/AppServerClient.swift` | 독립 |
-| 32 | WO-P32: i18n 240개 키 전체 포팅 (`ChannelWizard`/`DirectoryBrowser`/`ResumeWizard`/`FolderPanel`/`ConfigPanel`) | H12 | `I18n.swift`, 전역(위저드류 전 파일) | **가장 넓게 퍼짐 — 마지막**(C11과 동일 사유) |
+| 32 | WO-P32: i18n 240개 키 전체 포팅 (`ChannelWizard`/`DirectoryBrowser`/`ResumeWizard`/`FolderPanel`/`ConfigPanel`) | H12 | `I18n.swift`, 전역(위저드류 전 파일) | **가장 넓게 퍼짐 — 마지막**(C11과 동일 사유). **1단계(누락 키 130개 `I18n.swift` ko/en 추가) 완료 · 2단계(5개 파일 하드코딩→`I18n.t(...)` 배선) 대기** |
 
 **코드 변경 없이 "현재 설계 유지"로 결론(오케스트레이터 판단 — 지금 당장의 버그가 아니라 향후 확장성 메모이고, 억지로 추상화를 새로 만드는 게 오히려 과설계라 YAGNI 원칙상 보류):**
 - H11: `Capabilities` 8→4 축소 — 지금 4개 백엔드가 전부 true라 무해함. 5번째 백엔드가 생기면 그때 세분화.
