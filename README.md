@@ -182,7 +182,7 @@ If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge
    |---|---|---|
    | Token | wizard / service env | `~/.dab/env` → `DISCORD_BOT_TOKEN` |
    | Config root | `DAB_HOME` or `~/.discord-agent-bridge` | **same** |
-   | Auto-start | `discord-agent-bridge service install` | `swift/scripts/install.sh` (launchd) |
+   | Auto-start | `discord-agent-bridge service install` | `swift/scripts/install.sh` · `install-linux.sh` · `install-windows.ps1` |
    | Claude process | in-process **or** `DAB_CLAUDE_SIDECAR=1` | **always sidecar** |
    | Sidecar spawn override | (sidecar path) | `DAB_CLAUDE_SIDECAR_CMD` |
    | Working dir default | config / wizard | `DAB_CWD` env + wizard folder step |
@@ -214,7 +214,7 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Auto-update | ✅ registry check + Yes/No UI; **no binary self-replace yet** | ✅ npm reinstall path |
 | Chromium table/mermaid render | ❌ deferred | ✅ optional |
 | Host file attach to Discord | partial / residual | ✅ (sidecar path) |
-| Linux/Windows service | ❌ macOS launchd first | ✅ launchd / systemd / schtasks |
+| Linux/Windows service | ✅ launchd / systemd / schtasks scripts | ✅ launchd / systemd / schtasks |
 | npm global install | ❌ (checkout + build) | ✅ |
 
 **Residual queue (not complete):** W16 polish, W13-b allowlist when default perm changes — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.

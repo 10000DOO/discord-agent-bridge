@@ -182,7 +182,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
    |---|---|---|
    | 토큰 | 마법사 / 서비스 env | `~/.dab/env` → `DISCORD_BOT_TOKEN` |
    | 설정 루트 | `DAB_HOME` 또는 `~/.discord-agent-bridge` | **동일** |
-   | 자동 시작 | `discord-agent-bridge service install` | `swift/scripts/install.sh` (launchd) |
+   | 자동 시작 | `discord-agent-bridge service install` | `swift/scripts/install.sh` · `install-linux.sh` · `install-windows.ps1` |
    | Claude 프로세스 | in-process **또는** `DAB_CLAUDE_SIDECAR=1` | **항상 사이드카** |
    | 사이드카 스폰 오버라이드 | (사이드카 경로) | `DAB_CLAUDE_SIDECAR_CMD` |
    | 작업 디렉터리 기본 | config / 마법사 | `DAB_CWD` env + 마법사 폴더 스텝 |
@@ -214,7 +214,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | Auto-update | ✅ 레지스트리 체크 + Yes/No UI; **바이너리 자가 교체 미구현** | ✅ npm 재설치 경로 |
 | Chromium 표/mermaid 렌더 | ❌ defer | ✅ 선택 |
 | Host file Discord 첨부 | partial / 잔여 | ✅ (사이드카 경로) |
-| Linux/Windows 서비스 | ❌ macOS launchd 1차 | ✅ launchd / systemd / schtasks |
+| Linux/Windows 서비스 | ✅ launchd / systemd / schtasks 스크립트 | ✅ launchd / systemd / schtasks |
 | npm global 설치 | ❌ (체크아웃 + 빌드) | ✅ |
 
 **잔여 큐(미완):** W16 폴리시, W13-b allowlist — [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.

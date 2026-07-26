@@ -109,41 +109,82 @@ CODEX_CMD=/path/to/codex swift run --package-path swift dab codex-smoke
 
 Library: `CodexAppServerClient` (JSON-RPC NDJSON over stdio; inject `SidecarTransport` for tests). Not wired to Discord/`AgentMode` yet.
 
-## Deploy (launchd)
+## Deploy (service install)
 
-Runs `dab` as a per-user macOS LaunchAgent (starts at login, kept alive).
+Runs `dab` as a **per-user** OS auto-start service. Pick the script for your platform
+(mirrors TS `service/*`: launchd / systemd / schtasks).
 
 **Deploy unit = the whole repo checkout.** The launcher `cd`s into the repo root so
 the Claude sidecar spawn can find `src/sidecar` / `dist` + `node_modules`. Keep the
-checkout in place (and Node deps installed) — the LaunchAgent points at it by absolute path.
+checkout in place (and Node deps installed) — the service points at it by absolute path.
+
+### macOS (launchd)
 
 ```bash
-# build (release), install to ~/.dab, register + start
-bash swift/scripts/install.sh
-
-# validate only — generate + plutil -lint the plist and run.sh, no build, no load
-bash swift/scripts/install.sh --dry-run
-
-# stop + unregister + remove plist/bin/run.sh (keeps ~/.dab/env and ~/.dab/logs)
-bash swift/scripts/uninstall.sh
+bash swift/scripts/install.sh              # build + install + load
+bash swift/scripts/install.sh --dry-run    # plutil -lint only
+bash swift/scripts/uninstall.sh            # stop + unregister (keeps env/logs)
 ```
-
-What install lays down:
 
 | Path | Role |
 |------|------|
-| `~/.dab/bin/dab` | copied release binary |
-| `~/.dab/env` (0600) | secrets + `DAB_*` (from `swift/deploy/env.example` on first install) |
-| `~/.dab/run.sh` (0755) | launcher: sets PATH (finds node/codex/grok), sources env, `cd` repo root, execs dab |
-| `~/Library/LaunchAgents/com.discord-agent-bridge.plist` (0644) | LaunchAgent; carries **HOME only** — no tokens |
-| `~/.dab/logs/agent.{out,err}.log` | stdout / stderr |
+| `~/Library/LaunchAgents/com.discord-agent-bridge.plist` | LaunchAgent (`KeepAlive`) |
+| `~/.dab/run.sh` | PATH + env + `cd` repo + exec dab |
 
-After editing `~/.dab/env`, reload: `launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist && launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist`.
+Reload after editing env:  
+`launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist && launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist`.
 
-Two launchd traps the launcher solves: launchd hands children a minimal PATH (Homebrew /
-user-local CLIs unfindable) and defaults cwd to `/` (breaks repo-relative sidecar paths).
-If `node` / `codex` / `grok` live outside the baked PATH (e.g. nvm, custom npm prefix), add
-that bin dir to `~/.dab/run.sh`'s PATH export.
+### Linux (systemd --user)
+
+Requires `systemctl` (user session). `Restart=always`; best-effort `loginctl enable-linger`
+so the unit can start before interactive login (same as TS `src/service/systemd.ts`).
+
+```bash
+bash swift/scripts/install-linux.sh              # build + enable --now
+bash swift/scripts/install-linux.sh --dry-run    # generate + bash -n only
+bash swift/scripts/uninstall-linux.sh
+systemctl --user status discord-agent-bridge
+systemctl --user restart discord-agent-bridge    # after editing ~/.dab/env
+```
+
+| Path | Role |
+|------|------|
+| `~/.config/systemd/user/discord-agent-bridge.service` | user unit |
+| `~/.dab/run.sh` | PATH + `DAB_SUPERVISED=1` + env + `cd` repo + exec dab |
+
+### Windows (Task Scheduler / onlogon)
+
+No admin required. **No crash auto-restart** (onlogon only — same trade-off as TS
+`src/service/schtasks.ts`). Needs Swift for Windows on PATH, or a prebuilt binary.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
+powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1 -Uninstall
+# optional: -BinaryPath C:\path\to\dab.exe
+schtasks /Run /TN discord-agent-bridge   # start now
+```
+
+| Path | Role |
+|------|------|
+| Task `discord-agent-bridge` | onlogon trigger |
+| `%USERPROFILE%\.dab\run.cmd` | load env + `cd` repo + run `dab.exe` |
+| `%USERPROFILE%\.dab\bin\dab.exe` | release binary |
+
+### Shared layout (`~/.dab` / `%USERPROFILE%\.dab`)
+
+| Path | Role |
+|------|------|
+| `bin/dab` (`.exe` on Windows) | copied release binary |
+| `env` (0600 on Unix) | secrets + `DAB_*` (from `swift/deploy/env.example` on first install) |
+| `logs/agent.{out,err}.log` | stdout / stderr |
+
+Secrets live **only** in `env` — never in the plist / unit / task definition.
+
+Supervisor traps the launcher solves: minimal service PATH (Homebrew / linuxbrew /
+user-local CLIs unfindable) and default cwd `/` or system dir (breaks repo-relative
+sidecar paths). If `node` / `codex` / `grok` live outside the baked PATH (e.g. nvm),
+add that bin dir to `run.sh` / `run.cmd` or export `PATH` in `env`.
 
 ## Layout
 
