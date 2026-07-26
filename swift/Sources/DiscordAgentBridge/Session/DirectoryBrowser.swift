@@ -13,9 +13,8 @@ import Foundation
 //   dir:create button — open create-folder modal (handled in DabMain)
 //   dir:manual button — open absolute-path modal (handled in DabMain)
 //   dir:panel  button — native host picker when `nativePanel` (handled in DabMain)
+//   dir:resume button — start Resume Session flow (ResumeWizard; handled in DabMain)
 //   cancel     button — cancel wizard
-//
-// ponytail: dir:resume omitted (resume wizard residual).
 
 private let maxSelectOptions = 25
 private let maxLabelLength = 95
@@ -173,7 +172,7 @@ public final class DirectoryBrowser: @unchecked Sendable {
                 options: options
             ),
         ])
-        // Row1 ≤5: up · here · create · cancel (resume residual). Row2: manual · optional panel.
+        // Row1 ≤5 (Discord limit): up · here · resume · create · cancel. Row2: manual · optional panel.
         let actionButtons: [WizardComponent] = [
             .button(
                 customId: "dir:up",
@@ -182,6 +181,7 @@ public final class DirectoryBrowser: @unchecked Sendable {
                 disabled: !canGoUp()
             ),
             .button(customId: "dir:here", label: "✅ 이 폴더로 시작", style: .success, disabled: false),
+            .button(customId: "dir:resume", label: "세션 재개", style: .primary, disabled: false),
             .button(customId: "dir:create", label: "📁 폴더 만들기", style: .secondary, disabled: false),
             .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
         ]
@@ -264,7 +264,8 @@ public func isSafeFolderName(_ name: String) -> Bool {
 public func isDirectoryBrowserCustomId(_ customId: String) -> Bool {
     switch customId {
     case "dir:into", "dir:up", "dir:here",
-         "dir:create", "dir:manual", "dir:panel":
+         "dir:create", "dir:manual", "dir:panel",
+         "dir:resume":
         return true
     default:
         return false

@@ -147,6 +147,16 @@ struct EventHandler: GatewayEventHandler {
                 }
                 return
             }
+            // (A2a) Resume flow: dir:resume + resume.* (owner-gated; may list/spawn sidecar >3s).
+            // cancel while a resume flow is active is routed here (shared custom_id with ChannelWizard).
+            let resumeChannelId = payload.channel_id?.rawValue ?? ""
+            let hasResumeFlow = await ResumeWizardRegistry.shared.get(channelId: resumeChannelId) != nil
+            if isResumeWizardCustomId(comp.custom_id)
+                || (comp.custom_id == "cancel" && hasResumeFlow)
+            {
+                try await handleResumeComponent(payload, comp: comp)
+                return
+            }
             // (A2) W11-b2 wizard components (folder browser + select steps; owner-gated).
             if isWizardCustomId(comp.custom_id) {
                 try await handleWizardComponent(payload, comp: comp)
@@ -685,9 +695,141 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
+    /// W11-b2 residual: dir:resume + resume.* flow (owner-gated). Binds current channel (A4D create residual).
+    private func handleResumeComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue ?? ""
+        let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+
+        if comp.custom_id == "dir:resume" {
+            guard let wizard = await WizardRegistry.shared.get(channelId: channelId) else {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+                        flags: [.ephemeral]
+                    ))
+                )
+                return
+            }
+            guard wizard.ownerId == clicker else {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "이 마법사는 연 사람만 조작할 수 있어요.",
+                        flags: [.ephemeral]
+                    ))
+                )
+                return
+            }
+            let flow = buildResumeWizard(
+                guildId: guildId,
+                channelId: channelId,
+                ownerId: clicker,
+                cwd: wizard.browserCwd(),
+                defaultBackend: wizard.current().backend
+            )
+            await ResumeWizardRegistry.shared.put(flow, channelId: channelId)
+            let (embeds, components) = discordPayload(from: flow.render())
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: components))
+            )
+            return
+        }
+
+        // resume.* or cancel while flow is active
+        guard let flow = await ResumeWizardRegistry.shared.get(channelId: channelId) else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "재개 마법사 세션이 없습니다. `/agent start` → 세션 재개로 다시 열어주세요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+        guard flow.ownerId == clicker else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "이 마법사는 연 사람만 조작할 수 있어요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+
+        let value = comp.values?.first
+        let step = await flow.handle(WizardInput(id: comp.custom_id, value: value))
+        switch step {
+        case .done:
+            await ResumeWizardRegistry.shared.remove(channelId: channelId)
+            await WizardRegistry.shared.remove(channelId: channelId)
+            let bound = flow.sessionChannelId() ?? channelId
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(
+                    content: "세션 재개됨: <#\(bound)>",
+                    embeds: [],
+                    components: []
+                ))
+            )
+        case .empty:
+            await ResumeWizardRegistry.shared.remove(channelId: channelId)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(
+                    content: "재개할 세션이 없습니다.",
+                    embeds: [],
+                    components: []
+                ))
+            )
+        case .cancelled:
+            await ResumeWizardRegistry.shared.remove(channelId: channelId)
+            await WizardRegistry.shared.remove(channelId: channelId)
+            let (embeds, _) = discordPayload(from: flow.render())
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: []))
+            )
+        default:
+            let (embeds, components) = discordPayload(from: flow.render())
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: components))
+            )
+        }
+    }
+
+    /// Build ResumeWizard with live list/resume wiring (Claude sidecar · store best-effort).
+    private func buildResumeWizard(
+        guildId: String,
+        channelId: String,
+        ownerId: String,
+        cwd: String,
+        defaultBackend: Backend
+    ) -> ResumeWizard {
+        ResumeWizard(options: ResumeWizardOptions(
+            guildId: guildId,
+            channelId: channelId,
+            ownerId: ownerId,
+            cwd: cwd,
+            backends: Backend.allCases,
+            defaultBackend: defaultBackend,
+            listResumableFor: { backend, dir in
+                await listResumableForBackend(backend, cwd: dir)
+            },
+            resume: { params in
+                try await bindResumedSession(params)
+            }
+        ))
+    }
+
     /// W11-b2: drive the channel's agent-start wizard from a select/button click (dir:* + choice steps).
     /// Owner gate: only the user who opened the wizard may advance it.
     /// dir:create / dir:manual open modals (showModal = ack). dir:panel defers then native pick.
+    /// dir:resume is handled by `handleResumeComponent` (routed before this).
     private func handleWizardComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
         let channelId = payload.channel_id?.rawValue ?? ""
         let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
@@ -1200,6 +1342,45 @@ struct EventHandler: GatewayEventHandler {
             payload: .init(content: ok ? InterruptLabels.done : InterruptLabels.none, flags: [.ephemeral])
         )
     }
+}
+
+// MARK: - Resume list + bind (W11-b2 residual)
+
+/// Claude/custom → sidecar sessions.list; Codex/Grok → store best-effort (or empty).
+func listResumableForBackend(_ backend: Backend, cwd: String) async -> [ResumableSession] {
+    switch backend {
+    case .claude, .custom:
+        return await DabSessionBridge.shared.listResumableSessions(cwd: cwd)
+    case .codex, .grok:
+        let all = await SessionStore.shared.all()
+        return listResumableFromStore(sessions: all, backend: backend, cwd: cwd)
+    }
+}
+
+/// Bind registry + upsert store with `backendSessionId` on the **current** channel (A4D create residual).
+func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
+    // Prefer model/effort/perm from an existing store row when rebinding the same channel.
+    let existing = await SessionStore.shared.binding(channelId: params.channelId)
+    let model = existing?.model
+    let effort = existing?.effort
+    let perm = existing?.permMode
+    await SessionRegistry.shared.bind(
+        channelId: params.channelId,
+        SessionConfig(backend: params.backend, model: model, effort: effort, permMode: perm)
+    )
+    let record = PersistedSession(
+        backend: params.backend,
+        backendSessionId: params.sessionId,
+        cwd: params.cwd,
+        guildId: params.guildId,
+        ownerId: params.ownerId.isEmpty ? nil : params.ownerId,
+        model: model,
+        effort: effort,
+        permMode: perm,
+        updatedAt: ISO8601DateFormatter().string(from: Date())
+    )
+    try await SessionStore.shared.upsert(channelId: params.channelId, record)
+    return ResumeResult(channelId: params.channelId)
 }
 
 // MARK: - interrupt control message

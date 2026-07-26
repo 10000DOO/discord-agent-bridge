@@ -13,7 +13,8 @@ import Foundation
 // Option lists are injected at open from live `providerCatalog(for:)` — never hardcoded
 // model/effort/perm vocabularies (Backend.allCases is the only fixed list).
 //
-// ponytail: preset · reconfigure · dir:resume · A4D channel create → residual.
+// ponytail: preset · reconfigure · A4D channel create → residual.
+// dir:resume → separate ResumeWizard (W11-b2 residual, wired).
 
 // MARK: Types
 
@@ -169,8 +170,10 @@ public struct WizardView: Sendable, Equatable {
 // MARK: Component id recognition (for DabMain routing)
 
 /// Custom ids owned by the agent-start wizard (folder + select steps). Distinct from `perm:<req>:<action>`.
+/// Includes resume-flow ids so DabMain can dispatch before generic handlers.
 public func isWizardCustomId(_ customId: String) -> Bool {
     if isDirectoryBrowserCustomId(customId) { return true }
+    if isResumeWizardCustomId(customId) { return true }
     switch customId {
     case "backend", "backend.next",
          "model", "model.next",

@@ -125,6 +125,19 @@ public actor DabSessionBridge {
         }
     }
 
+    /// Resumable Claude sessions for `cwd` via sidecar `sessions.list` (W11-b2 resume UI).
+    /// Failures → empty (resume wizard shows "재개할 세션이 없습니다").
+    public func listResumableSessions(cwd: String, limit: Int = 25) async -> [ResumableSession] {
+        do {
+            let c = try await ensureClient()
+            let result = try await c.sessionsList(cwd: cwd, limit: limit)
+            return result.sessions
+        } catch {
+            print("dab: sessions.list failed (\(error))")
+            return []
+        }
+    }
+
     /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
     /// Turns on the same channel are serialized. Usage (cost/tokens/duration) from the result
     /// event is returned when present (W11-g slice1).

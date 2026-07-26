@@ -298,6 +298,19 @@ struct DirectoryBrowserTests {
         #expect(isDirectoryBrowserCustomId("dir:manual"))
         #expect(isDirectoryBrowserCustomId("dir:panel"))
         #expect(!isDirectoryBrowserCustomId("backend"))
-        #expect(!isDirectoryBrowserCustomId("dir:resume")) // residual
+        #expect(isDirectoryBrowserCustomId("dir:resume"))
+    }
+
+    @Test func renderIncludesResumeButton() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        let buttonIds = b.render().rows.flatMap(\.components).compactMap { c -> String? in
+            if case .button(let id, _, _, _) = c { return id }
+            return nil
+        }
+        #expect(buttonIds.contains("dir:resume"))
+        #expect(buttonIds.contains("dir:here"))
+        #expect(buttonIds.contains("dir:create"))
     }
 }

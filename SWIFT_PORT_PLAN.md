@@ -42,7 +42,7 @@
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W11-b2** | `partial` | folder 클러스터 ✅. **잔여:** dir:resume UI · A4D 세션 채널 생성 · preset · reconfigure 팝업 |
+| **W11-b2** | `partial` | folder 클러스터 ✅ · **dir:resume + ResumeWizard ✅** (Claude sessions.list · Codex/Grok store best-effort · 현재 채널 bind). **잔여:** A4D 세션 채널 생성 · preset · reconfigure 팝업 |
 | **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 · 사이드카 setModel displayName 재해석 |
 | **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · Codex/Grok mid-turn tool · pin status · **바이너리 self-replace** |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
@@ -282,7 +282,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-a** | G | `done` | 슬래시 인프라(DiscordBM) + `SessionRegistry` + 순수 `routeDecision` + `/agent start·close` + config seam | `/agent start`로 채널 바인딩 → 접두사 없이 대화 |
 | **W11-b1** | G | `done` | 브리지 model·effort 실소비(config→client params) + `/agent start model·effort` 옵션 | model/effort 세션 반영, fake 검증 |
 | **W11-h** | G | `done` | **provider 카탈로그 Swift 포팅** (W11-b2 선행). 3백엔드 모델/추론/권한을 **전부 라이브** 조회(하드코딩 고정 금지 — 백엔드만 고정). Claude=사이드카 **`claude.catalog` RPC**, Codex/Grok=`models_cache.json` 읽기, 추론=모델별 `supportedEffortLevels` 좁힘, 권한=백엔드별(Codex 샌드박스는 `codex --help` 동적). 상세 §14.10 | 카탈로그 라이브 조회 |
-| **W11-b2** | G | `partial` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그 주입**). **slice1–3 folder 클러스터 ✅**: pure SM+카탈로그 + `DirectoryBrowser`(into/up/here/goTo/createChild·dot-last·cap25·allowedRoots) + `FolderPanel`(osascript pickFolder·injectable runner) + dir:manual/create 모달(DiscordBM showModal) + dir:panel(nativePanel) + DabMain owner gate. **잔여**: dir:resume·A4D 채널 생성·preset·reconfigure | 마법사 UI(folder→backend→model→effort→perm) |
+| **W11-b2** | G | `partial` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그 주입**). **slice1–3 folder 클러스터 ✅**: pure SM+카탈로그 + `DirectoryBrowser`(into/up/here/goTo/createChild·dot-last·cap25·allowedRoots) + `FolderPanel`(osascript pickFolder·injectable runner) + dir:manual/create 모달(DiscordBM showModal) + dir:panel(nativePanel) + DabMain owner gate. **dir:resume UI ✅**: pure `ResumeWizard`(backend→pick→done/empty/cancelled) + `dir:resume` 버튼(row1≤5) + `ResumeWizardRegistry` + DabMain owner gate · Claude `sessions.list` · Codex/Grok `listResumableFromStore` best-effort · pick 시 registry bind + store upsert(`backendSessionId`) on **current channel**. **잔여**: A4D 채널 생성·preset·reconfigure | 마법사 UI(folder→backend→model→effort→perm) + resume |
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
 | **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
@@ -514,7 +514,7 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 ### 14.7 남은 큐 (순서)
 1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1–3**~~ ✅ · ~~**W12**~~ ✅ (README·호환 매트릭스)
 2. **W11-g slice4+** — tools/subagent 집계·라이브 HUD 임베드·setModel displayName (상세 §14.9).
-3. **W11-b2 잔여** — dir:resume·A4D 채널 생성·preset·reconfigure (folder 클러스터 외).
+3. **W11-b2 잔여** — A4D 채널 생성·preset·reconfigure (dir:resume UI ✅).
 4. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 바이너리 교체.
 5. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영 · §14.4 플래키 근본 판정.
