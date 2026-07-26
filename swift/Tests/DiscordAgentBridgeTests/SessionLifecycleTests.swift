@@ -526,6 +526,123 @@ struct SessionLifecycleTests {
         )
         #expect(await life.resumeBinding(channelId: "c1") == nil)
     }
+
+    // MARK: - C10 resumeAll (boot recovery)
+
+    @Test func resumeAllCleansUpGoneChannelWithoutCallingResumeSession() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude))
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(backend: .claude, backendSessionId: "B", cwd: "/x", guildId: "g", updatedAt: "t")
+        )
+        let stopped = LockedBox<[String]>([])
+        let resumedCalls = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: reg,
+            store: store,
+            audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { $0.append("claude:\(ch)") } },
+            stopCodex: { ch in stopped.withLock { $0.append("codex:\(ch)") } },
+            stopGrok: { ch in stopped.withLock { $0.append("grok:\(ch)") } },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false }
+        )
+        let summary = await life.resumeAll(
+            channelGone: { _ in true },
+            resumeSession: { ch in resumedCalls.withLock { $0.append(ch) }; return true }
+        )
+        #expect(summary.total == 1)
+        #expect(summary.resumed == 0)
+        #expect(summary.cleaned == 1)
+        // Gone → hard-cleaned via the exact same path as stopChannel/onChannelDelete, never resumed.
+        #expect(resumedCalls.withLock { $0 }.isEmpty)
+        #expect(stopped.withLock { $0 } == ["claude:c1", "codex:c1", "grok:c1"])
+        #expect(await reg.binding(channelId: "c1") == nil)
+        #expect(await store.binding(channelId: "c1") == nil)
+    }
+
+    @Test func resumeAllResumesLiveChannelWithoutStopping() async throws {
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(backend: .codex, backendSessionId: "t1", cwd: "/x", guildId: "g", updatedAt: "t")
+        )
+        let stopped = LockedBox(0)
+        let resumedCalls = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: SessionRegistry(),
+            store: store,
+            audit: tempAudit(),
+            stopClaude: { _ in stopped.withLock { $0 += 1 } },
+            stopCodex: { _ in stopped.withLock { $0 += 1 } },
+            stopGrok: { _ in stopped.withLock { $0 += 1 } },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false }
+        )
+        let summary = await life.resumeAll(
+            channelGone: { _ in false },
+            resumeSession: { ch in resumedCalls.withLock { $0.append(ch) }; return true }
+        )
+        #expect(summary.total == 1)
+        #expect(summary.resumed == 1)
+        #expect(summary.cleaned == 0)
+        // Not gone → resumed, never stopped, binding untouched.
+        #expect(resumedCalls.withLock { $0 } == ["c1"])
+        #expect(stopped.withLock { $0 } == 0)
+        #expect(await store.binding(channelId: "c1")?.backendSessionId == "t1")
+    }
+
+    @Test func resumeAllHandlesEachChannelIndependently() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        for ch in ["gone1", "live1", "live2"] {
+            await reg.bind(channelId: ch, SessionConfig(backend: .grok))
+            try await store.upsert(
+                channelId: ch,
+                PersistedSession(backend: .grok, backendSessionId: "s-\(ch)", cwd: "/x", guildId: "g", updatedAt: "t")
+            )
+        }
+        let stopped = LockedBox<Set<String>>([])
+        let resumedCalls = LockedBox<Set<String>>([])
+        let life = SessionLifecycle(
+            registry: reg,
+            store: store,
+            audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { _ = $0.insert(ch) } },
+            stopCodex: { ch in stopped.withLock { _ = $0.insert(ch) } },
+            stopGrok: { ch in stopped.withLock { _ = $0.insert(ch) } },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false }
+        )
+        let summary = await life.resumeAll(
+            channelGone: { ch in ch == "gone1" },
+            resumeSession: { ch in
+                resumedCalls.withLock { _ = $0.insert(ch) }
+                return ch == "live1" // live2 "fails" to resume — must not affect gone1 / live1's outcomes.
+            }
+        )
+        #expect(summary.total == 3)
+        #expect(summary.cleaned == 1)
+        #expect(summary.resumed == 1)
+        // gone1: stopped, never asked to resume.
+        #expect(stopped.withLock { $0 }.contains("gone1"))
+        #expect(!resumedCalls.withLock { $0 }.contains("gone1"))
+        #expect(await store.binding(channelId: "gone1") == nil)
+        // live1: resumed successfully, never stopped.
+        #expect(resumedCalls.withLock { $0 }.contains("live1"))
+        #expect(!stopped.withLock { $0 }.contains("live1"))
+        #expect(await store.binding(channelId: "live1") != nil)
+        // live2: resume attempted and failed — still not stopped (a failed resume is not a deletion),
+        // and does not affect live1's success or gone1's cleanup (Promise.allSettled tolerance).
+        #expect(resumedCalls.withLock { $0 }.contains("live2"))
+        #expect(!stopped.withLock { $0 }.contains("live2"))
+        #expect(await store.binding(channelId: "live2") != nil)
+    }
 }
 
 @Suite("SessionRegistry.list")

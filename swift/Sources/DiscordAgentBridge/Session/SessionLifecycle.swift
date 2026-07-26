@@ -360,6 +360,51 @@ public struct SessionLifecycle: Sendable {
         }
     }
 
+    /// C10: boot recovery — TS `sessionOrchestrator.resumeAll()` + `app.ts`'s boot attach loop merged
+    /// into one pass (Swift has no separate Discord "wiring/attach" object to re-subscribe, so
+    /// checking channel existence and reconnecting the backend happen together per channel). For
+    /// every non-archived store binding, concurrently: (1) ask `channelGone` whether Discord confirms
+    /// the channel is permanently deleted (10003) — if so, hard-clean the binding via `stopChannel`
+    /// (same path as a live `channelDelete` event) and skip resume entirely (avoids TS's own
+    /// documented "resume then immediately kill the orphan" waste); otherwise (2) attempt
+    /// `resumeSession` so a live session survives a restart without waiting for the channel's next
+    /// message. Neither closure throws, so one channel's failure can never cancel or affect another
+    /// (TS `Promise.allSettled` semantics via Swift's TaskGroup). `channelGone` defaults to "never
+    /// gone" (TS `wiring.ts`'s documented safe default for a caller without Discord access — e.g. a
+    /// test — so it can never trigger cleanup). `resumeSession` defaults to `softEnsureLive` itself;
+    /// tests override it to avoid touching the live `.shared` bridge singletons.
+    @discardableResult
+    public func resumeAll(
+        channelGone: @escaping @Sendable (String) async -> Bool = { _ in false },
+        resumeSession: (@Sendable (String) async -> Bool)? = nil
+    ) async -> (total: Int, resumed: Int, cleaned: Int) {
+        let bindings = await store.active()
+        let resume = resumeSession ?? { channelId in await self.softEnsureLive(channelId: channelId) }
+
+        let outcomes = await withTaskGroup(of: (gone: Bool, resumed: Bool).self) { group in
+            for (channelId, ps) in bindings {
+                group.addTask {
+                    if await channelGone(channelId) {
+                        _ = await self.stopChannel(
+                            channelId: channelId, actorId: "system", guildId: ps.guildId, roleTier: "execute"
+                        )
+                        return (gone: true, resumed: false)
+                    }
+                    return (gone: false, resumed: await resume(channelId))
+                }
+            }
+            var collected: [(gone: Bool, resumed: Bool)] = []
+            for await outcome in group { collected.append(outcome) }
+            return collected
+        }
+
+        return (
+            total: bindings.count,
+            resumed: outcomes.filter(\.resumed).count,
+            cleaned: outcomes.filter(\.gone).count
+        )
+    }
+
     /// Active bindings for `/agent stats` (registry ∪ non-archived store; registry wins on model/effort).
     /// G-P2-04: attaches per-channel `running` / `queueDepth` from bridge gate chains (TS listActive).
     public func listActiveBindings() async -> [StatsBindingLine] {

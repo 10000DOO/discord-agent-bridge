@@ -108,6 +108,15 @@ struct EventHandler: GatewayEventHandler {
         print("dab: auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()
+        // C10: eagerly reconnect every restored channel now, instead of waiting for its next
+        // message — TS `resumeAll()` + `app.ts`'s boot attach loop (10003 detection + cleanup).
+        let resumeSummary = await SessionLifecycle.shared.resumeAll(channelGone: { channelId in
+            await self.channelConfirmedGone(channelId: channelId)
+        })
+        print(
+            "dab: resume-on-boot complete resumed=\(resumeSummary.resumed) "
+                + "cleaned=\(resumeSummary.cleaned) total=\(resumeSummary.total)"
+        )
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
         await startAutoUpdater(client: client)
     }
@@ -150,8 +159,10 @@ struct EventHandler: GatewayEventHandler {
     }
 
     /// G5: on boot, load persisted sessions and repopulate the routing map so prefix-less messages
-    /// reach the saved backend. Does NOT spawn any backend — resume is lazy on the first message.
-    /// Skips archived bindings (TS resumeAll filters `archived == true`).
+    /// reach the saved backend. Registry-only — does not itself touch any backend; the caller
+    /// (`onReady`) follows up with `SessionLifecycle.resumeAll` (C10) to eagerly reconnect. A channel
+    /// that eager-resume misses still falls back to the on-demand `softEnsureLive` on its first
+    /// message. Skips archived bindings (TS resumeAll filters `archived == true`).
     private func restoreSessionBindings() async {
         let imported = await LegacyStateImport.runIfNeeded()
         if imported > 0 {
@@ -166,6 +177,15 @@ struct EventHandler: GatewayEventHandler {
             )
         }
         print("dab: restored \(active.count) session binding(s) from store")
+    }
+
+    /// C10: TS `wiring.ts`'s `resolveChannelResult` — true only when Discord confirms the channel is
+    /// permanently gone (10003 Unknown Channel). Any other outcome (network hiccup, other API error)
+    /// returns false so a transient failure can never trigger the boot loop's stale-binding cleanup.
+    private func channelConfirmedGone(channelId: String) async -> Bool {
+        guard let response = try? await client.getChannel(id: ChannelSnowflake(channelId)) else { return false }
+        guard case .jsonError(let jsonError)? = response.httpResponse.asError() else { return false }
+        return jsonError.code == .unknownChannel
     }
 
     /// Register slash commands (W11-d set). Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h).
