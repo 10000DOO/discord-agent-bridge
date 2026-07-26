@@ -102,10 +102,6 @@ public actor DabSessionBridge {
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
-    // ponytail: invariant — the permission-button deadline must be SHORTER than the turn timeout so
-    // an unanswered ask denies (and the tool result flows) before the whole turn times out.
-    private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
-
     func ensureClient() async throws -> ClaudeSidecarClient {
         // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
         // (mirrors CodexSessionBridge/GrokSessionBridge.ensureChannel). The dead client's session
@@ -468,12 +464,12 @@ public actor DabSessionBridge {
                 error: SidecarRpcError(code: "sdk_error", message: message)
             )
         case .permissionRequest(let id, let toolName, let input):
-            // Ask the owner via Discord buttons; deny-by-default on timeout. Answer the sidecar with
-            // the decision so the tool proceeds/aborts. Does not touch the turn accumulator.
+            // Ask the owner via Discord buttons; waits forever if unanswered (TS parity — no
+            // timeout). Answers the sidecar with the decision so the tool proceeds/aborts. Does not
+            // touch the turn accumulator.
             // W16-e: tools in global autoAllowClaudeTools auto-allow without a button (mid-session
             // always-allow takes effect immediately on the host even if the sidecar list is stale).
             let meta = sessionMeta[handle]
-            let timeout = permGateTimeoutNs
             let client = self.client
             let configStore = self.configStore
             let gate = self.gate
@@ -489,7 +485,7 @@ public actor DabSessionBridge {
                     detail: permissionDetail(input),
                     approverId: meta?.approverId
                 )
-                let decision = await gate.await(prompt: prompt, timeoutNs: timeout)
+                let decision = await gate.await(prompt: prompt)
                 try? await client?.sessionPermission(
                     session: handle,
                     requestId: id,

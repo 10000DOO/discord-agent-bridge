@@ -36,7 +36,7 @@
 | Q1 | Linux/Windows 지원 범위 | ✅ 결정 완료 (덤 취급, 작업 안 함) |
 | Q2 | 설정화면(`/config`) TS 원복 | ✅ 완료 (빌드+테스트 확인) |
 | Q3 | Codex 모델 저장 키 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
-| Q4 | 권한 타임아웃/Codex 자동승인 제거 | ⏳ 대기 |
+| Q4 | 권한 타임아웃/Codex 자동승인 제거 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
 | Q5 | 채널 삭제 가드 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 
 ### High (26건)
@@ -107,9 +107,9 @@
 
 - **H1.** 권한 요청 임베드가 도구의 전체 JSON 입력(Edit의 old/new 문자열, WebFetch URL, 커스텀 MCP 도구 인자 등)을 안 보여주고 `command`/`file_path`만 뽑아 보여줌(`DabSessionBridge.swift:652-656` vs `permissionButtons.ts:97-104`) — 그 외 도구는 승인자가 아무 상세정보 없이 승인/거부해야 함.
 - **H2.** 결정 후 재렌더링이 "색상+제목+본문 임베드"에서 평문 한 줄(`"🔐 ALLOW — @user"`)로 다운그레이드(`DabMain.swift:220-223`). `perm.request.body`/`perm.decided.*` i18n 키가 `I18n.swift`에 아예 없음.
-- **H3.** (Swift만 있는 추가 동작, 참고용) 권한 게이트에 TS엔 없는 "미응답 시 자동 거부 타임아웃"이 있음(`PermissionGate.swift:72-89`) — 의도된 안전장치인지 확인 필요(9장 Q4).
+- **H3. [구현됨: `Session/PermissionGate.swift` `await(prompt:)`]** (Swift만 있는 추가 동작, 참고용) 권한 게이트에 TS엔 없는 "미응답 시 자동 거부 타임아웃"이 있었음(`PermissionGate.swift:72-89`, 수정 전) — 9장 Q4 결정에 따라 제거. `timeoutNs` 파라미터·`Pending.timeoutTask`·타이머 `Task`/`settle` 분기를 전부 삭제해 TS와 동일하게 무한 대기로 전환. `DabSessionBridge`/`CodexSessionBridge`/`GrokSessionBridge` 3곳의 `permGateTimeoutNs` 계산 프로퍼티와 호출부 인자도 함께 제거(공유 액터라 시그니처 변경 시 3곳 다 갱신 필요). 테스트: `PermissionGateTests.swift`의 `timeoutDeniesByDefault` 삭제, `nilApproverCannotBeResolved`는 타임아웃 의존을 걷어내고 "아무도 못 정하지만 계속 pending"만 검증하도록 정리, `unansweredAskStaysPendingIndefinitely` 신규 추가 — `swift test --filter 'PermissionGateTests|DabSessionBridgeTests|CodexSessionBridgeTests|GrokSessionBridgeTests'` 86건 전부 통과(0.235s). 전체 빌드/전체 테스트 최종 확인은 사용자가 별도 진행.
 - **H4. [보안] 이미지 렌더링용 headless 브라우저에 네트워크 차단이 빠짐.** TS는 표/mermaid 스크린샷을 찍는 브라우저에서 아웃바운드 네트워크를 통째로 막는다(`setRequestInterception`+`setOfflineMode(true)`, `browserRenderer.ts:143-148`). Swift `BrowserImageRenderer.swift`는 `chrome --headless=new --screenshot=...`를 프로세스로 실행할 뿐 네트워크 차단 플래그가 전혀 없다(`:216-227`) — 신뢰할 수 없는 표/mermaid 콘텐츠(사용자가 입력한 텍스트에서 파싱됨)가 외부로 네트워크 요청을 보낼 수 있다.
-- **H25.** (Swift만 있는 동작) Codex 승인 요청도 도구 이름이 전역 `autoAllowClaudeTools`에 있으면 Discord에 묻지도 않고 자동 승인(`CodexSessionBridge.swift:255-260`). TS의 Codex 승인은 `approvalPolicy`/샌드박스로만 결정되고 클로드 전용 허용목록과 무관 — 의도한 동작인지 확인 필요(9장 Q4).
+- **H25. [구현됨: `Bridges/CodexSessionBridge.swift` `ensureChannel` `onApproval`]** (Swift만 있는 동작) Codex 승인 요청도 도구 이름이 전역 `autoAllowClaudeTools`에 있으면 Discord에 묻지도 않고 자동 승인했음(`CodexSessionBridge.swift:255-260`, 수정 전) — 9장 Q4 결정에 따라 제거. `onApproval` 핸들러 안의 `isAutoAllowedClaudeTool(...)` 체크를 삭제해 Codex 승인이 그 세션의 `approvalPolicy`/샌드박스(`resolveThreadPolicy`)로만 결정되도록 함(TS 동일). 그 체크에만 쓰이던 `configStore` 프로퍼티/init 파라미터도 완전히 죽은 코드가 되어 함께 제거(다른 참조 없음, 확인 완료). Grok(`GrokSessionBridge.swift`)의 동일한 `isAutoAllowedClaudeTool` 참조는 이번 결정(H25) 대상이 아니라 그대로 둠(문서·사용자 지시 모두 Codex만 지목) — 다만 구조적으로 동일한 패턴이라 필요 시 별도 검토 대상. 전용 테스트는 없었음(기존 `nonAutoPolicyHandlerAllowMapsToAccept` 등은 승인 플로우 자체를 검증할 뿐 auto-allow-list 우회는 다루지 않았음) — 기존 CodexSessionBridge 테스트 전부(`swift test --filter CodexSessionBridgeTests`, H3와 동일 실행에 포함) 통과로 회귀 없음 확인.
 
 ### Chromium 이미지 렌더링
 
@@ -201,7 +201,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 14 | WO-P14: "도구 사용 알림" 배선 | C15 | `SessionNotifier`/`DabMain.swift` | 소규모, 독립 |
 | 15 | WO-P15: 프리셋 초안 디스크 영속화 [완료] | C16 | `ChannelWizard.swift` (`PresetDraftRegistry`) | `SessionStore.swift` 패턴 미러링, 독립 |
 | 16 | WO-P16: `/config` 패널 TS 원복 (Q2) [구현됨: `ConfigPanel.swift:24-105,342-436,755-761,906-940`] | Q2 | `ConfigPanel.swift` | `dmPolicy` 행 제거, `locale` 원위치, `renderDecline`이 `render.enabled` 끄지 않게 |
-| 17 | WO-P17: 권한 타임아웃 제거 + Codex 자동승인 분리 (Q4) | H3, H25 | `PermissionGate.swift`, `CodexSessionBridge.swift` | 독립 |
+| 17 | WO-P17: 권한 타임아웃 제거 + Codex 자동승인 분리 (Q4) [완료: 1장 H3/H25 참고] | H3, H25 | `PermissionGate.swift`, `CodexSessionBridge.swift` | 독립 |
 | 18 | WO-P18: 로거 포팅 (`src/core/logger.ts`) | C11 | 전역(모든 `print`/`fputs` 호출부) | **가장 넓게 퍼짐 — 마지막에 진행**(다른 WO들이 먼저 끝나 print 호출부가 안정된 뒤 일괄 교체) |
 
 완료 판정은 매 WO 공통: `swift build --package-path swift` 성공 + 해당 영역 유닛 테스트 신규 작성·필터 통과 + 문서(`docs/swift-port-parity-gaps.md`) 해당 C#/H# 옆에 `[구현됨: file:line]` 표기.

@@ -97,9 +97,6 @@ public actor GrokSessionBridge {
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
-    // ponytail: permission-button deadline = half the turn budget (not half of control 60s).
-    private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
-
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized. Cost/tokens from the prompt response are
     /// returned when present (W11-g slice1).
@@ -262,8 +259,7 @@ public actor GrokSessionBridge {
         // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
 
         // W11-c: bypass permMode → `--always-approve` (no handler). Non-bypass → route grok's
-        // permission asks through the Discord gate (onPermission), deny-by-default on timeout.
-        let gateTimeout = permGateTimeoutNs
+        // permission asks through the Discord gate (onPermission); waits forever if unanswered.
         let gate = self.gate
         let onPermission: AcpPermissionHandler?
         if grokBypassPermMode(config?.permMode) {
@@ -282,8 +278,7 @@ public actor GrokSessionBridge {
                         channelId: channelId,
                         toolName: toolName,
                         approverId: ownerId
-                    ),
-                    timeoutNs: gateTimeout
+                    )
                 )
                 return decision.isAllowing ? .allow : .deny   // always|allow → allow; deny-by-default
             }

@@ -40,7 +40,7 @@ public enum PermissionDecision: String, Sendable, Equatable {
 
 /// Deny-by-default permission gate. A backend `await`s a decision keyed by `reqKey`; the Discord
 /// layer `resolve`s it when the owner clicks a button. No sleep-based races: `await` suspends on a
-/// continuation and a timeout Task settles it as `.deny` if unanswered.
+/// continuation until `resolve` is called — no timeout (TS parity: an unanswered ask waits forever).
 public actor PermissionGate {
     public static let shared = PermissionGate()
 
@@ -48,41 +48,33 @@ public actor PermissionGate {
         let continuation: CheckedContinuation<PermissionDecision, Never>
         let approverId: String?
         let toolName: String
-        let timeoutTask: Task<Void, Never>
     }
     private var pending: [String: Pending] = [:]
     private var presenter: PermissionPresenter?
 
     public init() {}
 
-    /// Wire the button presenter once at startup (dab). Absent → prompts still register and simply
-    /// deny-by-default at timeout (no UI = no approval).
+    /// Wire the button presenter once at startup (dab). Absent → prompts still register and just
+    /// never resolve (no UI = no approval, no auto-deny either).
     public func setPresenter(_ presenter: @escaping PermissionPresenter) {
         self.presenter = presenter
     }
 
-    /// The tool name of a still-pending request, or nil once resolved/expired.
+    /// The tool name of a still-pending request, or nil once resolved.
     /// Lets the host peek the tool for always-allow persistence **before** `resolve` removes the entry.
     public func peekToolName(_ reqKey: String) -> String? {
         pending[reqKey]?.toolName
     }
 
-    /// Suspend until `resolve` (or the timeout) settles this `reqKey`. Deny-by-default on timeout.
+    /// Suspend until `resolve` settles this `reqKey`. No timeout — waits forever if unanswered.
     /// Registers BEFORE presenting so a fast button click can never race ahead of registration.
-    public func await(prompt: PermissionPrompt, timeoutNs: UInt64) async -> PermissionDecision {
+    public func await(prompt: PermissionPrompt) async -> PermissionDecision {
         let presenter = self.presenter
         return await withCheckedContinuation { (cont: CheckedContinuation<PermissionDecision, Never>) in
-            let key = prompt.reqKey
-            let timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: timeoutNs)
-                guard !Task.isCancelled else { return }
-                await self?.settle(reqKey: key, decision: .deny)
-            }
-            pending[key] = Pending(
+            pending[prompt.reqKey] = Pending(
                 continuation: cont,
                 approverId: prompt.approverId,
-                toolName: prompt.toolName,
-                timeoutTask: timeoutTask
+                toolName: prompt.toolName
             )
             if let presenter { Task { await presenter(prompt) } }
         }
@@ -98,26 +90,16 @@ public actor PermissionGate {
     public func resolve(reqKey: String, action: PermissionDecision, byUserId: String? = nil) -> Bool {
         guard let entry = pending[reqKey] else { return false }
         // deny-by-default: only the named approver may decide. An ask with no approver (approverId
-        // == nil) cannot be resolved by any click — it stays pending and can only deny at timeout.
+        // == nil) cannot be resolved by any click — it stays pending forever.
         guard let approver = entry.approverId, approver == byUserId else { return false }
-        settleEntry(reqKey: reqKey, entry: entry, decision: action)
+        pending[reqKey] = nil
+        entry.continuation.resume(returning: action)
         return true
     }
 
     /// Test hook (internal): number of awaits currently suspended. Lets tests observe registration
     /// without a sleep. Not part of the public API.
     func pendingCount() -> Int { pending.count }
-
-    private func settle(reqKey: String, decision: PermissionDecision) {
-        guard let entry = pending[reqKey] else { return }
-        settleEntry(reqKey: reqKey, entry: entry, decision: decision)
-    }
-
-    private func settleEntry(reqKey: String, entry: Pending, decision: PermissionDecision) {
-        pending[reqKey] = nil
-        entry.timeoutTask.cancel()
-        entry.continuation.resume(returning: decision)
-    }
 }
 
 // MARK: - Discord component custom_id (≤100 chars)

@@ -62,8 +62,6 @@ public actor CodexSessionBridge {
     private let gate: PermissionGate
     /// Session persistence (default shared; tests inject a temp-file store).
     private let store: SessionStore
-    /// Global config (autoAllowClaudeTools host-side check for Always-Allow).
-    private let configStore: ConfigStore
     /// C3: attach_file / share_document sinks (default shared; tests inject fresh instances
     /// so they never touch the process-wide singleton, mirroring GrokAttachGateway's own DI).
     private let fileAttachHost: FileAttachHost
@@ -78,7 +76,6 @@ public actor CodexSessionBridge {
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
-        configStore: ConfigStore = .shared,
         fileAttachHost: FileAttachHost = .shared,
         documentShareHost: DocumentShareHost = .shared
     ) {
@@ -86,7 +83,6 @@ public actor CodexSessionBridge {
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
-        self.configStore = configStore
         self.fileAttachHost = fileAttachHost
         self.documentShareHost = documentShareHost
     }
@@ -158,9 +154,6 @@ public actor CodexSessionBridge {
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
         return UInt64(max(5, sec)) * 1_000_000_000
     }
-
-    // ponytail: permission-button deadline < turn timeout so an unanswered ask denies in time.
-    private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
 
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
     /// Turns on the same channel are serialized. Token usage from `turn/completed` is returned
@@ -296,27 +289,22 @@ public actor CodexSessionBridge {
         // (danger) preserved when no permMode bound. A non-auto policy routes Codex approval requests
         // through the Discord permission gate; an auto policy needs no handler (nil).
         let policy = resolveThreadPolicy(permMode: config?.permMode ?? "bypassPermissions")
-        let gateTimeout = permGateTimeoutNs
         let gate = self.gate
         let onApproval: AppServerApprovalHandler?
         if isAutoApprovePolicy(policy) {
             onApproval = nil   // auto-approve: no Discord prompt needed
         } else {
-            let configStore = self.configStore
+            // H25: Codex approval is decided solely by this session's approvalPolicy/sandbox above —
+            // it must not consult the Claude-only autoAllowClaudeTools list (TS parity).
             onApproval = { req in
                 let toolName = codexApprovalToolName(req)
-                // W16-e: always-allowed tools skip the Discord button.
-                if await isAutoAllowedClaudeTool(toolName, store: configStore) {
-                    return .accept
-                }
                 let decision = await gate.await(
                     prompt: PermissionPrompt(
                         reqKey: UUID().uuidString,
                         channelId: channelId,
                         toolName: toolName,
                         approverId: ownerId
-                    ),
-                    timeoutNs: gateTimeout
+                    )
                 )
                 return decision.isAllowing ? .accept : .decline   // always|allow → accept; deny-by-default
             }

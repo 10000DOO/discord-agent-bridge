@@ -2,8 +2,6 @@ import Testing
 import Foundation
 @testable import DiscordAgentBridge
 
-private let bigTimeout: UInt64 = 60_000_000_000   // 60s — never fires within a test
-
 /// Spin (no sleep) until the awaiting Task has registered its continuation on the gate.
 private func waitRegistered(_ gate: PermissionGate) async {
     while await gate.pendingCount() == 0 { await Task.yield() }
@@ -14,7 +12,7 @@ struct PermissionGateTests {
     @Test func resolveAllowAndDeny() async {
         for expected in [PermissionDecision.allow, .deny] {
             let gate = PermissionGate()
-            let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
+            let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner")) }
             await waitRegistered(gate)
             #expect(await gate.resolve(reqKey: "k", action: expected, byUserId: "owner") == true)
             #expect(await t.value == expected)
@@ -25,10 +23,7 @@ struct PermissionGateTests {
     @Test func resolveAlwaysReturnsAlwaysDecision() async {
         let gate = PermissionGate()
         let t = Task {
-            await gate.await(
-                prompt: .init(reqKey: "k", channelId: "c", toolName: "Bash", approverId: "owner"),
-                timeoutNs: bigTimeout
-            )
+            await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "Bash", approverId: "owner"))
         }
         await waitRegistered(gate)
         #expect(await gate.peekToolName("k") == "Bash")
@@ -44,10 +39,7 @@ struct PermissionGateTests {
     @Test func peekToolNameWhilePending() async {
         let gate = PermissionGate()
         let t = Task {
-            await gate.await(
-                prompt: .init(reqKey: "r1", channelId: "c", toolName: "WebFetch", approverId: "owner"),
-                timeoutNs: bigTimeout
-            )
+            await gate.await(prompt: .init(reqKey: "r1", channelId: "c", toolName: "WebFetch", approverId: "owner"))
         }
         await waitRegistered(gate)
         #expect(await gate.peekToolName("r1") == "WebFetch")
@@ -56,16 +48,21 @@ struct PermissionGateTests {
         _ = await t.value
     }
 
-    @Test func timeoutDeniesByDefault() async {
+    // H3 (TS parity): no timeout — an unanswered ask stays pending indefinitely instead of
+    // auto-denying. Verified by staying pending well past what used to be the timeout window.
+    @Test func unansweredAskStaysPendingIndefinitely() async {
         let gate = PermissionGate()
-        // 200ms: still fast, but less sensitive to scheduler delay under parallel load than 50ms.
-        let decision = await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 200_000_000)
-        #expect(decision == .deny)
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner")) }
+        await waitRegistered(gate)
+        try? await Task.sleep(nanoseconds: 200_000_000)   // past the old 200ms timeout window
+        #expect(await gate.pendingCount() == 1)            // still pending — never auto-denied
+        #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "owner") == true)
+        #expect(await t.value == .allow)
     }
 
     @Test func approverMismatchIgnored() async {
         let gate = PermissionGate()
-        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner")) }
         await waitRegistered(gate)
         // Bystander cannot answer.
         #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "other") == false)
@@ -82,7 +79,7 @@ struct PermissionGateTests {
 
     @Test func secondResolveIsNoOp() async {
         let gate = PermissionGate()
-        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner"), timeoutNs: bigTimeout) }
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash", approverId: "owner")) }
         await waitRegistered(gate)
         #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "owner") == true)
         _ = await t.value
@@ -90,16 +87,15 @@ struct PermissionGateTests {
     }
 
     // Regression guard (c2 security RV): a prompt with NO approver cannot be resolved by anyone —
-    // it stays pending and deny-by-defaults at timeout (never auto-allow via a stray click).
+    // it stays pending forever (TS parity — no timeout, never auto-allow via a stray click either).
     @Test func nilApproverCannotBeResolved() async {
         let gate = PermissionGate()
-        // 250ms budget: resolve attempts must still see pending=1 before timeout settles deny.
-        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 250_000_000) }
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash")) }
         await waitRegistered(gate)
         #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "anyone") == false)
         #expect(await gate.resolve(reqKey: "k", action: .allow) == false)   // byUserId nil too
-        #expect(await gate.pendingCount() == 1)   // still pending → will deny at timeout
-        #expect(await t.value == .deny)
+        #expect(await gate.pendingCount() == 1)   // still pending — nothing can ever resolve it
+        t.cancel()   // never resolves; drop the waiter instead of hanging the test
     }
 }
 
