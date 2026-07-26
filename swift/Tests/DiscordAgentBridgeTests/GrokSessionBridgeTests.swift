@@ -93,6 +93,7 @@ private func makeGrokBridge(
     permGate: PermissionGate = .shared,
     onPermissionSpy: LockedBox<[AcpPermissionHandler?]>? = nil,
     store: SessionStore? = nil,
+    configStore: ConfigStore? = nil,
     backendIdCapture: LockedBox<[String]>? = nil,
     attachGateway: any GrokAttachGatewayProviding = NoopAttachGateway(),
     mcpServersSpy: LockedBox<[[AcpMcpServerConfig]]>? = nil
@@ -107,7 +108,13 @@ private func makeGrokBridge(
         Task { await server.run() }
         // Control timeout only; turn budget is bridge turnTimeoutOverrideNs / DAB_TURN_TIMEOUT_SEC.
         return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
-    }, turnTimeoutOverrideNs: turnTimeoutOverrideNs, gate: permGate, store: store ?? freshTempStore(), attachGateway: attachGateway)
+    }, turnTimeoutOverrideNs: turnTimeoutOverrideNs, gate: permGate, store: store ?? freshTempStore(),
+       // Isolate from the real ~/.discord-agent-bridge/config.json (DabSessionBridgeTests convention):
+       // a shared-config autoAllowClaudeTools entry would short-circuit onPermission before it ever
+       // reaches gate.await, starving tests that wait on the presenter.
+       configStore: configStore ?? ConfigStore(baseDir: FileManager.default.temporaryDirectory
+           .appendingPathComponent("grok-cfg-missing-\(UUID().uuidString)", isDirectory: true)),
+       attachGateway: attachGateway)
     return (bridge, made)
 }
 
