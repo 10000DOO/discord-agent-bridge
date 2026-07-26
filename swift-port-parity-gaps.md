@@ -18,7 +18,7 @@
 | C4 | Codex 재개목록 SQLite 읽기 | ✅ 완료 (빌드+테스트 확인) |
 | C5 | Grok MCP 파일첨부/문서공유 루프백 | ✅ 완료 (빌드+테스트 확인) |
 | C6 | 첨부 이미지 실제 이미지로 전달 | ✅ 완료 (빌드+테스트 확인) |
-| C7 | Grok 사용량 패널 | ⏳ 대기 |
+| C7 | Grok 사용량 패널 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
 | C8 | Grok 재개목록 SQLite 읽기 | ⏳ 대기 |
 | C9 | Claude 권한 프로필(allowedTools) 배선 | ✅ 완료 (빌드+테스트 확인) |
 | C10 | 부팅 시 세션 즉시 재연결 + 채널삭제 감지 | ⏳ 대기 |
@@ -79,7 +79,9 @@
 
 - **C5. [구현됨: `Grok/AttachGateway.swift`(신규, `GrokAttachGateway`/`GrokAttachGatewayProviding`), `GrokSessionBridge.swift:29,54`(buildMcpServers/unregisterAttach), `DabMain.swift`(`attach-mcp` 서브커맨드)]** Discord 파일첨부/문서공유 MCP 루프백 전체 미구현. TS는 `attachGateway.ts`(로컬 HTTP 서버)를 통해 Grok의 별도 프로세스가 `attach_file`/`share_document`를 콜백할 수 있게 한다(`acpSession.ts:205-235`, `agent/index.ts:23-32,79-88`). **직접 재확인**: `swift/Sources/.../attachGateway` 류 서버 자체가 없고(`grep -r "createServer\|HTTPServer\|127.0.0.1"` 0건), `GrokSessionBridge.swift:44`가 `GrokAcpClient(...)`를 생성할 때 `mcpServers` 파라미터를 아예 안 넘겨서(디폴트 `[]`) 항상 빈 배열로 시작한다. Grok 세션은 파일 첨부·문서 공유가 완전히 불가능하다.
 - **C6. [구현됨: `AttachmentDownload.swift`(classifyTurnFiles/readImageBase64), `GrokSessionBridge.swift`(buildGrokPromptBlocks), `CodexSessionBridge.swift`(buildCodexTurnItems)]** 이미지 첨부가 실제 이미지로 전달 안 됨. TS `buildGrokPromptBlocks`(`acpSession.ts:430-441`)는 이미지 파일을 base64 ACP `image` 블록으로 보낸다. Swift는 `appendAttachedFileHints`(`AttachmentDownload.swift:120-126`)로 모든 파일(이미지 포함)을 그냥 `"Attached file: <path>"` 텍스트 한 줄로 다운그레이드한다. Codex도 동일 문제.
-- **C7. 컨텍스트 사용량(토큰 %) 패널 미표시.** `GrokConfigSource.contextWindow(_:)`(`GrokCatalog.swift:258-261`)는 있는데 `GrokSessionBridge`에서 아무도 호출하지 않아 `TurnResult.contextUsage`가 항상 `nil`.
+- **C7. [구현됨: `UsageFormat.swift`(`grokContextUsageInputs`/`grokContextUsage` 신규), `Bridges/GrokSessionBridge.swift`(`configSource` 주입 + `executeTurn` 끝부분)]** 컨텍스트 사용량(토큰 %) 패널 미표시. `GrokConfigSource.contextWindow(_:)`(`GrokCatalog.swift:258-261`)는 있는데 `GrokSessionBridge`에서 아무도 호출하지 않아 `TurnResult.contextUsage`가 항상 `nil`.
+  - **구현**: TS `acpSession.ts:355-399`(`emitResult`)는 Codex(C2)와 달리 턴 중간 알림이 아니라 `session/prompt` 최종 응답 1회에서만 계산한다(`result._meta.totalTokens`/`modelId`, model = 세션 바인딩 모델 → 없으면 응답의 modelId → 없으면 카탈로그 기본값, `grokConfigSource.contextWindow(model)`으로 창 크기 조회, `min(100, round(...))`). Swift `executeTurn`은 이미 `promptResult: JSONValue`를 턴 끝에 들고 있으므로, C2가 세운 "관심사 1개 = 순수 함수 1개" 컨벤션 그대로 `UsageFormat.swift`(기존 `turnUsage(fromGrokPromptResult:)` 바로 옆)에 순수 함수 2개(`grokContextUsageInputs` — `_meta.totalTokens`/`modelId` 추출, `grokContextUsage` — totalTokens/model/maxTokens로 `ContextUsageInfo` 조립, `totalTokens<=0`/`maxTokens<=0` 가드) 추가. 액터 호출(모델 조회)만 `GrokSessionBridge`에 남기되, 이 브릿지가 이미 `gate`/`store`/`configStore`/`attachGateway`를 전부 생성자 주입(기본 `.shared`)하는 컨벤션을 그대로 따라 `configSource: GrokConfigSource = .shared`를 추가 주입 — 실제 `~/.grok/models_cache.json`을 참조하는 테스트가 로컬 파일에 오염되는, 이미 한 번 겪었던 `ConfigStore.shared` 격리 버그를 반복하지 않기 위함(3안 중 사용자가 이 옵션을 확정).
+  - 유닛 테스트: `UsageFormatTests.swift`에 순수 함수 2건(`grokContextUsageInputsExtractsMetaFields`, `grokContextUsageBuildsPanelAndSkipsOnMissingInputs` — 퍼센트 100% 캡, totalTokens/maxTokens 각각 nil·0 가드 확인) + `GrokSessionBridgeTests.swift`에 라운드트립 4건(`contextUsageReachesTurnResult`, `contextUsageFallsBackToResponseModelIdWhenSessionModelUnset`, `contextUsageNilWhenNoMeta`, `contextUsageNilWhenModelContextWindowUnknown` — 페이크 `GrokConfigSource`(`fakeGrokConfigSource`, 인메모리 models_cache.json) + 페이크 서버의 `session/prompt` 응답에 `_meta` 주입) — `swift test --filter 'GrokSessionBridgeTests|UsageFormatTests'` 33건 전부 통과(빌드 19.33s, 테스트 0.226s). 전체 빌드/전체 테스트 최종 확인은 사용자가 별도 진행.
 - **C8. 세션 재개 목록이 진짜 Grok 세션 검색이 아님.** TS `GrokDiscovery`는 `~/.grok/sessions/session_search.sqlite`를 sql.js로 읽어 cwd/심링크 정규화까지 하며 어떤 grok 세션이든 찾아낸다. **직접 재확인**: Swift 전체에 SQLite를 읽는 코드가 없다. C4와 동일한 구조적 문제.
 
 ### Claude 백엔드 / 공통 세션
@@ -190,7 +192,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 3 | WO-P3: Codex 동적 도구(파일첨부/문서공유) [구현됨: `Codex/AppServerClient.swift`, `Bridges/CodexSessionBridge.swift` — 1장 C3 참고] | C3 | `AppServerClient.swift`, `CodexSessionBridge.swift` | WO-P2 이후 |
 | 4 | WO-P4: Codex discovery/sqlite 재개 목록 | C4 | 신규 파일 + `ResumeWizard.swift` 연동 | WO-P7과 SQLite 유틸 공유 가능성 — 먼저 진행 |
 | 5 | WO-P5: Grok MCP 루프백(파일첨부/문서공유) | C5 | `GrokSessionBridge.swift` + 신규 로컬 서버 | WO-P6과 순차 |
-| 6 | WO-P6: Grok 사용량 패널 | C7 | `GrokSessionBridge.swift` | WO-P5 이후 |
+| 6 | WO-P6: Grok 사용량 패널 [완료: 1장 C7 참고] | C7 | `GrokSessionBridge.swift` | WO-P5 이후 |
 | 7 | WO-P7: Grok sqlite 재개 목록 | C8 | 신규 파일 + `ResumeWizard.swift` 연동 | WO-P4 완료 후(공유 유틸 재사용 검토) |
 | 8 | WO-P8: 첨부 이미지 실제 이미지로 전달 | C6 | `AttachmentDownload.swift` | Codex/Grok 공통, 독립 |
 | 9 | WO-P9: Claude 권한 프로필(allowedTools) 배선 | C9 | `DabSessionBridge.swift` | 독립 |

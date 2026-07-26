@@ -85,6 +85,40 @@ struct UsageFormatTests {
         #expect(turnUsage(fromGrokPromptResult: nil) == nil)
     }
 
+    // C7: `_meta.totalTokens`/`_meta.modelId` extraction (pure, no actor involved).
+    @Test func grokContextUsageInputsExtractsMetaFields() {
+        let both = JSONValue.object(["_meta": .object(["totalTokens": .number(1234), "modelId": .string("grok-4")])])
+        let result = grokContextUsageInputs(fromPromptResult: both)
+        #expect(result.totalTokens == 1234)
+        #expect(result.modelId == "grok-4")
+
+        #expect(grokContextUsageInputs(fromPromptResult: nil).totalTokens == nil)
+        #expect(grokContextUsageInputs(fromPromptResult: nil).modelId == nil)
+        #expect(grokContextUsageInputs(fromPromptResult: .object([:])).totalTokens == nil)
+        // totalTokens present, modelId absent, and vice versa — each field is independent.
+        let totalOnly = JSONValue.object(["_meta": .object(["totalTokens": .number(5)])])
+        #expect(grokContextUsageInputs(fromPromptResult: totalOnly).totalTokens == 5)
+        #expect(grokContextUsageInputs(fromPromptResult: totalOnly).modelId == nil)
+    }
+
+    // C7: context-usage panel build (TS acpSession.ts:385-398 emitResult) — cap at 100%, skip on
+    // totalTokens<=0 or unknown/zero maxTokens (a 0-denominator gauge is worse than none).
+    @Test func grokContextUsageBuildsPanelAndSkipsOnMissingInputs() {
+        let normal = grokContextUsage(totalTokens: 64_000, model: "grok-4", maxTokens: 128_000)
+        #expect(normal?.totalTokens == 64_000)
+        #expect(normal?.maxTokens == 128_000)
+        #expect(normal?.percentage == 50)
+        #expect(normal?.model == "grok-4")
+
+        let capped = grokContextUsage(totalTokens: 150_000, model: "grok-4", maxTokens: 100_000)
+        #expect(capped?.percentage == 100)
+
+        #expect(grokContextUsage(totalTokens: nil, model: "grok-4", maxTokens: 100_000) == nil)
+        #expect(grokContextUsage(totalTokens: 0, model: "grok-4", maxTokens: 100_000) == nil)
+        #expect(grokContextUsage(totalTokens: 100, model: "grok-4", maxTokens: nil) == nil)
+        #expect(grokContextUsage(totalTokens: 100, model: "grok-4", maxTokens: 0) == nil)
+    }
+
     @Test func discordColorsMatchTS() {
         #expect(DiscordColors.streaming == 0xfee75c)
         #expect(DiscordColors.thinking == 0x9b59b6)

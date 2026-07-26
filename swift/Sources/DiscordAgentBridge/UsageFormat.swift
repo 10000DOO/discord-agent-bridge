@@ -416,6 +416,25 @@ public func turnUsage(fromGrokPromptResult result: JSONValue?) -> TurnUsage? {
     return u.hasMetrics ? u : nil
 }
 
+/// Extract totalTokens/modelId from Grok's `session/prompt` response `_meta` (C7 / TS
+/// acpClient.ts extractPromptResult `_meta.totalTokens`/`_meta.modelId`). Pure; never throws.
+public func grokContextUsageInputs(fromPromptResult result: JSONValue?) -> (totalTokens: Int?, modelId: String?) {
+    let meta = result?["_meta"]
+    let totalTokens = meta?["totalTokens"]?.numberValue.map { Int($0) }
+    let modelId = meta?["modelId"]?.stringValue
+    return (totalTokens, modelId)
+}
+
+/// Build the context-usage panel once totalTokens/model/maxTokens are resolved (C7 / TS
+/// acpSession.ts:385-398 emitResult). `totalTokens<=0` or an unknown/zero `maxTokens` skip the
+/// panel (a 0-denominator gauge is worse than none — TS parity comment).
+public func grokContextUsage(totalTokens: Int?, model: String, maxTokens: Int?) -> ContextUsageInfo? {
+    guard let totalTokens, totalTokens > 0 else { return nil }
+    guard let maxTokens, maxTokens > 0 else { return nil }
+    let percentage = min(100.0, (Double(totalTokens) / Double(maxTokens) * 100).rounded())
+    return ContextUsageInfo(totalTokens: totalTokens, maxTokens: maxTokens, percentage: percentage, model: model)
+}
+
 private func intField(_ obj: JSONValue?, _ key: String) -> Int? {
     guard let n = obj?[key]?.numberValue else { return nil }
     return Int(n)

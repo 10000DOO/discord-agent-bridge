@@ -11,13 +11,15 @@ private actor GateableGrokServer {
     private let initFails: Bool
     private let fixedChunks: [String]?
     private let backendIdCapture: LockedBox<[String]>?   // records "new" / "load:<sessionId>"
+    private let promptResultMeta: JSONValue?             // C7: session/prompt response `_meta`
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, fixedChunks: [String]? = nil, backendIdCapture: LockedBox<[String]>? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, fixedChunks: [String]? = nil, backendIdCapture: LockedBox<[String]>? = nil, promptResultMeta: JSONValue? = nil) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
         self.fixedChunks = fixedChunks
         self.backendIdCapture = backendIdCapture
+        self.promptResultMeta = promptResultMeta
     }
 
     func run() async {
@@ -62,7 +64,9 @@ private actor GateableGrokServer {
         for chunk in fixedChunks ?? ["ok:\(text)"] {
             await pushUpdate(chunk)
         }
-        await writeResult(id, .object(["stopReason": .string("end_turn")]))
+        var result: [String: JSONValue] = ["stopReason": .string("end_turn")]
+        if let promptResultMeta { result["_meta"] = promptResultMeta }
+        await writeResult(id, .object(result))
     }
 
     private func pushUpdate(_ text: String) async {
@@ -96,7 +100,9 @@ private func makeGrokBridge(
     configStore: ConfigStore? = nil,
     backendIdCapture: LockedBox<[String]>? = nil,
     attachGateway: any GrokAttachGatewayProviding = NoopAttachGateway(),
-    mcpServersSpy: LockedBox<[[AcpMcpServerConfig]]>? = nil
+    mcpServersSpy: LockedBox<[[AcpMcpServerConfig]]>? = nil,
+    promptResultMeta: JSONValue? = nil,
+    configSource: GrokConfigSource? = nil
 ) -> (GrokSessionBridge, MadeClients<GrokAcpClient>) {
     let made = MadeClients<GrokAcpClient>()
     let bridge = GrokSessionBridge(makeClient: { cfg, onPermission, mcpServers in
@@ -104,7 +110,7 @@ private func makeGrokBridge(
         onPermissionSpy?.withLock { $0.append(onPermission) }
         mcpServersSpy?.withLock { $0.append(mcpServers) }
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture)
+        let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture, promptResultMeta: promptResultMeta)
         Task { await server.run() }
         // Control timeout only; turn budget is bridge turnTimeoutOverrideNs / DAB_TURN_TIMEOUT_SEC.
         return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
@@ -114,7 +120,12 @@ private func makeGrokBridge(
        // reaches gate.await, starving tests that wait on the presenter.
        configStore: configStore ?? ConfigStore(baseDir: FileManager.default.temporaryDirectory
            .appendingPathComponent("grok-cfg-missing-\(UUID().uuidString)", isDirectory: true)),
-       attachGateway: attachGateway)
+       attachGateway: attachGateway,
+       // C7: isolate from the real ~/.grok/models_cache.json (same reasoning as configStore above) —
+       // a nonexistent grokHome makes contextWindow/defaultModel fall back to static values, never
+       // reading this machine's actual Grok install.
+       configSource: configSource ?? GrokConfigSource(grokHome: FileManager.default.temporaryDirectory
+           .appendingPathComponent("grok-home-missing-\(UUID().uuidString)", isDirectory: true).path))
     return (bridge, made)
 }
 
@@ -378,4 +389,71 @@ struct GrokSessionBridgeTests {
         let blocks = try buildGrokPromptBlocks(text: "hi", files: [TurnFile(path: "/x/note.txt", mime: "text/plain")])
         #expect(blocks == [.text("hi\n\nAttached file: /x/note.txt")])
     }
+
+    // C7: session/prompt response `_meta.totalTokens`/`modelId` + the bound session model reach
+    // TurnResult.contextUsage (TS acpSession.ts:385-398 emitResult).
+    @Test func contextUsageReachesTurnResult() async throws {
+        let configSource = fakeGrokConfigSource(contextWindows: ["grok-4": 128_000])
+        let (bridge, _) = makeGrokBridge(
+            promptResultMeta: .object(["totalTokens": .number(64_000), "modelId": .string("grok-4")]),
+            configSource: configSource
+        )
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-4"))
+        #expect(reply.contextUsage?.totalTokens == 64_000)
+        #expect(reply.contextUsage?.maxTokens == 128_000)
+        #expect(reply.contextUsage?.percentage == 50)
+        #expect(reply.contextUsage?.model == "grok-4")
+    }
+
+    // No model bound on the session → falls to the response's own modelId (TS
+    // `this.model.length > 0 ? this.model : result?.modelId ?? grokConfigSource.defaultModel()`).
+    @Test func contextUsageFallsBackToResponseModelIdWhenSessionModelUnset() async throws {
+        let configSource = fakeGrokConfigSource(contextWindows: ["grok-9": 200_000])
+        let (bridge, _) = makeGrokBridge(
+            promptResultMeta: .object(["totalTokens": .number(100_000), "modelId": .string("grok-9")]),
+            configSource: configSource
+        )
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok))
+        #expect(reply.contextUsage?.model == "grok-9")
+        #expect(reply.contextUsage?.maxTokens == 200_000)
+    }
+
+    // No `_meta` at all on the prompt response (the default fake server behavior) → no panel.
+    @Test func contextUsageNilWhenNoMeta() async throws {
+        let (bridge, _) = makeGrokBridge()
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi")
+        #expect(reply.contextUsage == nil)
+    }
+
+    // totalTokens present but the model's context window is unknown → skip the panel rather than
+    // a 0-denominator gauge (TS parity comment, acpSession.ts:389).
+    @Test func contextUsageNilWhenModelContextWindowUnknown() async throws {
+        let configSource = fakeGrokConfigSource(contextWindows: [:])
+        let (bridge, _) = makeGrokBridge(
+            promptResultMeta: .object(["totalTokens": .number(500)]),
+            configSource: configSource
+        )
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-unknown"))
+        #expect(reply.contextUsage == nil)
+    }
+}
+
+/// Fake `GrokConfigSource` serving an in-memory `models_cache.json` (id → context_window), isolated
+/// from the real filesystem (C7 — mirrors the `configStore` isolation convention above).
+private func fakeGrokConfigSource(contextWindows: [String: Int]) -> GrokConfigSource {
+    let entries = contextWindows.map { id, window in
+        "\"\(id)\":{\"info\":{\"id\":\"\(id)\",\"context_window\":\(window)}}"
+    }.joined(separator: ",")
+    let raw = "{\"models\":{\(entries)}}"
+    return GrokConfigSource(
+        readFile: { path in
+            guard path.hasSuffix("models_cache.json") else { throw CocoaError(.fileReadNoSuchFile) }
+            return raw
+        },
+        statMtime: { path in
+            guard path.hasSuffix("models_cache.json") else { throw CocoaError(.fileReadNoSuchFile) }
+            return Date(timeIntervalSince1970: 1)
+        },
+        grokHome: "/nonexistent-grok-home-for-test"
+    )
 }

@@ -28,6 +28,9 @@ public actor GrokSessionBridge {
     /// Loopback attach_file/share_document gateway (default shared; tests inject a no-socket
     /// fake — see `GrokAttachGatewayProviding`).
     private let attachGateway: any GrokAttachGatewayProviding
+    /// Model catalog / context-window source (C7; default shared; tests inject a fake so the
+    /// usage-panel lookup never touches the real `~/.grok/models_cache.json`).
+    private let configSource: GrokConfigSource
 
     init(
         makeClient: @escaping @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?, _ mcpServers: [AcpMcpServerConfig]) throws -> GrokAcpClient = { config, onPermission, mcpServers in
@@ -52,7 +55,8 @@ public actor GrokSessionBridge {
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
         configStore: ConfigStore = .shared,
-        attachGateway: any GrokAttachGatewayProviding = GrokAttachGateway.shared
+        attachGateway: any GrokAttachGatewayProviding = GrokAttachGateway.shared,
+        configSource: GrokConfigSource = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
@@ -60,6 +64,7 @@ public actor GrokSessionBridge {
         self.store = store
         self.configStore = configStore
         self.attachGateway = attachGateway
+        self.configSource = configSource
     }
 
     /// Session persistence (default shared; tests inject a temp-file store).
@@ -236,9 +241,24 @@ public actor GrokSessionBridge {
         let (tools, agents) = statsBox.withLock { ($0.toolsSnapshot(), $0.agentsSnapshot()) }
         // W16-g: turn boundary for tool threads.
         await ToolActivityHost.shared.resetTurn(channelId: channelId)
+        // C7: model → this session's bound model, else the response's own modelId, else the
+        // catalog default (TS acpSession.ts:387 `this.model.length > 0 ? this.model : result?.modelId
+        // ?? grokConfigSource.defaultModel()`).
+        let (rawTotalTokens, resultModelId) = grokContextUsageInputs(fromPromptResult: promptResult)
+        let sessionModel = (config?.model).flatMap { $0.isEmpty ? nil : $0 }
+        let model: String
+        if let sessionModel {
+            model = sessionModel
+        } else if let resultModelId {
+            model = resultModelId
+        } else {
+            model = await configSource.defaultModel()
+        }
+        let maxTokens = await configSource.contextWindow(model)
         return TurnResult(
             text: textOut,
             usage: turnUsage(fromGrokPromptResult: promptResult),
+            contextUsage: grokContextUsage(totalTokens: rawTotalTokens, model: model, maxTokens: maxTokens),
             tools: tools,
             agents: agents
         )
