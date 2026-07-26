@@ -92,8 +92,8 @@ private func makeWizard(
 
 /// Confirm folder (root) and land on backend — no presets (R6).
 @discardableResult
-private func pastFolder(_ w: ChannelWizard) -> WizardStep {
-    w.handle(WizardInput(id: "dir:here"))
+private func pastFolder(_ w: ChannelWizard) async -> WizardStep {
+    await w.handle(WizardInput(id: "dir:here"))
 }
 
 private let SAMPLE_PRESETS: [Preset] = [
@@ -109,7 +109,7 @@ private let SAMPLE_PRESETS: [Preset] = [
 
 private func makeWizardWithPresets(
     presets: [Preset] = SAMPLE_PRESETS,
-    onDelete: ((String) -> Void)? = nil,
+    onDelete: ((String) async -> [Preset])? = nil,
     backendAvailable: ((String) -> Bool)? = nil
 ) throws -> (ChannelWizard, URL) {
     let folderRoot = try makeFolderRoot()
@@ -150,35 +150,35 @@ private func componentIds(_ wizard: ChannelWizard) -> [String] {
 @Suite("ChannelWizard state machine (slice2 folder + button-advance)")
 struct ChannelWizardTests {
 
-    @Test func startsOnFolderThenAdvancesToDone() throws {
+    @Test func startsOnFolderThenAdvancesToDone() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(w.currentStep() == .folder)
 
-        #expect(w.handle(WizardInput(id: "dir:into", value: "project")) == .folder)
+        #expect(await w.handle(WizardInput(id: "dir:into", value: "project")) == .folder)
         #expect(w.browserCwd() == root.appendingPathComponent("project").path)
-        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .backend)
         #expect(w.current().cwd == root.appendingPathComponent("project").path)
 
         // Select change does NOT advance; Next commits.
-        #expect(w.handle(WizardInput(id: "backend", value: "codex")) == .backend)
+        #expect(await w.handle(WizardInput(id: "backend", value: "codex")) == .backend)
         #expect(w.current().backend == .claude)
-        #expect(w.handle(WizardInput(id: "backend.next")) == .model)
+        #expect(await w.handle(WizardInput(id: "backend.next")) == .model)
         #expect(w.current().backend == .codex)
         #expect(w.current().model == "gpt-5.5")
         #expect(w.current().effort == "medium")
         #expect(w.current().permMode == "read-only")
 
-        #expect(w.handle(WizardInput(id: "model", value: "gpt-5.4")) == .model)
-        #expect(w.handle(WizardInput(id: "model.next")) == .effort)
+        #expect(await w.handle(WizardInput(id: "model", value: "gpt-5.4")) == .model)
+        #expect(await w.handle(WizardInput(id: "model.next")) == .effort)
         #expect(w.current().model == "gpt-5.4")
 
-        #expect(w.handle(WizardInput(id: "effort", value: "high")) == .effort)
-        #expect(w.handle(WizardInput(id: "effort.next")) == .perm)
+        #expect(await w.handle(WizardInput(id: "effort", value: "high")) == .effort)
+        #expect(await w.handle(WizardInput(id: "effort.next")) == .perm)
         #expect(w.current().effort == "high")
 
-        #expect(w.handle(WizardInput(id: "perm.mode", value: "workspace-write")) == .perm)
-        #expect(w.handle(WizardInput(id: "perm.start")) == .done)
+        #expect(await w.handle(WizardInput(id: "perm.mode", value: "workspace-write")) == .perm)
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
         #expect(w.current().permMode == "workspace-write")
 
         let p = w.startParams
@@ -192,22 +192,22 @@ struct ChannelWizardTests {
         #expect(p?.channelId == "c1")
     }
 
-    @Test func dirUpOnFolderStep() throws {
+    @Test func dirUpOnFolderStep() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:into", value: "project"))
-        #expect(w.handle(WizardInput(id: "dir:up")) == .folder)
+        await w.handle(WizardInput(id: "dir:into", value: "project"))
+        #expect(await w.handle(WizardInput(id: "dir:up")) == .folder)
         #expect(w.browserCwd() == root.path)
     }
 
-    @Test func keepingDefaultsAndPressingButtonsAdvancesToStart() throws {
+    @Test func keepingDefaultsAndPressingButtonsAdvancesToStart() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        #expect(w.handle(WizardInput(id: "backend.next")) == .model)
-        #expect(w.handle(WizardInput(id: "model.next")) == .effort)
-        #expect(w.handle(WizardInput(id: "effort.next")) == .perm)
-        #expect(w.handle(WizardInput(id: "perm.start")) == .done)
+        await pastFolder(w)
+        #expect(await w.handle(WizardInput(id: "backend.next")) == .model)
+        #expect(await w.handle(WizardInput(id: "model.next")) == .effort)
+        #expect(await w.handle(WizardInput(id: "effort.next")) == .perm)
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
         #expect(w.startParams?.backend == .claude)
         #expect(w.startParams?.model == "opus")
         #expect(w.startParams?.effort == "high")
@@ -215,120 +215,120 @@ struct ChannelWizardTests {
         #expect(w.startParams?.cwd == root.path)
     }
 
-    @Test func skipsEffortWhenBackendOffersNone() throws {
+    @Test func skipsEffortWhenBackendOffersNone() async throws {
         var opts = fakeOptions(backends: [.grok])
         opts.defaults = WizardDefaults(backend: .grok, model: "grok-4", effort: "", permMode: "default")
         let (w, root) = try makeWizard(options: opts)
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        #expect(w.handle(WizardInput(id: "backend.next")) == .model)
-        #expect(w.handle(WizardInput(id: "model.next")) == .perm)
-        #expect(w.handle(WizardInput(id: "perm.start")) == .done)
+        await pastFolder(w)
+        #expect(await w.handle(WizardInput(id: "backend.next")) == .model)
+        #expect(await w.handle(WizardInput(id: "model.next")) == .perm)
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
         #expect(w.startParams?.effort == "")
     }
 
-    @Test func selectChangeUpdatesPendingWithoutAdvancing() throws {
+    @Test func selectChangeUpdatesPendingWithoutAdvancing() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        w.handle(WizardInput(id: "backend", value: "codex"))
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend", value: "codex"))
         #expect(w.currentStep() == .backend)
         #expect(w.current().backend == .claude)
         let codex = selectOptions(w, customId: "backend").first { $0.value == "codex" }
         #expect(codex?.isDefault == true)
     }
 
-    @Test func afterCodexBackendModelAndPermShowCodexCatalog() throws {
+    @Test func afterCodexBackendModelAndPermShowCodexCatalog() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        w.handle(WizardInput(id: "backend", value: "codex"))
-        w.handle(WizardInput(id: "backend.next"))
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend", value: "codex"))
+        await w.handle(WizardInput(id: "backend.next"))
         #expect(selectOptions(w, customId: "model").map(\.value) == ["gpt-5.5", "gpt-5.4"])
-        w.handle(WizardInput(id: "model.next"))
+        await w.handle(WizardInput(id: "model.next"))
         let effortValues = selectOptions(w, customId: "effort").map(\.value)
         #expect(effortValues.contains("minimal"))
         #expect(!effortValues.contains("max"))
-        w.handle(WizardInput(id: "effort.next"))
+        await w.handle(WizardInput(id: "effort.next"))
         #expect(selectOptions(w, customId: "perm.mode").map(\.value) == [
             "read-only", "workspace-write", "danger-full-access",
         ])
     }
 
-    @Test func afterClaudeBackendShowsClaudeCatalog() throws {
+    @Test func afterClaudeBackendShowsClaudeCatalog() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        w.handle(WizardInput(id: "backend.next"))
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend.next"))
         #expect(selectOptions(w, customId: "model").map(\.value) == ["opus", "sonnet"])
-        w.handle(WizardInput(id: "model.next"))
+        await w.handle(WizardInput(id: "model.next"))
         let effortValues = selectOptions(w, customId: "effort").map(\.value)
         #expect(effortValues.contains("max"))
         #expect(!effortValues.contains("minimal"))
-        w.handle(WizardInput(id: "effort.next"))
+        await w.handle(WizardInput(id: "effort.next"))
         let perms = selectOptions(w, customId: "perm.mode").map(\.value)
         #expect(perms.contains("acceptEdits"))
         #expect(!perms.contains("workspace-write"))
     }
 
-    @Test func backFromBackendReturnsToFolder() throws {
+    @Test func backFromBackendReturnsToFolder() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        w.handle(WizardInput(id: "backend", value: "codex"))
-        w.handle(WizardInput(id: "backend.next"))
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend", value: "codex"))
+        await w.handle(WizardInput(id: "backend.next"))
         #expect(w.current().backend == .codex)
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .backend)
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .folder)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .backend)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .folder)
         #expect(w.browserCwd() == root.path)
         // re-confirm folder → backend; committed codex kept from before
-        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .backend)
         #expect(w.current().backend == .codex)
     }
 
-    @Test func backKeepsCommittedSelections() throws {
+    @Test func backKeepsCommittedSelections() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        w.handle(WizardInput(id: "backend", value: "codex"))
-        w.handle(WizardInput(id: "backend.next"))
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend", value: "codex"))
+        await w.handle(WizardInput(id: "backend.next"))
         #expect(w.current().backend == .codex)
-        w.handle(WizardInput(id: "model", value: "gpt-5.4"))
+        await w.handle(WizardInput(id: "model", value: "gpt-5.4"))
         // pending model discarded on back; committed backend kept
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .backend)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .backend)
         #expect(w.current().backend == .codex)
         #expect(w.current().model == "gpt-5.5") // applyBackend default, not pending gpt-5.4
-        #expect(w.handle(WizardInput(id: "backend.next")) == .model)
+        #expect(await w.handle(WizardInput(id: "backend.next")) == .model)
         #expect(w.current().backend == .codex)
     }
 
-    @Test func backOnFirstStepIsNoop() throws {
+    @Test func backOnFirstStepIsNoop() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .folder)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .folder)
     }
 
-    @Test func cancelEndsWizard() throws {
+    @Test func cancelEndsWizard() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(w.handle(WizardInput(id: "cancel")) == .cancelled)
+        #expect(await w.handle(WizardInput(id: "cancel")) == .cancelled)
         #expect(w.startParams == nil)
         #expect(w.render().rows.isEmpty)
     }
 
-    @Test func permBackSkipsEffortWhenEmpty() throws {
+    @Test func permBackSkipsEffortWhenEmpty() async throws {
         var opts = fakeOptions(backends: [.grok])
         opts.defaults = WizardDefaults(backend: .grok, model: "grok-4", effort: "", permMode: "default")
         let (w, root) = try makeWizard(options: opts)
         defer { try? FileManager.default.removeItem(at: root) }
-        pastFolder(w)
-        w.handle(WizardInput(id: "backend.next"))
-        w.handle(WizardInput(id: "model.next"))
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend.next"))
+        await w.handle(WizardInput(id: "model.next"))
         #expect(w.currentStep() == .perm)
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .model)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .model)
     }
 
-    @Test func folderRenderIncludesDirIds() throws {
+    @Test func folderRenderIncludesDirIds() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
         let ids = componentIds(w)
@@ -337,7 +337,7 @@ struct ChannelWizardTests {
         #expect(ids.contains("dir:create"))
         #expect(ids.contains("dir:manual"))
         #expect(ids.contains("cancel"))
-        pastFolder(w)
+        await pastFolder(w)
         let ids2 = componentIds(w)
         #expect(ids2.contains("backend"))
         #expect(ids2.contains("backend.next"))
@@ -394,16 +394,16 @@ struct ChannelWizardTests {
         #expect(w.render().description.contains("1/3"))
     }
 
-    @Test func reconfigureBackOnFirstStepCancels() throws {
+    @Test func reconfigureBackOnFirstStepCancels() async throws {
         let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
         let (w, root) = try makeReconfigureWizard(entry: entry)
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .cancelled)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .cancelled)
         #expect(w.startParams == nil)
         #expect(w.render().description.contains("취소"))
     }
 
-    @Test func reconfigureWalksModelEffortPermThenDone() throws {
+    @Test func reconfigureWalksModelEffortPermThenDone() async throws {
         let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
         let (w, root) = try makeReconfigureWizard(entry: entry)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -414,20 +414,20 @@ struct ChannelWizardTests {
         #expect(w.current().cwd == "/tmp/proj")
         #expect(w.current().backend == .codex)
 
-        #expect(w.handle(WizardInput(id: "model.next")) == .effort)
+        #expect(await w.handle(WizardInput(id: "model.next")) == .effort)
         #expect(componentIds(w).contains("wizard.back"))
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .model)
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .cancelled)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .model)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .cancelled)
     }
 
-    @Test func reconfigureConfirmSetsStartParams() throws {
+    @Test func reconfigureConfirmSetsStartParams() async throws {
         let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
         let (w, root) = try makeReconfigureWizard(entry: entry)
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(w.handle(WizardInput(id: "model", value: "gpt-5.4")) == .model)
-        #expect(w.handle(WizardInput(id: "model.next")) == .effort)
-        #expect(w.handle(WizardInput(id: "effort", value: "high")) == .effort)
-        #expect(w.handle(WizardInput(id: "effort.next")) == .perm)
+        #expect(await w.handle(WizardInput(id: "model", value: "gpt-5.4")) == .model)
+        #expect(await w.handle(WizardInput(id: "model.next")) == .effort)
+        #expect(await w.handle(WizardInput(id: "effort", value: "high")) == .effort)
+        #expect(await w.handle(WizardInput(id: "effort.next")) == .perm)
         // Start button label is reconfigure "전환"
         let permView = w.render()
         let startLabels = permView.rows.flatMap(\.components).compactMap { c -> String? in
@@ -435,7 +435,7 @@ struct ChannelWizardTests {
             return nil
         }
         #expect(startLabels.contains("✅ 전환"))
-        #expect(w.handle(WizardInput(id: "perm.start")) == .done)
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
         let p = w.startParams
         #expect(p?.backend == .codex)
         #expect(p?.model == "gpt-5.4")
@@ -464,17 +464,17 @@ struct ChannelWizardTests {
         #expect(w.currentStep() == .folder)
     }
 
-    @Test func browserGoToUpdatesFolderView() throws {
+    @Test func browserGoToUpdatesFolderView() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("project").path
         #expect(w.browserGoTo(project))
         #expect(w.browserCwd() == project)
-        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .backend)
         #expect(w.current().cwd == project)
     }
 
-    @Test func browserCreateMkdirAndEnter() throws {
+    @Test func browserCreateMkdirAndEnter() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
         switch w.browserCreate("spawned", enter: true) {
@@ -486,7 +486,7 @@ struct ChannelWizardTests {
         }
         // Create/manual do not advance the SM.
         #expect(w.currentStep() == .folder)
-        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .backend)
         #expect(w.current().cwd == root.appendingPathComponent("spawned").path)
     }
 
@@ -573,10 +573,10 @@ struct ChannelWizardTests {
 @Suite("ChannelWizard presets")
 struct ChannelWizardPresetTests {
 
-    @Test func dirHereGoesToPresetWhenPresetsNonEmpty() throws {
+    @Test func dirHereGoesToPresetWhenPresetsNonEmpty() async throws {
         let (w, root) = try makeWizardWithPresets()
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(w.handle(WizardInput(id: "dir:here")) == .preset)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .preset)
         let ids = componentIds(w)
         #expect(ids.contains("preset.pick"))
         #expect(ids.contains("preset.direct"))
@@ -584,19 +584,19 @@ struct ChannelWizardPresetTests {
         #expect(selectOptions(w, customId: "preset.pick").map(\.value) == ["codex-fast", "claude-min"])
     }
 
-    @Test func dirHereGoesToBackendWhenNoPresets() throws {
+    @Test func dirHereGoesToBackendWhenNoPresets() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .backend)
         #expect(!componentIds(w).contains("preset.pick"))
     }
 
-    @Test func pickingPresetSeedsAndStartsImmediately() throws {
+    @Test func pickingPresetSeedsAndStartsImmediately() async throws {
         let (w, root) = try makeWizardWithPresets()
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:into", value: "project"))
-        w.handle(WizardInput(id: "dir:here"))
-        #expect(w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .done)
+        await w.handle(WizardInput(id: "dir:into", value: "project"))
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .done)
         #expect(w.launchedFromPreset() == true)
         #expect(w.startParams?.backend == .codex)
         #expect(w.startParams?.model == "gpt-5.4")
@@ -605,82 +605,85 @@ struct ChannelWizardPresetTests {
         #expect(w.startParams?.cwd == root.appendingPathComponent("project").path)
     }
 
-    @Test func minimalPresetSeedsCatalogDefaults() throws {
+    @Test func minimalPresetSeedsCatalogDefaults() async throws {
         let (w, root) = try makeWizardWithPresets()
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        #expect(w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
         #expect(w.startParams?.backend == .claude)
         #expect(w.startParams?.model == "opus")
         #expect(w.startParams?.effort == "high")
         #expect(w.startParams?.permMode == "default")
     }
 
-    @Test func presetDirectAdvancesToBackendWithoutStart() throws {
+    @Test func presetDirectAdvancesToBackendWithoutStart() async throws {
         let (w, root) = try makeWizardWithPresets()
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        #expect(w.handle(WizardInput(id: "preset.direct")) == .backend)
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.direct")) == .backend)
         #expect(w.launchedFromPreset() == false)
         #expect(w.startParams == nil)
     }
 
-    @Test func deleteModeRemovesPresetAndStaysOnStep() throws {
+    @Test func deleteModeRemovesPresetAndStaysOnStep() async throws {
         var deleted: [String] = []
-        let (w, root) = try makeWizardWithPresets(onDelete: { deleted.append($0) })
+        let (w, root) = try makeWizardWithPresets(onDelete: { name in
+            deleted.append(name)
+            return SAMPLE_PRESETS.filter { $0.name != name }
+        })
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        #expect(w.handle(WizardInput(id: "preset.delete")) == .preset)
-        #expect(w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .preset)
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.delete")) == .preset)
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .preset)
         #expect(deleted == ["codex-fast"])
         #expect(selectOptions(w, customId: "preset.pick").map(\.value) == ["claude-min"])
         #expect(w.startParams == nil)
     }
 
-    @Test func unavailableBackendBlocksStartAndShowsNotice() throws {
+    @Test func unavailableBackendBlocksStartAndShowsNotice() async throws {
         let (w, root) = try makeWizardWithPresets(backendAvailable: { $0 != "codex" })
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        #expect(w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .preset)
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .preset)
         #expect(w.launchedFromPreset() == false)
         #expect(w.startParams == nil)
         #expect(w.render().description.contains("codex"))
-        #expect(w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
         #expect(w.startParams != nil)
     }
 
-    @Test func reenterPresetViaFolderClearsStaleUnavailableNotice() throws {
+    @Test func reenterPresetViaFolderClearsStaleUnavailableNotice() async throws {
         let (w, root) = try makeWizardWithPresets(backendAvailable: { $0 != "codex" })
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        w.handle(WizardInput(id: "preset.pick", value: "codex-fast"))
+        await w.handle(WizardInput(id: "dir:here"))
+        await w.handle(WizardInput(id: "preset.pick", value: "codex-fast"))
         #expect(w.render().description.contains("codex"))
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .folder)
-        #expect(w.handle(WizardInput(id: "dir:here")) == .preset)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .folder)
+        #expect(await w.handle(WizardInput(id: "dir:here")) == .preset)
         #expect(!w.render().description.contains("codex"))
     }
 
-    @Test func deletingLastPresetLeavesButtonsWithoutDropdown() throws {
+    @Test func deletingLastPresetLeavesButtonsWithoutDropdown() async throws {
         let single = [Preset(name: "only", backend: "claude")]
         let (w, root) = try makeWizardWithPresets(presets: single)
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        w.handle(WizardInput(id: "preset.delete"))
-        #expect(w.handle(WizardInput(id: "preset.pick", value: "only")) == .preset)
+        await w.handle(WizardInput(id: "dir:here"))
+        await w.handle(WizardInput(id: "preset.delete"))
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "only")) == .preset)
         let ids = componentIds(w)
         #expect(!ids.contains("preset.pick"))
         #expect(ids.contains("preset.direct"))
         #expect(ids.contains("preset.delete"))
     }
 
-    @Test func wizardBackWalksBackendPresetFolder() throws {
+    @Test func wizardBackWalksBackendPresetFolder() async throws {
         let (w, root) = try makeWizardWithPresets()
         defer { try? FileManager.default.removeItem(at: root) }
-        w.handle(WizardInput(id: "dir:here"))
-        w.handle(WizardInput(id: "preset.direct"))
+        await w.handle(WizardInput(id: "dir:here"))
+        await w.handle(WizardInput(id: "preset.direct"))
         #expect(w.currentStep() == .backend)
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .preset)
-        #expect(w.handle(WizardInput(id: "wizard.back")) == .folder)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .preset)
+        #expect(await w.handle(WizardInput(id: "wizard.back")) == .folder)
     }
 
     @Test func isWizardCustomIdRecognizesPresetIds() {

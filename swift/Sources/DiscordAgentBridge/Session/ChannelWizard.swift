@@ -312,8 +312,9 @@ public final class ChannelWizard: @unchecked Sendable {
     private var pending: Pending = Pending()
     /// Snapshot of saved presets at open; shrinks on delete. Empty → no preset step (R6).
     private var presets: [Preset]
-    /// Side-effect on delete (router persists to ConfigStore). Pure local filter always runs first.
-    private let onDeletePreset: ((String) -> Void)?
+    /// Side-effect on delete (router persists to ConfigStore, returns disk-truth preset list).
+    /// Nil (tests) → local filter fallback.
+    private let onDeletePreset: ((String) async -> [Preset])?
     /// Optional formatter for select option descriptions. Nil → `summarizePreset`.
     private let summarizePresetFn: ((Preset) -> String)?
     /// Whether a preset's backend is still usable. Nil → no availability guard.
@@ -342,7 +343,7 @@ public final class ChannelWizard: @unchecked Sendable {
         options: WizardOptionSource,
         entry: WizardEntry? = nil,
         presets: [Preset] = [],
-        onDeletePreset: ((String) -> Void)? = nil,
+        onDeletePreset: ((String) async -> [Preset])? = nil,
         summarizePreset: ((Preset) -> String)? = nil,
         backendAvailable: ((String) -> Bool)? = nil
     ) {
@@ -394,7 +395,7 @@ public final class ChannelWizard: @unchecked Sendable {
         allowedRoots: [String] = [],
         entry: WizardEntry? = nil,
         presets: [Preset] = [],
-        onDeletePreset: ((String) -> Void)? = nil,
+        onDeletePreset: ((String) async -> [Preset])? = nil,
         summarizePreset: ((Preset) -> String)? = nil,
         backendAvailable: ((String) -> Bool)? = nil
     ) {
@@ -436,7 +437,7 @@ public final class ChannelWizard: @unchecked Sendable {
 
     /// Advance by one select/button input. Unknown ids for the current step are ignored.
     @discardableResult
-    public func handle(_ input: WizardInput) -> WizardStep {
+    public func handle(_ input: WizardInput) async -> WizardStep {
         if input.id == "cancel" {
             step = .cancelled
             return step
@@ -447,7 +448,7 @@ public final class ChannelWizard: @unchecked Sendable {
         }
         switch step {
         case .folder: handleFolder(input)
-        case .preset: handlePreset(input)
+        case .preset: await handlePreset(input)
         case .backend: handleBackend(input)
         case .model: handleModel(input)
         case .effort: handleEffort(input)
@@ -498,7 +499,7 @@ public final class ChannelWizard: @unchecked Sendable {
     }
 
     /// Preset step: pick (launch) / direct (manual backend) / delete-mode toggle.
-    private func handlePreset(_ input: WizardInput) {
+    private func handlePreset(_ input: WizardInput) async {
         // Recompute unavailable notice per interaction (only re-set when a pick is blocked).
         presetUnavailable = nil
         if input.id == "preset.direct" {
@@ -507,8 +508,11 @@ public final class ChannelWizard: @unchecked Sendable {
             presetDeleteMode.toggle()
         } else if input.id == "preset.pick", let name = input.value, !name.isEmpty {
             if presetDeleteMode {
-                presets.removeAll { $0.name == name }
-                onDeletePreset?(name)
+                if let onDeletePreset {
+                    presets = await onDeletePreset(name)
+                } else {
+                    presets.removeAll { $0.name == name }
+                }
                 presetDeleteMode = false
                 return
             }

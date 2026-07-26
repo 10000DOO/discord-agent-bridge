@@ -604,11 +604,8 @@ struct EventHandler: GatewayEventHandler {
                     options: optionSource,
                     presets: serverPresets,
                     onDeletePreset: { name in
-                        Task {
-                            _ = try? await ConfigStore.shared.removeServerPreset(
-                                guildId: guildForPresets, name: name
-                            )
-                        }
+                        _ = try? await ConfigStore.shared.removeServerPreset(guildId: guildForPresets, name: name)
+                        return await ConfigStore.shared.loadServerConfig(guildId: guildForPresets)?.presets ?? []
                     },
                     backendAvailable: { Backend(rawValue: $0) != nil }
                 )
@@ -1384,7 +1381,7 @@ struct EventHandler: GatewayEventHandler {
         }
 
         let value = comp.values?.first
-        let step = wizard.handle(WizardInput(id: comp.custom_id, value: value))
+        let step = await wizard.handle(WizardInput(id: comp.custom_id, value: value))
 
         switch step {
         case .done:
