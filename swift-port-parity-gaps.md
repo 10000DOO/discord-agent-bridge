@@ -57,7 +57,7 @@
 | H12 | i18n 240개 중 102개만 포팅, 방향 깨짐 | ⏳ 대기 (WO-P32, 마지막) |
 | H13 | ChannelWizard 동시 상호작용 직렬화 큐 없음 | ⏳ 대기 (WO-P26) |
 | H14 | 프리셋 삭제 optimistic 저장 정합성 | ⏳ 대기 (WO-P25) |
-| H15 | DM 구조적 차단 가드 없음 | ⏳ 대기 (WO-P20) |
+| H15 | DM 구조적 차단 가드 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ⏳ 대기 (WO-P27) |
 | H17 | 부팅 안전망 + PID 파일 없음 | ⏳ 대기 (WO-P30) |
 | H18 | config.json 엄격 검증 부족 | ⏳ 대기 (WO-P24) |
@@ -200,7 +200,9 @@
 
 ### DM/커맨드 라우팅
 
-- **H15.** TS는 DM을 구조적으로 완전 차단(`messageRouter.ts:144`)하는데 Swift엔 그 가드가 없어서, `dmPolicy=allow`로 설정하면 `!claude/!codex/!grok/!custom <prompt>` 접두사로 DM에서도 턴을 실행할 수 있음(TS는 어떤 설정으로도 구조적으로 불가능). 기본값은 deny라 기본 설정에선 문제없음.
+- **H15. [구현됨: `Session/SessionRegistry.swift:66` `routeDecision(...)` `isDM` 파라미터, `dab/DabMain.swift:1842` 호출부 배선]** TS는 DM을 구조적으로 완전 차단(`messageRouter.ts:144`)하는데 Swift엔 그 가드가 없어서, `dmPolicy=allow`로 설정하면 `!claude/!codex/!grok/!custom <prompt>` 접두사로 DM에서도 턴을 실행할 수 있음(TS는 어떤 설정으로도 구조적으로 불가능). 기본값은 deny라 기본 설정에선 문제없음.
+  - **구현(3안 중 옵션 1 사용자 확정)**: `routeDecision`(콘텐츠/바인딩만 보는 순수 함수, 유닛테스트 지점)에 `isDM: Bool = false` 파라미터를 추가해 함수 맨 첫 줄에서 무조건 `.ignore`를 반환하도록 함 — TS의 "guildId 없으면 그 무엇보다 먼저 리턴"과 실행 순서까지 동일. 옵션 2(`guildId: String = "dm"` 매직 문자열 센티널, 이 파일에 이미 있는 관행 재사용)는 순수 함수에 디스코드 어휘를 끌어들이는 매직 문자열 비교가 생겨 기각. 옵션 3(`DabMain.swift`의 `onMessageCreate` 안에 직접 가드 추가, TS 위치와 가장 유사)은 그 파일이 유닛테스트 안 붙는 실행 타겟이라 회귀 검증이 안 돼 기각. 디폴트값 `false`라 기존 호출부/테스트 전부 무변경, `Authorizer`/`dmPolicy` 게이트는 건드리지 않음(이 가드가 그보다 먼저 실행되는 별개의 구조적 차단).
+  - 유닛 테스트 3건 신규(`SessionRoutingTests.swift` `RouteDecisionTests` 스위트): `dmIgnoresPrefixCommand`(DM에서 `!claude`/`!custom` 접두사 무시), `dmIgnoresBoundChannelPlainText`(바인딩된 채널이어도 DM이면 무시), `dmIgnoresEvenEmptyPromptPrefix`(DM이 아니면 `.usage`가 될 빈 프롬프트도 DM이면 그냥 무시). 최종 확인: `swift build --package-path swift` 성공(`dab` 타겟도 같은 빌드에서 링크), `swift test --filter RouteDecisionTests` 7건 전부 통과(0.001초, 기존 4건 회귀 없음).
 - **H16.** 슬래시 커맨드 등록이 서버별 즉시 등록(TS)에서 전역 등록(Swift, 최대 1시간 전파 지연)으로 바뀌고, 신규 서버 가입 시 재등록도 안 함.
 
 ---
@@ -270,7 +272,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 순서 | WO | 충족 | 대상 파일(주 파일) | 비고 |
 |---|---|---|---|---|
 | 19 | WO-P19: headless 브라우저 네트워크 차단 [보안] [완료: 1장 H4 참고] | H4 | `BrowserImageRenderer.swift` | 독립, 보안 최우선 |
-| 20 | WO-P20: DM 구조적 차단 가드 | H15 | `dab/DabMain.swift`(메시지 라우팅) | 독립 |
+| 20 | WO-P20: DM 구조적 차단 가드 [완료: 2장 H15 참고] | H15 | `Session/SessionRegistry.swift`, `dab/DabMain.swift`(메시지 라우팅) | 독립 |
 | 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift` | 같은 권한 UI 묶음 |
 | 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
 | 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 | H19 | `ConfigResolver.swift` | 독립 |

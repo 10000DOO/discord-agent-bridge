@@ -1839,7 +1839,7 @@ struct EventHandler: GatewayEventHandler {
         let channelId = payload.channel_id.rawValue
         let binding = await SessionRegistry.shared.binding(channelId: channelId)
         let hasAttachments = !payload.attachments.isEmpty
-        switch routeDecision(content: payload.content, binding: binding, hasAttachments: hasAttachments) {
+        switch routeDecision(content: payload.content, binding: binding, hasAttachments: hasAttachments, isDM: payload.guild_id == nil) {
         case .ignore:
             return
         case .usage(let label):

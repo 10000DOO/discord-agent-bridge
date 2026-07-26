@@ -51,6 +51,21 @@ struct RouteDecisionTests {
         #expect(routeDecision(content: "hello", binding: nil) == .ignore)
         #expect(routeDecision(content: "   ", binding: SessionConfig(backend: .codex)) == .ignore) // empty after trim
     }
+
+    // H15: TS `messageRouter.ts:144` ignores DMs unconditionally, before any prefix/binding logic
+    // runs (independent of dmPolicy). isDM must win over every other branch below.
+    @Test func dmIgnoresPrefixCommand() {
+        #expect(routeDecision(content: "!claude hi", binding: nil, isDM: true) == .ignore)
+        #expect(routeDecision(content: "!custom kimi", binding: nil, isDM: true) == .ignore)
+    }
+
+    @Test func dmIgnoresBoundChannelPlainText() {
+        #expect(routeDecision(content: "hello there", binding: SessionConfig(backend: .grok), isDM: true) == .ignore)
+    }
+
+    @Test func dmIgnoresEvenEmptyPromptPrefix() {
+        #expect(routeDecision(content: "!claude ", binding: nil, isDM: true) == .ignore) // would be .usage if not DM
+    }
 }
 
 @Suite("boot session restore (T9)")

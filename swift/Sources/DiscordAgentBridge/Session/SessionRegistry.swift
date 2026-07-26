@@ -63,7 +63,10 @@ public enum RouteDecision: Sendable, Equatable {
 
 /// Explicit prefixes win (one-off override); otherwise a bound channel routes plain text; else ignore.
 /// `hasAttachments`: empty body + files still routes on a bound channel (G-P0-01).
-public func routeDecision(content: String, binding: SessionConfig?, hasAttachments: Bool = false) -> RouteDecision {
+/// `isDM`: TS `messageRouter.ts:144` mirror (H15) — DMs (no guildId) are ignored unconditionally,
+/// before prefix/binding logic runs, regardless of dmPolicy (that's a separate, later gate).
+public func routeDecision(content: String, binding: SessionConfig?, hasAttachments: Bool = false, isDM: Bool = false) -> RouteDecision {
+    if isDM { return .ignore }
     func strip(_ prefix: String) -> String? {
         guard content.hasPrefix(prefix) else { return nil }
         return String(content.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
