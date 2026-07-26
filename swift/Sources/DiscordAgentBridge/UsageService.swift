@@ -1,9 +1,11 @@
 import Foundation
 
 // Claude usage/limits poller (TS `src/core/usageService.ts`) + Grok weekly-limit poller
-// (TS `src/modes/grok/usageService.ts`). Claude: Anthropic OAuth (file + Keychain).
+// (TS `src/modes/grok/usageService.ts`) + Codex rate-limits poller
+// (TS `src/modes/codex/usageService.ts`). Claude: Anthropic OAuth (file + Keychain).
 // Grok: `~/.grok/auth.json` bearer → cli-chat-proxy billing (sevenDay only).
-// NEVER throws into callers. Codex → `codexUsageUnavailable()`.
+// Codex: short-lived `codex app-server` → `account/rateLimits/read`.
+// NEVER throws into callers. Structural Codex fallback → `codexUsageUnavailable()`.
 
 // MARK: - Public snapshot shapes
 
@@ -64,7 +66,8 @@ public enum UsageResult: Sendable, Equatable {
     }
 }
 
-/// Codex usage is structurally unsupported (no limits API in CLI).
+/// Structural fallback when no Codex usage provider is wired (TS wiring.ts).
+/// Live path uses `CodexUsageService` (app-server rate limits); soft-fail → `no-credentials`.
 public func codexUsageUnavailable() -> UsageResult {
     .unavailable(UsageUnavailable(reason: .codexUnsupported))
 }
@@ -550,10 +553,157 @@ public actor GrokUsageService {
     }
 }
 
-// MARK: - Backend usage routing (W11-g)
+// MARK: - Codex rate limits (TS modes/codex/usageService.ts)
+
+/// Injectable one-shot for tests (avoids spawning a real `codex app-server`).
+public typealias CodexRateLimitsRequestFn = @Sendable () async throws -> JSONValue
+
+/// Codex account rate-limit poller via `account/rateLimits/read` on a short-lived
+/// app-server. Same never-throw cache contract as Claude/Grok. Maps primary/secondary
+/// windows by duration: under 24h → fiveHour, else sevenDay (weekly often 10080 mins).
+public actor CodexUsageService {
+    public static let shared = CodexUsageService()
+
+    private let cacheMs: Double
+    private let nowMs: @Sendable () -> Double
+    private let log: @Sendable (String) -> Void
+    private let requestRateLimits: CodexRateLimitsRequestFn
+
+    private var cached: UsageSnapshot?
+
+    public init(
+        cacheSec: Double = 15,
+        codexCommand: String? = nil,
+        codexHome: String? = nil,
+        requestRateLimits: CodexRateLimitsRequestFn? = nil,
+        nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
+        log: @escaping @Sendable (String) -> Void = { msg in fputs("dab codex usage: \(msg)\n", stderr) }
+    ) {
+        self.cacheMs = max(0, cacheSec) * 1000
+        self.nowMs = nowMs
+        self.log = log
+        if let requestRateLimits {
+            self.requestRateLimits = requestRateLimits
+        } else {
+            let cmd = codexCommand
+            // Expand ~ so CODEX_HOME is a real path (literal "~/.codex" makes app-server exit 1).
+            let home = resolveCodexHome(codexHome)
+            self.requestRateLimits = {
+                try await defaultRequestCodexRateLimits(codexCommand: cmd, codexHome: home)
+            }
+        }
+    }
+
+    /// Always true — fetch soft-fails to unavailable (TS CodexUsageService.isAvailable).
+    public func isAvailable() -> Bool { true }
+
+    /// Serve cache within TTL; else fetch. NEVER throws.
+    public func getUsage() async -> UsageResult {
+        let t = nowMs()
+        if let cached, t - cached.fetchedAt < cacheMs {
+            return .snapshot(cached)
+        }
+        do {
+            let raw = try await requestRateLimits()
+            if let snap = codexRateLimitsToSnapshot(raw, fetchedAt: nowMs()) {
+                cached = snap
+                return .snapshot(snap)
+            }
+        } catch {
+            log("codex rateLimits fetch failed: \(error)")
+        }
+        if let cached { return .snapshot(cached) }
+        return .unavailable(UsageUnavailable(reason: .noCredentials))
+    }
+}
+
+/// Spawn short-lived app-server, `initialize`, then `account/rateLimits/read`.
+private func defaultRequestCodexRateLimits(
+    codexCommand: String?,
+    codexHome: String
+) async throws -> JSONValue {
+    let client = try CodexAppServerClient(
+        codexHome: codexHome,
+        codexCommand: codexCommand
+    )
+    do {
+        _ = try await client.initialize()
+        let result = try await client.request(method: "account/rateLimits/read", params: .object([:]))
+        await client.close()
+        return result
+    } catch {
+        await client.close()
+        throw error
+    }
+}
+
+/// Map app-server rate-limit payload → `UsageSnapshot`.
+/// Accepts `{ rateLimits: {...} }` or the snapshot object itself.
+func codexRateLimitsToSnapshot(_ raw: JSONValue, fetchedAt: Double) -> UsageSnapshot? {
+    guard case .object(let root) = raw else { return nil }
+    let snap: [String: JSONValue]
+    if case .object(let nested) = root["rateLimits"] {
+        snap = nested
+    } else {
+        snap = root
+    }
+
+    let primary = codexAsWindow(snap["primary"])
+    let secondary = codexAsWindow(snap["secondary"])
+    if primary == nil && secondary == nil { return nil }
+
+    var out = UsageSnapshot(fetchedAt: fetchedAt)
+    // Assign by window length: long → weekly, short → fiveHour.
+    for w in [primary, secondary] {
+        guard let w else { continue }
+        let limit = UsageLimit(
+            utilization: w.usedPercent,
+            resetsAt: w.resetsAt.map(isoFromUnixSeconds)
+        )
+        if let mins = w.windowDurationMins, mins < 24 * 60 {
+            if out.fiveHour == nil { out.fiveHour = limit }
+            else if out.sevenDay == nil { out.sevenDay = limit }
+        } else {
+            // Default / weekly (incl. 10080 mins)
+            if out.sevenDay == nil { out.sevenDay = limit }
+            else if out.fiveHour == nil { out.fiveHour = limit }
+        }
+    }
+    // Primary with no duration → treat as weekly.
+    if out.sevenDay == nil && out.fiveHour == nil, let primary {
+        out.sevenDay = UsageLimit(
+            utilization: primary.usedPercent,
+            resetsAt: primary.resetsAt.map(isoFromUnixSeconds)
+        )
+    }
+    if out.sevenDay == nil && out.fiveHour == nil { return nil }
+    return out
+}
+
+private struct CodexRateWindow {
+    var usedPercent: Double
+    var windowDurationMins: Double?
+    var resetsAt: Double? // unix seconds
+}
+
+private func codexAsWindow(_ raw: JSONValue?) -> CodexRateWindow? {
+    guard let raw, case .object(let o) = raw else { return nil }
+    guard let used = o["usedPercent"]?.numberValue, used.isFinite else { return nil }
+    return CodexRateWindow(
+        usedPercent: used,
+        windowDurationMins: o["windowDurationMins"]?.numberValue,
+        resetsAt: o["resetsAt"]?.numberValue
+    )
+}
+
+private func isoFromUnixSeconds(_ sec: Double) -> String {
+    ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: sec))
+}
+
+// MARK: - Backend usage routing (W11-g / G-P1-09)
 
 /// Fresh usage for a backend. Claude/custom → Claude OAuth; grok → Grok weekly;
-/// codex → structural unavailable.
+/// codex → app-server rate limits (soft-fail → no-credentials).
 public func getUsageForBackend(_ backend: Backend) async -> UsageResult {
     switch backend {
     case .claude, .custom:
@@ -561,6 +711,6 @@ public func getUsageForBackend(_ backend: Backend) async -> UsageResult {
     case .grok:
         return await GrokUsageService.shared.getUsage()
     case .codex:
-        return codexUsageUnavailable()
+        return await CodexUsageService.shared.getUsage()
     }
 }

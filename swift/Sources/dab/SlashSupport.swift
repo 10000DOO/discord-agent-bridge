@@ -315,7 +315,7 @@ func postStatusNotification(
         case .grok:
             return { await GrokUsageService.shared.getUsage() }
         case .codex:
-            return { codexUsageUnavailable() }
+            return { await CodexUsageService.shared.getUsage() }
         }
     }()
     let notifier = SessionNotifier(

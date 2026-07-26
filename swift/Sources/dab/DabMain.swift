@@ -526,7 +526,7 @@ struct EventHandler: GatewayEventHandler {
                 let content =
                     "**활성 세션** (\(count))\n" + lines.joined(separator: "\n")
                     + "\n**버전** `\(readAppVersion())`\(dismissed)"
-                // W11-g slice2/3: Claude OAuth + Grok weekly embeds when credentials exist.
+                // W11-g + G-P1-09: Claude OAuth + Grok weekly + Codex rate-limit embeds.
                 var embeds: [Embed] = []
                 let claudeUsage = await ClaudeUsageService.shared.getUsage()
                 if let spec = buildUsageEmbed(usage: claudeUsage, ctxUsage: nil) {
@@ -534,6 +534,14 @@ struct EventHandler: GatewayEventHandler {
                 }
                 let grokUsage = await GrokUsageService.shared.getUsage()
                 if let spec = buildUsageEmbed(usage: grokUsage, ctxUsage: nil) {
+                    embeds.append(discordEmbed(from: spec))
+                }
+                let codexUsage = await CodexUsageService.shared.getUsage()
+                if let spec = buildUsageEmbed(
+                    usage: codexUsage,
+                    ctxUsage: nil,
+                    extras: UsageEmbedExtras(title: "Codex 사용량")
+                ) {
                     embeds.append(discordEmbed(from: spec))
                 }
                 if embeds.isEmpty {
@@ -1835,7 +1843,7 @@ struct EventHandler: GatewayEventHandler {
                 case .grok:
                     usageSnap = await GrokUsageService.shared.getUsage()
                 case .codex:
-                    usageSnap = nil
+                    usageSnap = await CodexUsageService.shared.getUsage()
                 }
                 let usageTitle: String
                 switch backend {

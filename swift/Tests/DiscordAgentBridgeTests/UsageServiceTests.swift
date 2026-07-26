@@ -560,3 +560,204 @@ struct GrokUsageServiceTests {
         #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
     }
 }
+
+// MARK: - CodexUsageService (G-P1-09)
+
+/// Build a rateLimits payload like app-server `account/rateLimits/read`.
+private func codexRateLimitsBody(
+    primaryUsed: Double = 42,
+    primaryMins: Double = 10080,
+    primaryResets: Double? = 1_800_000_000,
+    secondaryUsed: Double? = 10,
+    secondaryMins: Double? = 300,
+    secondaryResets: Double? = 1_700_000_000,
+    wrapInRateLimits: Bool = true
+) -> JSONValue {
+    var snap: [String: JSONValue] = [
+        "primary": .object([
+            "usedPercent": .number(primaryUsed),
+            "windowDurationMins": .number(primaryMins),
+        ].merging(primaryResets.map { ["resetsAt": .number($0)] } ?? [:]) { _, n in n }),
+    ]
+    if let secondaryUsed {
+        var sec: [String: JSONValue] = [
+            "usedPercent": .number(secondaryUsed),
+        ]
+        if let secondaryMins { sec["windowDurationMins"] = .number(secondaryMins) }
+        if let secondaryResets { sec["resetsAt"] = .number(secondaryResets) }
+        snap["secondary"] = .object(sec)
+    }
+    if wrapInRateLimits {
+        return .object(["rateLimits": .object(snap)])
+    }
+    return .object(snap)
+}
+
+@Suite("CodexUsageService")
+struct CodexUsageServiceTests {
+    @Test func mapsPrimaryWeeklyAndSecondaryFiveHour() async {
+        let clock: Double = 1_000_000
+        let raw = codexRateLimitsBody(
+            primaryUsed: 55,
+            primaryMins: 10080,
+            primaryResets: 1_800_000_000,
+            secondaryUsed: 12,
+            secondaryMins: 300,
+            secondaryResets: 1_700_000_000
+        )
+        let svc = CodexUsageService(
+            cacheSec: 15,
+            requestRateLimits: { raw },
+            nowMs: { clock },
+            log: { _ in }
+        )
+        let result = await svc.getUsage()
+        guard case .snapshot(let snap) = result else {
+            Issue.record("expected snapshot")
+            return
+        }
+        #expect(snap.sevenDay?.utilization == 55)
+        #expect(snap.fiveHour?.utilization == 12)
+        #expect(snap.sevenDay?.resetsAt == ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_800_000_000)))
+        #expect(snap.fiveHour?.resetsAt == ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_700_000_000)))
+        #expect(snap.fetchedAt == clock)
+        #expect(await svc.isAvailable() == true)
+    }
+
+    @Test func acceptsUnwrappedSnapshotShape() async {
+        let raw = codexRateLimitsBody(
+            primaryUsed: 7,
+            primaryMins: 10080,
+            primaryResets: nil,
+            secondaryUsed: nil,
+            wrapInRateLimits: false
+        )
+        let svc = CodexUsageService(
+            requestRateLimits: { raw },
+            nowMs: { 2_000_000 },
+            log: { _ in }
+        )
+        let result = await svc.getUsage()
+        if case .snapshot(let snap) = result {
+            #expect(snap.sevenDay?.utilization == 7)
+            #expect(snap.fiveHour == nil)
+            #expect(snap.sevenDay?.resetsAt == nil)
+        } else {
+            Issue.record("expected snapshot from unwrapped payload")
+        }
+    }
+
+    @Test func shortWindowAloneBecomesFiveHour() async {
+        let raw = codexRateLimitsBody(
+            primaryUsed: 33,
+            primaryMins: 300,
+            primaryResets: nil,
+            secondaryUsed: nil
+        )
+        let svc = CodexUsageService(
+            requestRateLimits: { raw },
+            nowMs: { 1 },
+            log: { _ in }
+        )
+        let result = await svc.getUsage()
+        if case .snapshot(let snap) = result {
+            #expect(snap.fiveHour?.utilization == 33)
+            #expect(snap.sevenDay == nil)
+        } else {
+            Issue.record("expected fiveHour-only snapshot")
+        }
+    }
+
+    @Test func emptyOrBadShapeUnavailable() async {
+        let svc = CodexUsageService(
+            requestRateLimits: { .object([:]) },
+            nowMs: { 1 },
+            log: { _ in }
+        )
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+    }
+
+    @Test func fetchErrorSoftFailsToNoCredentials() async {
+        struct Boom: Error {}
+        let logBox = LockedBox<[String]>([])
+        let svc = CodexUsageService(
+            requestRateLimits: { throw Boom() },
+            nowMs: { 1 },
+            log: { msg in logBox.withLock { $0.append(msg) } }
+        )
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+        let lines = logBox.withLock { $0 }
+        #expect(lines.contains { $0.contains("rateLimits") })
+    }
+
+    @Test func servesCacheWithinTTL() async {
+        let clock = ClockBox(1_000_000)
+        let callCount = LockedBox(0)
+        let svc = CodexUsageService(
+            cacheSec: 15,
+            requestRateLimits: {
+                let n = callCount.withLock { c -> Int in
+                    c += 1
+                    return c
+                }
+                return codexRateLimitsBody(primaryUsed: Double(n * 10), secondaryUsed: nil)
+            },
+            nowMs: { clock.ms },
+            log: { _ in }
+        )
+        let first = await svc.getUsage()
+        if case .snapshot(let s) = first { #expect(s.sevenDay?.utilization == 10) }
+        else { Issue.record("first fetch failed") }
+
+        clock.ms += 5_000
+        let second = await svc.getUsage()
+        if case .snapshot(let s) = second { #expect(s.sevenDay?.utilization == 10) }
+        #expect(callCount.withLock { $0 } == 1)
+
+        clock.ms += 11_000
+        let third = await svc.getUsage()
+        if case .snapshot(let s) = third { #expect(s.sevenDay?.utilization == 20) }
+        #expect(callCount.withLock { $0 } == 2)
+    }
+
+    @Test func returnsLastCacheOnSubsequentFailure() async {
+        let clock = ClockBox(1_000_000)
+        let callCount = LockedBox(0)
+        struct Boom: Error {}
+        let svc = CodexUsageService(
+            cacheSec: 0,
+            requestRateLimits: {
+                let n = callCount.withLock { c -> Int in
+                    c += 1
+                    return c
+                }
+                if n == 1 {
+                    return codexRateLimitsBody(primaryUsed: 9, secondaryUsed: nil)
+                }
+                throw Boom()
+            },
+            nowMs: { clock.ms },
+            log: { _ in }
+        )
+        let first = await svc.getUsage()
+        clock.ms += 1
+        let second = await svc.getUsage()
+        #expect(first == second)
+        if case .snapshot(let s) = second {
+            #expect(s.sevenDay?.utilization == 9)
+        } else {
+            Issue.record("expected last-good cache")
+        }
+    }
+
+    @Test func pureMapperHelpers() {
+        let nested = codexRateLimitsBody(primaryUsed: 1, primaryMins: 10080, secondaryUsed: 2, secondaryMins: 60)
+        let snap = codexRateLimitsToSnapshot(nested, fetchedAt: 99)
+        #expect(snap?.sevenDay?.utilization == 1)
+        #expect(snap?.fiveHour?.utilization == 2)
+        #expect(snap?.fetchedAt == 99)
+
+        #expect(codexRateLimitsToSnapshot(.null, fetchedAt: 0) == nil)
+        #expect(codexRateLimitsToSnapshot(.object(["primary": .string("x")]), fetchedAt: 0) == nil)
+    }
+}
