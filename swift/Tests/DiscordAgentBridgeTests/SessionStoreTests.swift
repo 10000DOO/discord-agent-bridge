@@ -280,4 +280,43 @@ struct SessionStoreTests {
         #expect(await s.binding(channelId: "c1")?.createdAt == "CREATED")
         #expect(await s.binding(channelId: "c1")?.cwd == "/b")
     }
+
+    /// G-P0-05: turn-time persistSession must not drop binding-resident projectAuth.
+    @Test func persistSessionCarriesProjectAuth() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        let acl = ProjectAuth(allowedRoleIds: ["r1"], allowedUserIds: ["u1"])
+        try await s.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude,
+                cwd: "/ws",
+                guildId: "g1",
+                permissionProfile: "prof",
+                projectAuth: acl,
+                createdAt: "C0",
+                updatedAt: "T0"
+            )
+        )
+        await persistSession(
+            store: s,
+            backend: .claude,
+            channelId: "c1",
+            guildId: "g1",
+            ownerId: "u1",
+            cwd: "/ws",
+            model: "m",
+            effort: "high",
+            permMode: "default",
+            backendSessionId: "sess-1"
+        )
+        let got = await s.binding(channelId: "c1")
+        #expect(got?.projectAuth == acl)
+        #expect(got?.permissionProfile == "prof")
+        #expect(got?.backendSessionId == "sess-1")
+        #expect(got?.model == "m")
+        #expect(got?.createdAt == "C0")
+    }
 }

@@ -217,6 +217,8 @@ struct EventHandler: GatewayEventHandler {
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
         let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup" || cmd.name == "config" || cmd.name == "update")
             ? .admin : .drive
+        // G-P0-05: per-project ACL from store narrows (nil = no extra gate).
+        let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
                 userId: actorId,
@@ -225,7 +227,8 @@ struct EventHandler: GatewayEventHandler {
                 guildId: payload.guild_id?.rawValue,
                 channelId: channelId,
                 isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
-            )
+            ),
+            projectAuth: projectAuth
         )
         guard decision.allowed else {
             await AuditLog.shared.record(AuditEntry(
@@ -653,6 +656,7 @@ struct EventHandler: GatewayEventHandler {
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
                 userId: actorId,
@@ -661,7 +665,8 @@ struct EventHandler: GatewayEventHandler {
                 guildId: payload.guild_id?.rawValue,
                 channelId: channelId,
                 isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
-            )
+            ),
+            projectAuth: projectAuth
         )
         guard decision.allowed else {
             _ = try? await client.createInteractionResponse(
@@ -752,6 +757,7 @@ struct EventHandler: GatewayEventHandler {
             return
         }
         // Admin gate (same as /config open). Discord Administrator always widens.
+        let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
                 userId: clicker,
@@ -760,7 +766,8 @@ struct EventHandler: GatewayEventHandler {
                 guildId: guildId,
                 channelId: channelId,
                 isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
-            )
+            ),
+            projectAuth: projectAuth
         )
         guard decision.allowed else {
             _ = try? await client.createInteractionResponse(
@@ -1500,6 +1507,8 @@ struct EventHandler: GatewayEventHandler {
         let effort = p.effort.isEmpty ? nil : p.effort
         let perm = p.permMode.isEmpty ? nil : p.permMode
         let bindId = channelId ?? p.channelId
+        // G-P0-05: carry binding-resident projectAuth across REPLACE (TS start()).
+        let existing = await SessionStore.shared.binding(channelId: bindId)
         await SessionRegistry.shared.bind(
             channelId: bindId,
             SessionConfig(backend: p.backend, model: model, effort: effort, permMode: perm)
@@ -1513,7 +1522,11 @@ struct EventHandler: GatewayEventHandler {
             model: model,
             effort: effort,
             permMode: perm,
-            updatedAt: ISO8601DateFormatter().string(from: Date())
+            permissionProfile: existing?.permissionProfile,
+            projectAuth: existing?.projectAuth,
+            createdAt: existing?.createdAt,
+            updatedAt: ISO8601DateFormatter().string(from: Date()),
+            archived: false
         )
         try? await SessionStore.shared.upsert(channelId: bindId, record)
     }
@@ -1557,8 +1570,11 @@ struct EventHandler: GatewayEventHandler {
         // routes (prefix*/bound) converge on (D4). Message path grants NO Administrator promotion
         // (Q2) — the gateway message event does not carry member.permissions, so isAdministrator
         // stays false (fail-secure); only role tiers / dmPolicy apply.
+        // G-P0-05: store projectAuth intersects (narrows only) when present on the binding.
+        let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
-            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: false)
+            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: false),
+            projectAuth: projectAuth
         )
         let tier = decision.tier?.rawValue ?? "none"
         guard decision.allowed else {
@@ -1789,6 +1805,7 @@ struct EventHandler: GatewayEventHandler {
         channelId: String
     ) async throws {
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
                 userId: actorId,
@@ -1797,7 +1814,8 @@ struct EventHandler: GatewayEventHandler {
                 guildId: payload.guild_id?.rawValue,
                 channelId: channelId,
                 isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
-            )
+            ),
+            projectAuth: projectAuth
         )
         guard decision.allowed else {
             _ = try? await client.createInteractionResponse(
@@ -1856,6 +1874,7 @@ func listResumableForBackend(_ backend: Backend, cwd: String) async -> [Resumabl
 /// Bind registry + upsert store with `backendSessionId` on the **current** channel (A4D create residual).
 func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
     // Prefer model/effort/perm from an existing store row when rebinding the same channel.
+    // G-P0-05: carry binding-resident projectAuth across REPLACE (TS resume()).
     let existing = await SessionStore.shared.binding(channelId: params.channelId)
     let model = existing?.model
     let effort = existing?.effort
@@ -1873,7 +1892,11 @@ func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
         model: model,
         effort: effort,
         permMode: perm,
-        updatedAt: ISO8601DateFormatter().string(from: Date())
+        permissionProfile: existing?.permissionProfile,
+        projectAuth: existing?.projectAuth,
+        createdAt: existing?.createdAt,
+        updatedAt: ISO8601DateFormatter().string(from: Date()),
+        archived: existing?.archived ?? false
     )
     try await SessionStore.shared.upsert(channelId: params.channelId, record)
     return ResumeResult(channelId: params.channelId)

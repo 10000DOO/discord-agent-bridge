@@ -8,7 +8,8 @@ import Foundation
 // NARROWS access (intersect). DM traffic (no guild) honors dmPolicy.
 //
 // W15-a: Authorizer reads via ConfigStore (global + server auth layer). loadAuth() is
-// fail-secure; loadServerConfig is null-safe. projectAuth remains a call-arg hook.
+// fail-secure; loadServerConfig is null-safe. projectAuth is a call-arg (DabMain loads
+// SessionStore.binding.projectAuth when present — G-P0-05).
 
 public enum RoleTier: String, Sendable {
     case admin
@@ -72,9 +73,9 @@ public struct AuthResult: Sendable, Equatable {
     }
 }
 
-// Per-project access control carried on a binding (narrows only). R4 hook — DabMain passes
-// nil; real ACL storage/edit lands in W16. Mirrors channelRegistry.ts ProjectAuth.
-// Codable so SessionStore can persist projectAuth on bindings (W15-b).
+// Per-project access control on a channel binding (narrows only). Stored on
+// PersistedSession; DabMain passes SessionStore.binding?.projectAuth into authorize.
+// Codable (W15-b). Wizard edit UI optional; if store has it, it is enforced (G-P0-05).
 public struct ProjectAuth: Codable, Sendable, Equatable {
     public var allowedRoleIds: [String]
     public var allowedUserIds: [String]

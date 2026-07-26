@@ -2,6 +2,9 @@ import Foundation
 
 /// F2: persisting a session must NEVER kill a turn. Build the record, upsert, and swallow+log any
 /// write failure. Shared by the three bridges' turn-time capture (F7).
+///
+/// G-P0-05 / TS sessionOrchestrator: projectAuth (and permissionProfile/archived) are
+/// binding-resident — REPLACE must not drop them when a row already exists.
 func persistSession(
     store: SessionStore,
     backend: Backend,
@@ -14,6 +17,7 @@ func persistSession(
     permMode: String?,
     backendSessionId: String?
 ) async {
+    let existing = await store.binding(channelId: channelId)
     let record = PersistedSession(
         backend: backend,
         backendSessionId: backendSessionId,
@@ -23,7 +27,11 @@ func persistSession(
         model: model,
         effort: effort,
         permMode: permMode,
-        updatedAt: iso8601Now()
+        permissionProfile: existing?.permissionProfile,
+        projectAuth: existing?.projectAuth,
+        createdAt: existing?.createdAt,
+        updatedAt: iso8601Now(),
+        archived: existing?.archived ?? false
     )
     do {
         try await store.upsert(channelId: channelId, record)

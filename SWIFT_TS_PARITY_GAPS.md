@@ -51,7 +51,7 @@
 | **G-P0-02** | `done` | **턴 리액션 ⏳/✅/❌** | `messageRouter.ts` REACT_WORKING/DONE/ERROR · EventBus 완료 시 swap | `DabMain` add/deleteOwn reaction · 수락 시 ⏳ · 성공 ✅ · 실패 ❌ | 턴 수락 시 ⏳ · result ✅ · error ❌ · 권한 실패 best-effort |
 | **G-P0-03** | `done` | **Claude thinking 스트림 렌더** | `streamEmbed` thinking 경로 · `AgentEvent.thinking` | `noteThinking` + purple "생각 중…" · Dab/Grok 배선 | thinking 델타 → stream 임베드(또는 TS 동등 색/제목) · 답변 버퍼와 분리 |
 | **G-P0-04** | `todo` | **`/agent close` 세션 채널 삭제** | `slashCommands.close` + `deleteSessionChannel` (A4D proj 채널, 컨트롤 제외) | stop+unbind만 | close 후 전용 세션 채널 best-effort 삭제 · 컨트롤/상태 채널 보호 |
-| **G-P0-05** | `todo` | **`projectAuth` 인가 배선** | `auth.ts` projectAuth 교집합 · 바인딩 필드 | 타입/영속 가능 · DabMain 항상 nil | 바인딩/store projectAuth를 Authorizer에 전달 · 좁히기만 · 테스트 |
+| **G-P0-05** | `done` | **`projectAuth` 인가 배선** | `auth.ts` projectAuth 교집합 · 바인딩 필드 | DabMain authorize 경로 store.projectAuth 전달 · persist/resume/start REPLACE 보존 · Authorizer+SessionStore 테스트 | 바인딩/store projectAuth를 Authorizer에 전달 · 좁히기만 · 테스트 |
 
 ---
 
@@ -92,12 +92,12 @@
 | 2026-07-26 | G-P0-01 | `feat(swift-port): G-P0-01 메시지 첨부→에이전트 입력` | AttachmentDownload (sanitize/confine/fetch 주입) · DabMain 다운로드 · Claude files · Codex/Grok text hint |
 | 2026-07-26 | G-P0-03 | `feat(swift-port): G-P0-03 Claude thinking 스트림 렌더` | `formatStreamEmbed` phase·thinking · `StreamStatusHost.noteThinking` · Dab/Grok 답변 버퍼 분리 · 단위 테스트 |
 | 2026-07-26 | G-P0-02 | `feat(swift-port): G-P0-02 턴 리액션 ⏳✅❌` | DabMain: 턴 수락 시 ⏳ · 성공 ⏳→✅ · 실패 ⏳→❌ · DiscordBM best-effort |
+| 2026-07-26 | G-P0-05 | `feat(swift-port): G-P0-05 projectAuth 인가 배선` | DabMain authorize←store.projectAuth · persistSession/resume/start 보존 · Authorizer store-row 테스트 |
 
 ---
 
 ## 6. 다음 착수
 
 1. **G-P0-04** close 채널 삭제  
-2. **G-P0-05** projectAuth  
 
 완료 후 PLAN §0 / README 호환 매트릭스에 “패리티 갭 문서” 링크를 건다.

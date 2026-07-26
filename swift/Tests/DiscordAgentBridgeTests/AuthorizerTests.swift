@@ -145,6 +145,47 @@ struct AuthorizerTests {
         #expect(await authz.authorize(input(userId: "u1", roleIds: [EXEC_ROLE], action: .drive), projectAuth: byUser).allowed == true)
     }
 
+    /// G-P0-05: store-shaped ACL → authorize (DabMain loads PersistedSession.projectAuth).
+    @Test func projectAuthFromStoreRowNarrowsAndAdmits() async throws {
+        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        try writeAuthConfig(dir, execute: [EXEC_ROLE])
+        let storeURL = dir.appendingPathComponent("swift-state.json")
+        let store = SessionStore(fileURL: storeURL)
+        let acl = ProjectAuth(allowedRoleIds: ["role-project"], allowedUserIds: ["u-owner"])
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude,
+                cwd: "/ws",
+                guildId: "g1",
+                projectAuth: acl,
+                updatedAt: "t"
+            )
+        )
+        let fromStore = await store.binding(channelId: "c1")?.projectAuth
+        #expect(fromStore == acl)
+        let authz = authorizer(dir)
+        let denied = await authz.authorize(
+            input(userId: "stranger", roleIds: [EXEC_ROLE], action: .drive, channelId: "c1"),
+            projectAuth: fromStore
+        )
+        #expect(denied.allowed == false)
+        #expect(denied.reason?.contains("projectAuth") == true)
+        let admitted = await authz.authorize(
+            input(userId: "u-owner", roleIds: [EXEC_ROLE], action: .drive, channelId: "c1"),
+            projectAuth: fromStore
+        )
+        #expect(admitted.allowed == true)
+        #expect(admitted.tier == .execute)
+    }
+
+    @Test func nilProjectAuthDoesNotNarrow() async throws {
+        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        try writeAuthConfig(dir, execute: [EXEC_ROLE])
+        let r = await authorizer(dir).authorize(input(roleIds: [EXEC_ROLE], action: .drive), projectAuth: nil)
+        #expect(r.allowed == true)
+    }
+
     @Test func dmDeniedByDefault() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeAuthConfig(dir, admin: [ADMIN_ROLE])
