@@ -276,6 +276,29 @@ public actor GrokSessionBridge {
     public func isLive(channelId: String) -> Bool {
         channels[channelId] != nil
     }
+
+    /// G-P1-05: open/resume the Grok ACP session without a user turn. No-op when already live.
+    @discardableResult
+    public func softEnsure(
+        channelId: String,
+        guildId: String,
+        ownerId: String?,
+        config: SessionConfig?
+    ) async -> Bool {
+        if isLive(channelId: channelId) { return true }
+        do {
+            _ = try await ensureChannel(
+                channelId: channelId,
+                config: config,
+                ownerId: ownerId,
+                guildId: guildId
+            )
+            return true
+        } catch {
+            print("dab: grok softEnsure failed channel=\(channelId) error=\(error)")
+            return false
+        }
+    }
 }
 
 /// Whether a permMode auto-approves for Grok (→ `--always-approve`, no permission UI). No bound

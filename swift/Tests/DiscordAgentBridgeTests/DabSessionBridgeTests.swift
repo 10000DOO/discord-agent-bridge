@@ -476,6 +476,41 @@ struct DabSessionBridgeTests {
         #expect(!reqs.withLock { $0 }.contains("start"))
     }
 
+    // G-P1-05: softEnsure resumes without a user turn (no session.send).
+    @Test func softEnsureResumesWithoutTurn() async throws {
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B-soft", cwd: "/x", guildId: "g", updatedAt: "t"
+            )
+        )
+        let reqs = LockedBox<[String]>([])
+        let (bridge, _) = makeDabBridge(store: store, reqCapture: reqs)
+        #expect(await bridge.isLive(channelId: "c") == false)
+        #expect(
+            await bridge.softEnsure(
+                channelId: "c",
+                guildId: "g",
+                ownerId: "o",
+                config: SessionConfig(backend: .claude)
+            ) == true
+        )
+        #expect(await bridge.isLive(channelId: "c") == true)
+        #expect(reqs.withLock { $0 }.contains("resume:B-soft"))
+        #expect(!reqs.withLock { $0 }.contains("start"))
+        // Idempotent when already live.
+        #expect(
+            await bridge.softEnsure(
+                channelId: "c",
+                guildId: "g",
+                ownerId: "o",
+                config: SessionConfig(backend: .claude)
+            ) == true
+        )
+        #expect(reqs.withLock { $0.filter { $0.hasPrefix("resume:") }.count } == 1)
+    }
+
     // T3: start returns null → nothing persisted until the backend_id notify fires (no notify → no record).
     @Test func t3_noRecordWithoutBackendId() async throws {
         let store = freshTempStore()

@@ -499,14 +499,24 @@ struct EventHandler: GatewayEventHandler {
                     )
                 }
             case "resume":
-                // W11-d minimal: re-bind registry from non-archived store row (no wizard).
-                if let cfg = await life.resumeBinding(channelId: channelId) {
+                // G-P1-05: store→registry re-bind + status intro + soft ensure (no full turn).
+                if let session = await life.resumeBinding(channelId: channelId) {
+                    // Ack first (TS cmd.resume.rebound) so soft ensure latency never blocks Discord.
+                    try await respondEphemeral(payload, "이 채널을 다시 연결했어요.")
+                    await postResumeChannelIntro(
+                        client: client,
+                        channelId: channelId,
+                        session: session
+                    )
+                    // Soft reconnect when a backend id exists; otherwise next message starts fresh.
+                    if session.backendSessionId != nil {
+                        _ = await life.softEnsureLive(channelId: channelId)
+                    }
+                } else {
                     try await respondEphemeral(
                         payload,
-                        "저장된 \(cfg.backend.rawValue) 세션을 다시 바인딩했습니다."
+                        "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요."
                     )
-                } else {
-                    try await respondEphemeral(payload, "이 채널에 재개할 세션이 없습니다.")
                 }
             case "stats":
                 let lines = formatStatsLines(bindings: await life.listActiveBindings())
@@ -1061,6 +1071,17 @@ struct EventHandler: GatewayEventHandler {
                     components: []
                 ))
             )
+            // G-P1-05 / TS postResumeIntro: status embed on bound channel + soft ensure.
+            if let session = await SessionStore.shared.binding(channelId: bound) {
+                await postResumeChannelIntro(
+                    client: client,
+                    channelId: bound,
+                    session: session
+                )
+                if session.backendSessionId != nil {
+                    _ = await SessionLifecycle.shared.softEnsureLive(channelId: bound)
+                }
+            }
         case .empty:
             await ResumeWizardRegistry.shared.remove(channelId: channelId)
             _ = try? await client.createInteractionResponse(
@@ -1307,7 +1328,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = await postSessionStatusIntro(
                     client: client,
                     channelId: ChannelSnowflake(bindChannelId),
-                    content: "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
+                    content: sessionStatusIntroContent,
                     embed: statusEmbed
                 )
             } else {
@@ -1983,6 +2004,28 @@ func listResumableForBackend(_ backend: Backend, cwd: String) async -> [Resumabl
         let all = await SessionStore.shared.all()
         return listResumableFromStore(sessions: all, backend: backend, cwd: cwd)
     }
+}
+
+/// G-P1-05 / TS `postResumeIntro`: status embed titled "세션 재개됨" + pin best-effort.
+func postResumeChannelIntro(
+    client: any DiscordClient,
+    channelId: String,
+    session: PersistedSession
+) async {
+    let caps = await resolveSessionCapabilities(backend: session.backend, guildId: session.guildId)
+    let status = SessionStatus(
+        mode: session.backend.rawValue,
+        cwd: session.cwd,
+        sessionId: session.backendSessionId,
+        permMode: session.permMode ?? "default",
+        usagePanel: caps.usagePanel
+    )
+    _ = await postSessionStatusIntro(
+        client: client,
+        channelId: ChannelSnowflake(channelId),
+        content: sessionStatusIntroContent,
+        embed: discordEmbed(from: buildResumeStatusEmbed(status))
+    )
 }
 
 /// Bind registry + upsert store with `backendSessionId` on the **current** channel (A4D create residual).

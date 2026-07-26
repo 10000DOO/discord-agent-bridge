@@ -474,6 +474,29 @@ public actor CodexSessionBridge {
         channels[channelId] != nil
     }
 
+    /// G-P1-05: open/resume the Codex thread without a user turn. No-op when already live.
+    @discardableResult
+    public func softEnsure(
+        channelId: String,
+        guildId: String,
+        ownerId: String?,
+        config: SessionConfig?
+    ) async -> Bool {
+        if isLive(channelId: channelId) { return true }
+        do {
+            _ = try await ensureChannel(
+                channelId: channelId,
+                config: config,
+                ownerId: ownerId,
+                guildId: guildId
+            )
+            return true
+        } catch {
+            print("dab: codex softEnsure failed channel=\(channelId) error=\(error)")
+            return false
+        }
+    }
+
     /// Test/inspection: turn id from the latest `turn/start` (nil when idle).
     public func activeTurnId(channelId: String) -> String? {
         activeTurnIds[channelId]

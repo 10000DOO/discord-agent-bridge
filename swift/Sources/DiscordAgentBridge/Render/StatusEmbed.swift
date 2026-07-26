@@ -52,15 +52,21 @@ public struct SessionStatus: Sendable, Equatable {
     }
 }
 
-/// Korean labels (TS i18n status.* / perm.*).
+/// Korean labels (TS i18n status.* / perm.* / resume.status.title).
 public enum StatusEmbedLabels {
     public static let title = "세션 상태"
+    /// `/agent resume` + resume-wizard intro (TS `resume.status.title`).
+    public static let resumeTitle = "세션 재개됨"
     public static let mode = "모드"
     public static let permMode = "권한 모드"
     public static let cwd = "작업 폴더"
     public static let session = "세션 ID"
     public static let usageCodex = "사용량/한도 정보 없음 (Codex CLI 제한)"
 }
+
+/// Channel intro body under the status embed (TS `cmd.start.intro`).
+public let sessionStatusIntroContent =
+    "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요."
 
 /// Human label for a permMode code (Claude + Codex vocabularies).
 public func permModeLabel(_ perm: String) -> String {
@@ -78,7 +84,10 @@ public func permModeLabel(_ perm: String) -> String {
     }
 }
 
-public func buildStatusEmbed(_ status: SessionStatus) -> StatusEmbedSpec {
+public func buildStatusEmbed(
+    _ status: SessionStatus,
+    title: String = StatusEmbedLabels.title
+) -> StatusEmbedSpec {
     let fields: [StatusEmbedField] = [
         StatusEmbedField(name: StatusEmbedLabels.mode, value: status.mode, inline: true),
         StatusEmbedField(name: StatusEmbedLabels.permMode, value: permModeLabel(status.permMode), inline: true),
@@ -87,11 +96,16 @@ public func buildStatusEmbed(_ status: SessionStatus) -> StatusEmbedSpec {
     ]
     let footer: String? = status.usagePanel ? nil : StatusEmbedLabels.usageCodex
     return StatusEmbedSpec(
-        title: StatusEmbedLabels.title,
+        title: title,
         color: DiscordColors.idle,
         fields: fields,
         footer: footer
     )
+}
+
+/// Status embed for `/agent resume` (TS `postResumeIntro` title override).
+public func buildResumeStatusEmbed(_ status: SessionStatus) -> StatusEmbedSpec {
+    buildStatusEmbed(status, title: StatusEmbedLabels.resumeTitle)
 }
 
 /// usagePanel capability for a backend (TS mode.capabilities.usagePanel defaults).

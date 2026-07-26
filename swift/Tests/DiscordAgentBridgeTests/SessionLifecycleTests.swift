@@ -504,10 +504,13 @@ struct SessionLifecycleTests {
             interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
         )
         #expect(await life.resumeBinding(channelId: "missing") == nil)
-        let cfg = await life.resumeBinding(channelId: "c1")
-        #expect(cfg?.backend == .grok)
-        #expect(cfg?.model == "g1")
+        let row = await life.resumeBinding(channelId: "c1")
+        #expect(row?.backend == .grok)
+        #expect(row?.model == "g1")
+        #expect(row?.cwd == "/x")
+        #expect(row?.backendSessionId == "s1")
         #expect(await reg.binding(channelId: "c1")?.backend == .grok)
+        #expect(await reg.binding(channelId: "c1")?.model == "g1")
     }
 
     @Test func resumeSkipsArchived() async throws {

@@ -317,15 +317,47 @@ public struct SessionLifecycle: Sendable {
         return true
     }
 
-    /// `/agent resume` minimal: re-register registry from a non-archived store row.
-    /// Returns the rebound config, or nil when none.
-    public func resumeBinding(channelId: String) async -> SessionConfig? {
+    /// `/agent resume`: re-register registry from a non-archived store row (G-P1-05).
+    /// Returns the store row (cwd / backendSessionId for intro + soft ensure), or nil when none.
+    public func resumeBinding(channelId: String) async -> PersistedSession? {
         guard let session = await store.binding(channelId: channelId), !session.archived else {
             return nil
         }
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+        return session
+    }
+
+    /// Best-effort: open or resume the backend session **without** a user turn (G-P1-05).
+    /// No-ops when already live or no non-archived store row. Failures stay false (first message retries).
+    @discardableResult
+    public func softEnsureLive(channelId: String) async -> Bool {
+        guard let session = await store.binding(channelId: channelId), !session.archived else {
+            return false
+        }
         let config = sessionConfig(from: session)
-        await registry.bind(channelId: channelId, config)
-        return config
+        switch session.backend {
+        case .claude, .custom:
+            return await DabSessionBridge.shared.softEnsure(
+                channelId: channelId,
+                guildId: session.guildId,
+                ownerId: session.ownerId,
+                config: config
+            )
+        case .codex:
+            return await CodexSessionBridge.shared.softEnsure(
+                channelId: channelId,
+                guildId: session.guildId,
+                ownerId: session.ownerId,
+                config: config
+            )
+        case .grok:
+            return await GrokSessionBridge.shared.softEnsure(
+                channelId: channelId,
+                guildId: session.guildId,
+                ownerId: session.ownerId,
+                config: config
+            )
+        }
     }
 
     /// Active bindings for `/agent stats` (registry ∪ non-archived store; registry wins on model/effort).

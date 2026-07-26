@@ -36,6 +36,21 @@ struct StatusEmbedTests {
         #expect(backendSupportsUsagePanel(.claude))
         #expect(backendSupportsUsagePanel(.grok))
     }
+
+    @Test func resumeStatusTitleOverride() {
+        let status = SessionStatus(
+            mode: "claude",
+            cwd: "/proj",
+            sessionId: "sid-9",
+            permMode: "default",
+            usagePanel: true
+        )
+        let embed = buildResumeStatusEmbed(status)
+        #expect(embed.title == StatusEmbedLabels.resumeTitle)
+        #expect(embed.title == "세션 재개됨")
+        #expect(embed.fields.contains { $0.value == "`sid-9`" })
+        #expect(!sessionStatusIntroContent.isEmpty)
+    }
 }
 
 @Suite("resolveNotifications / formatNotification")

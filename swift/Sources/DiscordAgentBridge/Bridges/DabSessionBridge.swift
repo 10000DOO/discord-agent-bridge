@@ -601,6 +601,32 @@ public actor DabSessionBridge {
     public func isLive(channelId: String) -> Bool {
         sessions[channelId] != nil
     }
+
+    /// G-P1-05: open/resume the Claude session without a user turn. No-op when already live.
+    /// Failures return false (caller keeps the registry bind; next message retries).
+    @discardableResult
+    public func softEnsure(
+        channelId: String,
+        guildId: String,
+        ownerId: String?,
+        config: SessionConfig?
+    ) async -> Bool {
+        if isLive(channelId: channelId) { return true }
+        do {
+            let client = try await ensureClient()
+            _ = try await sessionHandle(
+                client: client,
+                channelId: channelId,
+                guildId: guildId,
+                ownerId: ownerId,
+                config: config
+            )
+            return true
+        } catch {
+            print("dab: softEnsure failed channel=\(channelId) error=\(error)")
+            return false
+        }
+    }
 }
 
 /// Short human hint for the permission button message (e.g. the shell command). Best-effort.
