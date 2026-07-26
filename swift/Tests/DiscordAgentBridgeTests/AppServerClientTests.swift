@@ -318,6 +318,184 @@ struct AppServerClientTests {
         recordTask.cancel()
     }
 
+    @Test func dynamicToolCallRoutesToHandlerAndRespondsSuccess() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let recorded = LockedBox<[JSONValue]>([])
+        let recordTask = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    if let data = line.data(using: .utf8),
+                       let v = try? JSONDecoder().decode(JSONValue.self, from: data)
+                    {
+                        recorded.withLock { $0.append(v) }
+                    }
+                }
+            } catch {}
+        }
+
+        let seenParams = LockedBox<AppServerDynamicToolCallParams?>(nil)
+        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000)
+        client.setDynamicToolCallHandler { params in
+            seenParams.withLock { $0 = params }
+            return AppServerDynamicToolCallResult(success: true, contentItems: [.inputText("Sent a.txt to the channel.")])
+        }
+
+        let callLine = try JSONEncoder().encode(
+            JSONValue.object([
+                "id": .number(42),
+                "method": .string("item/tool/call"),
+                "params": .object([
+                    "tool": .string("attach_file"),
+                    "arguments": .object(["path": .string("a.txt")]),
+                    "callId": .string("call-1"),
+                    "threadId": .string("t1"),
+                    "turnId": .string("u1"),
+                ]),
+            ])
+        )
+        if let s = String(data: callLine, encoding: .utf8) {
+            try await pair.sidecar.writeLine(s + "\n")
+        }
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 42 && o["result"] != nil
+            }
+        })
+
+        #expect(seenParams.withLock { $0 }?.tool == "attach_file")
+        #expect(seenParams.withLock { $0 }?.callId == "call-1")
+        let msgs = recorded.withLock { $0 }
+        let resp = msgs.first { msg in
+            guard case .object(let o) = msg else { return false }
+            return o["id"]?.numberValue == 42
+        }
+        #expect(resp?["result"]?["success"]?.boolValue == true)
+        #expect(resp?["result"]?["contentItems"]?.arrayValue?.first?["text"]?.stringValue == "Sent a.txt to the channel.")
+
+        await client.close()
+        await pair.sidecar.close()
+        recordTask.cancel()
+    }
+
+    @Test func dynamicToolCallWithNoHandlerRespondsNoHandlerText() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let recorded = LockedBox<[JSONValue]>([])
+        let recordTask = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    if let data = line.data(using: .utf8),
+                       let v = try? JSONDecoder().decode(JSONValue.self, from: data)
+                    {
+                        recorded.withLock { $0.append(v) }
+                    }
+                }
+            } catch {}
+        }
+
+        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let callLine = try JSONEncoder().encode(
+            JSONValue.object([
+                "id": .number(1),
+                "method": .string("item/tool/call"),
+                "params": .object([
+                    "tool": .string("attach_file"),
+                    "callId": .string("call-2"),
+                    "threadId": .string("t1"),
+                    "turnId": .string("u1"),
+                ]),
+            ])
+        )
+        if let s = String(data: callLine, encoding: .utf8) {
+            try await pair.sidecar.writeLine(s + "\n")
+        }
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 1 && o["result"] != nil
+            }
+        })
+        let resp = recorded.withLock { $0 }.first { msg in
+            guard case .object(let o) = msg else { return false }
+            return o["id"]?.numberValue == 1
+        }
+        #expect(resp?["result"]?["success"]?.boolValue == false)
+        #expect(resp?["result"]?["contentItems"]?.arrayValue?.first?["text"]?.stringValue?.contains("No handler for dynamic tool") == true)
+
+        await client.close()
+        await pair.sidecar.close()
+        recordTask.cancel()
+    }
+
+    @Test func dynamicToolCallWithMissingCallIdRespondsInvalidParams() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let recorded = LockedBox<[JSONValue]>([])
+        let recordTask = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    if let data = line.data(using: .utf8),
+                       let v = try? JSONDecoder().decode(JSONValue.self, from: data)
+                    {
+                        recorded.withLock { $0.append(v) }
+                    }
+                }
+            } catch {}
+        }
+
+        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000)
+        client.setDynamicToolCallHandler { _ in
+            AppServerDynamicToolCallResult(success: true, contentItems: [.inputText("should not be reached")])
+        }
+        let callLine = try JSONEncoder().encode(
+            JSONValue.object([
+                "id": .number(2),
+                "method": .string("item/tool/call"),
+                "params": .object([
+                    "tool": .string("attach_file"),
+                    "threadId": .string("t1"),
+                    "turnId": .string("u1"),
+                    // callId intentionally missing → invalid params
+                ]),
+            ])
+        )
+        if let s = String(data: callLine, encoding: .utf8) {
+            try await pair.sidecar.writeLine(s + "\n")
+        }
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 2 && o["result"] != nil
+            }
+        })
+        let resp = recorded.withLock { $0 }.first { msg in
+            guard case .object(let o) = msg else { return false }
+            return o["id"]?.numberValue == 2
+        }
+        #expect(resp?["result"]?["success"]?.boolValue == false)
+        #expect(resp?["result"]?["contentItems"]?.arrayValue?.first?["text"]?.stringValue == "Invalid item/tool/call params.")
+
+        await client.close()
+        await pair.sidecar.close()
+        recordTask.cancel()
+    }
+
+    @Test func parseDynamicToolCallParamsHelper() {
+        let valid = JSONValue.object([
+            "tool": .string("attach_file"),
+            "arguments": .object(["path": .string("a.txt")]),
+            "callId": .string("c1"),
+            "threadId": .string("t1"),
+            "turnId": .string("u1"),
+        ])
+        let parsed = parseDynamicToolCallParams(valid)
+        #expect(parsed?.tool == "attach_file")
+        #expect(parsed?.arguments?["path"]?.stringValue == "a.txt")
+
+        #expect(parseDynamicToolCallParams(.object(["tool": .string("attach_file")])) == nil)
+        #expect(parseDynamicToolCallParams(nil) == nil)
+        #expect(parseDynamicToolCallParams(.array([])) == nil)
+    }
+
     @Test func closedClientRejectsRequest() async throws {
         let pair = InMemorySidecarTransport.makePair()
         let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 1_000)

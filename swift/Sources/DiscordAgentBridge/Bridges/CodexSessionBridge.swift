@@ -1,5 +1,47 @@
 import Foundation
 
+/// `attach_file` dynamic tool spec registered on `thread/start` (TS appSession.ts
+/// ATTACH_FILE_DYNAMIC_TOOL, :62-75).
+private let codexAttachFileDynamicTool: JSONValue = .object([
+    "type": .string("function"),
+    "name": .string("attach_file"),
+    "description": .string(
+        "Send a file from the workspace to the Discord channel for this session. Path must be inside the workspace. Create the file first if needed."
+    ),
+    "inputSchema": .object([
+        "type": .string("object"),
+        "properties": .object([
+            "path": .object([
+                "type": .string("string"),
+                "description": .string("Workspace-relative or absolute path inside workspace"),
+            ]),
+            "filename": .object([
+                "type": .string("string"),
+                "description": .string("Optional display name"),
+            ]),
+        ]),
+        "required": .array([.string("path")]),
+    ]),
+])
+
+/// `share_document` dynamic tool spec, PATH-ONLY (D2) — TS appSession.ts
+/// SHARE_DOCUMENT_DYNAMIC_TOOL, :80-91.
+private let codexShareDocumentDynamicTool: JSONValue = .object([
+    "type": .string("function"),
+    "name": .string("share_document"),
+    "description": .string("Post a markdown document from the workspace into a Discord thread."),
+    "inputSchema": .object([
+        "type": .string("object"),
+        "properties": .object([
+            "path": .object([
+                "type": .string("string"),
+                "description": .string("Workspace-relative or absolute path inside workspace"),
+            ]),
+        ]),
+        "required": .array([.string("path")]),
+    ]),
+])
+
 /// Sibling of `DabSessionBridge` for the minimal `!codex` path (W10-c1). Same shape:
 /// per-channel session, per-channel turn serialization, blocking runTurn that accumulates
 /// text until the turn completes (or a timeout fallback), via a continuation.
@@ -22,6 +64,10 @@ public actor CodexSessionBridge {
     private let store: SessionStore
     /// Global config (autoAllowClaudeTools host-side check for Always-Allow).
     private let configStore: ConfigStore
+    /// C3: attach_file / share_document sinks (default shared; tests inject fresh instances
+    /// so they never touch the process-wide singleton, mirroring GrokAttachGateway's own DI).
+    private let fileAttachHost: FileAttachHost
+    private let documentShareHost: DocumentShareHost
 
     init(
         makeClient: @escaping @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient = { onApproval in
@@ -32,13 +78,17 @@ public actor CodexSessionBridge {
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
-        configStore: ConfigStore = .shared
+        configStore: ConfigStore = .shared,
+        fileAttachHost: FileAttachHost = .shared,
+        documentShareHost: DocumentShareHost = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
         self.configStore = configStore
+        self.fileAttachHost = fileAttachHost
+        self.documentShareHost = documentShareHost
     }
 
     /// One-shot resume-failure notice to prepend to the next reply (F5).
@@ -280,6 +330,11 @@ public actor CodexSessionBridge {
             "sandbox": .string(policy.sandbox),
         ]
         if let model = config?.model, !model.isEmpty { startParams["model"] = .string(model) }
+        // C3: attach_file / share_document — FileAttachHost/DocumentShareHost sinks are wired
+        // process-wide at boot (DabMain), so always register (TS registers unconditionally too:
+        // wiring.ts always supplies sendFileFor/shareDocumentFor to the Codex mode factory deps).
+        // No-op on thread/resume (ignored there, same as TS — the handler lives on the client).
+        startParams["dynamicTools"] = .array([codexAttachFileDynamicTool, codexShareDocumentDynamicTool])
 
         let threadId: String
         do {
@@ -310,6 +365,14 @@ public actor CodexSessionBridge {
             throw AppServerError("session stopped")
         }
 
+        // C3: item/tool/call → attach_file / share_document (TS appSession.ts handleDynamicToolCall).
+        // No approval gate — dynamic tools bypass the permission flow entirely, same as TS.
+        client.setDynamicToolCallHandler { [weak self] params in
+            guard let self else {
+                return AppServerDynamicToolCallResult(success: false, contentItems: [.inputText("session closed")])
+            }
+            return await self.handleDynamicToolCall(channelId: channelId, params: params)
+        }
         // Extend the chain *synchronously* in the read-loop callback so arrival order is kept
         // even when work hops onto this actor.
         client.onNotification { [weak self] method, params in
@@ -413,6 +476,99 @@ public actor CodexSessionBridge {
             finishTurnUnlocked(channelId: channelId, result: nil, error: AppServerError(message))
         case .ignore:
             break
+        }
+    }
+
+    // MARK: - Dynamic tool calls (C3: attach_file / share_document)
+
+    /// TS `handleDynamicToolCall` (appSession.ts:369-414). No approval gate — dynamic tools bypass
+    /// the permission flow entirely, same as TS (`item/tool/call` is routed separately from
+    /// `requestApproval` methods in `AppServerClient.handleServerRequest`).
+    private func handleDynamicToolCall(
+        channelId: String,
+        params: AppServerDynamicToolCallParams
+    ) async -> AppServerDynamicToolCallResult {
+        let args = params.arguments?.objectValue ?? [:]
+        let requestedPath = args["path"]?.stringValue ?? ""
+
+        if params.tool == "share_document" {
+            return await handleShareDocumentCall(channelId: channelId, callId: params.callId, requestedPath: requestedPath)
+        }
+
+        let filename = args["filename"]?.stringValue
+        var input: [String: JSONValue] = ["path": .string(requestedPath)]
+        if let filename { input["filename"] = .string(filename) }
+        let toolName = params.tool.isEmpty ? "attach_file" : params.tool
+        noteToolEvent(channelId: channelId, .toolUse(id: params.callId, name: toolName, input: .object(input), parentToolUseId: nil))
+
+        guard params.tool == "attach_file" else {
+            let text = "Unknown dynamic tool: \(params.tool)"
+            noteToolEvent(channelId: channelId, .toolResult(id: params.callId, ok: false, content: text, parentToolUseId: nil))
+            return AppServerDynamicToolCallResult(success: false, contentItems: [.inputText(text)])
+        }
+        guard !requestedPath.isEmpty else {
+            let text = "attach_file requires a path."
+            noteToolEvent(channelId: channelId, .toolResult(id: params.callId, ok: false, content: text, parentToolUseId: nil))
+            return AppServerDynamicToolCallResult(success: false, contentItems: [.inputText(text)])
+        }
+
+        let host = fileAttachHost
+        let result = await attachFileConfined(
+            workspaceRoot: cwd,
+            sendFile: { abs, name in try await host.attach(channelId: channelId, path: abs, name: name) },
+            requestedPath: requestedPath,
+            filename: filename
+        )
+        noteToolEvent(
+            channelId: channelId,
+            .toolResult(id: params.callId, ok: !result.isError, content: result.text, parentToolUseId: nil)
+        )
+        return AppServerDynamicToolCallResult(success: !result.isError, contentItems: [.inputText(result.text)])
+    }
+
+    /// Path-only share (D2): result is a short confirmation, never the document body. Reuses
+    /// `shareResultText` (Grok/AttachGateway.swift, C5) for the rejection-code → English text
+    /// mapping instead of re-porting TS `shareErrorText` a third time.
+    private func handleShareDocumentCall(
+        channelId: String,
+        callId: String,
+        requestedPath: String
+    ) async -> AppServerDynamicToolCallResult {
+        noteToolEvent(
+            channelId: channelId,
+            .toolUse(id: callId, name: "share_document", input: .object(["path": .string(requestedPath)]), parentToolUseId: nil)
+        )
+        guard !requestedPath.isEmpty else {
+            let text = "share_document requires a path."
+            noteToolEvent(channelId: channelId, .toolResult(id: callId, ok: false, content: text, parentToolUseId: nil))
+            return AppServerDynamicToolCallResult(success: false, contentItems: [.inputText(text)])
+        }
+
+        let text: String
+        let isError: Bool
+        do {
+            let result = try await documentShareHost.share(channelId: channelId, path: requestedPath)
+            (text, isError) = shareResultText(result, requestedPath: requestedPath)
+        } catch {
+            text = "Could not share \(requestedPath): unexpected error"
+            isError = true
+        }
+        noteToolEvent(channelId: channelId, .toolResult(id: callId, ok: !isError, content: text, parentToolUseId: nil))
+        return AppServerDynamicToolCallResult(success: !isError, contentItems: [.inputText(text)])
+    }
+
+    /// Feed a synthetic tool_use/tool_result event into this turn's stats + Discord side-effects
+    /// (ToolActivityHost work thread, StreamStatusHost tool count) — the same three effects as the
+    /// tool loop in `onNotification` (W16-g), reused here for dynamic tool calls so attach_file /
+    /// share_document show up in Discord the same way any other Codex tool call does (TS `ctx.emit`).
+    private func noteToolEvent(channelId: String, _ ev: AgentEvent) {
+        guard var box = turns[channelId], !box.done else { return }
+        box.stats.note(ev)
+        turns[channelId] = box
+        let ch = channelId
+        Task { await ToolActivityHost.shared.handle(channelId: ch, event: ev) }
+        if case .toolUse = ev {
+            Task { await StreamStatusHost.shared.noteToolUse(channelId: ch) }
         }
     }
 

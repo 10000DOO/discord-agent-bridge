@@ -14,14 +14,16 @@ private actor GateableCodexServer {
     private let completion: Completion
     private let capture: LockedBox<[String: String]>?   // records thread/start + turn/start params
     private let backendIdCapture: LockedBox<[String]>?  // records "start" / "resume:<threadId>"
+    private let responseCapture: LockedBox<[JSONValue]>?  // C3: client's responses (id+result/error, no method)
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil, backendIdCapture: LockedBox<[String]>? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil, backendIdCapture: LockedBox<[String]>? = nil, responseCapture: LockedBox<[JSONValue]>? = nil) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
         self.completion = completion
         self.capture = capture
         self.backendIdCapture = backendIdCapture
+        self.responseCapture = responseCapture
     }
 
     func run() async {
@@ -32,8 +34,15 @@ private actor GateableCodexServer {
         let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, let data = t.data(using: .utf8),
               let v = try? JSONDecoder().decode(JSONValue.self, from: data),
-              case .object(let msg) = v, let method = msg["method"]?.stringValue, let id = msg["id"]
+              case .object(let msg) = v
         else { return }
+
+        // C3: client's response to a server-initiated request (item/tool/call) — id + result/error, no method.
+        if msg["method"] == nil, msg["id"] != nil, msg["result"] != nil || msg["error"] != nil {
+            responseCapture?.withLock { $0.append(v) }
+            return
+        }
+        guard let method = msg["method"]?.stringValue, let id = msg["id"] else { return }
 
         switch method {
         case "initialize":
@@ -46,6 +55,9 @@ private actor GateableCodexServer {
             if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["threadModel"] = m } }
             if let a = msg["params"]?["approvalPolicy"]?.stringValue { capture?.withLock { $0["approvalPolicy"] = a } }
             if let s = msg["params"]?["sandbox"]?.stringValue { capture?.withLock { $0["sandbox"] = s } }
+            if let names = msg["params"]?["dynamicTools"]?.arrayValue?.compactMap({ $0["name"]?.stringValue }) {
+                capture?.withLock { $0["dynamicTools"] = names.joined(separator: ",") }
+            }
             backendIdCapture?.withLock { $0.append("start") }
             await writeResult(id, .object(["thread": .object(["id": .string("t1")])]))
         case "thread/resume":
@@ -93,6 +105,20 @@ private actor GateableCodexServer {
     private func pushNotification(_ method: String, _ params: JSONValue) async {
         await write(["method": .string(method), "params": params])
     }
+    /// C3 test seam: push a server-initiated `item/tool/call` request to the client.
+    func pushToolCall(id: Int, tool: String, arguments: JSONValue, callId: String, threadId: String, turnId: String) async {
+        await write([
+            "id": .number(Double(id)),
+            "method": .string("item/tool/call"),
+            "params": .object([
+                "tool": .string(tool),
+                "arguments": arguments,
+                "callId": .string(callId),
+                "threadId": .string(threadId),
+                "turnId": .string(turnId),
+            ]),
+        ])
+    }
     private func write(_ obj: [String: JSONValue]) async {
         guard let d = try? JSONEncoder().encode(JSONValue.object(obj)), let s = String(data: d, encoding: .utf8) else { return }
         try? await transport.writeLine(s + "\n")
@@ -108,16 +134,21 @@ private func makeCodexBridge(
     permGate: PermissionGate = .shared,
     onApprovalSpy: LockedBox<[AppServerApprovalHandler?]>? = nil,
     store: SessionStore? = nil,
-    backendIdCapture: LockedBox<[String]>? = nil
+    backendIdCapture: LockedBox<[String]>? = nil,
+    responseCapture: LockedBox<[JSONValue]>? = nil,
+    fileAttachHost: FileAttachHost = FileAttachHost(),
+    documentShareHost: DocumentShareHost = DocumentShareHost(),
+    serverBox: LockedBox<GateableCodexServer?>? = nil
 ) -> (CodexSessionBridge, MadeClients<CodexAppServerClient>) {
     let made = MadeClients<CodexAppServerClient>()
     let bridge = CodexSessionBridge(makeClient: { onApproval in
         onApprovalSpy?.withLock { $0.append(onApproval) }
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture, backendIdCapture: backendIdCapture)
+        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture, backendIdCapture: backendIdCapture, responseCapture: responseCapture)
+        serverBox?.withLock { $0 = server }
         Task { await server.run() }
         return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000, onApproval: onApproval))
-    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore())
+    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore(), fileAttachHost: fileAttachHost, documentShareHost: documentShareHost)
     return (bridge, made)
 }
 
@@ -400,5 +431,147 @@ struct CodexSessionBridgeTests {
     @Test func buildCodexTurnItemsNonImageOnlyStaysSingleTextItem() {
         let items = buildCodexTurnItems(text: "hi", files: [TurnFile(path: "/x/note.txt", mime: "text/plain")])
         #expect(items == [.object(["type": .string("text"), "text": .string("hi\n\nAttached file: /x/note.txt")])])
+    }
+
+    // MARK: - C3: dynamic tools (attach_file / share_document)
+
+    @Test func dynamicToolsRegisteredOnThreadStart() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeCodexBridge(capture: capture)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi")
+        let names = capture.withLock { $0["dynamicTools"] } ?? ""
+        #expect(names.contains("attach_file"))
+        #expect(names.contains("share_document"))
+    }
+
+    @Test func dynamicToolCallAttachFileRoutesToFileAttachHost() async throws {
+        let gate = TurnGate()
+        let serverBox = LockedBox<GateableCodexServer?>(nil)
+        let responseCapture = LockedBox<[JSONValue]>([])
+        let fileAttachHost = FileAttachHost()
+        let calls = LockedBox<[(channelId: String, path: String, name: String?)]>([])
+        await fileAttachHost.setAttachHandler { channelId, path, name in
+            calls.withLock { $0.append((channelId, path, name)) }
+            return "Sent \(name ?? path) to the channel."
+        }
+        let (bridge, _) = makeCodexBridge(gate: gate, responseCapture: responseCapture, fileAttachHost: fileAttachHost, serverBox: serverBox)
+
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "attach please") }
+        await gate.waitReceived(1)   // turn in flight → channel/client/handler are live
+        guard let server = serverBox.withLock({ $0 }) else {
+            Issue.record("server not captured")
+            await gate.release()
+            _ = try await t.value
+            return
+        }
+        await server.pushToolCall(
+            id: 501, tool: "attach_file", arguments: .object(["path": .string("a.txt")]),
+            callId: "call-1", threadId: "t1", turnId: "u1"
+        )
+        #expect(await waitUntil {
+            responseCapture.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 501
+            }
+        })
+        let resp = responseCapture.withLock { $0 }.first { msg in
+            guard case .object(let o) = msg else { return false }
+            return o["id"]?.numberValue == 501
+        }
+        #expect(resp?["result"]?["success"]?.boolValue == true)
+        let recorded = calls.withLock { $0 }
+        #expect(recorded.count == 1)
+        #expect(recorded.first?.channelId == "c")
+        #expect(recorded.first?.path.hasSuffix("/a.txt") == true)   // resolved to an absolute path under cwd
+
+        await gate.release()
+        _ = try await t.value
+    }
+
+    @Test func dynamicToolCallShareDocumentRoutesToDocumentShareHost() async throws {
+        let gate = TurnGate()
+        let serverBox = LockedBox<GateableCodexServer?>(nil)
+        let responseCapture = LockedBox<[JSONValue]>([])
+        let documentShareHost = DocumentShareHost()
+        let calls = LockedBox<[(channelId: String, path: String)]>([])
+        await documentShareHost.setShareHandler { channelId, path in
+            calls.withLock { $0.append((channelId, path)) }
+            return ShareResult(ok: true, threadName: "📄 notes.md", path: "notes.md")
+        }
+        let (bridge, _) = makeCodexBridge(gate: gate, responseCapture: responseCapture, documentShareHost: documentShareHost, serverBox: serverBox)
+
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "share please") }
+        await gate.waitReceived(1)
+        guard let server = serverBox.withLock({ $0 }) else {
+            Issue.record("server not captured")
+            await gate.release()
+            _ = try await t.value
+            return
+        }
+        await server.pushToolCall(
+            id: 502, tool: "share_document", arguments: .object(["path": .string("notes.md")]),
+            callId: "call-2", threadId: "t1", turnId: "u1"
+        )
+        #expect(await waitUntil {
+            responseCapture.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 502
+            }
+        })
+        let resp = responseCapture.withLock { $0 }.first { msg in
+            guard case .object(let o) = msg else { return false }
+            return o["id"]?.numberValue == 502
+        }
+        #expect(resp?["result"]?["success"]?.boolValue == true)
+        #expect(resp?["result"]?["contentItems"]?.arrayValue?.first?["text"]?.stringValue == "Shared \"notes.md\" to thread 📄 notes.md")
+        let recorded = calls.withLock { $0 }
+        #expect(recorded.count == 1)
+        #expect(recorded.first?.channelId == "c")
+        #expect(recorded.first?.path == "notes.md")
+
+        await gate.release()
+        _ = try await t.value
+    }
+
+    @Test func dynamicToolCallAttachFileMissingPathRespondsFailureWithoutCallingHost() async throws {
+        let gate = TurnGate()
+        let serverBox = LockedBox<GateableCodexServer?>(nil)
+        let responseCapture = LockedBox<[JSONValue]>([])
+        let fileAttachHost = FileAttachHost()
+        let called = LockedBox(false)
+        await fileAttachHost.setAttachHandler { _, _, _ in
+            called.withLock { $0 = true }
+            return "should not be reached"
+        }
+        let (bridge, _) = makeCodexBridge(gate: gate, responseCapture: responseCapture, fileAttachHost: fileAttachHost, serverBox: serverBox)
+
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "attach please") }
+        await gate.waitReceived(1)
+        guard let server = serverBox.withLock({ $0 }) else {
+            Issue.record("server not captured")
+            await gate.release()
+            _ = try await t.value
+            return
+        }
+        await server.pushToolCall(
+            id: 503, tool: "attach_file", arguments: .object([:]),
+            callId: "call-3", threadId: "t1", turnId: "u1"
+        )
+        #expect(await waitUntil {
+            responseCapture.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 503
+            }
+        })
+        let resp = responseCapture.withLock { $0 }.first { msg in
+            guard case .object(let o) = msg else { return false }
+            return o["id"]?.numberValue == 503
+        }
+        #expect(resp?["result"]?["success"]?.boolValue == false)
+        #expect(resp?["result"]?["contentItems"]?.arrayValue?.first?["text"]?.stringValue == "attach_file requires a path.")
+        #expect(called.withLock { $0 } == false)
+
+        await gate.release()
+        _ = try await t.value
     }
 }

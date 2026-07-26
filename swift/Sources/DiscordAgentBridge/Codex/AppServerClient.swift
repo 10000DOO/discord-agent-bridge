@@ -38,6 +38,50 @@ public struct AppServerError: Error, Sendable, Equatable, LocalizedError {
     public var errorDescription: String? { message }
 }
 
+// MARK: - Dynamic tool call (attach_file / share_document, `item/tool/call` — C3)
+
+/// Server→client dynamic tool call params. Mirrors TS `DynamicToolCallParams`
+/// (appServerClient.ts:40-47).
+public struct AppServerDynamicToolCallParams: Sendable, Equatable {
+    public var tool: String
+    public var arguments: JSONValue?
+    public var callId: String
+    public var threadId: String
+    public var turnId: String
+    public var namespace: String?
+
+    public init(
+        tool: String, arguments: JSONValue?, callId: String, threadId: String, turnId: String,
+        namespace: String? = nil
+    ) {
+        self.tool = tool
+        self.arguments = arguments
+        self.callId = callId
+        self.threadId = threadId
+        self.turnId = turnId
+        self.namespace = namespace
+    }
+}
+
+/// Mirrors TS `DynamicToolCallResult` (appServerClient.ts:49-52).
+public struct AppServerDynamicToolCallResult: Sendable, Equatable {
+    public enum ContentItem: Sendable, Equatable {
+        case inputText(String)
+        case inputImage(String)
+    }
+
+    public var success: Bool
+    public var contentItems: [ContentItem]
+
+    public init(success: Bool, contentItems: [ContentItem]) {
+        self.success = success
+        self.contentItems = contentItems
+    }
+}
+
+public typealias AppServerDynamicToolCallHandler =
+    @Sendable (AppServerDynamicToolCallParams) async -> AppServerDynamicToolCallResult
+
 // MARK: - Client
 
 /**
@@ -60,6 +104,7 @@ public final class CodexAppServerClient: @unchecked Sendable {
         var nextId: Int = 1
         var pending: [Int: PendingRpc] = [:]
         var notificationHandlers: [UUID: AppServerNotificationHandler] = [:]
+        var dynamicToolHandler: AppServerDynamicToolCallHandler?
         var closed = false
         var started = false
         var initializeResult: JSONValue?
@@ -124,6 +169,13 @@ public final class CodexAppServerClient: @unchecked Sendable {
         return { [weak self] in
             self?.state.withLock { $0.notificationHandlers[id] = nil }
         }
+    }
+
+    /// Registers the single `item/tool/call` handler (mirrors TS `onDynamicToolCall` option).
+    /// Set post-construction — same reason as `onNotification`: the handler needs `self`/the
+    /// owning channel id, unavailable inside CodexSessionBridge's static `makeClient` default.
+    public func setDynamicToolCallHandler(_ handler: @escaping AppServerDynamicToolCallHandler) {
+        state.withLock { $0.dynamicToolHandler = handler }
     }
 
     public func initialize(clientInfo: (name: String, version: String)? = nil) async throws -> JSONValue {
@@ -326,7 +378,14 @@ public final class CodexAppServerClient: @unchecked Sendable {
             ])
             return
         }
-        // Scaffold: dynamic tools / unknown methods → method not found
+        if method == "item/tool/call" {
+            let result = await resolveDynamicToolCall(msg["params"])
+            let closed = state.withLock { $0.closed }
+            if closed { return }
+            try? await writeObject(["id": id, "result": encodeDynamicToolCallResult(result)])
+            return
+        }
+        // Scaffold: unknown methods → method not found
         let closed = state.withLock { $0.closed }
         if closed { return }
         try? await writeObject([
@@ -341,6 +400,22 @@ public final class CodexAppServerClient: @unchecked Sendable {
     private func resolveApproval(_ req: AppServerApprovalRequest) async -> AppServerApprovalDecision {
         guard let approvalHandler else { return .accept }
         return await approvalHandler(req)
+    }
+
+    private func resolveDynamicToolCall(_ params: JSONValue?) async -> AppServerDynamicToolCallResult {
+        guard let parsed = parseDynamicToolCallParams(params) else {
+            return AppServerDynamicToolCallResult(
+                success: false,
+                contentItems: [.inputText("Invalid item/tool/call params.")]
+            )
+        }
+        guard let handler = state.withLock({ $0.dynamicToolHandler }) else {
+            return AppServerDynamicToolCallResult(
+                success: false,
+                contentItems: [.inputText("No handler for dynamic tool \"\(parsed.tool)\".")]
+            )
+        }
+        return await handler(parsed)
     }
 
     private func dispatchNotification(method: String, params: JSONValue?) {
@@ -395,6 +470,37 @@ func extractTurnId(_ result: JSONValue) -> String? {
     if let id = obj["turnId"]?.stringValue, !id.isEmpty { return id }
     if let id = obj["id"]?.stringValue, !id.isEmpty { return id }
     return nil
+}
+
+/// Mirrors TS `parseDynamicToolCallParams` (appServerClient.ts:442-458) — tool/callId/threadId/
+/// turnId must all be non-empty strings, else the whole request is invalid.
+func parseDynamicToolCallParams(_ params: JSONValue?) -> AppServerDynamicToolCallParams? {
+    guard case .object(let obj)? = params else { return nil }
+    guard let tool = obj["tool"]?.stringValue, !tool.isEmpty,
+          let callId = obj["callId"]?.stringValue, !callId.isEmpty,
+          let threadId = obj["threadId"]?.stringValue, !threadId.isEmpty,
+          let turnId = obj["turnId"]?.stringValue, !turnId.isEmpty
+    else { return nil }
+    return AppServerDynamicToolCallParams(
+        tool: tool,
+        arguments: obj["arguments"],
+        callId: callId,
+        threadId: threadId,
+        turnId: turnId,
+        namespace: obj["namespace"]?.stringValue
+    )
+}
+
+func encodeDynamicToolCallResult(_ result: AppServerDynamicToolCallResult) -> JSONValue {
+    let items: [JSONValue] = result.contentItems.map { item in
+        switch item {
+        case .inputText(let text):
+            return .object(["type": .string("inputText"), "text": .string(text)])
+        case .inputImage(let url):
+            return .object(["type": .string("inputImage"), "imageUrl": .string(url)])
+        }
+    }
+    return .object(["success": .bool(result.success), "contentItems": .array(items)])
 }
 
 func formatRpcError(_ error: JSONValue) -> String {
