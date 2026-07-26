@@ -13,7 +13,7 @@
 | # | 내용 | 상태 |
 |---|---|---|
 | C1 | Codex 생각중(thinking) 스트림 | ✅ 완료 (빌드+테스트 확인) |
-| C2 | Codex 사용량 패널 | 🔧 [진행중] |
+| C2 | Codex 사용량 패널 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
 | C3 | Codex 동적 도구(파일첨부/문서공유) | ⏳ 대기 |
 | C4 | Codex 재개목록 SQLite 읽기 | ✅ 완료 (빌드+테스트 확인) |
 | C5 | Grok MCP 파일첨부/문서공유 루프백 | ✅ 완료 (빌드+테스트 확인) |
@@ -47,7 +47,7 @@
 
 | 내용 | 상태 |
 |---|---|
-| `GrokSessionBridgeTests.swift:202` `nonBypassPermModeHandlerAllowMapsToAllow()` — busy-poll(`while ... Task.yield()`)이 실제로 무한 대기하는 기존 버그(오늘 변경분과 무관, git 대조로 확인) | 🔧 작업중 (원인 진단 + 수정 진행중) |
+| `GrokSessionBridgeTests.swift:202` `nonBypassPermModeHandlerAllowMapsToAllow()` — `makeGrokBridge`가 `ConfigStore.shared`(실제 로컬 config.json)를 그대로 써서, 이 머신의 `autoAllowClaudeTools`에 "Bash"가 있으면 프레젠터가 호출 안 되고 폴링 루프가 무한대기하던 격리 누락 버그 | ✅ 완료 (커밋 `63def8e`, 빌드+테스트 확인) |
 
 ---
 
@@ -66,7 +66,9 @@
 ### Codex 백엔드
 
 - **C1. [구현됨: `CodexTurnAccumulator.swift:82-86`, `CodexSessionBridge.swift:349-357`]** "생각 중"(thinking) 스트림 미표시. TS `eventMapper.ts:171-184`는 `item/reasoning/delta`(+3개 별칭)를 `kind:'thinking'`으로 매핑한다. Swift `CodexTurnAccumulator.swift`엔 reasoning 계열 케이스가 전혀 없었다 — **코드 자체 주석(`:132`)이 이 누락을 인정**했다. → `codexProgressEvents`에 4개 메서드명(원본+별칭 3개) 케이스를 추가해 `.thinking(text:delta:)`로 매핑(Grok `grokProgressEvents` 패턴과 동일 구조), `CodexSessionBridge.onNotification`의 progress 루프를 switch로 확장해 `StreamStatusHost.noteThinking`으로 배선. 테스트: `CodexTurnAccumulatorTests.swift`의 `progressEventsReasoningDeltaMapsToThinking`(4개 별칭 전부), `progressEventsReasoningDeltaEmptyIgnored`.
-- **C2. 턴 진행 중 사용량(토큰 %) 패널 미표시.** TS `eventMapper.ts:186-208` + `appSession.ts:211-219`는 `thread/tokenUsage/updated`마다 `context_usage` 이벤트를 쏜다. Swift `CodexSessionBridge.onNotification`(`:339-402`)엔 이 메서드 처리가 없다 — Codex 세션은 사용량 패널이 절대 안 뜬다.
+- **C2. [구현됨: `Codex/CodexTurnAccumulator.swift` `codexContextUsage(method:params:)`(신규), `Bridges/CodexSessionBridge.swift` `TurnBox.contextUsage`/`makeTurnResult`/`onNotification`]** 턴 진행 중 사용량(토큰 %) 패널 미표시. TS `eventMapper.ts:186-208` + `appSession.ts:211-219`는 `thread/tokenUsage/updated`마다 최신 스냅샷만 갱신하고(중간 emit 안 함) `turn/completed` 시점에 `context_usage`를 1회 방출한다. Swift `CodexSessionBridge.onNotification`엔 이 메서드 처리가 없어 Codex 세션은 사용량 패널이 절대 안 떴다.
+  - **구현**: `DabMain.swift`가 이미 백엔드 무관하게 `TurnResult.contextUsage`로 패널을 그리고 있어(`caps.usagePanel` Codex도 기본 true), Codex `TurnResult.contextUsage`가 항상 `nil`인 것만 원인이었음 — 렌더링 쪽은 무변경. C1이 세운 "관심사 1개 = 순수 함수 1개" 컨벤션 그대로, `codexTurnStep`/`codexProgressEvents`/`codexToolEvents` 옆에 `codexContextUsage(method:params:) -> ContextUsageInfo?` 신규 함수 추가(`usage.total.totalTokens`/`usage.modelContextWindow` 파싱, `maxTokens<=0` 가드, `percentage = min(100, round(...))` TS와 동일). Claude `DabSessionBridge.TurnBox.contextUsage` 패턴을 그대로 미러링해 Codex `TurnBox`에도 `contextUsage` 필드 추가, `onNotification`에서 최신 스냅샷만 갱신(즉시 emit 없음), `makeTurnResult`가 그 값을 `TurnResult.contextUsage`로 실어 나름. Codex는 TS와 동일하게 `model` 필드를 세팅하지 않음(패널에서 모델명 없이 퍼센트/토큰만 표시).
+  - 유닛 테스트 3건 추가(`CodexTurnAccumulatorTests.swift`): `contextUsageMapsTokenUsageUpdated`, `contextUsageCapsAt100Percent`, `contextUsageIgnoresOtherMethodsAndMissingFields`(메서드 불일치·params nil·tokenUsage 없음·totalTokens 없음·modelContextWindow<=0 전부 nil 확인) — `swift test --filter CodexTurnStepTests` 20건 전부 통과(빌드 13.37s). 전체 빌드/테스트 최종 확인은 사용자가 별도 진행.
 - **C3. 동적 도구(파일첨부/문서공유) 전체 미구현.** TS는 `thread/start`에 `DynamicToolSpec`을 등록하고 `item/tool/call`에 응답한다(`appSession.ts:353-414`, `appServerClient.ts:335,345-376`). **직접 재확인**: `grep -rn "attach_file\|share_document\|item/tool/call\|dynamicTool" swift/Sources/DiscordAgentBridge/Codex swift/Sources/DiscordAgentBridge/Bridges/CodexSessionBridge.swift` → 0건. Codex `AppServerClient.handleServerRequest`(`:316-339`)는 승인 메서드 외엔 전부 `-32601 Method not found`로 응답 — Codex 세션은 Discord로 파일을 절대 못 보낸다(Claude는 됨).
 - **C4. [구현됨: `Codex/CodexSqliteReader.swift`, `Codex/CodexDiscovery.swift`, `DabMain.swift` `listResumableForBackend` `.codex` 케이스]** `discovery.ts`/`sqliteReader.ts` 완전 미포팅. `~/.codex/session_index.jsonl` + rollout sqlite(`threads`/`thread_spawn_edges`)를 읽어 아카이브/서브에이전트 세션까지 재개 목록에 올리는 기능이 없다. Swift의 Codex "재개" 목록(`ResumeWizard.swift:253-276` → `listResumableFromStore`)은 **이 봇 프로세스가 직접 시작해 저장소에 남긴 세션만** 보여준다 — 터미널에서 직접 실행한 `codex` 세션이나, 봇 재시작 이전 세션은 안 보인다.
 

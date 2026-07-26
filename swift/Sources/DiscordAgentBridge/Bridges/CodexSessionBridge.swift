@@ -75,6 +75,8 @@ public actor CodexSessionBridge {
     private struct TurnBox {
         var text = ""
         var usage: TurnUsage?
+        /// C2: latest `thread/tokenUsage/updated` snapshot (kept, not emitted mid-turn).
+        var contextUsage: ContextUsageInfo?
         /// Turn-local tools/subagent HUD + ToolActivityHost feed (W16-g residual).
         var stats = TurnToolStatsAggregator()
         /// Mint ids for codex items that lack `id` / `itemId`.
@@ -88,6 +90,7 @@ public actor CodexSessionBridge {
         TurnResult(
             text: text,
             usage: box.usage,
+            contextUsage: box.contextUsage,
             tools: box.stats.toolsSnapshot(),
             agents: box.stats.agentsSnapshot()
         )
@@ -336,6 +339,14 @@ public actor CodexSessionBridge {
 
     private func onNotification(channelId: String, method: String, params: JSONValue?) {
         guard var box = turns[channelId], !box.done else { return }
+
+        // C2: thread/tokenUsage/updated → keep the latest context_usage snapshot; makeTurnResult
+        // surfaces it once via TurnResult.contextUsage at turn end (TS appSession.ts:211-219,
+        // not emitted mid-turn since this notification fires many times per turn).
+        if let ctx = codexContextUsage(method: method, params: params) {
+            box.contextUsage = ctx
+            turns[channelId] = box
+        }
 
         // G-P1-02: item/started + turn/started → stream embed progress (TS transcriptFeed).
         // C1: item/reasoning/delta(+aliases) → thinking (TS eventMapper.ts:171-184).

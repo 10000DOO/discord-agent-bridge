@@ -394,6 +394,56 @@ struct CodexTurnStepTests {
         #expect(codexTurnStep(method: "error", params: .object(["message": .string("m")])) == .failed("m"))
         #expect(codexTurnStep(method: "error", params: nil) == .failed("Codex turn failed."))
     }
+
+    // C2 / eventMapper.ts:186-208 — thread/tokenUsage/updated → context-usage snapshot.
+    @Test func contextUsageMapsTokenUsageUpdated() {
+        let params: JSONValue = .object([
+            "tokenUsage": .object([
+                "total": .object(["totalTokens": .number(1_200)]),
+                "modelContextWindow": .number(200_000),
+            ]),
+        ])
+        #expect(codexContextUsage(method: "thread/tokenUsage/updated", params: params) == ContextUsageInfo(
+            totalTokens: 1_200, maxTokens: 200_000, percentage: 1
+        ))
+    }
+
+    @Test func contextUsageCapsAt100Percent() {
+        let params: JSONValue = .object([
+            "tokenUsage": .object([
+                "total": .object(["totalTokens": .number(50_000)]),
+                "modelContextWindow": .number(10_000)]),
+        ])
+        #expect(codexContextUsage(method: "thread/tokenUsage/updated", params: params) == ContextUsageInfo(
+            totalTokens: 50_000, maxTokens: 10_000, percentage: 100
+        ))
+    }
+
+    @Test func contextUsageIgnoresOtherMethodsAndMissingFields() {
+        let validUsage: JSONValue = .object([
+            "tokenUsage": .object([
+                "total": .object(["totalTokens": .number(1)]),
+                "modelContextWindow": .number(100),
+            ]),
+        ])
+        // Wrong method → nil (thinking/progress notifications must not be mistaken for usage).
+        #expect(codexContextUsage(method: "item/reasoning/delta", params: validUsage) == nil)
+        // No params / no tokenUsage / missing totalTokens / non-positive modelContextWindow → nil
+        // (eventMapper.ts:190,197 EMPTY guards).
+        #expect(codexContextUsage(method: "thread/tokenUsage/updated", params: nil) == nil)
+        #expect(codexContextUsage(method: "thread/tokenUsage/updated", params: .object([:])) == nil)
+        #expect(codexContextUsage(
+            method: "thread/tokenUsage/updated",
+            params: .object(["tokenUsage": .object(["modelContextWindow": .number(100)])])
+        ) == nil)
+        #expect(codexContextUsage(
+            method: "thread/tokenUsage/updated",
+            params: .object(["tokenUsage": .object([
+                "total": .object(["totalTokens": .number(1)]),
+                "modelContextWindow": .number(0),
+            ])])
+        ) == nil)
+    }
 }
 
 @Suite("CodexSessionBridge turn accumulation (fake transport)")
