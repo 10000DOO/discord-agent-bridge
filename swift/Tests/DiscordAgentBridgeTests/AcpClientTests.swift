@@ -503,6 +503,85 @@ struct GrokUpdateStepTests {
             parentToolUseId: nil
         ))
     }
+
+    // W16-g gap: agent_thought_chunk / plan → thinking / progress (TS acpSession mapUpdate).
+
+    @Test func thoughtChunkMapsToThinking() {
+        let params = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("agent_thought_chunk"),
+            "content": .object(["type": .string("text"), "text": .string("pondering")]),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: params) == [
+            .thinking(text: "pondering", delta: true),
+        ])
+        // x.ai method alias
+        #expect(grokProgressEvents(method: "x.ai/session/update", params: params) == [
+            .thinking(text: "pondering", delta: true),
+        ])
+        // empty / missing text skipped (TS parity)
+        let empty = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("agent_thought_chunk"),
+            "content": .object(["text": .string("")]),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: empty).isEmpty)
+        let bare = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("agent_thought_chunk"),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: bare).isEmpty)
+        // text path stays clean
+        #expect(grokUpdateStep(method: "session/update", params: params) == .ignore)
+    }
+
+    @Test func planMapsToProgressWithStatusMarks() {
+        let params = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("plan"),
+            "entries": .array([
+                .object(["content": .string("read the file"), "status": .string("completed")]),
+                .object(["content": .string("write the fix"), "status": .string("in_progress")]),
+                .object(["content": .string("run tests"), "status": .string("pending")]),
+                .object(["status": .string("pending")]), // no content → skipped
+            ]),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: params) == [
+            .progress(
+                label: "Plan",
+                detail: "✓ read the file\n▶ write the fix\n• run tests"
+            ),
+        ])
+    }
+
+    @Test func planEmptyEntriesStillEmitsBarePlan() {
+        let empty = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("plan"),
+            "entries": .array([]),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: empty) == [
+            .progress(label: "Plan", detail: nil),
+        ])
+        let noEntries = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("plan"),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: noEntries) == [
+            .progress(label: "Plan", detail: nil),
+        ])
+        // unknown method / non-progress kinds
+        #expect(grokProgressEvents(method: "session/cancel", params: nil).isEmpty)
+        let tool = JSONValue.object(["update": .object(["sessionUpdate": .string("tool_call")])])
+        #expect(grokProgressEvents(method: "session/update", params: tool).isEmpty)
+        let msg = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("agent_message_chunk"),
+            "content": .object(["text": .string("hi")]),
+        ])])
+        #expect(grokProgressEvents(method: "session/update", params: msg).isEmpty)
+    }
+
+    @Test func planStatusMarkMapping() {
+        #expect(planStatusMark("completed") == "✓")
+        #expect(planStatusMark("in_progress") == "▶")
+        #expect(planStatusMark("pending") == "•")
+        #expect(planStatusMark(nil) == "•")
+        #expect(planStatusMark("unknown") == "•")
+    }
 }
 
 @Suite("GrokAcpClient prompt turn (fake transport)")

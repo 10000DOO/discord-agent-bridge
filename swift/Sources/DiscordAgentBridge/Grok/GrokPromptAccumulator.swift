@@ -1,13 +1,13 @@
 import Foundation
 
-// Map one grok ACP session/update notification to a text step or mid-turn tool events.
+// Map one grok ACP session/update notification to a text step, progress notes, or mid-turn tools.
 // Text: src/modes/grok/agent/acpSession.ts:mapUpdate agent_message_chunk.
+// Progress (W16-g gap): agent_thought_chunk → thinking; plan → progress (WO-11).
 // Tools (W16-g residual): tool_call / tool_call_update → tool_use / tool_result.
 //
 // Completion/failure are NOT here: grok terminates a turn with the session/prompt RESPONSE, not an
 // update (acpClient.ts:341-342, 470-475) — so GrokAcpClient.sessionPrompt's return/throw is the
-// terminator. agent_thought_chunk / plan / user_message_chunk / available_commands_update stay
-// out of the reply path (progress/thinking residual).
+// terminator. user_message_chunk / available_commands_update stay out of the reply path.
 
 public enum GrokUpdateStep: Equatable {
     case appendText(String)   // session/update agent_message_chunk → update.content.text
@@ -23,13 +23,56 @@ public func grokUpdateStep(method: String, params: JSONValue?) -> GrokUpdateStep
     return text.isEmpty ? .ignore : .appendText(text)
 }
 
+// MARK: - Thought / plan → AgentEvent (W16-g gap / TS acpSession mapUpdate)
+
+/// Map grok ACP session/update → thinking / progress. Pure; never throws.
+/// Mirrors TS `mapUpdate` agent_thought_chunk + plan (acpSession.ts:274-332).
+/// Intermediate / unknown kinds → []. Empty thought text skipped (TS parity).
+public func grokProgressEvents(method: String, params: JSONValue?) -> [AgentEvent] {
+    guard method == "session/update" || method == "x.ai/session/update" else { return [] }
+    guard let update = params?["update"] else { return [] }
+    let kind = update["sessionUpdate"]?.stringValue ?? ""
+    switch kind {
+    case "agent_thought_chunk":
+        // TS acpSession.ts:274-277 — empty thought chunks are skipped.
+        let text = update["content"]?["text"]?.stringValue ?? ""
+        guard !text.isEmpty else { return [] }
+        return [.thinking(text: text, delta: true)]
+
+    case "plan":
+        // TS acpSession.ts:320-332 (WO-11): reuse progress kind; status-marked lines; bare "Plan"
+        // when every entry lacks content / list empty.
+        let entries = update["entries"]?.arrayValue ?? []
+        let lines: [String] = entries.compactMap { entry in
+            let content = (entry["content"]?.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            let mark = planStatusMark(entry["status"]?.stringValue)
+            return "\(mark) \(content)".trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if lines.isEmpty {
+            return [.progress(label: "Plan", detail: nil)]
+        }
+        return [.progress(label: "Plan", detail: lines.joined(separator: "\n"))]
+
+    default:
+        return []
+    }
+}
+
+/// Compact marker for one plan entry status (TS planStatusMark, acpSession.ts:408-416).
+func planStatusMark(_ status: String?) -> String {
+    switch status {
+    case "completed": return "✓"
+    case "in_progress": return "▶"
+    default: return "•"
+    }
+}
+
 // MARK: - Tool mid-turn events (W16-g residual / TS acpSession mapUpdate)
 
 /// Map grok ACP session/update → tool_use / tool_result. Pure; never throws.
-///
-/// Gaps vs TS `acpSession.ts` (best-effort):
-/// - plan / agent_thought_chunk not mapped (no live progress embed residual).
-/// - Intermediate tool_call_update (no terminal status) skipped — same as TS.
+/// Intermediate tool_call_update (no terminal status) skipped — same as TS.
 public func grokToolEvents(
     method: String,
     params: JSONValue?,

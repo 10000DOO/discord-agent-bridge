@@ -110,6 +110,24 @@ public actor GrokSessionBridge {
                 let ch = channelId
                 Task { await StreamStatusHost.shared.noteText(channelId: ch, delta: delta) }
             }
+            // W16-g gap: agent_thought_chunk / plan → StreamStatusHost progress text.
+            // Thought is not part of the reply buffer (TS thinking stream); plan reuses progress.
+            let ch = channelId
+            for pev in grokProgressEvents(method: method, params: params) {
+                switch pev {
+                case .thinking(let text, _):
+                    // Delta-friendly: accumulate into the live embed body (not the answer buffer).
+                    Task { await StreamStatusHost.shared.noteText(channelId: ch, delta: text) }
+                case .progress(let label, let detail):
+                    Task {
+                        await StreamStatusHost.shared.noteProgress(
+                            channelId: ch, label: label, detail: detail
+                        )
+                    }
+                default:
+                    break
+                }
+            }
             // W16-g residual: tool_call / tool_call_update → stats + Discord work threads.
             let toolEvs = idSeq.withLock { seq -> [AgentEvent] in
                 grokToolEvents(method: method, params: params, mintId: &seq)
@@ -118,7 +136,6 @@ public actor GrokSessionBridge {
                 statsBox.withLock { s in
                     for ev in toolEvs { s.note(ev) }
                 }
-                let ch = channelId
                 for ev in toolEvs {
                     Task { await ToolActivityHost.shared.handle(channelId: ch, event: ev) }
                     if case .toolUse = ev {
