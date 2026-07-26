@@ -43,8 +43,8 @@
 
 | # | 내용 | 상태 |
 |---|---|---|
-| H1 | 권한 임베드 상세정보 부족 | ⏳ 대기 (WO-P21) |
-| H2 | 결정 후 재렌더링 다운그레이드 + i18n 키 없음 | ⏳ 대기 (WO-P21) |
+| H1 | 권한 임베드 상세정보 부족 | ✅ 완료 (빌드+전체테스트 확인) |
+| H2 | 결정 후 재렌더링 다운그레이드 + i18n 키 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H3 | 미응답 시 자동거부 타임아웃 (Swift만 추가) | ✅ 완료 (Q4, 1장 참고) |
 | H4 | [보안] headless 브라우저 네트워크 차단 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H5 | Chromium 설치가 Node/npx 셸아웃에 의존 | ⏳ 대기 (WO-P28) |
@@ -159,8 +159,14 @@
 
 ### 권한/보안
 
-- **H1.** 권한 요청 임베드가 도구의 전체 JSON 입력(Edit의 old/new 문자열, WebFetch URL, 커스텀 MCP 도구 인자 등)을 안 보여주고 `command`/`file_path`만 뽑아 보여줌(`DabSessionBridge.swift:652-656` vs `permissionButtons.ts:97-104`) — 그 외 도구는 승인자가 아무 상세정보 없이 승인/거부해야 함.
-- **H2.** 결정 후 재렌더링이 "색상+제목+본문 임베드"에서 평문 한 줄(`"🔐 ALLOW — @user"`)로 다운그레이드(`DabMain.swift:220-223`). `perm.request.body`/`perm.decided.*` i18n 키가 `I18n.swift`에 아예 없음.
+- **H1. [구현됨: `Bridges/DabSessionBridge.swift` `permissionDetail(_:)`]** 권한 요청 임베드가 도구의 전체 JSON 입력(Edit의 old/new 문자열, WebFetch URL, 커스텀 MCP 도구 인자 등)을 안 보여주고 `command`/`file_path`만 뽑아 보여줌(`DabSessionBridge.swift:652-656` vs `permissionButtons.ts:97-104`, 수정 전) — 그 외 도구는 승인자가 아무 상세정보 없이 승인/거부해야 했음.
+  - **구현**: 새 포맷터를 짜지 않고 이미 있던 `formatToolInput(_:)`(`Render/ToolFormat.swift`, 도구 실행 스레드 첫 메시지용으로 이미 만들어져 있던 함수 — TS `permissionButtons.ts`의 `formatInput`과 로직이 완전히 동일: 문자열이면 그대로, 아니면 `JSONEncoder`(prettyPrinted+sortedKeys)로 찍어서 ` ```json ` 펜스로 감싼다)를 그대로 재사용. `permissionDetail`은 `DiscordText.truncate(formatToolInput(input), 3000)` 한 줄로 교체(TS의 `truncate(formatInput(...), 3000)`와 동일 상한). `PermissionPrompt.detail`의 의미가 "짧은 힌트"에서 "전체 포맷된 입력값"으로 바뀜(타입은 그대로 `String?`).
+  - 테스트: `PermissionGateTests.swift`에 `PermissionDetailFormatTests` 신규(문자열 그대로/객체→JSON 펜스/배열→JSON 펜스/3000자 초과 시 말줄임 처리 4건). 기존 `DabSessionBridgeTests.swift:413`의 `#expect(prompt.detail == "ls")`는 이제 값이 전체 JSON 포맷 결과로 바뀌므로 실제 `JSONEncoder` 출력 기준(`"command" : "ls"` — Foundation 특유의 콜론 앞 공백, JS `JSON.stringify`와 다르지만 `formatToolInput` 재사용 시점부터 이미 감수하던 기존 특성)으로 갱신.
+- **H2. [구현됨: `dab/DabMain.swift` `postPermissionButtons`/`onInteractionCreate`, `Session/PermissionGate.swift` `PermissionEmbedSpec`, `I18n.swift`]** 결정 후 재렌더링이 "색상+제목+본문 임베드"에서 평문 한 줄(`"🔐 ALLOW — @user"`)로 다운그레이드(`DabMain.swift:220-223`, 수정 전). `perm.request.body`/`perm.decided.*` i18n 키가 `I18n.swift`에 아예 없었음.
+  - **구현**: `I18n.swift` ko/en 카탈로그에 `perm.request.body`, `perm.decided.allow/always/deny` 8개 키 추가. 이 코드베이스의 "라이브러리 쪽 순수 Spec 구조체 → dab 타겟에서 `discordEmbed(from:)` 변환" 관례(`UpdateEmbedSpec`/`AutoUpdateWiring.swift`와 동일 패턴)를 따라 `PermissionEmbedSpec{title,description,color}`을 `PermissionGate.swift`에 신설(`UpdateEmbedSpec`을 그대로 빌려 쓰는 대신 렌더러별 전용 타입 관례를 유지 — 재사용안·전용타입안 두 옵션 중 사용자가 전용타입안 확정). `postPermissionButtons`는 평문 `content:` 한 줄 대신 임베드(제목=`perm.request.title`, 본문=`perm.request.body`를 `{tool, input}`로 채운 것, 색상=`permission`)를 보내고, 기존 `<@approverId>` 멘션은 삭제하지 않고 `content:` 필드에 그대로 유지(임베드는 `embeds:` 필드로 별도 전송 — Discord는 한 메시지에 둘 다 허용). `onInteractionCreate`의 퍼미션 버튼 분기는 평문 대체를 임베드 대체로 변경 — 제목=`"perm.request.title — perm.decided.X"`, 본문=`perm.request.body`를 `{tool, input: perm.decided.X}`로 채운 것, 색상=deny면 `stopped` 아니면 `idle`. `PermissionGate.shared.peekToolName(reqKey)`를 기존엔 `always` 액션에서만 호출했으나, `resolve()`가 pending 엔트리를 지우므로 재렌더링에 필요한 toolName을 놓치지 않도록 **모든 액션에서** resolve 전에 먼저 호출하도록 변경.
+  - 결정 재렌더링에서 `content:` 필드는 아예 손대지 않음 — Discord의 interaction UPDATE_MESSAGE는 페이로드에 없는 필드를 "안 건드림"으로 처리하므로, 최초 게시 때 넣은 승인자 멘션이 결정 후에도 그대로 남음(별도 처리 불필요, `DiscordBM` `Payloads.InteractionResponse.Message`/`CreateMessage` 둘 다 `content: String?` 단순 옵셔널로 확인).
+  - 순수 라이브러리 함수 단위 테스트는 H1의 `PermissionDetailFormatTests`로 커버(임베드 배선 자체는 `dab` 실행 타겟이라 유닛테스트 미부착, 기존 관례와 동일).
+  - 최종 확인: `swift build --package-path swift` 성공(`dab` 타겟도 같은 빌드에서 링크), `swift test --filter "DabSessionBridgeTests|PermissionGateTests"` 47건 + `swift test --filter PermissionDetailFormatTests` 4건 통과, 전체 스위트 1036개(신규 9건 포함: H1 4건 + H15 3건 + H4 2건) 전부 통과.
 - **H3. [구현됨: `Session/PermissionGate.swift` `await(prompt:)`]** (Swift만 있는 추가 동작, 참고용) 권한 게이트에 TS엔 없는 "미응답 시 자동 거부 타임아웃"이 있었음(`PermissionGate.swift:72-89`, 수정 전) — 9장 Q4 결정에 따라 제거. `timeoutNs` 파라미터·`Pending.timeoutTask`·타이머 `Task`/`settle` 분기를 전부 삭제해 TS와 동일하게 무한 대기로 전환. `DabSessionBridge`/`CodexSessionBridge`/`GrokSessionBridge` 3곳의 `permGateTimeoutNs` 계산 프로퍼티와 호출부 인자도 함께 제거(공유 액터라 시그니처 변경 시 3곳 다 갱신 필요). 테스트: `PermissionGateTests.swift`의 `timeoutDeniesByDefault` 삭제, `nilApproverCannotBeResolved`는 타임아웃 의존을 걷어내고 "아무도 못 정하지만 계속 pending"만 검증하도록 정리, `unansweredAskStaysPendingIndefinitely` 신규 추가 — `swift test --filter 'PermissionGateTests|DabSessionBridgeTests|CodexSessionBridgeTests|GrokSessionBridgeTests'` 86건 전부 통과(0.235s). 전체 빌드/전체 테스트 최종 확인은 사용자가 별도 진행.
 - **H4. [구현됨: `Render/BrowserImageRenderer.swift` `screenshot(html:name:extraArgs:)` 크롬 인자 배열]** [보안] 이미지 렌더링용 headless 브라우저에 네트워크 차단이 빠짐. TS는 표/mermaid 스크린샷을 찍는 브라우저에서 아웃바운드 네트워크를 통째로 막는다(`setRequestInterception`+`setOfflineMode(true)`, `browserRenderer.ts:143-148`). Swift `BrowserImageRenderer.swift`는 `chrome --headless=new --screenshot=...`를 프로세스로 실행할 뿐 네트워크 차단 플래그가 전혀 없었다(`:216-227`) — 신뢰할 수 없는 표/mermaid 콘텐츠(사용자가 입력한 텍스트에서 파싱됨)가 외부로 네트워크 요청을 보낼 수 있었다.
   - **구조적 차이**: TS는 Puppeteer로 페이지 이벤트에 후킹해 요청 단위로 허용/차단(`data:`/`blob:`/`about:`만 통과)하지만, Swift는 `chrome` 바이너리를 프로세스로 직접 실행해서 그런 페이지 이벤트 훅 자체가 없다 — 대신 크롬 실행 플래그로 네트워크 자체를 원천 차단하는 방식을 쓴다(3안 중 사용자가 이 옵션을 확정, 옵션2 "이름 붙은 상수로 분리"·옵션3 "on/off 스위치 추가"는 각각 재사용 계획 없음/보안 코드에 불필요한 구멍이라 기각). 메인 HTML을 `file://` 임시파일로 navigate하는 기존 방식은 그대로 둠(로컬 파일 읽기라 SSRF 벡터 아님, TS의 `setContent` 대응 API가 CLI엔 없음). `mermaid.min.js`도 기존처럼 로컬 파일로만 로드되어(`HtmlTemplates.swift:169`) 이번 변경으로 기능 영향 없음.
@@ -273,7 +279,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 |---|---|---|---|---|
 | 19 | WO-P19: headless 브라우저 네트워크 차단 [보안] [완료: 1장 H4 참고] | H4 | `BrowserImageRenderer.swift` | 독립, 보안 최우선 |
 | 20 | WO-P20: DM 구조적 차단 가드 [완료: 2장 H15 참고] | H15 | `Session/SessionRegistry.swift`, `dab/DabMain.swift`(메시지 라우팅) | 독립 |
-| 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift` | 같은 권한 UI 묶음 |
+| 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 [완료: 1장 H1/H2 참고] | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift`, `PermissionGate.swift` | 같은 권한 UI 묶음 |
 | 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
 | 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 | H19 | `ConfigResolver.swift` | 독립 |
 | 24 | WO-P24: `config.json` 엄격 검증 | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |

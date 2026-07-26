@@ -670,9 +670,9 @@ public actor DabSessionBridge {
     }
 }
 
-/// Short human hint for the permission button message (e.g. the shell command). Best-effort.
+/// Full formatted tool input for the permission prompt (TS `permissionButtons.ts` formatInput +
+/// truncate(…, 3000)). Reuses `formatToolInput` (Render/ToolFormat.swift) — same string/JSON-fence
+/// shape the tool thread's opening message already uses.
 private func permissionDetail(_ input: JSONValue) -> String? {
-    if let c = input["command"]?.stringValue, !c.isEmpty { return c }
-    if let p = input["file_path"]?.stringValue, !p.isEmpty { return p }
-    return nil
+    DiscordText.truncate(formatToolInput(input), 3000)
 }

@@ -287,10 +287,12 @@ struct EventHandler: GatewayEventHandler {
             // persists into global autoAllowClaudeTools (best-effort; turn is already allowed).
             if let (reqKey, action) = parseCustomId(comp.custom_id) {
                 let userId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue
-                let alwaysTool = action == .always ? await PermissionGate.shared.peekToolName(reqKey) : nil
+                // H2: resolve() below removes the pending entry, so the tool name for the
+                // re-rendered embed must be peeked for EVERY action, not just always-allow.
+                let toolName = await PermissionGate.shared.peekToolName(reqKey)
                 let accepted = await PermissionGate.shared.resolve(reqKey: reqKey, action: action, byUserId: userId)
                 if accepted {
-                    if action == .always, let tool = alwaysTool, !tool.isEmpty {
+                    if action == .always, let tool = toolName, !tool.isEmpty {
                         await persistAlwaysAllow(
                             tool: tool,
                             actorId: userId ?? "",
@@ -298,16 +300,27 @@ struct EventHandler: GatewayEventHandler {
                             channelId: payload.channel_id?.rawValue ?? ""
                         )
                     }
-                    let label: String
+                    let decidedKey: String
                     switch action {
-                    case .allow: label = "ALLOW"
-                    case .always: label = "ALWAYS-ALLOW"
-                    case .deny: label = "DENY"
+                    case .allow: decidedKey = "perm.decided.allow"
+                    case .always: decidedKey = "perm.decided.always"
+                    case .deny: decidedKey = "perm.decided.deny"
                     }
-                    // Replace the buttons with the outcome (idempotent, removes the buttons).
+                    let decidedLabel = I18n.t(decidedKey)
+                    // Replace the buttons with the outcome, keeping the same embed shape as the
+                    // original prompt (TS permissionButtons.ts:149-167): title gets " — <decision>"
+                    // appended, body reuses perm.request.body with `input` swapped for the decision
+                    // label, color flips to stopped(deny)/idle(else). `content` (the approver
+                    // mention, if any) is left untouched — omitting it from the update payload
+                    // means Discord keeps whatever was already there.
+                    let embed = discordEmbed(from: PermissionEmbedSpec(
+                        title: "\(I18n.t("perm.request.title")) — \(decidedLabel)",
+                        description: I18n.t("perm.request.body", ["tool": toolName ?? "", "input": decidedLabel]),
+                        color: action == .deny ? DiscordColors.stopped : DiscordColors.idle
+                    ))
                     _ = try? await client.createInteractionResponse(
                         id: payload.id, token: payload.token,
-                        payload: .updateMessage(.init(content: "🔐 \(label) — <@\(userId ?? "")>", components: []))
+                        payload: .updateMessage(.init(embeds: [embed], components: []))
                     )
                 } else {
                     _ = try? await client.createInteractionResponse(
@@ -2541,6 +2554,16 @@ func emitDeliverPayload(
 
 // MARK: - permission buttons
 
+/// Library `PermissionEmbedSpec` → DiscordBM `Embed` (same pattern as `AutoUpdateWiring.swift`'s
+/// `discordEmbed(from: UpdateEmbedSpec)`).
+func discordEmbed(from spec: PermissionEmbedSpec) -> Embed {
+    Embed(
+        title: spec.title,
+        description: spec.description,
+        color: DiscordColor(value: spec.color) ?? DiscordColor(value: DiscordColors.permission)
+    )
+}
+
 /// The gate's presenter sink: post Allow / Always-Allow / Deny (TS permissionButtons 3-button row).
 /// custom_id carries the reqKey so the click routes back to the same pending ask.
 func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) async {
@@ -2561,15 +2584,20 @@ func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) 
         custom_id: buildCustomId(reqKey: prompt.reqKey, action: .deny)
     )
     let row: Interaction.ActionRow = [.button(allow), .button(always), .button(deny)]
-    let detail = prompt.detail.map { ": `\($0)`" } ?? ""
-    let mention = prompt.approverId.map { " <@\($0)>" } ?? ""
-    let content = "🔐 \(I18n.t("perm.request.title"))\(mention): **\(prompt.toolName)**\(detail)"
+    // Swift-only extra (TS has no equivalent): ping the bound approver in `content`, alongside the
+    // embed (Discord allows both in one message). Not an H1/H2 concern — kept as-is.
+    let mention = prompt.approverId.map { "<@\($0)>" }
+    let embed = discordEmbed(from: PermissionEmbedSpec(
+        title: I18n.t("perm.request.title"),
+        description: I18n.t("perm.request.body", ["tool": prompt.toolName, "input": prompt.detail ?? ""]),
+        color: DiscordColors.permission
+    ))
     // C14: retry-wrapped (PermissionPrompt carries no guildId — onGone omitted, same as the
     // idle watchdog poster above).
     _ = await createMessageWithRetry(
         client: client,
         channelId: ChannelSnowflake(prompt.channelId),
-        payload: .init(content: content, components: [row])
+        payload: .init(content: mention, embeds: [embed], components: [row])
     )
 }
 

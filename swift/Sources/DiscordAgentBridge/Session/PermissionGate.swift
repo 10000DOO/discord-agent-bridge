@@ -22,6 +22,20 @@ public struct PermissionPrompt: Sendable, Equatable {
 /// Lives on the gate so the library never imports DiscordBM.
 public typealias PermissionPresenter = @Sendable (PermissionPrompt) async -> Void
 
+/// Pure embed shape for the permission prompt + its post-decision re-render (TS embed literal in
+/// `permissionButtons.ts:97-104,153-166`). dab converts this to a `DiscordBM.Embed` (same
+/// library-Spec-struct → dab-converter pattern as `UpdateEmbedSpec`/`discordEmbed(from:)`).
+public struct PermissionEmbedSpec: Sendable, Equatable {
+    public var title: String
+    public var description: String
+    public var color: Int
+    public init(title: String, description: String, color: Int) {
+        self.title = title
+        self.description = description
+        self.color = color
+    }
+}
+
 /// Button / resolve action. `always` allows the tool **and** signals the host to persist the tool
 /// into the global auto-allow set (TS `perm:<reqId>:always` + `addAutoAllowClaudeTool`).
 public enum PermissionDecision: String, Sendable, Equatable {

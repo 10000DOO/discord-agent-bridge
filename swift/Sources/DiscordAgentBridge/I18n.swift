@@ -127,9 +127,13 @@ public enum I18n {
 
         // Permission
         "perm.request.title": "권한 요청",
+        "perm.request.body": "**도구:** {tool}\n\n{input}",
         "perm.button.allow": "허용",
         "perm.button.always": "항상 허용",
         "perm.button.deny": "거부",
+        "perm.decided.allow": "허용됨",
+        "perm.decided.always": "항상 허용됨",
+        "perm.decided.deny": "거부됨",
         "perm.default": "기본 (매번 확인)",
         "perm.acceptEdits": "편집 자동 승인",
         "perm.bypassPermissions": "전체 자동 승인 (⚠️ 위험)",
@@ -269,9 +273,13 @@ public enum I18n {
         "resume.none": "No session to resume.",
 
         "perm.request.title": "Permission request",
+        "perm.request.body": "**Tool:** {tool}\n\n{input}",
         "perm.button.allow": "Allow",
         "perm.button.always": "Always allow",
         "perm.button.deny": "Deny",
+        "perm.decided.allow": "Allowed",
+        "perm.decided.always": "Always allowed",
+        "perm.decided.deny": "Denied",
         "perm.default": "Default (ask each time)",
         "perm.acceptEdits": "Auto-approve edits",
         "perm.bypassPermissions": "Bypass all permissions (⚠️ dangerous)",

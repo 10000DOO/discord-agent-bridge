@@ -130,6 +130,35 @@ struct PermissionCustomIdTests {
     }
 }
 
+// H1: `permissionDetail` (DabSessionBridge.swift, private) is `DiscordText.truncate(formatToolInput(input), 3000)`.
+// Exercised here directly against its public building blocks (formatToolInput lives in
+// Render/ToolFormat.swift and is shared with the tool-thread opening message).
+@Suite("permission detail format (H1)")
+struct PermissionDetailFormatTests {
+    @Test func stringInputPassesThrough() {
+        let out = DiscordText.truncate(formatToolInput(.string("ls -la")), 3000)
+        #expect(out == "ls -la")
+    }
+
+    @Test func objectInputBecomesFencedJson() {
+        let out = formatToolInput(.object(["command": .string("ls")]))
+        #expect(out == "```json\n{\n  \"command\" : \"ls\"\n}\n```")
+    }
+
+    @Test func arrayInputBecomesFencedJson() {
+        let out = formatToolInput(.array([.string("a"), .number(1)]))
+        #expect(out.hasPrefix("```json\n["))
+        #expect(out.hasSuffix("]\n```"))
+    }
+
+    @Test func over3000CharsIsTruncated() {
+        let huge = String(repeating: "x", count: 4000)
+        let out = DiscordText.truncate(formatToolInput(.object(["path": .string(huge)])), 3000)
+        #expect(out.utf16.count == 3000)
+        #expect(out.hasSuffix("…"))
+    }
+}
+
 @Suite("resolveThreadPolicy")
 struct ResolveThreadPolicyTests {
     @Test func claudePermModes() {

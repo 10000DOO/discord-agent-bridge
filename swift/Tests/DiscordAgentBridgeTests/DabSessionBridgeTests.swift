@@ -410,7 +410,9 @@ struct DabSessionBridgeTests {
         let prompt = prompts.withLock { $0[0] }
         #expect(prompt.toolName == "Bash")
         #expect(prompt.approverId == "owner-1")
-        #expect(prompt.detail == "ls")
+        // H1: detail is now the full formatted input (formatToolInput + truncate(…, 3000)), not a
+        // short "command"/"file_path" hint. Input here is `.object(["command": .string("ls")])`.
+        #expect(prompt.detail == "```json\n{\n  \"command\" : \"ls\"\n}\n```")
         // Owner approves → sidecar receives behavior "allow" → turn completes.
         #expect(await gate.resolve(reqKey: prompt.reqKey, action: .allow, byUserId: "owner-1") == true)
         let reply = try await t.value
