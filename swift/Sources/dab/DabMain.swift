@@ -80,6 +80,12 @@ struct DabMain {
         await ToolActivityHost.shared.setChannelFactory { channelId in
             turnThreadChannel(client: client, channelId: channelId)
         }
+        // C15: tool_use → status-channel notification (independent of render capabilities).
+        await ToolActivityHost.shared.setNotifier { channelId, guildId, backend, event in
+            await postStatusNotification(
+                client: client, guildId: guildId, sessionChannelId: channelId, event: event, backend: backend
+            )
+        }
         // W11-g residual: mid-turn stream status embed edits (text / tool_use / progress).
         await StreamStatusHost.shared.setUpdater { channelId, messageId, guildId, spec in
             await editStreamControlMessage(
@@ -1933,6 +1939,8 @@ struct EventHandler: GatewayEventHandler {
         // Capabilities gate (TS RendererDispatcher): toolThreads/fileDiff/streaming/usagePanel.
         let caps = await resolveSessionCapabilities(backend: backend, guildId: guildId)
         await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)
+        // C15: guildId/backend for the status-channel tool_use notifier (see setNotifier above).
+        await ToolActivityHost.shared.setNotifyContext(channelId: channelId, guildId: guildId, backend: backend)
         // Live stream status embed: yellow "응답 중…" + Stop button (W11-g residual).
         // Mid-turn text/tool/progress edits via StreamStatusHost; finalize collapses to done.
         // streaming=false → skip begin (notes no-op); interrupt control message still posts.

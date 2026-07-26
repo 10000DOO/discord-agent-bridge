@@ -7,6 +7,12 @@ import Foundation
 /// Builds a TurnThreadChannel for a Discord session channel id.
 public typealias TurnThreadChannelFactory = @Sendable (_ channelId: String) -> TurnThreadChannel
 
+/// C15: status-channel tool_use notification (TS `SessionNotifier` — a subscription
+/// independent of RendererDispatcher/render caps). Fired only for `.toolUse`, never `.toolResult`.
+public typealias ToolUseNotifier = @Sendable (
+    _ channelId: String, _ guildId: String, _ backend: Backend, _ event: AgentEvent
+) async -> Void
+
 /// Mid-turn tool_use / tool_result → Discord work threads + diffs.
 public actor ToolActivityHost {
     public static let shared = ToolActivityHost()
@@ -15,6 +21,9 @@ public actor ToolActivityHost {
     private var states: [String: ChannelState] = [:]
     /// Per-channel render caps (set by dab each turn). Absent → allEnabled.
     private var capsByChannel: [String: Capabilities] = [:]
+    private var notifier: ToolUseNotifier?
+    /// Per-channel guildId/backend for the C15 notifier (set by dab each turn).
+    private var notifyContextByChannel: [String: (guildId: String, backend: Backend)] = [:]
 
     private struct ChannelState {
         var registry: TurnThreadRegistry
@@ -34,9 +43,25 @@ public actor ToolActivityHost {
         capsByChannel[channelId] = caps
     }
 
+    /// Wire the status-channel tool_use notifier once at startup (dab). Absent → no-op.
+    public func setNotifier(_ notifier: @escaping ToolUseNotifier) {
+        self.notifier = notifier
+    }
+
+    /// Bind guildId/backend for a session channel (dab, each turn, alongside setCapabilities).
+    public func setNotifyContext(channelId: String, guildId: String, backend: Backend) {
+        notifyContextByChannel[channelId] = (guildId: guildId, backend: backend)
+    }
+
     /// Handle a tool_use or tool_result AgentEvent for a session channel.
     /// Gated by channel caps: `toolThreads` → ToolThreadHandler, `fileDiff` → DiffViewHandler.
     public func handle(channelId: String, event: AgentEvent) async {
+        // C15: status-channel notification — independent of toolThreads/fileDiff render caps.
+        if case .toolUse = event, let notifier, let ctx = notifyContextByChannel[channelId] {
+            let ch = channelId
+            let ev = event
+            Task { await notifier(ch, ctx.guildId, ctx.backend, ev) }
+        }
         let caps = capsByChannel[channelId] ?? .allEnabled
         if !caps.toolThreads && !caps.fileDiff { return }
         switch event {
@@ -72,6 +97,7 @@ public actor ToolActivityHost {
     /// Drop all state for a channel (session stop / detach).
     public func dispose(channelId: String) {
         capsByChannel.removeValue(forKey: channelId)
+        notifyContextByChannel.removeValue(forKey: channelId)
         if let state = states.removeValue(forKey: channelId) {
             state.registry.reset()
             state.toolThread.resetTurn()

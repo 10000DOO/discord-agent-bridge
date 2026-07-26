@@ -166,6 +166,80 @@ struct ToolActivityHostCapsTests {
     }
 }
 
+@Suite("ToolActivityHost C15 tool_use notifier")
+struct ToolActivityHostNotifierTests {
+    @Test func toolUseFiresNotifierIndependentOfCaps() async {
+        let posts = FakePosts()
+        let recorder = NotifierRecorder()
+        let host = ToolActivityHost()
+        await host.setChannelFactory { _ in posts.channel() }
+        // Both render caps off — the notifier must still fire (TS SessionNotifier is a
+        // separate subscription from RendererDispatcher, not gated by toolThreads/fileDiff).
+        await host.setCapabilities(channelId: "ch1", Capabilities(toolThreads: false, fileDiff: false))
+        await host.setNotifyContext(channelId: "ch1", guildId: "g1", backend: .codex)
+        await host.setNotifier { channelId, guildId, backend, event in
+            recorder.record(channelId: channelId, guildId: guildId, backend: backend, event: event)
+        }
+        await host.handle(
+            channelId: "ch1",
+            event: .toolUse(id: "t1", name: "Bash", input: .object(["command": .string("ls")]), parentToolUseId: nil)
+        )
+        #expect(await waitUntil { recorder.calls.count == 1 })
+        #expect(recorder.calls.first?.channelId == "ch1")
+        #expect(recorder.calls.first?.guildId == "g1")
+        #expect(recorder.calls.first?.backend == .codex)
+        // Render caps still off → no thread posts (the two concerns stay independent).
+        #expect(posts.createCount == 0)
+    }
+
+    @Test func toolResultDoesNotFireNotifier() async {
+        let recorder = NotifierRecorder()
+        let host = ToolActivityHost()
+        await host.setNotifyContext(channelId: "ch1", guildId: "g1", backend: .claude)
+        await host.setNotifier { channelId, guildId, backend, event in
+            recorder.record(channelId: channelId, guildId: guildId, backend: backend, event: event)
+        }
+        await host.handle(
+            channelId: "ch1",
+            event: .toolResult(id: "t1", ok: true, content: "ok", parentToolUseId: nil)
+        )
+        // Give the (absent) fire-and-forget Task a chance to run before asserting it never did.
+        _ = await waitUntil(timeoutNs: 100_000_000, pollNs: 5_000_000) { recorder.calls.count > 0 }
+        #expect(recorder.calls.isEmpty)
+    }
+
+    @Test func missingNotifyContextSkipsNotifier() async {
+        let recorder = NotifierRecorder()
+        let host = ToolActivityHost()
+        // No setNotifyContext call for "ch1" — notifier must not fire (no guildId to notify with).
+        await host.setNotifier { channelId, guildId, backend, event in
+            recorder.record(channelId: channelId, guildId: guildId, backend: backend, event: event)
+        }
+        await host.handle(
+            channelId: "ch1",
+            event: .toolUse(id: "t1", name: "Bash", input: .object(["command": .string("ls")]), parentToolUseId: nil)
+        )
+        _ = await waitUntil(timeoutNs: 100_000_000, pollNs: 5_000_000) { recorder.calls.count > 0 }
+        #expect(recorder.calls.isEmpty)
+    }
+}
+
+private final class NotifierRecorder: @unchecked Sendable {
+    struct Call {
+        var channelId: String
+        var guildId: String
+        var backend: Backend
+        var event: AgentEvent
+    }
+    private let box = LockedBox<[Call]>([])
+
+    var calls: [Call] { box.withLock { $0 } }
+
+    func record(channelId: String, guildId: String, backend: Backend, event: AgentEvent) {
+        box.withLock { $0.append(Call(channelId: channelId, guildId: guildId, backend: backend, event: event)) }
+    }
+}
+
 // MARK: - Local fake (mirrors ToolThreadAndDiffTests)
 
 private final class FakePosts: @unchecked Sendable {
