@@ -139,7 +139,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 기본 흐름: **`/setup` → `/config` → `/agent start`**, 이후 세션 채널에서 일반 메시지.
 
 1. **`/setup`** (관리자) — 컨트롤 채널 · 세션 카테고리 · 상태 채널 (기존 재사용).
-2. **`/config`** (관리자) — 역할 티어 + 기본값(mode/model/effort/perm, dmPolicy) + 알림 서브패널(켜기 + 상태 채널). 잔여: locale select · 이미지/chromium 렌더 서브패널(S3 defer).
+2. **`/config`** (관리자) — 역할 티어 + 기본값(mode/model/effort/perm, dmPolicy) + 알림 + **이미지/chromium 렌더** 서브패널(켜기 + Chromium 설치).
 3. **`/agent start`** — 마법사: **폴더 → 백엔드 → 모델 → 추론 → 권한**. 폴더 브라우저는 이동/생성/네이티브 선택 지원. 확인 시 채널 바인딩(전용 A4D 세션 채널 생성은 Swift 경로 잔여).
 4. 바인딩된 채널에서 **일반 메시지**로 대화. 접두사 단축키: `!claude` / `!codex` / `!grok` / `!custom`.
 
@@ -161,7 +161,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 
 권한 모드: `default` · `acceptEdits` · `plan` · `bypassPermissions`(및 카탈로그된 백엔드별 프로필). 스모크 기본이 `bypassPermissions`일 수 있음 — Allow/Deny UI 사용 시 `default` 권장.
 
-> **패리티 안내:** Swift가 제품 경로이지만 **옛 npm UX 100%는 아직 아닙니다.** [호환 매트릭스](#swift-vs-typescript-호환)와 [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0 잔여 목록을 보세요.
+> **패리티 안내:** Swift가 제품 경로이며 **~99% 패리티**. 잔여: W13-b 보류 · optional polish. [호환 매트릭스](#swift-vs-typescript-호환)와 [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0을 보세요.
 
 ---
 
@@ -194,7 +194,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 
 ## Swift vs TypeScript 호환
 
-의도된 상태: **Swift-first 제품**, TS 트리는 참고 + Claude 사이드카용. **100% 기능 패리티를 가정하지 마세요.**
+의도된 상태: **Swift-first 제품**, TS 트리는 참고 + Claude 사이드카용. **패리티 ~99%** (잔여: W13-b 보류 · optional polish).
 
 | 영역 | Swift (`dab`) | 레거시 TS 메인 |
 |---|---|---|
@@ -209,10 +209,10 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | 라이브 슬래시 model/effort/mode/clear/stop | ✅ 바인딩 + Claude 라이브 `setModel`/`setEffort` RPC + displayName 재해석 | ✅ |
 | 사용량 / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD; **잔여:** 라이브 스트림 임베드 | ✅ 더 풍부한 패널 |
 | 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude/Codex/Grok mid-turn tool; **잔여:** pin 임베드 | ✅ |
-| `/config` 패널 | ✅ 역할·mode/model/effort/perm·dm·알림; 잔여 locale · render(S3) | ✅ 더 넓은 UI |
+| `/config` 패널 | ✅ 역할·mode/model/effort/perm·dm·알림·locale·render(S3) | ✅ 더 넓은 UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ 레지스트리 체크 + Yes/No + **install.sh·launchctl 재시작** | ✅ npm 재설치 경로 |
-| Chromium 표/mermaid 렌더 | ❌ defer | ✅ 선택 |
+| Chromium 표/mermaid 렌더 | ✅ headless Chrome CLI (시스템 Chrome 또는 프로비저닝) | ✅ puppeteer |
 | Host file Discord 첨부 | partial / 잔여 | ✅ (사이드카 경로) |
 | Linux/Windows 서비스 | ✅ launchd / systemd / schtasks 스크립트 | ✅ launchd / systemd / schtasks |
 | npm global 설치 | ❌ (체크아웃 + 빌드) | ✅ |

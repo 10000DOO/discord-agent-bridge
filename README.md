@@ -139,7 +139,7 @@ Codex / Grok                 ──stdio (native clients)──►  their CLIs
 Typical flow: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel.
 
 1. **`/setup`** (admin) — control channel, sessions category, status channel (reuses existing).
-2. **`/config`** (admin) — role tiers + defaults (mode/model/effort/perm, dmPolicy) + notifications sub-panel (enable + status channel). Residual: locale select · image/chromium render sub-panel (S3 defer).
+2. **`/config`** (admin) — role tiers + defaults (mode/model/effort/perm, dmPolicy) + notifications + **image/chromium render** sub-panels (enable + Install Chromium).
 3. **`/agent start`** — wizard: **folder → backend → model → effort → permission**. Folder browser supports navigate / create / native pick. On confirm, the channel is bound (dedicated A4D session-channel creation is still residual on the Swift path).
 4. In a bound channel, **send normal messages**. Prefix shortcuts still work: `!claude` / `!codex` / `!grok` / `!custom`.
 
@@ -194,7 +194,7 @@ If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge
 
 ## Swift vs TypeScript compatibility
 
-Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **Do not assume 100% feature parity.**
+Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **Parity ~99%** (residual: W13-b permMode default / allowlist 보류 · optional polish).
 
 | Area | Swift (`dab`) | Legacy TS main |
 |---|---|---|
@@ -209,10 +209,10 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Live slash model/effort/mode/clear/stop | ✅ binding + Claude live `setModel`/`setEffort` RPC + displayName re-resolve | ✅ |
 | Usage / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD + live stream status embed | ✅ richer panels |
 | Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path; **residual:** pin embed | ✅ |
-| `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif; residual locale · render(S3) | ✅ fuller UI |
+| `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif·locale·render(S3) | ✅ fuller UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ registry check + Yes/No + **install.sh + launchctl restart** | ✅ npm reinstall path |
-| Chromium table/mermaid render | ❌ deferred | ✅ optional |
+| Chromium table/mermaid render | ✅ headless Chrome CLI (system Chrome or provisioned) | ✅ puppeteer |
 | Host file attach to Discord | partial / residual | ✅ (sidecar path) |
 | Linux/Windows service | ✅ launchd / systemd / schtasks scripts | ✅ launchd / systemd / schtasks |
 | npm global install | ❌ (checkout + build) | ✅ |

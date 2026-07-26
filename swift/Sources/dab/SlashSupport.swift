@@ -142,6 +142,7 @@ func postDocumentShare(
     }
 
     let chId = channelId
+    let renderFn = await ImageRenderHost.shared.resolveRenderFn()
     return try await shareDocument(
         cwd: resolvedCwd,
         path: path,
@@ -171,7 +172,8 @@ func postDocumentShare(
                     )
                 )
             }
-        }
+        },
+        renderImage: renderFn
     )
 }
 

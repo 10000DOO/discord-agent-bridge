@@ -11,11 +11,10 @@ SwiftPM package for the Swift port of discord-agent-bridge.
 
 | Piece | Status |
 |-------|--------|
-| Gateway login + `!dab` → Claude via Node sidecar | **MVP working** |
-| Claude sidecar protocol client | done (`Sidecar/`) |
-| Codex `app-server` client | scaffold only (`Codex/`) |
-| Grok ACP client | scaffold only (`Grok/`) |
-| Full orchestrator / slash / multi-mode | not yet (see plan W10–W11) |
+| Gateway + slash + `!claude`/`!codex`/`!grok`/`!custom` | **working** (W11–W16) |
+| Claude sidecar / Codex app-server / Grok ACP | done |
+| Table/mermaid → PNG (S3) | **done** — headless Chrome CLI (not puppeteer-in-Swift) |
+| Residual | W13-b 보류 · optional polish (~99% parity) |
 
 ## Requirements
 
@@ -26,9 +25,9 @@ SwiftPM package for the Swift port of discord-agent-bridge.
 ## Build & test
 
 ```bash
-cd swift
-swift build
-swift test
+# Prefer isolated scratch (avoids SourceKit index lock hang on swift/.build)
+swift test --package-path swift --scratch-path /tmp/dab-ci
+swift build --package-path swift --scratch-path /tmp/dab-ci
 ```
 
 ## Run (Discord + `!dab` Claude)
@@ -73,6 +72,19 @@ Enable **Message Content Intent** in the [Discord Developer Portal](https://disc
 | `DAB_PERM_MODE` | `bypassPermissions` | **dangerous** default for smoke; prefer `default` when permission UI exists |
 | `DAB_TURN_TIMEOUT_SEC` | `120` | wait for result/text |
 | `DAB_CLAUDE_SIDECAR_CMD` | auto | override sidecar spawn |
+| `DAB_RENDER` | (config) | `0` force off table/mermaid PNG; `1` prefer on when Chrome present |
+| `DAB_MERMAID_JS` | auto | path to `mermaid.min.js` (else repo `node_modules/…` or `~/.dab/render/`) |
+| `DAB_CHROMIUM_CACHE` | `~/.dab/chromium` | provisioned Chrome for Testing cache |
+| `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | system scan | override Chrome binary |
+
+### Image render (S3)
+
+GFM tables and ` ```mermaid ` ` fences in answers (and `/doc` body) become PNG attachments when:
+
+1. `config.render.enabled` is true (default; toggle in `/config` → 🖼), and
+2. a browser is available: system Chrome/Edge/Chromium **or** provisioned under `DAB_CHROMIUM_CACHE` (Install button downloads via `npx @puppeteer/browsers` when Node is present).
+
+Implementation: headless Chrome CLI (`--headless=new --screenshot=… file://…`), not embedded puppeteer. Render failures fall back to raw markdown. Caps: 15s timeout, 20k chars/block, 2000 table cells, max 2 concurrent.
 
 ## Sidecar smoke (W9)
 

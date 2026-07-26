@@ -1,6 +1,7 @@
 import DiscordAgentBridge
 import DiscordBM
 import Foundation
+import NIOCore
 
 @main
 struct DabMain {
@@ -60,6 +61,10 @@ struct DabMain {
                 spec: spec
             )
         }
+        // S3: table/mermaid → PNG when Chrome available + render.enabled.
+        await ImageRenderHost.shared.configure(
+            configLoad: { try? await ConfigStore.shared.load() }
+        )
 
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -811,6 +816,48 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id, token: payload.token,
                 payload: .updateMessage(.init(embeds: embeds, components: rows))
             )
+        case .renderPanel(let sub):
+            let (embeds, rows) = discordPayload(from: sub)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    embeds: embeds,
+                    flags: [.ephemeral],
+                    components: rows
+                ))
+            )
+        case .renderUpdated(let sub):
+            let (embeds, rows) = discordPayload(from: sub)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: rows))
+            )
+        case .renderInstall:
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            do {
+                try await ConfigStore.shared.setChromiumDecision("accepted")
+                let path = try await ImageRenderHost.shared.install()
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(
+                        content: "Chromium ready: `\(path)` — tables/mermaid will render as PNG.",
+                        flags: [.ephemeral]
+                    )
+                )
+            } catch {
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(
+                        content: "Chromium install failed: \(error). System Chrome or `npx` required.",
+                        flags: [.ephemeral]
+                    )
+                )
+            }
         case .pending, .ignored:
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
@@ -1560,11 +1607,19 @@ struct EventHandler: GatewayEventHandler {
                 client: client, channelId: payload.channel_id, messageId: controlMsgId,
                 guildId: guildId, toolCount: toolCount
             )
-            // W16-a: multi-message chunking (TS chunkMessage) — never truncate long replies.
+            // W16-a + S3: deliverAnswer (chunkMessage; tables/mermaid → PNG when Chrome ready).
             let body = turn.text.isEmpty ? "(no text)" : turn.text
-            for chunk in DiscordText.chunkMessage(body) {
-                _ = try await client.createMessage(channelId: payload.channel_id, payload: .init(content: chunk))
-            }
+            let renderFn = await ImageRenderHost.shared.resolveRenderFn()
+            let chId = payload.channel_id
+            try await deliverAnswer(
+                body,
+                options: DeliverOptions(
+                    renderImage: renderFn,
+                    emit: { out in
+                        try await emitDeliverPayload(client: client, channelId: chId, payload: out)
+                    }
+                )
+            )
             // W11-g slice1: optional done-line footer (cost/tokens/duration) after answer chunks.
             if let usage = turn.usage, let line = buildResultLine(usage) {
                 _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: line))
@@ -1852,6 +1907,35 @@ func finalizeInterruptControlMessage(
         messageId: messageId,
         payload: .init(content: "", embeds: [embed], components: [row])
     )
+}
+
+// MARK: - answer delivery (S3)
+
+/// Map `DeliverPayload` → DiscordBM createMessage (text and/or PNG attachment).
+func emitDeliverPayload(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    payload: DeliverPayload
+) async throws {
+    if let name = payload.fileName, let data = payload.fileData {
+        var buf = ByteBufferAllocator().buffer(capacity: data.count)
+        buf.writeBytes(data)
+        _ = try await client.createMessage(
+            channelId: channelId,
+            payload: Payloads.CreateMessage(
+                content: payload.content,
+                files: [RawFile(data: buf, filename: name)],
+                attachments: [Payloads.Attachment(index: 0, filename: name)]
+            )
+        )
+        return
+    }
+    if let content = payload.content {
+        _ = try await client.createMessage(
+            channelId: channelId,
+            payload: .init(content: content)
+        )
+    }
 }
 
 // MARK: - permission buttons

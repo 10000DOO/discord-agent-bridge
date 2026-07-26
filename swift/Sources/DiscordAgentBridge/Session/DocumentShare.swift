@@ -10,8 +10,8 @@ import Foundation
 //  1. Absolute paths resolve as-is; relative against session cwd. Existence, regular-file,
 //     extension allowlist, size, and binary (NUL) checks apply. Paths *outside* the session
 //     folder ARE allowed for share (unlike attach_file confinement).
-//  2. Body posts through the sink as plain text chunks (`DiscordText.chunkMessage`). Image
-//     render of tables/mermaid is deferred (Swift has no Chromium stack yet; S3).
+//  2. Body posts through `deliverAnswer` so tables/mermaid render as PNG when an
+//     ImageRenderFn is injected; otherwise plain `DiscordText.chunkMessage`.
 //  3. `escape` ShareErrorCode is retained for i18n/compat but is no longer produced.
 
 /// Per-cause rejection code. Edge localizes via `doc.error.<code>`; core stays i18n-free.
@@ -250,7 +250,8 @@ public func shareDocument(
     cwd: String,
     path: String,
     options: DocumentShareOptions = .default,
-    channel: DocumentShareChannel
+    channel: DocumentShareChannel,
+    renderImage: ImageRenderFn? = nil
 ) async throws -> ShareResult {
     let loaded: LoadedDocument
     switch loadShareableDocument(cwd: cwd, path: path, options: options) {
@@ -266,11 +267,21 @@ public func shareDocument(
     // (h) Meta + original .md attachment (always).
     try await thread.send(loaded.metaLine, (name: loaded.basename, data: loaded.fileData))
 
-    // (i) Body per bodyMode. Plain chunkMessage (no image renderer in Swift 1st pass).
+    // (i) Body per bodyMode — deliverAnswer (tables/mermaid → PNG when renderer present).
     if let body = loaded.bodyText {
-        for chunk in DiscordText.chunkMessage(body) {
-            try await thread.send(chunk, nil)
-        }
+        try await deliverAnswer(
+            body,
+            options: DeliverOptions(
+                renderImage: renderImage,
+                emit: { payload in
+                    if let name = payload.fileName, let data = payload.fileData {
+                        try await thread.send(payload.content, (name: name, data: data))
+                    } else {
+                        try await thread.send(payload.content, nil)
+                    }
+                }
+            )
+        )
     }
 
     // (j)

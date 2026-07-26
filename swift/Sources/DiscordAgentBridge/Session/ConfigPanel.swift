@@ -3,16 +3,16 @@ import Foundation
 // `/config` settings panel (W16-b residual polish).
 // Pure SM + ConfigStore persistence — no DiscordBM. dab maps ConfigPanelView → components.
 //
-// Mirrors TS `src/discord/configPanel.ts` (reduced: no image/chromium sub-panel — S3 defer):
+// Mirrors TS `src/discord/configPanel.ts`:
 //   - Role tiers (3 role-selects) batch into pending → Save writes servers/<guildId>.json auth
 //   - defaults.mode / model / effort / permissionMode AUTO-SAVE to server on each select change
 //   - auth.dmPolicy AUTO-SAVE to GLOBAL config.json (server has no dmPolicy field)
 //   - locale AUTO-SAVE to GLOBAL config.json (process-wide UI language; ko/en)
 //   - Notifications sub-panel: enable toggle + status channel select → server.notifications
+//   - Image/chromium sub-panel (S3): render.enabled toggle + Chromium install
 //   - Embed shows effective global+server auth / defaults / limits
 //
 // Layout: roleRows free 5th row holds locale (defaultRows already at 5 with dmPolicy).
-// ponytail residual: image/chromium sub-panel (S3).
 
 // MARK: - Ids
 
@@ -35,6 +35,10 @@ public enum ConfigPanelIds {
     public static let notifOpen = "config.notif.open"
     public static let notifToggle = "config.notif.toggle"
     public static let notifChannel = "config.notif.channel"
+    public static let renderOpen = "config.render.open"
+    public static let renderToggle = "config.render.toggle"
+    public static let renderInstall = "config.render.install"
+    public static let renderDecline = "config.render.decline"
 }
 
 /// True when a component id belongs to a `/config` panel (router routing predicate).
@@ -152,6 +156,12 @@ public enum ConfigPanelResult: Sendable, Equatable {
     case notifPanel(ConfigPanelSubView)
     /// Toggle/channel change persisted; re-render sub-panel in place.
     case notifUpdated(ConfigPanelSubView)
+    /// 🖼 opened image-render sub-panel (fresh ephemeral message).
+    case renderPanel(ConfigPanelSubView)
+    /// Render on/off or decline persisted; re-render sub-panel in place.
+    case renderUpdated(ConfigPanelSubView)
+    /// Install Chromium — router runs ChromiumProvisioner.
+    case renderInstall
     case ignored
 }
 
@@ -278,6 +288,14 @@ public final class ConfigPanel: @unchecked Sendable {
             // Empty pick clears the override (falls back to /setup status channel).
             let channelId = input.values?.first.flatMap { $0.isEmpty ? nil : $0 }
             return await setNotificationChannel(channelId)
+        case ConfigPanelIds.renderOpen:
+            return await .renderPanel(renderRenderPanel())
+        case ConfigPanelIds.renderToggle:
+            return await toggleRender()
+        case ConfigPanelIds.renderInstall:
+            return .renderInstall
+        case ConfigPanelIds.renderDecline:
+            return await declineChromium()
         case ConfigPanelIds.save:
             return await saveRoles()
         default:
@@ -312,6 +330,11 @@ public final class ConfigPanel: @unchecked Sendable {
         let notif = ConfigPanelComponent.button(
             customId: ConfigPanelIds.notifOpen,
             label: "🔔 Notifications",
+            style: .secondary
+        )
+        let renderBtn = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.renderOpen,
+            label: "🖼 Image render",
             style: .secondary
         )
 
@@ -363,7 +386,7 @@ public final class ConfigPanel: @unchecked Sendable {
                 ConfigPanelRow(components: [admin]),
                 ConfigPanelRow(components: [exec]),
                 ConfigPanelRow(components: [read]),
-                ConfigPanelRow(components: [save, notif]),
+                ConfigPanelRow(components: [save, notif, renderBtn]),
                 // 5th row: locale (defaultRows already at Discord's 5-row budget with dmPolicy).
                 ConfigPanelRow(components: [localeSelect]),
             ],
@@ -592,6 +615,68 @@ public final class ConfigPanel: @unchecked Sendable {
             rows: [
                 ConfigPanelRow(components: [channel]),
                 ConfigPanelRow(components: [toggle]),
+            ]
+        )
+    }
+
+    // MARK: Image render (S3 Chromium)
+
+    private func renderEnabled() async -> Bool {
+        ((try? await store.load())?.render?.enabled) ?? true
+    }
+
+    private func toggleRender() async -> ConfigPanelResult {
+        let next = !(await renderEnabled())
+        do {
+            try await store.setRenderEnabled(next)
+        } catch {
+            return .autosaved(notice: "render 저장 실패: \(error)")
+        }
+        return await .renderUpdated(renderRenderPanel())
+    }
+
+    private func declineChromium() async -> ConfigPanelResult {
+        do {
+            try await store.setChromiumDecision("declined")
+            try await store.setRenderEnabled(false)
+        } catch {
+            return .autosaved(notice: "chromium 저장 실패: \(error)")
+        }
+        return await .renderUpdated(renderRenderPanel())
+    }
+
+    private func renderRenderPanel() async -> ConfigPanelSubView {
+        let enabled = await renderEnabled()
+        let decision = ((try? await store.load())?.chromium?.decision) ?? "undecided"
+        let chrome = findChrome()
+        let chromeLine = chrome.map { "system: `\(($0 as NSString).lastPathComponent)`" }
+            ?? "no system Chrome (Install downloads Chrome for Testing)"
+        let toggle = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.renderToggle,
+            label: enabled ? "Disable table/mermaid PNG" : "Enable table/mermaid PNG",
+            style: enabled ? .danger : .success
+        )
+        let install = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.renderInstall,
+            label: "Install Chromium",
+            style: .primary
+        )
+        let decline = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.renderDecline,
+            label: "Decline",
+            style: .secondary
+        )
+        return ConfigPanelSubView(
+            title: "Image render (tables · mermaid)",
+            description: """
+            Render GFM tables and ```mermaid``` blocks as PNG attachments (headless Chrome).
+            State: **\(enabled ? "on" : "off")** · chromium.decision: `\(decision)`
+            Browser: \(chromeLine)
+            Env: `DAB_RENDER=0` force off · `DAB_MERMAID_JS` · `DAB_CHROMIUM_CACHE`
+            """,
+            rows: [
+                ConfigPanelRow(components: [toggle]),
+                ConfigPanelRow(components: [install, decline]),
             ]
         )
     }
