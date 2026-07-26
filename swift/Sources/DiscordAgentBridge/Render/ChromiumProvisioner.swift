@@ -1,8 +1,8 @@
 import Foundation
 
 // Chromium provisioning (TS `chromiumProvisioner.ts`).
-// System Chrome is preferred; otherwise optional download under cache via
-// `npx @puppeteer/browsers install chrome@stable --path CACHE` when node is available.
+// System Chrome is preferred; otherwise optional download under cache — natively, via the
+// Chrome for Testing distribution API (see ChromiumDownload.swift; H5: no Node/npx needed).
 // Concurrent install() callers join a single in-flight promise.
 
 /// Injectable provision step (tests create a fake launchable binary without downloading).
@@ -140,7 +140,7 @@ public actor ChromiumProvisioner {
         (appHome as NSString).appendingPathComponent("chromium")
     }
 
-    // MARK: - Default install via npx @puppeteer/browsers
+    // MARK: - Default install via Chrome for Testing (native download, no Node/npx)
 
     private static func defaultDownloadAndExtract(
         cacheDir: String,
@@ -148,89 +148,48 @@ public actor ChromiumProvisioner {
         logger: (@Sendable (String) -> Void)?
     ) async throws {
         let fm = FileManager.default
-        try fm.createDirectory(
-            atPath: cacheDir,
-            withIntermediateDirectories: true
-        )
-        onProgress?(5)
-
-        // Prefer project-local npx when node_modules exists; else PATH npx/node.
-        let npx = resolveNpx()
-        guard let npx else {
-            throw ChromiumProvisionError.nodeUnavailable
+        guard let platform = chromiumPlatformId() else {
+            throw ChromiumProvisionError.unsupportedPlatform
         }
 
-        logger?("chromium: installing via \(npx) @puppeteer/browsers …")
-        onProgress?(10)
+        let versions: ChromeForTestingVersions
+        do {
+            versions = try await fetchChromeForTestingVersions()
+        } catch {
+            throw ChromiumProvisionError.metadataFetchFailed
+        }
+        guard let match = chromiumStableDownload(from: versions, platform: platform),
+              let downloadURL = URL(string: match.url)
+        else {
+            throw ChromiumProvisionError.metadataFetchFailed
+        }
 
-        let ok = await runProcess(
-            executable: npx,
-            args: [
-                "--yes",
-                "@puppeteer/browsers",
-                "install",
-                "chrome@stable",
-                "--path",
-                cacheDir,
-            ],
-            timeoutSec: 600
-        )
+        let chromeDir = (cacheDir as NSString).appendingPathComponent("chrome")
+        try fm.createDirectory(atPath: chromeDir, withIntermediateDirectories: true)
+        let zipPath = (chromeDir as NSString).appendingPathComponent("\(platform)-\(match.version).zip")
+
+        logger?("chromium: downloading \(match.url)")
+        do {
+            try await downloadChromiumZip(from: downloadURL, to: URL(fileURLWithPath: zipPath), onProgress: onProgress)
+        } catch {
+            throw ChromiumProvisionError.downloadFailed
+        }
+
+        // destDir layout matches scanProvisioned's expectations: the zip's own top-level
+        // entry is already `<platform>/...`, so unzipping into `chrome/<platform>-<version>`
+        // reproduces exactly `chrome/<dir>/chrome-mac-arm64/...` etc.
+        let destDir = (chromeDir as NSString).appendingPathComponent("\(platform)-\(match.version)")
+        try? fm.removeItem(atPath: destDir) // drop any broken stub from a prior failed attempt
+        let ok = await runProcess(executable: "/usr/bin/unzip", args: ["-q", "-o", zipPath, "-d", destDir], timeoutSec: 120)
+        try? fm.removeItem(atPath: zipPath)
         guard ok else {
             throw ChromiumProvisionError.installFailed
         }
         onProgress?(100)
-        if scanProvisioned(cacheDir: cacheDir) == nil {
-            // npx may nest differently — accept any chrome binary under cacheDir.
-            if let found = findAnyChromeBinary(under: cacheDir) {
-                logger?("chromium: found at \(found)")
-                return
-            }
+        guard scanProvisioned(cacheDir: cacheDir) != nil else {
             throw ChromiumProvisionError.noExecutable
         }
-        logger?("chromium provisioned under \(cacheDir)")
-    }
-
-    private static func resolveNpx() -> String? {
-        let fm = FileManager.default
-        if let root = findRepoRoot() {
-            let local = root.appendingPathComponent("node_modules/.bin/npx").path
-            if fm.isExecutableFile(atPath: local) { return local }
-        }
-        // PATH lookup
-        let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-        for dir in pathEnv.split(separator: ":") {
-            let p = "\(dir)/npx"
-            if fm.isExecutableFile(atPath: p) { return p }
-        }
-        // node + npx module fallback
-        for dir in pathEnv.split(separator: ":") {
-            let p = "\(dir)/node"
-            if fm.isExecutableFile(atPath: p) { return p }
-        }
-        return nil
-    }
-
-    private static func findAnyChromeBinary(under root: String) -> String? {
-        let fm = FileManager.default
-        let names = [
-            "Google Chrome for Testing",
-            "chrome",
-            "chrome.exe",
-            "Chromium",
-            "google-chrome",
-        ]
-        guard let enumerator = fm.enumerator(atPath: root) else { return nil }
-        while let rel = enumerator.nextObject() as? String {
-            let base = (rel as NSString).lastPathComponent
-            if names.contains(base) {
-                let full = (root as NSString).appendingPathComponent(rel)
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: full, isDirectory: &isDir), !isDir.boolValue {
-                    return full
-                }
-            }
-        }
-        return nil
+        logger?("chromium provisioned under \(destDir)")
     }
 
     private static func runProcess(
@@ -242,7 +201,6 @@ public actor ChromiumProvisioner {
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: executable)
-                // When executable is `node`, we'd need different args — npx path only.
                 proc.arguments = args
                 proc.standardOutput = FileHandle.nullDevice
                 proc.standardError = FileHandle.nullDevice
@@ -268,14 +226,20 @@ public actor ChromiumProvisioner {
 }
 
 public enum ChromiumProvisionError: Error, CustomStringConvertible, Sendable {
-    case nodeUnavailable
+    case unsupportedPlatform
+    case metadataFetchFailed
+    case downloadFailed
     case installFailed
     case noExecutable
 
     public var description: String {
         switch self {
-        case .nodeUnavailable:
-            return "node/npx not found — install Node.js or place Chrome on the system PATH"
+        case .unsupportedPlatform:
+            return "chromium download is unsupported on this platform (macOS mac-arm64/mac-x64 or Linux linux64 only)"
+        case .metadataFetchFailed:
+            return "failed to fetch Chrome for Testing version metadata"
+        case .downloadFailed:
+            return "chromium download failed"
         case .installFailed:
             return "chromium download/install failed"
         case .noExecutable:

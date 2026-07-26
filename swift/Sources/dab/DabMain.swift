@@ -330,6 +330,13 @@ struct EventHandler: GatewayEventHandler {
                 }
                 return
             }
+            // (A1b) H6: Chromium install prompt (render-setup:install|decline) — posted after
+            // /setup. Host-wide decision, drive-tier (anyone may act on it), checked before the
+            // wizard/config dispatch below since it shares no custom_id namespace with either.
+            if let renderSetupAction = parseRenderSetupId(comp.custom_id) {
+                try await handleRenderSetupComponent(client: client, payload: payload, action: renderSetupAction)
+                return
+            }
             // (A2a) Resume flow: dir:resume + resume.* (owner-gated; may list/spawn sidecar >3s).
             // cancel while a resume flow is active is routed here (shared custom_id with ChannelWizard).
             let resumeChannelId = payload.channel_id?.rawValue ?? ""
@@ -728,6 +735,8 @@ struct EventHandler: GatewayEventHandler {
                     payload,
                     I18n.t("cmd.setup.done", ["control": "<#\(channels.controlChannelId)>"])
                 )
+                // H6: offer the Chromium install prompt in the fresh control channel.
+                await maybePromptRenderSetup(client: client, channelId: channels.controlChannelId)
             } catch {
                 log.error("/setup failed guild=\(realGuildId): \(error)")
                 try await respondEphemeral(payload, I18n.t("cmd.setup.unavailable"))
@@ -1132,31 +1141,14 @@ struct EventHandler: GatewayEventHandler {
                 payload: .updateMessage(.init(embeds: embeds, components: rows))
             )
         case .renderInstall:
+            // H7: reuses the same install flow as the render-setup:install button (TS
+            // components.ts:78-83 calls the identical `handleRenderSetup(..., 'install')`
+            // for both) — progress bar + i18n done/failed, edited into this same message.
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .deferredUpdateMessage()
             )
-            do {
-                try await ConfigStore.shared.setChromiumDecision("accepted")
-                let path = try await ImageRenderHost.shared.install()
-                _ = try? await client.createFollowupMessage(
-                    appId: payload.application_id,
-                    token: payload.token,
-                    payload: .init(
-                        content: "Chromium ready: `\(path)` — tables/mermaid will render as PNG.",
-                        flags: [.ephemeral]
-                    )
-                )
-            } catch {
-                _ = try? await client.createFollowupMessage(
-                    appId: payload.application_id,
-                    token: payload.token,
-                    payload: .init(
-                        content: "Chromium install failed: \(error). System Chrome or `npx` required.",
-                        flags: [.ephemeral]
-                    )
-                )
-            }
+            await performRenderSetupInstall(client: client, appId: payload.application_id, token: payload.token)
         case .pending, .ignored:
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,

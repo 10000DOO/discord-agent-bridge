@@ -30,6 +30,12 @@ public actor ImageRenderHost {
 
     public func provisionerInstance() -> ChromiumProvisioner? { provisioner }
 
+    /// True when something launchable already exists (system or provisioned) — H6/H7's
+    /// "already installed" fast path, without constructing a renderer.
+    public func isInstalled() async -> Bool {
+        await provisioner?.isInstalled() ?? false
+    }
+
     /// Resolve render fn for a turn/share, or nil when branch is off.
     public func resolveRenderFn() async -> ImageRenderFn? {
         if disabledByEnv { return nil }

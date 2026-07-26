@@ -47,9 +47,9 @@
 | H2 | 결정 후 재렌더링 다운그레이드 + i18n 키 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H3 | 미응답 시 자동거부 타임아웃 (Swift만 추가) | ✅ 완료 (Q4, 1장 참고) |
 | H4 | [보안] headless 브라우저 네트워크 차단 없음 | ✅ 완료 (빌드+테스트 확인) |
-| H5 | Chromium 설치가 Node/npx 셸아웃에 의존 | ⏳ 대기 (WO-P28) |
-| H6 | Chromium 설치 사전 안내 프롬프트 없음 | ⏳ 대기 (WO-P28) |
-| H7 | Chromium 설치 진행률 표시 없음 | ⏳ 대기 (WO-P28) |
+| H5 | Chromium 설치가 Node/npx 셸아웃에 의존 | ✅ 완료 (빌드+전체테스트 확인) |
+| H6 | Chromium 설치 사전 안내 프롬프트 없음 | ✅ 완료 (빌드+전체테스트 확인) |
+| H7 | Chromium 설치 진행률 표시 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H8 | 스트림 임베드 경과시간/델타개수 손실 | ⏳ 대기 (WO-P29) |
 | H9 | 텍스트/생각 디바운스 간격 통일됨(TS는 다름) | ⏳ 대기 (WO-P29) |
 | H10 | 턴 중간 사용량/레이트리밋 이벤트 소실 | ⏳ 대기 (WO-P29) |
@@ -177,9 +177,16 @@
 
 ### Chromium 이미지 렌더링
 
-- **H5.** Chromium 자동 설치가 런타임에 Node.js/npx를 요구하게 됨. TS는 `@puppeteer/browsers` 라이브러리를 인프로세스로 호출해서 빌드 타임 외엔 Node 불필요(`chromiumProvisioner.ts:95-147`). Swift는 `npx @puppeteer/browsers install chrome@stable`을 셸아웃(`ChromiumProvisioner.swift:145-191`)해서 Node/npx가 PATH에 없으면 `.nodeUnavailable`로 실패 — Swift 포팅이 없애려던 바로 그 런타임 의존성이 재도입됨.
-- **H6.** 신규 서버 초대/최초 `/setup` 성공 후 "Chromium 설치할까요?" 선제 안내 프롬프트 미포팅(`client.ts:601,724`, `router.ts:266-276` `maybePromptRenderSetup`) — **discord 렌더러/패널/인프라 3개 에이전트가 독립적으로 동일 항목을 발견**(교차검증 강함). Swift는 `/config` 패널을 수동으로 열어야만 설치 가능.
-- **H7.** 설치 진행률(%) 표시 없음 — `ChromiumProvisioner.install(onProgress:)` 콜백을 지원하는데 호출부(`DabMain.swift:992-1017`)가 `onProgress`를 안 씀. 성공/실패 메시지도 i18n 아닌 하드코딩 영어.
+- **H5. [구현됨: WO-P28]** Chromium 자동 설치가 런타임에 Node.js/npx를 요구하게 됨. TS는 `@puppeteer/browsers` 라이브러리를 인프로세스로 호출해서 빌드 타임 외엔 Node 불필요(`chromiumProvisioner.ts:95-147`). Swift는 `npx @puppeteer/browsers install chrome@stable`을 셸아웃(`ChromiumProvisioner.swift:145-191`)해서 Node/npx가 PATH에 없으면 `.nodeUnavailable`로 실패 — Swift 포팅이 없애려던 바로 그 런타임 의존성이 재도입됨.
+  - 조치: npx 셸아웃을 완전히 제거하고 구글 "Chrome for Testing" 배포 API(`https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json`)를 직접 호출하는 네이티브 다운로드로 교체. 신규 `Render/ChromiumDownload.swift`: 플랫폼id 판별(`chromiumPlatformId()` — macOS mac-arm64/mac-x64, Linux linux64, 그 외 nil), `ChromeForTestingVersions` Codable 모델 + `chromiumStableDownload(from:platform:)`, 진행률 계산/스로틀 순수함수(`chromiumDownloadPercent`, `shouldReportChromiumProgress` — TS `downloadProgressCallback`의 "0-99%, 10% 단위만 콜백" 그대로), `URLSessionDownloadDelegate` 기반 `downloadChromiumZip(from:to:onProgress:)`(`CheckedContinuation`으로 async/await 브릿지, 다운로드 완료 후 시스템 `/usr/bin/unzip`으로 압축 해제 — 기존 `runProcess` 재사용). `ChromiumProvisioner.swift`의 `defaultDownloadAndExtract`를 이 경로로 교체하고 `resolveNpx()`/`findAnyChromeBinary(under:)`는 삭제(다른 참조 없음 확인). 압축 해제 목적지는 `cacheDir/chrome/<platform>-<version>/`로 고정해 기존 `scanProvisioned`가 그대로 찾아내도록 함(스캔 로직 자체는 무변경). `ChromiumProvisionError`에서 `.nodeUnavailable` 제거, `.unsupportedPlatform`/`.metadataFetchFailed`/`.downloadFailed` 추가(`.installFailed`/`.noExecutable`은 유지).
+  - 단위테스트 신규(`ChromiumDownloadTests.swift`): 플랫폼id가 허용된 값 집합에 속하는지, JSON 디코딩(사용 안 하는 `chromedriver` 등 필드는 무시), `chromiumStableDownload`의 정상/미매치 케이스, 퍼센트 계산의 floor/99% 상한, 10%-스로틀 조건. 네트워크 타는 실제 다운로드/설치 오케스트레이션은 기존 관례대로(`provisionFn` 주입 지점이 이미 우회) 통합테스트 없이 유지.
+- **H6. [구현됨: WO-P28]** 신규 서버 초대/최초 `/setup` 성공 후 "Chromium 설치할까요?" 선제 안내 프롬프트 미포팅(`client.ts:601,724`, `router.ts:266-276` `maybePromptRenderSetup`) — **discord 렌더러/패널/인프라 3개 에이전트가 독립적으로 동일 항목을 발견**(교차검증 강함). Swift는 `/config` 패널을 수동으로 열어야만 설치 가능.
+  - 조치: TS `renderSetupButton.ts`를 그대로 포팅한 순수 빌더 신규 `Render/RenderSetupButton.swift`(`render-setup:install|decline` customId 스킴, `RenderSetupLabels`(i18n 래퍼), `shouldPromptRenderSetup(renderEnabled:chromiumDecision:isInstalled:)` 순수 게이팅 함수). discord.js 연동은 신규 `dab/RenderSetupWiring.swift`(`AutoUpdateWiring.swift`와 동일한 free-function 스타일): `maybePromptRenderSetup(client:channelId:)`가 `/setup` 성공 응답 직후(`DabMain.swift` `case "setup"`) 호출되어 render.enabled && chromium.decision=="undecided" && !isInstalled일 때만 컨트롤 채널에 설치/나중에 버튼 메시지를 올림. 버튼 클릭은 `handleRenderSetupComponent`(drive-tier 인가, `DabMain.swift`의 컴포넌트 디스패치에서 위저드/설정패널 분기보다 앞서 가로챔) — decline은 `chromium.decision="declined"` 저장 후 원본 메시지를 편집(내용 교체+버튼 제거), install은 H7과 공유하는 `performRenderSetupInstall`로 위임.
+  - i18n 키 8개 신규(`I18n.swift`, `render.setup.*`) — TS는 영어 로케일이 없어 영어에서도 한글로 보였으나, 이 파일 기존 관례(ko/en 둘 다 채움)를 따라 자연스러운 영어 버전도 함께 추가.
+  - 단위테스트 신규(`RenderSetupButtonTests.swift`): customId build/parse 라운드트립 + 이물질 id 거부, `shouldPromptRenderSetup` 4가지 게이팅 조건(정상/렌더꺼짐/이미결정/이미설치) 개별 검증.
+- **H7. [구현됨: WO-P28]** 설치 진행률(%) 표시 없음 — `ChromiumProvisioner.install(onProgress:)` 콜백을 지원하는데 호출부(`DabMain.swift:992-1017`)가 `onProgress`를 안 씀. 성공/실패 메시지도 i18n 아닌 하드코딩 영어.
+  - 조치: TS `components.ts:78-83`을 그대로 확인해보니 `/config`의 설치 버튼이 `/setup` 프롬프트와 **동일한 `handleRenderSetup(..., 'install')` 함수를 재사용**하고 있었음 — Swift도 동일하게 `DabMain.swift`의 `.renderInstall` 케이스가 H6에서 만든 `performRenderSetupInstall(client:appId:token:)`을 그대로 호출하도록 교체(둘 다 `deferredUpdateMessage` ack 기반 컴포넌트 인터랙션이라 `updateOriginalInteractionResponse`로 동일하게 진행률 편집 가능함을 코드로 확인). `chromium.decision="accepted"` 저장 → 이미 설치돼 있으면 `render.setup.already`로 즉시 종료 → 아니면 진행률 콜백마다 같은 메시지를 `⏬ 설치 중 ▓▓▓░░░░░░░ N%` 형태로 편집 → 완료/실패 시 `render.setup.done`/`render.setup.failed`. 하드코딩 영어 문자열("Chromium ready: ...", "Chromium install failed: ...") 완전 제거.
+  - 최종 확인(H5/H6/H7 공통): `swift build --package-path swift` 성공(`dab` 타겟 포함), `swift test --filter "ChromiumDownloadTests|RenderSetupButtonTests|ChromiumProvisionerTests"` 18건 전부 통과(기존 `ChromiumProvisionerTests` 회귀 없음), 전체 스위트 1064개 전부 통과.
 
 ### 스트리밍/렌더링 세부
 
@@ -306,7 +313,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 [완료: 2장 H14 참고] | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |
 | 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 [완료: 2장 H13 참고] | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |
 | 27 | WO-P27: 슬래시 커맨드 서버별 즉시 등록 + 신규 서버 재등록 [완료(결정): 2장 H16 참고 — 코드 변경 없음] | H16 | `dab/DabMain.swift` | 독립 |
-| 28 | WO-P28: Chromium 설치 인프로세스화 + 사전 안내 + 진행률 표시 | H5, H6, H7 | `ChromiumProvisioner.swift`, `dab/DabMain.swift` | 크로미움 설치 3건 묶음 |
+| 28 | WO-P28: Chromium 설치 인프로세스화 + 사전 안내 + 진행률 표시 [완료: 2장 H5/H6/H7 참고] | H5, H6, H7 | `ChromiumProvisioner.swift`(+ 신규 `ChromiumDownload.swift`/`RenderSetupButton.swift`/`dab/RenderSetupWiring.swift`), `dab/DabMain.swift` | 크로미움 설치 3건 묶음 |
 | 29 | WO-P29: 스트림 임베드 정보 손실 + 디바운스 간격 + 중간 사용량 이벤트 | H8, H9, H10 | `Render/StreamEmbed.swift`, `Render/StreamStatusHost.swift`, `dab/DabMain.swift` | 스트리밍 세부 3건 묶음 |
 | 30 | WO-P30: 부팅 안전망(`installGlobalSafetyNet`) + PID 파일 | H17 | `dab/DabMain.swift` | 독립 |
 | 31 | WO-P31: Codex 앱서버 실패 원인 분류 | H24 | `Codex/AppServerClient.swift` | 독립 |

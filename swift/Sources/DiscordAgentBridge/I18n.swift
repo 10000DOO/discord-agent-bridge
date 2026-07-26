@@ -198,6 +198,18 @@ public enum I18n {
         "update.checkFailed": "버전 확인에 실패했어요 (네트워크/레지스트리).",
         "update.disabled": "자동 업데이트가 꺼져 있어요 (`autoUpdate.enabled=false`).",
 
+        // Render setup (Chromium install prompt)
+        "render.setup.prompt":
+            "🖼 표·다이어그램을 **이미지로** 보시겠어요? 렌더링에 필요한 Chromium(약 300MB)을 설치할 수 있어요. 설치하지 않아도 답변은 원문 텍스트로 정상 표시됩니다.",
+        "render.setup.install": "설치",
+        "render.setup.decline": "나중에",
+        "render.setup.unavailable": "이 호스트에서는 설치를 사용할 수 없어요.",
+        "render.setup.declined": "알겠어요. 나중에 `/config` 에서 설치할 수 있어요.",
+        "render.setup.already": "이미 사용 가능한 브라우저가 있어요. 이미지 렌더링이 켜졌습니다.",
+        "render.setup.progress": "⏬ **Chromium 설치 중**\n`{bar}` {pct}%",
+        "render.setup.done": "✅ 설치 완료! 이제 표·다이어그램이 이미지로 렌더링됩니다.",
+        "render.setup.failed": "설치에 실패했어요. 잠시 후 `/config` 에서 다시 시도해 주세요.",
+
         // Watchdog
         "watchdog.idle":
             "약 3분 동안 새 활동이 없습니다. 아직 긴 작업을 하는 중일 수도 있고, 멈췄을 수도 있습니다. 채널 위쪽·스레드를 확인해 보거나, 작업이 끝났는지 에이전트한테 물어보세요.",
@@ -338,6 +350,17 @@ public enum I18n {
         "update.upToDate": "Already up to date.",
         "update.checkFailed": "Version check failed (network/registry).",
         "update.disabled": "Auto-update is off (`autoUpdate.enabled=false`).",
+
+        "render.setup.prompt":
+            "🖼 Want tables and diagrams shown as **images**? You can install Chromium (~300MB) for rendering. Without it, answers still display fine as plain text.",
+        "render.setup.install": "Install",
+        "render.setup.decline": "Later",
+        "render.setup.unavailable": "Install isn't available on this host.",
+        "render.setup.declined": "Got it — you can install it later from `/config`.",
+        "render.setup.already": "A usable browser is already available. Image rendering is on.",
+        "render.setup.progress": "⏬ **Installing Chromium**\n`{bar}` {pct}%",
+        "render.setup.done": "✅ Installed! Tables and diagrams will now render as images.",
+        "render.setup.failed": "Install failed. Please try again later from `/config`.",
 
         "watchdog.idle":
             "No new activity for about 3 minutes. It may still be working on a long task, or it may have stalled. Check above in the channel and any threads, or ask the agent whether the work finished.",
