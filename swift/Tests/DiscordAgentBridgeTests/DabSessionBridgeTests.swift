@@ -723,3 +723,45 @@ struct DabSessionBridgeTests {
         #expect(got["setEffort"] == "high")
     }
 }
+
+// H10: DabSessionBridge's .contextUsage/.rateLimit cases push out via UsageActivityHost.shared
+// (dab wires the real Discord post there — DabMain.swift setNotifier). .serialized: this touches
+// the shared singleton, mirrors LogTests/I18nTests' convention for shared-state tests.
+@Suite("DabSessionBridge H10 mid-turn UsageActivityHost notify", .serialized)
+struct DabSessionBridgeUsageActivityTests {
+    @Test func contextUsageAndRateLimitFireUsageActivityHostDuringTurn() async throws {
+        let recorder = LockedBox<[UsageActivityEvent]>([])
+        await UsageActivityHost.shared.setCapabilities(channelId: "c", Capabilities(usagePanel: true))
+        await UsageActivityHost.shared.setNotifyContext(channelId: "c", guildId: "g", backend: .claude, permMode: nil)
+        await UsageActivityHost.shared.setNotifier { channelId, _, _, _, event in
+            guard channelId == "c" else { return }
+            recorder.withLock { $0.append(event) }
+        }
+
+        let (bridge, _) = makeDabBridge(emitContextAndRateLimit: true)
+        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+
+        // Turn-end value is unaffected by the new real-time push (regression guard).
+        #expect(turn.contextUsage?.percentage == 10)
+        #expect(turn.rateLimit?.utilization == 50)
+
+        // Each event fires its own fire-and-forget notify Task (no ordering chain between the
+        // two, mirroring ToolActivityHost's .toolUse handling) — assert by content, not index.
+        #expect(await waitUntil { recorder.withLock { $0.count } == 2 })
+        let events = recorder.withLock { $0 }
+        let contextUsages = events.compactMap { event -> ContextUsageInfo? in
+            if case .contextUsage(let ctx, _, _) = event { return ctx }
+            return nil
+        }
+        let rateLimits = events.compactMap { event -> RateLimitInfo? in
+            if case .rateLimit(let rl) = event { return rl }
+            return nil
+        }
+        #expect(contextUsages.first?.percentage == 10)
+        #expect(rateLimits.first?.utilization == 50)
+
+        // Isolated cleanup (this suite is the only place touching the shared singleton).
+        await UsageActivityHost.shared.dispose(channelId: "c")
+        await UsageActivityHost.shared.setNotifier(nil)
+    }
+}

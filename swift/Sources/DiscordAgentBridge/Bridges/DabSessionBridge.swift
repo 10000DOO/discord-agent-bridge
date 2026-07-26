@@ -447,18 +447,35 @@ public actor DabSessionBridge {
             finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: out))
         case .contextUsage:
             // W11-g slice2: keep latest context_usage for the turn result / panel.
+            // H10: also push it out immediately (TS renderers/index.ts usage(ev) posts on every
+            // event, not just at turn end) with the turn-local tools/agents snapshot so far.
             if let info = ContextUsageInfo.from(event: event) {
                 box.contextUsage = info
                 turns[handle] = box
+                if let channelId = sessionMeta[handle]?.channelId {
+                    let tools = box.stats.toolsSnapshot()
+                    let agents = box.stats.agentsSnapshot()
+                    Task {
+                        await UsageActivityHost.shared.notify(
+                            channelId: channelId, .contextUsage(info, tools: tools, agents: agents)
+                        )
+                    }
+                }
             }
         case .rateLimit(let resetAt, let rateLimitType, let utilization):
             // W11-g slice2: capture rate_limit for a post-turn notice line.
-            box.rateLimit = RateLimitInfo(
+            // H10: TS rateLimit(ev) sends immediately on every event (renderers/index.ts:355-365),
+            // never gated/debounced — push it out now too.
+            let info = RateLimitInfo(
                 resetAt: resetAt,
                 rateLimitType: rateLimitType,
                 utilization: utilization
             )
+            box.rateLimit = info
             turns[handle] = box
+            if let channelId = sessionMeta[handle]?.channelId {
+                Task { await UsageActivityHost.shared.notify(channelId: channelId, .rateLimit(info)) }
+            }
         case .error(let message, _):
             finishTurnUnlocked(
                 handle: handle,
@@ -585,6 +602,7 @@ public actor DabSessionBridge {
         turnDepth[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
+        await UsageActivityHost.shared.dispose(channelId: channelId)
         guard let handle = sessions.removeValue(forKey: channelId) else { return }
         sessionMeta[handle] = nil
         // Unblock a waiter before the RPC so stop is never stuck on a hung turn.

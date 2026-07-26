@@ -44,11 +44,16 @@ public struct StreamEmbedSpec: Sendable, Equatable {
 /// - Live responding: title "응답 중…", yellow, description = clipped partial answer text.
 /// - Live thinking: title "생각 중…", purple (`DiscordColors.thinking`), description = thinking buffer.
 /// - Finalized: title "응답 완료" (+ " · 🛠️ N"), no body (answer is posted separately).
+/// - `elapsedSec`/`deltaCount` (H8, TS `streamEmbed.ts:219-222` footer `"{sec}s · {deltaCount}"`):
+///   absent (nil) until the current phase's kind has actually started (StreamStatusHost only
+///   passes a value once a matching delta arrived), so a tool-only flush still shows tool-count-only.
 public func formatStreamEmbed(
     partialText: String = "",
     toolCount: Int = 0,
     finalized: Bool = false,
-    phase: StreamEmbedPhase = .responding
+    phase: StreamEmbedPhase = .responding,
+    elapsedSec: String? = nil,
+    deltaCount: Int = 0
 ) -> StreamEmbedSpec {
     if finalized {
         return StreamEmbedSpec(
@@ -64,7 +69,10 @@ public func formatStreamEmbed(
     } else {
         desc = DiscordText.truncate(partialText, streamEmbedDescLimit)
     }
-    let footer: String? = toolCount > 0 ? "🛠️ \(toolCount)" : nil
+    var footerParts: [String] = []
+    if let elapsedSec { footerParts.append("\(elapsedSec)s · \(deltaCount)") }
+    if toolCount > 0 { footerParts.append("🛠️ \(toolCount)") }
+    let footer: String? = footerParts.isEmpty ? nil : footerParts.joined(separator: " · ")
     switch phase {
     case .thinking:
         return StreamEmbedSpec(
@@ -81,4 +89,16 @@ public func formatStreamEmbed(
             footer: footer
         )
     }
+}
+
+/// "Thought for Ns" (TS `finalize()` kind:'thinking', `streamEmbed.ts:158-164`) — bare
+/// `{ title, color }`, no description/footer (TS collapses the *separate* thinking message to
+/// this once the turn ends). Swift merged thinking/text into one control message, so the only
+/// point this is ever visible is the instant the phase leaves `.thinking` (StreamStatusHost
+/// flashes it there before the message moves on to the responding content).
+public func formatThoughtCompleteEmbed(elapsedSec: String) -> StreamEmbedSpec {
+    StreamEmbedSpec(
+        title: I18n.t("stream.thought", ["sec": elapsedSec]),
+        color: DiscordColors.thinking
+    )
 }

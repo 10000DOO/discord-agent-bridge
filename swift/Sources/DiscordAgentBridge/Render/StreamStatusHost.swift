@@ -18,11 +18,14 @@ public typealias StreamStatusUpdater = @Sendable (
 public actor StreamStatusHost {
     public static let shared = StreamStatusHost()
 
-    /// Default minimum gap between Discord edits (TS text debounce ≈ 1s).
-    public static let defaultMinFlushInterval: TimeInterval = 1.0
+    /// Default minimum gap between Discord edits while text streams (TS `TEXT_DEBOUNCE_MS` = 1000).
+    public static let defaultTextFlushInterval: TimeInterval = 1.0
+    /// Default minimum gap between Discord edits while thinking streams (TS `THINKING_DEBOUNCE_MS` = 2000).
+    public static let defaultThinkingFlushInterval: TimeInterval = 2.0
 
-    /// Per-instance interval (tests inject a short value).
-    private let minFlushInterval: TimeInterval
+    /// Per-instance intervals (tests inject short values).
+    private let textFlushInterval: TimeInterval
+    private let thinkingFlushInterval: TimeInterval
     private var updater: StreamStatusUpdater?
     private var states: [String: ChannelState] = [:]
 
@@ -39,10 +42,20 @@ public actor StreamStatusHost {
         var active: Bool = true
         var lastFlush: Date?
         var flushTask: Task<Void, Never>?
+        // H8 footer (TS per-kind `startedAt`/`deltaCount`, `streamEmbed.ts:58-60,87-90`): lazily
+        // set on each kind's first delta, independent of the other kind, reset only at begin().
+        var textStartedAt: Date?
+        var textDeltaCount = 0
+        var thinkingStartedAt: Date?
+        var thinkingDeltaCount = 0
     }
 
-    public init(minFlushInterval: TimeInterval = StreamStatusHost.defaultMinFlushInterval) {
-        self.minFlushInterval = minFlushInterval
+    public init(
+        textFlushInterval: TimeInterval = StreamStatusHost.defaultTextFlushInterval,
+        thinkingFlushInterval: TimeInterval = StreamStatusHost.defaultThinkingFlushInterval
+    ) {
+        self.textFlushInterval = textFlushInterval
+        self.thinkingFlushInterval = thinkingFlushInterval
     }
 
     /// Wire Discord edit sink once at startup (dab). Absent → notes no-op.
@@ -78,6 +91,9 @@ public actor StreamStatusHost {
     /// Append a text delta (Claude stream). Debounced flush. Switches phase → responding.
     public func noteText(channelId: String, delta: String) {
         guard !delta.isEmpty, var s = states[channelId], s.active else { return }
+        flashThoughtCompleteIfLeavingThinking(s, channelId: channelId)
+        if s.textStartedAt == nil { s.textStartedAt = Date() }
+        s.textDeltaCount += 1
         s.partialText += delta
         s.phase = .responding
         states[channelId] = s
@@ -90,6 +106,8 @@ public actor StreamStatusHost {
     /// Debounced flush; phase → thinking (purple "생각 중…").
     public func noteThinking(channelId: String, delta: String) {
         guard !delta.isEmpty, var s = states[channelId], s.active else { return }
+        if s.thinkingStartedAt == nil { s.thinkingStartedAt = Date() }
+        s.thinkingDeltaCount += 1
         s.thinkingText += delta
         s.phase = .thinking
         states[channelId] = s
@@ -109,6 +127,7 @@ public actor StreamStatusHost {
     /// Surface a progress label when no/partial text yet (or append a line).
     public func noteProgress(channelId: String, label: String, detail: String?) {
         guard var s = states[channelId], s.active else { return }
+        flashThoughtCompleteIfLeavingThinking(s, channelId: channelId)
         let line = detail.map { "\(label): \($0)" } ?? label
         if s.partialText.isEmpty {
             s.partialText = line
@@ -125,7 +144,8 @@ public actor StreamStatusHost {
 
     private func scheduleFlush(channelId: String, force: Bool) {
         guard var s = states[channelId], s.active else { return }
-        let minInterval = minFlushInterval
+        // TS debounces text (1s) and thinking (2s) separately; pick by the channel's current phase.
+        let minInterval = s.phase == .thinking ? thinkingFlushInterval : textFlushInterval
 
         if force {
             // Immediate if enough time has passed; else wait out the remainder.
@@ -174,13 +194,40 @@ public actor StreamStatusHost {
         let guildId = s.guildId
         // Thinking phase shows thinking buffer only; answer text stays in partialText.
         let displayText = s.phase == .thinking ? s.thinkingText : s.partialText
+        // H8: elapsed/delta count are per-kind (nil until that kind's first delta arrived).
+        let startedAt = s.phase == .thinking ? s.thinkingStartedAt : s.textStartedAt
+        let deltaCount = s.phase == .thinking ? s.thinkingDeltaCount : s.textDeltaCount
         let spec = formatStreamEmbed(
             partialText: displayText,
             toolCount: s.toolCount,
-            phase: s.phase
+            phase: s.phase,
+            elapsedSec: startedAt.map { Self.formatElapsedSec(since: $0) },
+            deltaCount: deltaCount
         )
         states[channelId] = s
         guard let updater else { return }
         await updater(channelId, messageId, guildId, spec)
+    }
+
+    // MARK: - H8 thought-complete flash
+
+    /// TS `finalize()` kind:'thinking' collapses the (separate) thinking message to "Thought for
+    /// Ns" once the turn ends (`streamEmbed.ts:158-164`). Swift merged both kinds into one control
+    /// message, so by real turn-end it already shows the finalized "done" embed — the only point
+    /// this is ever visible is the instant the phase actually leaves `.thinking`. Called from every
+    /// note*() that can move the phase to `.responding` (text delta, progress line) BEFORE that
+    /// mutation, so it still sees the outgoing `.thinking` state.
+    private func flashThoughtCompleteIfLeavingThinking(_ state: ChannelState, channelId: String) {
+        guard state.phase == .thinking, let startedAt = state.thinkingStartedAt, let updater else { return }
+        let spec = formatThoughtCompleteEmbed(elapsedSec: Self.formatElapsedSec(since: startedAt))
+        let messageId = state.messageId
+        let guildId = state.guildId
+        // Fire-and-forget: the caller's own scheduleFlush(force:false) right after re-arms the
+        // debounce for the new (responding) phase, so this is a one-shot edit, not a tracked task.
+        Task { await updater(channelId, messageId, guildId, spec) }
+    }
+
+    private static func formatElapsedSec(since startedAt: Date) -> String {
+        String(format: "%.1f", Date().timeIntervalSince(startedAt))
     }
 }

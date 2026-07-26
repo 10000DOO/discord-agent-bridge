@@ -85,12 +85,34 @@ struct FormatStreamEmbedTests {
         #expect(e.color == DiscordColors.streaming)
         #expect(e.description == nil)
     }
+
+    // H8: footer carries "{elapsedSec}s · {deltaCount}" (TS streamEmbed.ts:219-222) once the
+    // caller has a real elapsed value; absent (nil) omits it entirely (unchanged tool-only case).
+    @Test func liveFooterShowsElapsedAndDeltaCount() {
+        let e = formatStreamEmbed(partialText: "hi", elapsedSec: "1.2", deltaCount: 3)
+        #expect(e.footer == "1.2s · 3")
+    }
+
+    @Test func liveFooterCombinesElapsedDeltaAndToolCount() {
+        let e = formatStreamEmbed(partialText: "hi", toolCount: 2, elapsedSec: "0.5", deltaCount: 1)
+        #expect(e.footer == "0.5s · 1 · 🛠️ 2")
+    }
+
+    // H8: "Thought for Ns" (TS finalize() kind:'thinking', streamEmbed.ts:158-164) — bare
+    // title + color, no description/footer.
+    @Test func thoughtCompleteEmbedMatchesTSShape() {
+        let e = formatThoughtCompleteEmbed(elapsedSec: "3.4")
+        #expect(e.title == "3.4초 동안 생각함")
+        #expect(e.color == DiscordColors.thinking)
+        #expect(e.description == nil)
+        #expect(e.footer == nil)
+    }
 }
 
 @Suite("StreamStatusHost")
 struct StreamStatusHostTests {
     @Test func notesNoOpWithoutBegin() async {
-        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
         let edits = LockedBox<[StreamEmbedSpec]>([])
         await host.setUpdater { _, _, _, spec in
             edits.withLock { $0.append(spec) }
@@ -102,7 +124,7 @@ struct StreamStatusHostTests {
     }
 
     @Test func forceToolFlushUpdatesSpec() async {
-        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
         let edits = LockedBox<[StreamEmbedSpec]>([])
         await host.setUpdater { channelId, messageId, guildId, spec in
             #expect(channelId == "c1")
@@ -128,7 +150,7 @@ struct StreamStatusHostTests {
     }
 
     @Test func textDebounceThenFlush() async {
-        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
         let edits = LockedBox<[StreamEmbedSpec]>([])
         await host.setUpdater { _, _, _, spec in
             edits.withLock { $0.append(spec) }
@@ -150,7 +172,7 @@ struct StreamStatusHostTests {
 
     // G-P0-03: thinking buffer is separate from answer text; purple title while active.
     @Test func thinkingFlushIsPurpleAndSeparateFromText() async {
-        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
         let edits = LockedBox<[StreamEmbedSpec]>([])
         await host.setUpdater { _, _, _, spec in
             edits.withLock { $0.append(spec) }
@@ -183,7 +205,7 @@ struct StreamStatusHostTests {
 
     // G-P1-02: progress line surfaces as stream embed description (TS transcriptFeed parity).
     @Test func progressFlushShowsLabelAndDetail() async {
-        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
         let edits = LockedBox<[StreamEmbedSpec]>([])
         await host.setUpdater { _, _, _, spec in
             edits.withLock { $0.append(spec) }
@@ -197,5 +219,83 @@ struct StreamStatusHostTests {
         #expect(got?.title == "응답 중…")
         #expect(got?.description == "명령 실행 중: ls -la")
         await host.dispose(channelId: "c4")
+    }
+
+    // H9: text (1s) and thinking (2s) debounce independently in TS; verify the thinking
+    // phase really waits out its own (longer) interval instead of the text interval.
+    @Test func thinkingUsesItsOwnLongerFlushInterval() async {
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.3)
+        let edits = LockedBox<[StreamEmbedSpec]>([])
+        await host.setUpdater { _, _, _, spec in
+            edits.withLock { $0.append(spec) }
+        }
+        await host.begin(channelId: "c5", guildId: "g", messageId: "m")
+        await host.noteThinking(channelId: "c5", delta: "hmm")
+        // Well past the short text interval but before the long thinking interval: no flush yet.
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        #expect(edits.withLock { $0.isEmpty })
+        for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let got = edits.withLock { $0.last }
+        #expect(got?.title == "생각 중…")
+        await host.dispose(channelId: "c5")
+    }
+
+    // H8: footer carries "{elapsed}s · {deltaCount}" once a real text delta has arrived.
+    @Test func footerShowsElapsedAndDeltaOnceStarted() async {
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
+        let edits = LockedBox<[StreamEmbedSpec]>([])
+        await host.setUpdater { _, _, _, spec in
+            edits.withLock { $0.append(spec) }
+        }
+        await host.begin(channelId: "c6", guildId: "g", messageId: "m")
+        await host.noteText(channelId: "c6", delta: "a")
+        await host.noteText(channelId: "c6", delta: "b")
+        for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let footer = edits.withLock { $0.last?.footer }
+        #expect(footer?.hasSuffix("s · 2") == true)
+        await host.dispose(channelId: "c6")
+    }
+
+    // H8: leaving the thinking phase (a text delta arrives mid-thinking) flashes a one-shot
+    // "Thought for Ns" edit before the debounced responding flush lands (TS's separate thinking
+    // message collapses at turn end; Swift's merged single message only has this one moment).
+    @Test func thoughtCompleteFlashesOnceWhenLeavingThinking() async {
+        let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
+        let edits = LockedBox<[StreamEmbedSpec]>([])
+        await host.setUpdater { _, _, _, spec in
+            edits.withLock { $0.append(spec) }
+        }
+        await host.begin(channelId: "c7", guildId: "g", messageId: "m")
+        await host.noteThinking(channelId: "c7", delta: "hmm")
+        for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(edits.withLock { $0.last?.title } == "생각 중…")
+
+        await host.noteText(channelId: "c7", delta: "answer")
+        var thoughtComplete: StreamEmbedSpec?
+        for _ in 0..<100 {
+            thoughtComplete = edits.withLock { $0.first { $0.title.hasSuffix("생각함") } }
+            if thoughtComplete != nil { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(thoughtComplete?.title.hasSuffix("초 동안 생각함") == true)
+        #expect(thoughtComplete?.color == DiscordColors.thinking)
+        #expect(thoughtComplete?.description == nil)
+        #expect(thoughtComplete?.footer == nil)
+
+        // The normal debounced flush then still lands with the responding embed/answer text.
+        var lastDesc: String?
+        for _ in 0..<100 {
+            lastDesc = edits.withLock { $0.last?.description }
+            if lastDesc == "answer" { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(edits.withLock { $0.last?.title } == "응답 중…")
+        await host.dispose(channelId: "c7")
     }
 }

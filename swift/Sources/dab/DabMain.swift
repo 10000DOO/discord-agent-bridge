@@ -95,6 +95,14 @@ struct DabMain {
                 client: client, guildId: guildId, sessionChannelId: channelId, event: event, backend: backend
             )
         }
+        // H10: mid-turn context_usage/rate_limit → immediate usage embed / rate-limit line (TS
+        // renderers/index.ts usage(ev)/rateLimit(ev) post on every event, not just at turn end).
+        await UsageActivityHost.shared.setNotifier { channelId, guildId, backend, permMode, event in
+            await postUsageActivity(
+                client: client, channelId: ChannelSnowflake(channelId), guildId: guildId,
+                backend: backend, permMode: permMode, event: event
+            )
+        }
         // W11-g residual: mid-turn stream status embed edits (text / tool_use / progress).
         await StreamStatusHost.shared.setUpdater { channelId, messageId, guildId, spec in
             await editStreamControlMessage(
@@ -1954,6 +1962,18 @@ struct EventHandler: GatewayEventHandler {
         await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)
         // C15: guildId/backend for the status-channel tool_use notifier (see setNotifier above).
         await ToolActivityHost.shared.setNotifyContext(channelId: channelId, guildId: guildId, backend: backend)
+        // H10: caps/guildId/backend/permMode for the mid-turn usage notifier (see setNotifier
+        // above). Only DabSessionBridge (.claude/.custom) ever calls UsageActivityHost.notify —
+        // Codex/Grok emit context_usage/rate_limit at most once, synchronously at turn end
+        // already (see swift-port-parity-gaps.md H10), so they never touch this host. Scoping the
+        // registration to the backends that actually use it avoids leaking per-channel state for
+        // channels DabSessionBridge.stop's dispose(channelId:) never visits.
+        if backend == .claude || backend == .custom {
+            await UsageActivityHost.shared.setCapabilities(channelId: channelId, caps)
+            await UsageActivityHost.shared.setNotifyContext(
+                channelId: channelId, guildId: guildId, backend: backend, permMode: binding?.permMode
+            )
+        }
         // Live stream status embed: yellow "응답 중…" + Stop button (W11-g residual).
         // Mid-turn text/tool/progress edits via StreamStatusHost; finalize collapses to done.
         // streaming=false → skip begin (notes no-op); interrupt control message still posts.
@@ -2043,71 +2063,29 @@ struct EventHandler: GatewayEventHandler {
                     }
                 )
             }
-            // W11-g slice2/4: usage embed — caps.usagePanel only (TS RendererDispatcher).
+            // W11-g slice2/4: usage embed — caps.usagePanel only (TS RendererDispatcher). Shared
+            // with the H10 mid-turn UsageActivityHost notifier (postUsageActivity below).
             var usageSnap: UsageResult? = nil
             if caps.usagePanel {
-                switch backend {
-                case .claude, .custom:
-                    usageSnap = await ClaudeUsageService.shared.getUsage()
-                case .grok:
-                    usageSnap = await GrokUsageService.shared.getUsage()
-                case .codex:
-                    usageSnap = await CodexUsageService.shared.getUsage()
-                }
-                let usageTitle: String
-                switch backend {
-                case .claude, .custom: usageTitle = I18n.t("usage.title")
-                case .grok: usageTitle = I18n.t("usage.title.grok")
-                case .codex: usageTitle = I18n.t("usage.title.codex")
-                }
+                let (snap, usageTitle) = await usageSnapshotAndTitle(backend: backend)
+                usageSnap = snap
                 let embedExtras = UsageEmbedExtras(
                     meta: UsageSessionMeta(permMode: binding?.permMode),
                     title: usageTitle,
                     tools: turn.tools,
                     agents: turn.agents
                 )
-                if let spec = buildUsageEmbed(
-                    usage: usageSnap,
-                    ctxUsage: turn.contextUsage,
-                    extras: embedExtras
-                ) {
-                    _ = await createMessageWithRetry(
-                        client: client,
-                        channelId: payload.channel_id,
-                        payload: .init(embeds: [discordEmbed(from: spec)]),
-                        onGone: {
-                            await SessionLifecycle.shared.stopChannel(
-                                channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-                            )
-                        }
-                    )
-                } else if let ctx = turn.contextUsage {
-                    // Fallback: plain context line when no panel fields (no OAuth / tools).
-                    _ = await createMessageWithRetry(
-                        client: client,
-                        channelId: payload.channel_id,
-                        payload: .init(content: formatContextUsageLine(ctx)),
-                        onGone: {
-                            await SessionLifecycle.shared.stopChannel(
-                                channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-                            )
-                        }
-                    )
-                }
+                await postUsageEmbedOrFallback(
+                    client: client, channelId: payload.channel_id, guildId: guildId,
+                    usage: usageSnap, ctxUsage: turn.contextUsage, extras: embedExtras
+                )
             }
             // W11-g slice2: rate_limit notice (event fields; enrich with usage snapshot if any).
             // Always (not usagePanel-gated) — matches TS RendererDispatcher.rateLimit.
             if let rl = turn.rateLimit {
-                let line = formatRateLimitLine(rl, usage: usageSnap)
-                _ = await createMessageWithRetry(
-                    client: client,
-                    channelId: payload.channel_id,
-                    payload: .init(content: line),
-                    onGone: {
-                        await SessionLifecycle.shared.stopChannel(
-                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-                        )
-                    }
+                await postRateLimitLine(
+                    client: client, channelId: payload.channel_id, guildId: guildId,
+                    rateLimit: rl, usage: usageSnap
                 )
             }
             // W11-g slice2: mentionOnComplete — ping session owner (binding) or message author.
@@ -2369,6 +2347,85 @@ func resolveSessionCapabilities(backend: Backend, guildId: String) async -> Capa
         server: serverCaps,
         env: ProcessInfo.processInfo.environment
     )
+}
+
+// MARK: - Usage / rate-limit posting (shared by turn-end delivery + H10 UsageActivityHost)
+
+/// backend → (live usage snapshot, panel title). Shared by turn-end delivery
+/// (runAndReply) and the H10 mid-turn UsageActivityHost notifier (postUsageActivity).
+func usageSnapshotAndTitle(backend: Backend) async -> (usage: UsageResult?, title: String) {
+    switch backend {
+    case .claude, .custom:
+        return (await ClaudeUsageService.shared.getUsage(), I18n.t("usage.title"))
+    case .grok:
+        return (await GrokUsageService.shared.getUsage(), I18n.t("usage.title.grok"))
+    case .codex:
+        return (await CodexUsageService.shared.getUsage(), I18n.t("usage.title.codex"))
+    }
+}
+
+/// Post the usage embed, or the plain context-usage line when the embed has no panel fields.
+/// Shared by turn-end delivery and the H10 real-time notifier.
+func postUsageEmbedOrFallback(
+    client: any DiscordClient, channelId: ChannelSnowflake, guildId: String,
+    usage: UsageResult?, ctxUsage: ContextUsageInfo?, extras: UsageEmbedExtras
+) async {
+    let onGone: @Sendable () async -> Void = {
+        await SessionLifecycle.shared.stopChannel(
+            channelId: channelId.rawValue, actorId: "system", guildId: guildId, roleTier: "execute"
+        )
+    }
+    if let spec = buildUsageEmbed(usage: usage, ctxUsage: ctxUsage, extras: extras) {
+        _ = await createMessageWithRetry(
+            client: client, channelId: channelId,
+            payload: .init(embeds: [discordEmbed(from: spec)]), onGone: onGone
+        )
+    } else if let ctx = ctxUsage {
+        // Fallback: plain context line when no panel fields (no OAuth / tools).
+        _ = await createMessageWithRetry(
+            client: client, channelId: channelId,
+            payload: .init(content: formatContextUsageLine(ctx)), onGone: onGone
+        )
+    }
+}
+
+/// Post the rate-limit line (never usagePanel-gated — TS RendererDispatcher.rateLimit). Shared by
+/// turn-end delivery and the H10 real-time notifier.
+func postRateLimitLine(
+    client: any DiscordClient, channelId: ChannelSnowflake, guildId: String,
+    rateLimit: RateLimitInfo, usage: UsageResult?
+) async {
+    _ = await createMessageWithRetry(
+        client: client, channelId: channelId,
+        payload: .init(content: formatRateLimitLine(rateLimit, usage: usage)),
+        onGone: {
+            await SessionLifecycle.shared.stopChannel(
+                channelId: channelId.rawValue, actorId: "system", guildId: guildId, roleTier: "execute"
+            )
+        }
+    )
+}
+
+/// H10: UsageActivityHost notifier — mid-turn context_usage/rate_limit → immediate post (TS
+/// renderers/index.ts usage(ev)/rateLimit(ev), which never wait for turn completion).
+func postUsageActivity(
+    client: any DiscordClient, channelId: ChannelSnowflake, guildId: String,
+    backend: Backend, permMode: String?, event: UsageActivityEvent
+) async {
+    switch event {
+    case .contextUsage(let ctx, let tools, let agents):
+        let (usage, title) = await usageSnapshotAndTitle(backend: backend)
+        let extras = UsageEmbedExtras(
+            meta: UsageSessionMeta(permMode: permMode), title: title, tools: tools, agents: agents
+        )
+        await postUsageEmbedOrFallback(
+            client: client, channelId: channelId, guildId: guildId,
+            usage: usage, ctxUsage: ctx, extras: extras
+        )
+    case .rateLimit(let rl):
+        let (usage, _) = await usageSnapshotAndTitle(backend: backend)
+        await postRateLimitLine(client: client, channelId: channelId, guildId: guildId, rateLimit: rl, usage: usage)
+    }
 }
 
 // MARK: - turn reactions (G-P0-02 / TS messageRouter REACT_WORKING/DONE/ERROR)
