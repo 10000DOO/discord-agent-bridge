@@ -58,7 +58,7 @@
 | H13 | ChannelWizard 동시 상호작용 직렬화 큐 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H14 | 프리셋 삭제 optimistic 저장 정합성 | ✅ 완료 (빌드+전체테스트 확인) |
 | H15 | DM 구조적 차단 가드 없음 | ✅ 완료 (빌드+테스트 확인) |
-| H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ⏳ 대기 (WO-P27) |
+| H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H17 | 부팅 안전망 + PID 파일 없음 | ⏳ 대기 (WO-P30) |
 | H18 | config.json 엄격 검증 부족 | ✅ 완료 (빌드+테스트 확인) |
 | H19 | permissionProfile null vs 필드없음 구분 안됨 | ✅ 완료 (빌드+테스트 확인) |
@@ -226,7 +226,10 @@
 - **H15. [구현됨: `Session/SessionRegistry.swift:66` `routeDecision(...)` `isDM` 파라미터, `dab/DabMain.swift:1842` 호출부 배선]** TS는 DM을 구조적으로 완전 차단(`messageRouter.ts:144`)하는데 Swift엔 그 가드가 없어서, `dmPolicy=allow`로 설정하면 `!claude/!codex/!grok/!custom <prompt>` 접두사로 DM에서도 턴을 실행할 수 있음(TS는 어떤 설정으로도 구조적으로 불가능). 기본값은 deny라 기본 설정에선 문제없음.
   - **구현(3안 중 옵션 1 사용자 확정)**: `routeDecision`(콘텐츠/바인딩만 보는 순수 함수, 유닛테스트 지점)에 `isDM: Bool = false` 파라미터를 추가해 함수 맨 첫 줄에서 무조건 `.ignore`를 반환하도록 함 — TS의 "guildId 없으면 그 무엇보다 먼저 리턴"과 실행 순서까지 동일. 옵션 2(`guildId: String = "dm"` 매직 문자열 센티널, 이 파일에 이미 있는 관행 재사용)는 순수 함수에 디스코드 어휘를 끌어들이는 매직 문자열 비교가 생겨 기각. 옵션 3(`DabMain.swift`의 `onMessageCreate` 안에 직접 가드 추가, TS 위치와 가장 유사)은 그 파일이 유닛테스트 안 붙는 실행 타겟이라 회귀 검증이 안 돼 기각. 디폴트값 `false`라 기존 호출부/테스트 전부 무변경, `Authorizer`/`dmPolicy` 게이트는 건드리지 않음(이 가드가 그보다 먼저 실행되는 별개의 구조적 차단).
   - 유닛 테스트 3건 신규(`SessionRoutingTests.swift` `RouteDecisionTests` 스위트): `dmIgnoresPrefixCommand`(DM에서 `!claude`/`!custom` 접두사 무시), `dmIgnoresBoundChannelPlainText`(바인딩된 채널이어도 DM이면 무시), `dmIgnoresEvenEmptyPromptPrefix`(DM이 아니면 `.usage`가 될 빈 프롬프트도 DM이면 그냥 무시). 최종 확인: `swift build --package-path swift` 성공(`dab` 타겟도 같은 빌드에서 링크), `swift test --filter RouteDecisionTests` 7건 전부 통과(0.001초, 기존 4건 회귀 없음).
-- **H16.** 슬래시 커맨드 등록이 서버별 즉시 등록(TS)에서 전역 등록(Swift, 최대 1시간 전파 지연)으로 바뀌고, 신규 서버 가입 시 재등록도 안 함.
+- **H16. [코드 변경 없이 현행 유지 — 오케스트레이터 판단]** 슬래시 커맨드 등록이 서버별 즉시 등록(TS)에서 전역 등록(Swift, 최대 1시간 전파 지연)으로 바뀌고, 신규 서버 가입 시 재등록도 안 함.
+  - **직접 재확인 결과, 코드 변경하지 않기로 결론**: Swift가 전역 등록으로 바꾼 이유 자체가 "이전 TS가 남긴 서버별 명령어와 전역 명령어가 겹쳐서 슬래시 커맨드가 중복 표시되던 버그"를 고치기 위해서였다(`SlashCommandSpec.swift:233-246` `sweepStaleGuildCommands` — "guild-scoped commands left by a predecessor... don't linger alongside the global set"라는 주석이 이 배경을 그대로 증언). H16을 고친다고 `onGuildCreate`에 서버별 즉시 등록을 다시 추가하면, 그 서버별 명령어가 전역 명령어와 함께 남아 **정확히 그 중복 버그가 재발한다.**
+  - **"신규 서버 재등록 안 됨"도 실제로는 문제가 아님**: 디스코드의 전역(global) 애플리케이션 커맨드는 등록해두면 봇이 나중에 들어가는 서버에도 자동으로 적용된다(그 서버 전용으로 다시 등록할 필요가 원래 없음) — 최초 전역 등록의 전파 지연(최대 1시간)만 있을 뿐, "재등록 누락"이 아니다.
+  - 결론: 전역 등록이 정답이고(서버 수가 늘어나도 매 부팅 시 API 호출이 1번으로 끝나는 확장성 이점도 있음), 초기 전파 지연은 감수할 만한 비용 — H11/H21/H22와 동일하게 "설계 차이, 현재 구조 유지"로 분류.
 
 ---
 
@@ -302,7 +305,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 24 | WO-P24: `config.json` 엄격 검증 [완료: 2장 H18 참고] | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
 | 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 [완료: 2장 H14 참고] | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |
 | 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 [완료: 2장 H13 참고] | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |
-| 27 | WO-P27: 슬래시 커맨드 서버별 즉시 등록 + 신규 서버 재등록 | H16 | `dab/DabMain.swift` | 독립 |
+| 27 | WO-P27: 슬래시 커맨드 서버별 즉시 등록 + 신규 서버 재등록 [완료(결정): 2장 H16 참고 — 코드 변경 없음] | H16 | `dab/DabMain.swift` | 독립 |
 | 28 | WO-P28: Chromium 설치 인프로세스화 + 사전 안내 + 진행률 표시 | H5, H6, H7 | `ChromiumProvisioner.swift`, `dab/DabMain.swift` | 크로미움 설치 3건 묶음 |
 | 29 | WO-P29: 스트림 임베드 정보 손실 + 디바운스 간격 + 중간 사용량 이벤트 | H8, H9, H10 | `Render/StreamEmbed.swift`, `Render/StreamStatusHost.swift`, `dab/DabMain.swift` | 스트리밍 세부 3건 묶음 |
 | 30 | WO-P30: 부팅 안전망(`installGlobalSafetyNet`) + PID 파일 | H17 | `dab/DabMain.swift` | 독립 |
