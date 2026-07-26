@@ -18,6 +18,12 @@ struct DabMain {
             printSetupGuidance()
             return
         }
+        // C13: `dab service <status|restart>` — never boots the bot (mirrors cli.ts's
+        // service dispatch). install/uninstall stay as swift/scripts/install.sh|uninstall.sh.
+        if args.first == "service" {
+            let ok = await runServiceCommand(Array(args.dropFirst()))
+            exit(ok ? 0 : 1)
+        }
         if args.first == "sidecar-smoke" {
             await runSidecarSmoke()
             return
