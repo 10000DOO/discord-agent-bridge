@@ -350,7 +350,13 @@ struct EventHandler: GatewayEventHandler {
                 let cwd = storeRow?.cwd ?? stubCwd
                 let permMode = storeRow?.permMode ?? regRow?.permMode ?? "default"
                 let optionSource = await loadWizardOptionSource()
-                let browser = DirectoryBrowser(startPath: cwd, nativePanel: false)
+                // G-P1-06: same favorites confinement as /agent start (reconfigure rarely uses folder).
+                let favorites = (try? await ConfigStore.shared.load())?.favorites ?? []
+                let browser = DirectoryBrowser(
+                    allowedRoots: browseRoots(fromFavorites: favorites),
+                    startPath: cwd,
+                    nativePanel: false
+                )
                 let wizard = ChannelWizard(
                     guildId: guildId,
                     channelId: channelId,
@@ -394,11 +400,18 @@ struct EventHandler: GatewayEventHandler {
             switch sub.name {
             case "start":
                 // W11-b2: folder → [preset if any] → backend→model→effort→perm.
-                // Browser starts at DAB_CWD else home; unbounded (no allowedRoots) like TS default.
+                // G-P1-06: config.favorites → browseRoots/allowedRoots; empty → unbounded (TS Fix 1).
+                // Browser starts at DAB_CWD else home (clamped to first root when bounded).
                 // nativePanel: package is macOS-only → always wire host picker (dir:panel).
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
                 let optionSource = await loadWizardOptionSource()
-                let browser = DirectoryBrowser(startPath: stubCwd, nativePanel: true)
+                let favorites = (try? await ConfigStore.shared.load())?.favorites ?? []
+                let roots = browseRoots(fromFavorites: favorites)
+                let browser = DirectoryBrowser(
+                    allowedRoots: roots,
+                    startPath: stubCwd,
+                    nativePanel: true
+                )
                 let serverPresets = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.presets ?? []
                 let guildForPresets = guildId
                 let wizard = ChannelWizard(

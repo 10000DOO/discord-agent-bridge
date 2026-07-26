@@ -271,3 +271,16 @@ public func isDirectoryBrowserCustomId(_ customId: String) -> Bool {
         return false
     }
 }
+
+// MARK: - G-P1-06 favorites → browseRoots (TS app.ts / slashCommands)
+
+/// Map global `AppConfig.favorites` → `DirectoryBrowser` `allowedRoots`.
+///
+/// TS: `browseRoots: config.favorites` then
+/// `allowedRoots` only when `browseRoots.length > 0` (empty → unbounded, Fix 1).
+/// Empty/whitespace-only entries are dropped so a blank favorite cannot confine the browser.
+public func browseRoots(fromFavorites favorites: [String]) -> [String] {
+    favorites
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+}

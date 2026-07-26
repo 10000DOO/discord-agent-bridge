@@ -314,3 +314,51 @@ struct DirectoryBrowserTests {
         #expect(buttonIds.contains("dir:create"))
     }
 }
+
+// MARK: - G-P1-06 browseRoots(fromFavorites:)
+
+@Suite("browseRoots from favorites (G-P1-06)")
+struct BrowseRootsFromFavoritesTests {
+    @Test func emptyFavoritesYieldEmptyRoots() {
+        #expect(browseRoots(fromFavorites: []) == [])
+    }
+
+    @Test func nonEmptyFavoritesPassThrough() {
+        #expect(browseRoots(fromFavorites: ["/a", "/b"]) == ["/a", "/b"])
+    }
+
+    @Test func dropsBlankAndWhitespaceOnlyEntries() {
+        #expect(browseRoots(fromFavorites: ["", "  ", "\t", "/ok"]) == ["/ok"])
+        #expect(browseRoots(fromFavorites: ["", "   "]) == [])
+    }
+
+    @Test func emptyRootsLeaveBrowserUnbounded() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-fav-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let roots = browseRoots(fromFavorites: [])
+        let b = DirectoryBrowser(allowedRoots: roots, startPath: root.path)
+        var guardCount = 0
+        while b.up() && guardCount < 100 { guardCount += 1 }
+        #expect(b.cwd() == "/")
+    }
+
+    @Test func nonEmptyRootsConfineBrowser() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-fav-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nested = root.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+
+        let roots = browseRoots(fromFavorites: [root.path])
+        let b = DirectoryBrowser(allowedRoots: roots, startPath: nested.path)
+        #expect(b.cwd() == nested.path)
+        #expect(b.up())
+        #expect(b.cwd() == root.path)
+        #expect(!b.up()) // confined at favorite root
+        #expect(!b.goTo("/"))
+    }
+}
