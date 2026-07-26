@@ -6,6 +6,8 @@ public protocol SidecarTransport: Sendable {
     func writeLine(_ line: String) async throws
     /// Sidecar → host lines (without trailing newline).
     var lines: AsyncThrowingStream<String, Error> { get }
+    /// Bounded stderr capture when the transport supports it (Process); empty for in-memory.
+    var stderrBuffer: String { get }
     func close() async
 }
 
@@ -13,12 +15,23 @@ public protocol SidecarTransport: Sendable {
 
 /// Spawns a child process with stdin/stdout pipes for NDJSON.
 public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendable {
+    /// Retain last ~8KB of stderr (TS acpClient STDERR_CAPTURE_CAP).
+    private static let stderrCaptureCap = 8 * 1024
+
     private let process: Process
     private let stdinHandle: FileHandle
     private let stdoutHandle: FileHandle
     private let closed = LockedBox(false)
+    /// Rolling stderr bytes (last `stderrCaptureCap`); UTF-8 decoded on read.
+    private let stderrData = LockedBox(Data())
     public let lines: AsyncThrowingStream<String, Error>
     private let linesContinuation: AsyncThrowingStream<String, Error>.Continuation
+
+    public var stderrBuffer: String {
+        stderrData.withLock { data in
+            String(data: data, encoding: .utf8) ?? ""
+        }
+    }
 
     public init(spawn: SidecarSpawn, environment: [String: String]? = nil) throws {
         let process = Process()
@@ -27,9 +40,10 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        process.standardError = FileHandle.standardError
+        process.standardError = stderrPipe
 
         var env = ProcessInfo.processInfo.environment
         if let environment {
@@ -53,6 +67,26 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         let continuation = linesContinuation
         DispatchQueue.global(qos: .userInitiated).async {
             Self.readLines(from: handle, into: continuation)
+        }
+
+        let errHandle = stderrPipe.fileHandleForReading
+        let errBox = stderrData
+        DispatchQueue.global(qos: .utility).async {
+            Self.captureStderr(from: errHandle, into: errBox, cap: Self.stderrCaptureCap)
+        }
+    }
+
+    /// Drain stderr into a rolling buffer of at most `cap` bytes (last window).
+    private static func captureStderr(from handle: FileHandle, into box: LockedBox<Data>, cap: Int) {
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { return }
+            box.withLock { data in
+                data.append(chunk)
+                if data.count > cap {
+                    data = Data(data.suffix(cap))
+                }
+            }
         }
     }
 
@@ -149,6 +183,8 @@ public final class InMemorySidecarTransport: SidecarTransport, @unchecked Sendab
     private let state = LockedBox(State())
     public let lines: AsyncThrowingStream<String, Error>
     private let continuation: AsyncThrowingStream<String, Error>.Continuation
+    /// In-memory pair has no child stderr.
+    public var stderrBuffer: String { "" }
 
     public init() {
         var cont: AsyncThrowingStream<String, Error>.Continuation!

@@ -88,6 +88,7 @@ private func makeGrokBridge(
     initFails: Bool = false,
     fixedChunks: [String]? = nil,
     reqTimeoutMs: Int = 5_000,
+    turnTimeoutOverrideNs: UInt64? = nil,
     configSpy: LockedBox<[SessionConfig?]>? = nil,
     permGate: PermissionGate = .shared,
     onPermissionSpy: LockedBox<[AcpPermissionHandler?]>? = nil,
@@ -101,8 +102,9 @@ private func makeGrokBridge(
         let pair = InMemorySidecarTransport.makePair()
         let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture)
         Task { await server.run() }
+        // Control timeout only; turn budget is bridge turnTimeoutOverrideNs / DAB_TURN_TIMEOUT_SEC.
         return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
-    }, gate: permGate, store: store ?? freshTempStore())
+    }, turnTimeoutOverrideNs: turnTimeoutOverrideNs, gate: permGate, store: store ?? freshTempStore())
     return (bridge, made)
 }
 
@@ -174,10 +176,16 @@ struct GrokSessionBridgeTests {
 
     @Test func turnTimeoutThrows() async throws {
         let gate = TurnGate()
-        let (bridge, _) = makeGrokBridge(gate: gate, reqTimeoutMs: 200)   // client request timeout
+        // Bridge turn budget 200ms (client control timeout stays long; session/prompt has none).
+        let (bridge, _) = makeGrokBridge(gate: gate, turnTimeoutOverrideNs: 200_000_000)
         let t = Task { try await bridge.runTurn(channelId: "c", text: "x") }
-        await gate.waitReceived(1)                  // held, never released → client times out
-        await #expect(throws: (any Error).self) { _ = try await t.value }
+        await gate.waitReceived(1)                  // held, never released → bridge turn times out
+        do {
+            _ = try await t.value
+            Issue.record("expected turn timeout")
+        } catch let e as AcpClientError {
+            #expect(e.message.contains("timed out"))
+        }
     }
 
     // W11-c: bypass permMode → no permission handler; non-bypass → handler routes allow→allow.

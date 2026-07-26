@@ -3,10 +3,12 @@ import Foundation
 // Long-lived JSON-RPC 2.0 client over one `grok agent stdio` child (NDJSON).
 // Mirrors src/modes/grok/agent/acpClient.ts (request/notify/permission + initialize/session/prompt).
 //
+// Control requests use `requestTimeoutMs` (default 60s). `session/prompt` has no client-side
+// sleep timeout — the bridge owns the turn budget (DAB_TURN_TIMEOUT_SEC). On child death,
+// stderr is classified into login/install hints (classifyAcpFailure) else a redacted tail.
+//
 // ponytail: no AsyncIterator prompt stream — updates go through onNotification while sessionPrompt
-// awaits the session/prompt RESPONSE (bridge folds text synchronously before return). Separate
-// control vs prompt timeouts and stderr-classified exit errors need ProcessSidecarTransport
-// stderr capture; add when fail-fast control or actionable exit hints become necessary.
+// awaits the session/prompt RESPONSE (bridge folds text synchronously before return).
 
 // MARK: - Types
 
@@ -169,7 +171,8 @@ public final class GrokAcpClient: @unchecked Sendable {
     private struct PendingRpc {
         let method: String
         let continuation: CheckedContinuation<JSONValue, Error>
-        let timeoutTask: Task<Void, Never>
+        /// nil when the request has no sleep timeout (session/prompt).
+        let timeoutTask: Task<Void, Never>?
     }
 
     private struct State {
@@ -223,10 +226,15 @@ public final class GrokAcpClient: @unchecked Sendable {
                 effort: effort,
                 bypassPermissions: bypassPermissions
             )
-        let transport = try ProcessSidecarTransport(
-            spawn: resolved,
-            environment: environment
-        )
+        let transport: ProcessSidecarTransport
+        do {
+            transport = try ProcessSidecarTransport(
+                spawn: resolved,
+                environment: environment
+            )
+        } catch {
+            throw AcpClientError(classifySpawnFailure(error))
+        }
         self.init(
             transport: transport,
             requestTimeoutMs: requestTimeoutMs,
@@ -314,10 +322,8 @@ public final class GrokAcpClient: @unchecked Sendable {
     /// (acpClient.ts). Returns the prompt result (stopReason/usage); throws on prompt error or
     /// child exit. Requires a prior sessionNew/sessionLoad.
     ///
-    /// ponytail: the prompt turn shares the control-request timeout (requestTimeoutMs). The c3
-    /// bridge owns the turn timeout by creating the client with requestTimeoutMs = the turn budget
-    /// (like CodexSessionBridge). TS separates control/prompt timeouts (acpClient.ts:162) — split
-    /// here only if fast-failing control requests becomes necessary.
+    /// No client-side sleep timeout (TS: prompt is not in the control pending-timeout map).
+    /// `GrokSessionBridge` owns the turn budget via `DAB_TURN_TIMEOUT_SEC`.
     public func sessionPrompt(prompt: String) async throws -> JSONValue {
         try await sessionPrompt(blocks: [.text(prompt)])
     }
@@ -345,13 +351,23 @@ public final class GrokAcpClient: @unchecked Sendable {
             "sessionId": .string(sid),
             "prompt": .array(normalized.map { $0.asJSON() }),
         ])
-        let result = try await request(method: "session/prompt", params: params)
+        // nil timeout: ends only on response or child death (TS acpClient.prompt).
+        let result = try await request(method: "session/prompt", params: params, timeoutMs: nil)
         state.withLock { $0.lastPromptResult = result }
         return result
     }
 
-    /// Low-level control request (initialize / session/*). Prompt turns use sessionPrompt.
+    /// Low-level control request (initialize / session/*). Uses `requestTimeoutMs`.
     public func request(method: String, params: JSONValue? = nil) async throws -> JSONValue {
+        try await request(
+            method: method,
+            params: params,
+            timeoutMs: Int(requestTimeoutNs / 1_000_000)
+        )
+    }
+
+    /// JSON-RPC request. `timeoutMs == nil` → no sleep timeout (session/prompt).
+    public func request(method: String, params: JSONValue?, timeoutMs: Int?) async throws -> JSONValue {
         let closed = state.withLock { $0.closed }
         if closed { throw AcpClientError("Grok ACP client is closed.") }
 
@@ -362,17 +378,23 @@ public final class GrokAcpClient: @unchecked Sendable {
         }
 
         return try await withCheckedThrowingContinuation { cont in
-            let timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: self?.requestTimeoutNs ?? 60_000_000_000)
-                guard !Task.isCancelled else { return }
-                let removed = self?.state.withLock { $0.pending.removeValue(forKey: id) }
-                if let removed {
-                    removed.continuation.resume(
-                        throwing: AcpClientError(
-                            "grok agent stdio: \(method) timed out after \(Int((self?.requestTimeoutNs ?? 0) / 1_000_000))ms."
+            let timeoutTask: Task<Void, Never>?
+            if let timeoutMs, timeoutMs > 0 {
+                let timeoutNs = UInt64(timeoutMs) * 1_000_000
+                timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: timeoutNs)
+                    guard !Task.isCancelled else { return }
+                    let removed = self?.state.withLock { $0.pending.removeValue(forKey: id) }
+                    if let removed {
+                        removed.continuation.resume(
+                            throwing: AcpClientError(
+                                "grok agent stdio: \(method) timed out after \(timeoutMs)ms."
+                            )
                         )
-                    )
+                    }
                 }
+            } else {
+                timeoutTask = nil
             }
             state.withLock {
                 $0.pending[id] = PendingRpc(method: method, continuation: cont, timeoutTask: timeoutTask)
@@ -390,7 +412,7 @@ public final class GrokAcpClient: @unchecked Sendable {
                     try await self.writeObject(msg)
                 } catch {
                     let removed = self.state.withLock { $0.pending.removeValue(forKey: id) }
-                    removed?.timeoutTask.cancel()
+                    removed?.timeoutTask?.cancel()
                     removed?.continuation.resume(throwing: error)
                 }
             }
@@ -427,11 +449,31 @@ public final class GrokAcpClient: @unchecked Sendable {
                     self.onLine(line)
                 }
             } catch {
-                self.failAll(AcpClientError("grok agent stdio stdout closed: \(error)"))
+                self.failAll(self.buildExitError(underlying: error))
                 return
             }
-            self.failAll(AcpClientError("grok agent stdio stdout closed"))
+            self.failAll(self.buildExitError(underlying: nil))
         }
+    }
+
+    /// Actionable stderr classification, else generic closed + redacted tail (TS buildExitError).
+    private func buildExitError(underlying: Error?) -> AcpClientError {
+        let stderr = transport.stderrBuffer
+        if let underlying {
+            let text = String(describing: underlying)
+            if let classified = classifyAcpFailure(text) {
+                return AcpClientError(classified)
+            }
+        }
+        if let classified = classifyAcpFailure(stderr) {
+            return AcpClientError(classified)
+        }
+        let tail = redactSecrets(stderrTail(stderr))
+        let suffix = tail.isEmpty ? "" : " \(tail)"
+        if let underlying {
+            return AcpClientError("grok agent stdio stdout closed: \(underlying).\(suffix)")
+        }
+        return AcpClientError("grok agent stdio stdout closed.\(suffix)")
     }
 
     private func writeObject(_ obj: [String: JSONValue]) async throws {
@@ -486,7 +528,7 @@ public final class GrokAcpClient: @unchecked Sendable {
     private func handleResponse(id: Int, msg: [String: JSONValue]) {
         let pending = state.withLock { $0.pending.removeValue(forKey: id) }
         guard let pending else { return }
-        pending.timeoutTask.cancel()
+        pending.timeoutTask?.cancel()
         if let err = msg["error"] {
             pending.continuation.resume(throwing: AcpClientError(formatAcpRpcError(err)))
         } else {
@@ -542,13 +584,62 @@ public final class GrokAcpClient: @unchecked Sendable {
             return pending
         }
         for p in all {
-            p.timeoutTask.cancel()
+            p.timeoutTask?.cancel()
             p.continuation.resume(throwing: err)
         }
     }
 }
 
 // MARK: - Pure helpers
+
+/// User-facing KO hints for a dead/missing child (TS acpClient ACP_*_MESSAGE).
+public let ACP_LOGIN_MESSAGE =
+    "Grok에 로그인되어 있지 않습니다. 터미널에서 `grok login`을 실행한 뒤 다시 시도하세요."
+public let ACP_NOT_INSTALLED_MESSAGE =
+    "`grok` CLI를 찾을 수 없습니다. 설치 여부와 PATH를 확인하세요."
+
+private let acpAuthFailureRegex: NSRegularExpression? = try? NSRegularExpression(
+    pattern: #"\bnot authenticated\b|please log in|grok login|\bunauthorized\b|\bauthenticat"#,
+    options: .caseInsensitive
+)
+
+/// Classify spawn/exit text into a login or install hint, or nil when generic (TS classifyAcpFailure).
+public func classifyAcpFailure(_ text: String, code: String? = nil) -> String? {
+    if code == "ENOENT" || text.range(of: #"\bENOENT\b"#, options: .regularExpression) != nil {
+        return ACP_NOT_INSTALLED_MESSAGE
+    }
+    if let re = acpAuthFailureRegex {
+        let range = NSRange(text.startIndex..., in: text)
+        if re.firstMatch(in: text, options: [], range: range) != nil {
+            return ACP_LOGIN_MESSAGE
+        }
+    }
+    return nil
+}
+
+/// Last `maxChars` of stderr (ellipsis prefix when truncated). TS stderrTail.
+public func stderrTail(_ stderr: String, maxChars: Int = 500) -> String {
+    let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.count <= maxChars { return trimmed }
+    return "…" + String(trimmed.suffix(maxChars))
+}
+
+/// Map a Process launch failure to a user-facing message (ENOENT → not installed).
+func classifySpawnFailure(_ error: Error) -> String {
+    let ns = error as NSError
+    // POSIX ENOENT = 2; Cocoa no-such-file also means missing binary.
+    let posixEnoent = ns.domain == NSPOSIXErrorDomain && ns.code == 2
+    let cocoaNoSuchFile = ns.domain == NSCocoaErrorDomain && ns.code == NSFileNoSuchFileError
+    let code: String? = (posixEnoent || cocoaNoSuchFile) ? "ENOENT" : nil
+    let text = error.localizedDescription
+    if let classified = classifyAcpFailure(text, code: code) {
+        return classified
+    }
+    if posixEnoent || cocoaNoSuchFile || text.localizedCaseInsensitiveContains("no such file") {
+        return ACP_NOT_INSTALLED_MESSAGE
+    }
+    return text
+}
 
 /// Q4: confirmed live method `session/request_permission`.
 func isAcpPermissionMethod(_ method: String) -> Bool {

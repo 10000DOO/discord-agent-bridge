@@ -415,6 +415,122 @@ struct AcpClientTests {
     }
 }
 
+@Suite("classifyAcpFailure / stderrTail")
+struct AcpFailureClassifyTests {
+    @Test func authFailureReturnsLoginHint() {
+        #expect(classifyAcpFailure("Error: not authenticated. Run grok login.") == ACP_LOGIN_MESSAGE)
+        #expect(classifyAcpFailure("please log in") == ACP_LOGIN_MESSAGE)
+        #expect(classifyAcpFailure("unauthorized token") == ACP_LOGIN_MESSAGE)
+    }
+
+    @Test func enoentReturnsNotInstalled() {
+        #expect(classifyAcpFailure("spawn grok ENOENT", code: "ENOENT") == ACP_NOT_INSTALLED_MESSAGE)
+        #expect(classifyAcpFailure("Error: ENOENT") == ACP_NOT_INSTALLED_MESSAGE)
+    }
+
+    @Test func genericReturnsNil() {
+        #expect(classifyAcpFailure("segfault at 0x0") == nil)
+        #expect(classifyAcpFailure("") == nil)
+    }
+
+    @Test func stderrTailTruncatesWithEllipsis() {
+        let long = String(repeating: "a", count: 600)
+        let tail = stderrTail(long, maxChars: 500)
+        #expect(tail.hasPrefix("…"))
+        #expect(tail.count == 501) // ellipsis + 500
+        #expect(stderrTail("  short  ") == "short")
+    }
+}
+
+@Suite("GrokAcpClient control vs prompt timeout")
+struct AcpControlPromptTimeoutTests {
+    @Test func controlRequestTimesOutWhenNoResponse() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 60)
+        do {
+            _ = try await client.request(method: "ping")
+            Issue.record("expected control timeout")
+        } catch let err as AcpClientError {
+            #expect(err.message.contains("timed out after 60ms"))
+        }
+        await client.close()
+        await pair.sidecar.close()
+    }
+
+    @Test func sessionPromptHasNoClientTimeout() async throws {
+        // Short control budget; prompt waits past it, then fake responds.
+        let pair = InMemorySidecarTransport.makePair()
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 80)
+        let fake = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    guard let data = line.data(using: .utf8),
+                          let v = try? JSONDecoder().decode(JSONValue.self, from: data),
+                          case .object(let msg) = v,
+                          let method = msg["method"]?.stringValue,
+                          let id = msg["id"]
+                    else { continue }
+                    switch method {
+                    case "initialize":
+                        try? await pair.sidecar.writeLine(
+                            #"{"jsonrpc":"2.0","id":\#(Int(id.numberValue ?? 0)),"result":{"protocolVersion":1}}"# + "\n"
+                        )
+                    case "session/new":
+                        try? await pair.sidecar.writeLine(
+                            #"{"jsonrpc":"2.0","id":\#(Int(id.numberValue ?? 0)),"result":{"sessionId":"s-late"}}"# + "\n"
+                        )
+                    case "session/prompt":
+                        // Wait longer than control timeout (80ms) then complete.
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                        try? await pair.sidecar.writeLine(
+                            #"{"jsonrpc":"2.0","id":\#(Int(id.numberValue ?? 0)),"result":{"stopReason":"end_turn"}}"# + "\n"
+                        )
+                    default:
+                        break
+                    }
+                }
+            } catch {}
+        }
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+        let result = try await client.sessionPrompt(prompt: "late")
+        #expect(result["stopReason"]?.stringValue == "end_turn")
+        await client.close()
+        await pair.sidecar.close()
+        fake.cancel()
+    }
+
+    @Test func explicitNilTimeoutDoesNotFireTimer() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 50)
+        let idBox = LockedBox<Int?>(nil)
+        let watch = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    guard let data = line.data(using: .utf8),
+                          let v = try? JSONDecoder().decode(JSONValue.self, from: data),
+                          case .object(let msg) = v,
+                          let id = msg["id"]?.numberValue
+                    else { continue }
+                    idBox.withLock { $0 = Int(id) }
+                    // Respond after 150ms (> control 50ms) — nil timeout must still wait.
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    try? await pair.sidecar.writeLine(
+                        #"{"jsonrpc":"2.0","id":\#(Int(id)),"result":{"ok":true}}"# + "\n"
+                    )
+                    break
+                }
+            } catch {}
+        }
+        let result = try await client.request(method: "custom/slow", params: nil, timeoutMs: nil)
+        #expect(result["ok"]?.boolValue == true)
+        #expect(idBox.withLock { $0 } != nil)
+        watch.cancel()
+        await client.close()
+        await pair.sidecar.close()
+    }
+}
+
 @Suite("grokUpdateStep")
 struct GrokUpdateStepTests {
     private func agentChunk(_ text: String) -> JSONValue {

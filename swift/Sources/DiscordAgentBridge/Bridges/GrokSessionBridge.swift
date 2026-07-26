@@ -6,10 +6,10 @@ import Foundation
 /// Unlike Codex (turn completes on a `turn/completed` notification, so the bridge waits on a
 /// continuation), Grok completes a turn when `sessionPrompt` RETURNS (it blocks on the
 /// session/prompt response). Text arrives on `onNotification` meanwhile; the read loop dispatches
-/// those handlers synchronously BEFORE it resumes the prompt response (AcpClient.swift:280-291,
-/// 337-340, 386-391, 343-352), so a synchronous fold into a lock buffer is complete at return —
-/// no continuation / TurnBox / timeout task needed here (the client's requestTimeoutMs owns the
-/// turn budget). Do NOT hop onto the actor from the handler (a Task would run after the return).
+/// those handlers synchronously BEFORE it resumes the prompt response, so a synchronous fold into a
+/// lock buffer is complete at return. Control RPC uses a 60s client timeout; the **turn budget**
+/// (`DAB_TURN_TIMEOUT_SEC`, default 120) is enforced here by racing `sessionPrompt` (close child on
+/// expiry). Do NOT hop onto the actor from the notification handler (a Task would run after return).
 public actor GrokSessionBridge {
     public static let shared = GrokSessionBridge()
 
@@ -17,6 +17,8 @@ public actor GrokSessionBridge {
     /// takes the channel's SessionConfig to build the spawn (TS parity: no live setModel/setEffort).
     /// The permission handler is also construction-time, so it is passed too. `@testable` in tests.
     private let makeClient: @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient
+    /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
+    private let turnTimeoutOverrideNs: UInt64?
     /// Permission gate (default shared; tests inject a fresh gate for isolation).
     private let gate: PermissionGate
     /// Global config (autoAllowClaudeTools host-side check for Always-Allow).
@@ -24,7 +26,6 @@ public actor GrokSessionBridge {
 
     init(
         makeClient: @escaping @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient = { config, onPermission in
-            let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
             // W11-c: bypass (`--always-approve`) only when the permMode is an auto-approve one; else
             // grok emits permission asks answered via the Discord gate (onPermission). model/effort
             // from the bound config. No permMode bound → bypass (danger default parity).
@@ -39,13 +40,16 @@ public actor GrokSessionBridge {
                 isGrokModel: { $0.lowercased().contains("grok") }
             )
             print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
-            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000, onPermission: onPermission)
+            // Control-request timeout only (60s). Turn budget is bridge-owned (sessionPrompt has none).
+            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: 60_000, onPermission: onPermission)
         },
+        turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
         configStore: ConfigStore = .shared
     ) {
         self.makeClient = makeClient
+        self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
         self.configStore = configStore
@@ -76,12 +80,14 @@ public actor GrokSessionBridge {
         return NSHomeDirectory()
     }
 
-    // ponytail: permission-button deadline < the turn budget (client requestTimeoutMs) so an
-    // unanswered ask denies before the sessionPrompt request itself times out.
-    private var permGateTimeoutNs: UInt64 {
+    private var turnTimeoutNs: UInt64 {
+        if let turnTimeoutOverrideNs { return turnTimeoutOverrideNs }
         let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
-        return UInt64(max(5, sec)) * 1_000_000_000 / 2
+        return UInt64(max(5, sec)) * 1_000_000_000
     }
+
+    // ponytail: permission-button deadline = half the turn budget (not half of control 60s).
+    private var permGateTimeoutNs: UInt64 { turnTimeoutNs / 2 }
 
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized. Cost/tokens from the prompt response are
@@ -176,7 +182,49 @@ public actor GrokSessionBridge {
         }
         defer { unsub() }
 
-        let promptResult = try await channel.client.sessionPrompt(prompt: promptText)
+        // Bridge owns the turn budget: race sessionPrompt (no client timer) vs sleep; on expiry
+        // close the child so the prompt unblocks (TS interrupt = dropClient).
+        let timeoutNs = turnTimeoutNs
+        let client = channel.client
+        let timeoutSec = Int(timeoutNs / 1_000_000_000)
+        let timedOut = LockedBox(false)
+        let promptResult: JSONValue
+        do {
+            promptResult = try await withThrowingTaskGroup(of: JSONValue.self) { group in
+                group.addTask {
+                    try await client.sessionPrompt(prompt: promptText)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: timeoutNs)
+                    try Task.checkCancellation()
+                    timedOut.withLock { $0 = true }
+                    await client.close()
+                    throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
+                }
+                defer { group.cancelAll() }
+                while let outcome = await group.nextResult() {
+                    switch outcome {
+                    case .success(let value):
+                        return value
+                    case .failure(let error):
+                        if error is CancellationError { continue }
+                        if timedOut.withLock({ $0 }) {
+                            throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
+                        }
+                        throw error
+                    }
+                }
+                throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
+            }
+        } catch {
+            if timedOut.withLock({ $0 }) {
+                // Drop closed client so the next turn respawns cleanly.
+                if let held = channels[channelId], held.client === client {
+                    channels[channelId] = nil
+                }
+            }
+            throw error
+        }
         let out = buf.withLock { $0 }
         let textOut = out.isEmpty ? "(no text)" : out
         let (tools, agents) = statsBox.withLock { ($0.toolsSnapshot(), $0.agentsSnapshot()) }

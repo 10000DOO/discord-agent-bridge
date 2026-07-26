@@ -104,7 +104,8 @@
 | 2026-07-26 | G-P1-03 | `feat(swift-port): G-P1-03 model·effort autocomplete` | DiscordBM `applicationCommandAutocomplete` · `filterAutocompleteChoices` (cap 25) · catalog=binding backend else claude · 60s models cache · `/model`·`/effort` option.autocomplete |
 | 2026-07-26 | G-P1-10 | `feat(swift-port): G-P1-10 usage HUD extras` | AgentEvent.contextUsage 4 extras · ContextUsageInfo/TurnResult latch · buildUsageEmbed clearHint+세션구성 · bridge/embed 단위테스트 |
 | 2026-07-26 | G-P1-09 | `feat(swift-port): G-P1-09 Codex usage 패널` | `CodexUsageService` app-server `account/rateLimits/read` · getUsageForBackend/stats/turn panel · soft-fail no-credentials · mock tests |
-| 2026-07-26 | G-P1-11 | `feat(swift-port): G-P1-11 Grok ACP 세부` | AcpSessionMeta·mcpServers wire · prompt blocks/동시성/lastPromptResult · isGrokModel spawn 가드 · 단위 테스트 · AsyncIterator stream·stderr 분류는 ponytail 천장 |
+| 2026-07-26 | G-P1-11 | `feat(swift-port): G-P1-11 Grok ACP 세부` | AcpSessionMeta·mcpServers wire · prompt blocks/동시성/lastPromptResult · isGrokModel spawn 가드 · 단위 테스트 · AsyncIterator stream는 ponytail 천장 |
+| 2026-07-26 | Grok ACP | `feat(swift-port): Grok 제어/프롬프트 타임아웃 분리·stderr 분류` | control 60s · session/prompt 무타임아웃+bridge `DAB_TURN_TIMEOUT_SEC` · ProcessSidecarTransport stderr 8KB · classifyAcpFailure/stderrTail · spawn ENOENT |
 | 2026-07-26 | G-P1-08 | `feat(swift-port): G-P1-08 i18n en` | pure `I18n` (ko/en catalog · `t` · ConfigStore.locale) · stream/status/interrupt/update/doc/slash major paths · IdleWatchdog · 단위 테스트 |
 | 2026-07-26 | G-P2-01 | `feat(swift-port): G-P2-01 FileDownload 라이브러리` | pure FileDownload browse/download confine · OutgoingFile · temp-dir 테스트 |
 | 2026-07-26 | G-P2-02·03 | `docs(swift-port): G-P2-02·03 CLI·README 패리티` | TS CLI↔install 동등 표 · Codex “Not wired” 제거 · 레이아웃 갱신 |
