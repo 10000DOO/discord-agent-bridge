@@ -66,7 +66,7 @@
 | H21 | ModeRegistry 개방형 vs 고정 enum | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H22 | eventBus 범용 vs 전용 액터 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H23 | (원 조사에서 결번 — 해당 항목 없음) | — |
-| H24 | Codex 앱서버 실패 원인 분류 없음 | ⏳ 대기 (WO-P31) |
+| H24 | Codex 앱서버 실패 원인 분류 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H25 | Codex 자동승인이 Claude 전용 목록 곁눈질 (Swift만 추가) | ✅ 완료 (Q4, 1장 참고) |
 | H26 | 메시지 전송 재시도 없음 | ✅ 완료 (C14와 동일 커밋, 1장 참고) |
 
@@ -244,7 +244,11 @@
   **[구현됨: `Sidecar/Transport.swift`(`ProcessSidecarTransport.resolveExecutable` PATH+well-known 병합 검색, `wellKnownUserBinDirs(homeDir:)` 신규), `Tests/DiscordAgentBridgeTests/TransportResolveExecutableTests.swift`(신규, 6건)]** — `env`/`homeDir`/`isExecutable` 주입 파라미터 추가(전부 default=실제값이라 기존 호출부인 `Transport.swift:38`·`CliHelp.swift:92,97` 무변경, Claude/Codex/Grok 세 백엔드 스폰 경로 + CLI 헬프/버전 조회가 한 곳 수정으로 함께 해소됨). `#if os(macOS)`/`#elseif os(Linux)`로 플랫폼별 디렉터리 분기(Windows는 Q1 결정에 따라 미포팅). 최종 확인: `swift build --package-path swift` 성공, `swift test --filter TransportResolveExecutableTests` 6건 전부 통과(0.105초).
 - **H21.** TS `ModeRegistry`는 "등록만 하면 끝"인 개방형 구조인데 Swift는 고정 `Backend` enum + 5곳(ProviderCatalog/SessionLifecycle/UsageService/Capabilities 등) 분산 switch. 지금 4개 백엔드엔 기능적으로 문제없으나 확장성이 떨어짐.
 - **H22.** `eventBus.ts`(범용 pub/sub)가 관심사별 전용 액터(`ToolActivityHost`/`StreamStatusHost`/`IdleWatchdog`/`ImageRenderHost` 등)로 대체됨. 지금 쓰는 렌더러엔 충분하나 새 이벤트 소비자를 추가하려면 매번 새 Host 타입을 만들어야 함.
-- **H24.** Codex 앱서버 프로세스 실패 원인 분류(ENOENT→"찾을 수 없음", 인증실패→로그인 안내, 그 외→종료코드+stderr) 없이 뭉뚱그려 일반 에러 메시지만 표시(`AppServerClient.swift`).
+- **H24. [구현됨: `Codex/AppServerClient.swift` `classifyFailure`/`classifyStreamFailure`/`buildExitError`]** Codex 앱서버 프로세스 실패 원인 분류(ENOENT→"찾을 수 없음", 인증실패→로그인 안내, 그 외→종료코드+stderr) 없이 뭉뚱그려 일반 에러 메시지만 표시(`AppServerClient.swift`).
+  - **구현**: TS `classifyFailure`/`NOT_INSTALLED_MESSAGE`/`AUTH_FAILURE_RE`/`LOGIN_MESSAGE`를 `AppServerClient.swift`에 그대로 포팅(`classifyFailure`, `codexNotInstalledMessage`, `codexLoginMessage`, `codexAuthFailureRegex`). `startReading()`의 스트림 종료를 TS의 두 갈래로 분리: 스트림이 에러를 던진 경우(spawn 레벨 실패, TS `onChildError`)는 `classifyStreamFailure(error)`가, 스트림이 정상 EOF로 끝난 경우(자식 프로세스 종료, TS `buildExitError`)는 `buildExitError(stderrBuffer:)`가 처리 — 후자는 기존 `stderrBuffer`(`ProcessSidecarTransport`)와 기존 `redactSecrets`/`stderrTail`(Grok `AcpClient.swift`에 이미 있던 전역 함수, 재사용)을 그대로 사용.
+  - 구조적 한계 1건: Swift `SidecarTransport` 프로토콜이 자식 프로세스의 종료코드/시그널을 노출하지 않아(Node `child.on('close', (code, signal))`에 대응하는 정보 없음) TS의 `(code N)`/`(signal S)` 접미사는 이번 포팅에서 생략함 — stderr 기반 분류/tail은 동일하게 동작. 필요해지면 `SidecarTransport`에 종료 정보를 추가로 노출하는 별도 작업으로 확장 가능(Grok/Claude와 공유하는 인터페이스라 이번 스코프 밖).
+  - 테스트: `AppServerClientTests.swift`에 `classifyFailure`(ENOENT/인증실패/불일치→nil)와 `buildExitError`(actionable stderr 우선, 일반 메시지+tail) 순수 함수 테스트 추가. 메시지 문구가 바뀌며 기존 `ClientHardeningTests.swift`의 `inFlightRejectedOnTransportClose`(Codex용, 152번째 줄 근처)가 옛 문구("closed")를 검사하고 있어 회귀 발견 — 새 문구("exited unexpectedly")로 갱신(테스트 취지인 "in-flight 요청이 transport 종료 시 거부되는지"는 그대로 유지).
+  - **최종 확인**: `swift build --package-path swift` 성공, `swift test --filter AppServerClientTests` 23건 전부 통과, 전체 스위트 1086개 중 H10의 기존 기록된 간헐적 타이밍 이슈 1건 제외 전부 통과.
 - **H26. [구현됨(초안): C14와 동일 커밋 — `Sources/dab/MessageRetry.swift`, `try? client.createMessage(...)` 15곳]** Discord 전송 실패 시 재시도가 없어(H4/C14와 연결) 일시적 API 오류에도 조용히 드롭됨. — C14(WO-P13)와 완전히 동일한 원인(재시도 없음)이라 별도 작업 없이 C14 구현으로 함께 해소됨. 전체 빌드/전체 테스트 최종 확인은 사용자가 별도 진행.
 
 ### DM/커맨드 라우팅
@@ -335,7 +339,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 28 | WO-P28: Chromium 설치 인프로세스화 + 사전 안내 + 진행률 표시 [완료: 2장 H5/H6/H7 참고] | H5, H6, H7 | `ChromiumProvisioner.swift`(+ 신규 `ChromiumDownload.swift`/`RenderSetupButton.swift`/`dab/RenderSetupWiring.swift`), `dab/DabMain.swift` | 크로미움 설치 3건 묶음 |
 | 29 | WO-P29: 스트림 임베드 정보 손실 + 디바운스 간격 + 중간 사용량 이벤트 [완료: 2장 H8/H9/H10 참고] | H8, H9, H10 | `Render/StreamEmbed.swift`, `Render/StreamStatusHost.swift`, `dab/DabMain.swift`(+ 신규 `Render/UsageActivityHost.swift`) | 스트리밍 세부 3건 묶음 |
 | 30 | WO-P30: 부팅 안전망(`installGlobalSafetyNet`) + PID 파일 [완료: 2장 H17 참고 — 안전망은 조사 후 코드변경 없음 결정] | H17 | `dab/DabMain.swift` | 독립 |
-| 31 | WO-P31: Codex 앱서버 실패 원인 분류 | H24 | `Codex/AppServerClient.swift` | 독립 |
+| 31 | WO-P31: Codex 앱서버 실패 원인 분류 [완료: 2장 H24 참고] | H24 | `Codex/AppServerClient.swift` | 독립 |
 | 32 | WO-P32: i18n 240개 키 전체 포팅 (`ChannelWizard`/`DirectoryBrowser`/`ResumeWizard`/`FolderPanel`/`ConfigPanel`) | H12 | `I18n.swift`, 전역(위저드류 전 파일) | **가장 넓게 퍼짐 — 마지막**(C11과 동일 사유) |
 
 **코드 변경 없이 "현재 설계 유지"로 결론(오케스트레이터 판단 — 지금 당장의 버그가 아니라 향후 확장성 메모이고, 억지로 추상화를 새로 만드는 게 오히려 과설계라 YAGNI 원칙상 보류):**

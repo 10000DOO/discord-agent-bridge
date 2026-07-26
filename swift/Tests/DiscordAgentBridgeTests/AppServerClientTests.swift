@@ -522,3 +522,42 @@ struct AppServerClientTests {
         #expect(!isApprovalMethod("turn/start"))
     }
 }
+
+@Suite("classifyFailure / stderrTail (H24)")
+struct AppServerFailureClassifyTests {
+    @Test func enoentReturnsNotInstalled() {
+        #expect(classifyFailure("spawn codex ENOENT", code: "ENOENT") == codexNotInstalledMessage)
+        #expect(classifyFailure("Error: ENOENT") == codexNotInstalledMessage)
+    }
+
+    @Test func authFailureReturnsLoginHint() {
+        #expect(classifyFailure("Error: not authenticated. Run codex login.") == codexLoginMessage)
+        #expect(classifyFailure("please log in") == codexLoginMessage)
+        #expect(classifyFailure("unauthorized token") == codexLoginMessage)
+    }
+
+    @Test func genericReturnsNil() {
+        #expect(classifyFailure("segfault at 0x0") == nil)
+        #expect(classifyFailure("") == nil)
+    }
+
+    @Test func stderrTailKeepsShortTextAsIs() {
+        #expect(stderrTail("  short stderr  ") == "short stderr")
+    }
+
+    @Test func stderrTailTruncatesWithEllipsis() {
+        let long = String(repeating: "a", count: 600)
+        let tail = stderrTail(long, maxChars: 500)
+        #expect(tail.hasPrefix("…"))
+        #expect(tail.count == 501) // ellipsis + 500
+    }
+
+    @Test func buildExitErrorPrefersActionableStderrOverGenericMessage() {
+        #expect(buildExitError(stderrBuffer: "Error: not authenticated.") == codexLoginMessage)
+    }
+
+    @Test func buildExitErrorFallsBackToGenericMessageWithStderrTail() {
+        #expect(buildExitError(stderrBuffer: "") == "codex app-server exited unexpectedly.")
+        #expect(buildExitError(stderrBuffer: "boom") == "codex app-server exited unexpectedly. boom")
+    }
+}

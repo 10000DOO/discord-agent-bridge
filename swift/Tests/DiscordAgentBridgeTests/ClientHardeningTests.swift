@@ -164,7 +164,9 @@ struct CodexClientHardeningTests {
             _ = try await task.value
             Issue.record("expected in-flight rejection")
         } catch let err as AppServerError {
-            #expect(err.message.contains("closed"))
+            // H24: clean stream EOF now reports via buildExitError, not the old
+            // "stdout closed" wording — this only checks in-flight requests get rejected.
+            #expect(err.message.contains("exited unexpectedly"))
         }
         await client.close()
         await pair.sidecar.close()

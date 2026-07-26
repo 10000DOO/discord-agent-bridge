@@ -298,10 +298,12 @@ public final class CodexAppServerClient: @unchecked Sendable {
                     self.onLine(line)
                 }
             } catch {
-                self.failAll(AppServerError("codex app-server stdout closed: \(error)"))
+                // Stream itself threw (TS `onChildError` — spawn-level failure, e.g. ENOENT).
+                self.failAll(AppServerError(classifyStreamFailure(error)))
                 return
             }
-            self.failAll(AppServerError("codex app-server stdout closed"))
+            // Stream ended cleanly, i.e. the child exited (TS `onChildClose`/`buildExitError`).
+            self.failAll(AppServerError(buildExitError(stderrBuffer: self.transport.stderrBuffer)))
         }
     }
 
@@ -515,4 +517,59 @@ func formatRpcError(_ error: JSONValue) -> String {
         return "codex app-server error \(code): \(message)"
     }
     return "codex app-server error: \(String(describing: error))"
+}
+
+// MARK: - Process failure classification (H24)
+
+/// User-facing KO hint when the `codex` CLI binary itself can't be found (TS
+/// `NOT_INSTALLED_MESSAGE`, appServerClient.ts:110).
+let codexNotInstalledMessage = "`codex` CLI를 찾을 수 없습니다. 설치 여부와 PATH를 확인하세요."
+/// User-facing KO hint when codex app-server reports it isn't logged in (TS `LOGIN_MESSAGE`,
+/// appServerClient.ts:112).
+let codexLoginMessage = "Codex에 로그인되어 있지 않습니다. 터미널에서 `codex login`을 실행한 뒤 다시 시도하세요."
+
+private let codexAuthFailureRegex = try? NSRegularExpression(
+    pattern: #"\bnot authenticated\b|please log in|codex login|\bunauthorized\b|\bauthenticat"#,
+    options: .caseInsensitive
+)
+
+/// Classify spawn-error text or accumulated stderr into an actionable hint, else nil (TS
+/// `classifyFailure`, appServerClient.ts:487-490).
+func classifyFailure(_ text: String, code: String? = nil) -> String? {
+    if code == "ENOENT" || text.range(of: #"\bENOENT\b"#, options: .regularExpression) != nil {
+        return codexNotInstalledMessage
+    }
+    if let re = codexAuthFailureRegex {
+        let range = NSRange(text.startIndex..., in: text)
+        if re.firstMatch(in: text, options: [], range: range) != nil {
+            return codexLoginMessage
+        }
+    }
+    return nil
+}
+
+/// Classify a thrown transport-stream error (TS `onChildError`, appServerClient.ts:403-408 —
+/// a spawn-level failure such as ENOENT). Swift has no direct analogue of Node's `err.code`
+/// errno string; approximate it from the NSError domain/code, the same technique already used
+/// by Grok's `AcpClient.classifySpawnFailure`.
+func classifyStreamFailure(_ error: Error) -> String {
+    let ns = error as NSError
+    let posixEnoent = ns.domain == NSPOSIXErrorDomain && ns.code == 2
+    let cocoaNoSuchFile = ns.domain == NSCocoaErrorDomain && ns.code == NSFileNoSuchFileError
+    let code: String? = (posixEnoent || cocoaNoSuchFile) ? "ENOENT" : nil
+    let text = error.localizedDescription
+    return classifyFailure(text, code: code) ?? redactSecrets(text)
+}
+
+/// Build the message for a clean stream EOF, i.e. the child exited (TS `buildExitError`,
+/// appServerClient.ts:416-423). `SidecarTransport` does not expose the child's exit code/signal
+/// (unlike Node's `close` event), so the `(code N)`/`(signal S)` suffix TS includes is omitted
+/// here — a gap in the current transport surface, not a behavior choice.
+func buildExitError(stderrBuffer: String) -> String {
+    if let actionable = classifyFailure(stderrBuffer) {
+        return actionable
+    }
+    let tail = redactSecrets(stderrTail(stderrBuffer))
+    let suffix = tail.isEmpty ? "" : " \(tail)"
+    return "codex app-server exited unexpectedly.\(suffix)"
 }
