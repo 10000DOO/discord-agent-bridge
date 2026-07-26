@@ -67,7 +67,7 @@ struct ConfigPanelAccessTests {
         let panel = try await makePanel(store: store)
         let view = panel.render()
 
-        #expect(view.roleRows.count == 5) // 행 개수 불변 (5행 예산 그대로)
+        #expect(view.roleRows.count == 4) // 행 개수 불변 (locale은 defaultRows로 복귀, dmPolicy 없음)
         let buttonRow = view.roleRows[3].components
         let buttonIds = buttonRow.compactMap { c -> String? in
             if case .button(let id, _, _) = c { return id }

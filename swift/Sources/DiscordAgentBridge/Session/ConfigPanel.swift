@@ -5,14 +5,14 @@ import Foundation
 //
 // Mirrors TS `src/discord/configPanel.ts`:
 //   - Role tiers (3 role-selects) batch into pending → Save writes servers/<guildId>.json auth
-//   - defaults.mode / model / effort / permissionMode AUTO-SAVE to server on each select change
-//   - auth.dmPolicy AUTO-SAVE to GLOBAL config.json (server has no dmPolicy field)
+//   - defaults.mode / model / effort / permissionMode / locale AUTO-SAVE to server on each select change
 //   - locale AUTO-SAVE to GLOBAL config.json (process-wide UI language; ko/en)
 //   - Notifications sub-panel: enable toggle + status channel select → server.notifications
 //   - Image/chromium sub-panel (S3): render.enabled toggle + Chromium install
 //   - Embed shows effective global+server auth / defaults / limits
 //
-// Layout: roleRows free 5th row holds locale (defaultRows already at 5 with dmPolicy).
+// Layout: roleRows = 3 role selects + Save/Notif/Render/Access row (4 rows, TS-identical
+// budget). defaultRows = backend/model/effort/permMode/locale (5 rows, TS-identical order).
 
 // MARK: - Ids
 
@@ -30,7 +30,6 @@ public enum ConfigPanelIds {
     public static let effort = "config.default.effort"
     public static let permMode = "config.default.permMode"
     public static let locale = "config.default.locale"
-    public static let dmPolicy = "config.dmPolicy"
     public static let save = "config.save"
     public static let notifOpen = "config.notif.open"
     public static let notifToggle = "config.notif.toggle"
@@ -63,7 +62,6 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
     public var readOnlyUserIds: [String]
     public var backend: String
     public var permMode: String
-    public var dmPolicy: String
     /// Display-only (resolved global→server limits).
     public var limits: LimitsSection
     /// UI language: panel edits GLOBAL config.locale (server.locale still wins when set).
@@ -82,7 +80,6 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
         readOnlyUserIds: [String] = [],
         backend: String,
         permMode: String,
-        dmPolicy: String,
         limits: LimitsSection = LimitsSection(),
         locale: String = "ko",
         model: String = "",
@@ -96,7 +93,6 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
         self.readOnlyUserIds = readOnlyUserIds
         self.backend = backend
         self.permMode = permMode
-        self.dmPolicy = dmPolicy
         self.limits = limits
         self.locale = locale
         self.model = model
@@ -218,9 +214,9 @@ public struct ConfigPanelRow: Sendable, Equatable {
 public struct ConfigPanelView: Sendable, Equatable {
     public var title: String
     public var description: String
-    /// Primary message: role tiers + Save (+ notif) + locale (≤5 rows).
+    /// Primary message: role tiers + Save/Notif/Render/Access (≤5 rows).
     public var roleRows: [ConfigPanelRow]
-    /// Follow-up: backend / model / effort / permMode / dmPolicy (≤5 rows).
+    /// Follow-up: backend / model / effort / permMode / locale (≤5 rows).
     public var defaultRows: [ConfigPanelRow]
 
     public init(
@@ -311,9 +307,6 @@ public final class ConfigPanel: @unchecked Sendable {
         case ConfigPanelIds.permMode:
             guard let value = input.value, !value.isEmpty else { return .pending }
             return await autosavePermMode(value)
-        case ConfigPanelIds.dmPolicy:
-            guard let value = input.value, !value.isEmpty else { return .pending }
-            return await autosaveDmPolicy(value)
         case ConfigPanelIds.locale:
             guard let value = input.value, !value.isEmpty else { return .pending }
             return await autosaveLocale(value)
@@ -410,13 +403,6 @@ public final class ConfigPanel: @unchecked Sendable {
                 WizardSelectOption(label: $0.label, value: $0.value, isDefault: $0.value == d.permMode)
             }
         )
-        let dmSelect = ConfigPanelComponent.select(
-            customId: ConfigPanelIds.dmPolicy,
-            placeholder: "DM policy (global)",
-            options: ["deny", "allow"].map {
-                WizardSelectOption(label: $0, value: $0, isDefault: $0 == d.dmPolicy)
-            }
-        )
         let localeSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.locale,
             placeholder: "Bot language (global)",
@@ -433,15 +419,13 @@ public final class ConfigPanel: @unchecked Sendable {
                 ConfigPanelRow(components: [exec]),
                 ConfigPanelRow(components: [read]),
                 ConfigPanelRow(components: [save, notif, renderBtn, accessBtn]),
-                // 5th row: locale (defaultRows already at Discord's 5-row budget with dmPolicy).
-                ConfigPanelRow(components: [localeSelect]),
             ],
             defaultRows: [
                 ConfigPanelRow(components: [backendSelect]),
                 ConfigPanelRow(components: [modelSelect]),
                 ConfigPanelRow(components: [effortSelect]),
                 ConfigPanelRow(components: [permSelect]),
-                ConfigPanelRow(components: [dmSelect]),
+                ConfigPanelRow(components: [localeSelect]),
             ]
         )
     }
@@ -521,7 +505,7 @@ public final class ConfigPanel: @unchecked Sendable {
         admin: \(formatRoleList(adminRoleIds))
         execute: \(formatRoleList(executeRoleIds))
         read-only: \(formatRoleList(readOnlyRoleIds))
-        backend=\(d.backend) model=\(d.model) effort=\(d.effort) perm=\(d.permMode) dmPolicy=\(d.dmPolicy)
+        backend=\(d.backend) model=\(d.model) effort=\(d.effort) perm=\(d.permMode)
         """
         return .saved(summary: summary)
     }
@@ -665,21 +649,6 @@ public final class ConfigPanel: @unchecked Sendable {
         return .autosaved(notice: "기본 권한 모드 → `\(permMode)`")
     }
 
-    private func autosaveDmPolicy(_ policy: String) async -> ConfigPanelResult {
-        guard policy == "allow" || policy == "deny" else {
-            return .ignored
-        }
-        do {
-            var config = try await store.load()
-            config.auth.dmPolicy = policy
-            try await store.save(config)
-            defaults.dmPolicy = policy
-        } catch {
-            return .autosaved(notice: "dmPolicy 저장 실패: \(error)")
-        }
-        return .autosaved(notice: "DM policy (global) → `\(policy)`")
-    }
-
     private func autosaveLocale(_ locale: String) async -> ConfigPanelResult {
         guard CONFIG_LOCALES.contains(locale) else {
             return .ignored
@@ -786,7 +755,6 @@ public final class ConfigPanel: @unchecked Sendable {
     private func declineChromium() async -> ConfigPanelResult {
         do {
             try await store.setChromiumDecision("declined")
-            try await store.setRenderEnabled(false)
         } catch {
             return .autosaved(notice: "chromium 저장 실패: \(error)")
         }
@@ -885,11 +853,10 @@ public final class ConfigPanel: @unchecked Sendable {
         roles admin: \(formatRoleList(d.adminRoleIds))
         roles execute: \(formatRoleList(d.executeRoleIds))
         roles read-only: \(formatRoleList(d.readOnlyRoleIds))
-        dmPolicy: `\(d.dmPolicy)` (global)
         defaults: mode=`\(d.backend)` model=`\(d.model)` effort=`\(d.effort)` perm=`\(d.permMode)` locale=`\(d.locale)`
         limits: maxSessions/user=\(lim.maxSessionsPerUser) permTimeout=\(lim.permissionTimeoutSec)s codexTimeoutMs=\(lim.codexTimeoutMs)
 
-        Role picks batch until **Save roles**. Backend / model / effort / perm / DM / locale auto-save on change. 🔔 opens notifications.
+        Role picks batch until **Save roles**. Backend / model / effort / perm / locale auto-save on change. 🔔 opens notifications.
         """
     }
 }
@@ -965,7 +932,6 @@ public func configPanelDefaults(
         readOnlyUserIds: effective.readOnlyUserIds,
         backend: backend,
         permMode: perm,
-        dmPolicy: global.auth.dmPolicy,
         limits: resolved.limits,
         locale: server?.locale ?? global.locale,
         model: model,

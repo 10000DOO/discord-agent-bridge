@@ -85,7 +85,6 @@ struct ConfigPanelTests {
         #expect(isConfigPanelId("config.default.model"))
         #expect(isConfigPanelId("config.default.effort"))
         #expect(isConfigPanelId("config.default.locale"))
-        #expect(isConfigPanelId("config.dmPolicy"))
         #expect(isConfigPanelId("config.notif.open"))
         #expect(isConfigPanelId("config.notif.toggle"))
         #expect(isConfigPanelId("config.notif.channel"))
@@ -102,10 +101,9 @@ struct ConfigPanelTests {
         let view = panel.render()
 
         #expect(view.title == "Bot config")
-        #expect(view.description.contains("dmPolicy"))
         #expect(view.description.contains("effort="))
         #expect(view.description.contains("locale="))
-        #expect(view.roleRows.count == 5)
+        #expect(view.roleRows.count == 4)
         #expect(view.defaultRows.count == 5)
 
         let roleComps = view.roleRows.flatMap(\.components)
@@ -126,9 +124,9 @@ struct ConfigPanelTests {
             if case .button(let id, _, _) = $0 { return id == ConfigPanelIds.notifOpen }
             return false
         })
-        // Locale sits on roleRows 5th (defaultRows already at budget with dmPolicy).
-        #expect(defaultSelected(selectById(view.roleRows, ConfigPanelIds.locale)) == "ko")
-        let localeOpts = selectById(view.roleRows, ConfigPanelIds.locale)
+        // Locale sits on defaultRows 5th (TS-identical: backend/model/effort/permMode/locale).
+        #expect(defaultSelected(selectById(view.defaultRows, ConfigPanelIds.locale)) == "ko")
+        let localeOpts = selectById(view.defaultRows, ConfigPanelIds.locale)
         #expect(localeOpts?.map(\.value) == CONFIG_LOCALES)
 
         let defaultIds = view.defaultRows.flatMap(\.components).compactMap { c -> String? in
@@ -140,7 +138,7 @@ struct ConfigPanelTests {
             ConfigPanelIds.model,
             ConfigPanelIds.effort,
             ConfigPanelIds.permMode,
-            ConfigPanelIds.dmPolicy,
+            ConfigPanelIds.locale,
         ])
         #expect(defaultSelected(selectById(view.defaultRows, ConfigPanelIds.model)) == "opus")
         #expect(defaultSelected(selectById(view.defaultRows, ConfigPanelIds.effort)) == "high")
@@ -274,25 +272,6 @@ struct ConfigPanelTests {
         #expect(server?.defaults?.permissionMode == "acceptEdits")
     }
 
-    @Test func autosaveDmPolicyWritesGlobalOnly() async throws {
-        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = ConfigStore(baseDir: dir)
-        try await seedGlobal(store, dmPolicy: "deny")
-        let panel = try await makePanel(store: store)
-
-        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.dmPolicy, value: "allow"))
-        guard case .autosaved(let notice) = r else {
-            Issue.record("expected autosaved, got \(r)")
-            return
-        }
-        #expect(notice.contains("allow"))
-        let global = try await store.load()
-        #expect(global.auth.dmPolicy == "allow")
-        // Server file may exist if other fields written; dmPolicy is not a server field.
-        let server = await store.loadServerConfig(guildId: "g1")
-        #expect(server == nil || server?.auth?.adminRoleIds == nil || true)
-    }
-
     @Test func autosaveLocaleWritesGlobalConfig() async throws {
         let prevLocale = I18n.getLocale()
         defer { I18n.setLocale(prevLocale) }
@@ -314,7 +293,7 @@ struct ConfigPanelTests {
         let server = await store.loadServerConfig(guildId: "g1")
         #expect(server?.locale == nil)
         // In-memory defaults + re-render mark en selected.
-        #expect(defaultSelected(selectById(panel.render().roleRows, ConfigPanelIds.locale)) == "en")
+        #expect(defaultSelected(selectById(panel.render().defaultRows, ConfigPanelIds.locale)) == "en")
     }
 
     @Test func autosaveLocaleRejectsUnknownCode() async throws {
@@ -369,7 +348,6 @@ struct ConfigPanelTests {
         #expect(d.backend == "codex")
         #expect(d.permMode == "plan")
         #expect(d.locale == "en")
-        #expect(d.dmPolicy == "deny")
         #expect(d.model == "gpt-5.5")
         #expect(d.effort == "high")
         #expect(d.limits.maxSessionsPerUser == 2)
@@ -468,6 +446,33 @@ struct ConfigPanelTests {
         server = await store.loadServerConfig(guildId: "g1")
         #expect(server?.notifications?.channelId == nil)
         #expect(resolveNotifications(server).channelId == "status-fallback")
+    }
+
+    // WO-P16 (Q2): TS `handleRenderSetup('decline')` (slashCommands.ts:262-266) only persists
+    // chromium.decision — it never touches render.enabled. Swift's renderDecline must match.
+    @Test func renderDeclineDoesNotDisableRenderEnabled() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+
+        let opened = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.renderOpen))
+        guard case .renderPanel(let before) = opened else {
+            Issue.record("expected renderPanel, got \(opened)")
+            return
+        }
+        #expect(before.description.contains("**on**"))
+
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.renderDecline))
+        guard case .renderUpdated(let after) = r else {
+            Issue.record("expected renderUpdated, got \(r)")
+            return
+        }
+        #expect(after.description.contains("**on**")) // still on — decline must not disable render
+        #expect(after.description.contains("declined"))
+        let global = try await store.load()
+        #expect(global.chromium?.decision == "declined")
+        #expect((global.render?.enabled ?? true) == true)
     }
 
     @Test func configCommandSpecRequiresAdministrator() {
