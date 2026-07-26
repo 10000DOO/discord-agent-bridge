@@ -114,6 +114,7 @@ private struct StoreFile: Codable {
     var version: Int
     var channels: [String: PersistedSession]
     var autoUpdate: AutoUpdateMeta?
+    var presetDrafts: [String: PresetDraft]?
 }
 
 // MARK: - Ordered migrations (fromVersion → next). Port of state/store.ts migrate().
@@ -174,6 +175,7 @@ public actor SessionStore {
     private let fileURL: URL
     private var channels: [String: PersistedSession] = [:]
     private var autoUpdate: AutoUpdateMeta = .empty
+    private var presetDrafts: [String: PresetDraft] = [:]
 
     public init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? Self.defaultFileURL()
@@ -199,6 +201,7 @@ public actor SessionStore {
         let file = Self.readFile(fileURL)
         channels = file?.channels ?? [:]
         autoUpdate = file?.autoUpdate ?? .empty
+        presetDrafts = file?.presetDrafts ?? [:]
     }
 
     public func binding(channelId: String) -> PersistedSession? { channels[channelId] }
@@ -215,19 +218,51 @@ public actor SessionStore {
 
     public func getUpdateMeta() -> AutoUpdateMeta { autoUpdate }
 
-    /// Merge patch and persist. Channel bindings are re-read so concurrent writers survive.
+    /// Merge patch and persist. Channel bindings + preset drafts are re-read so concurrent writers survive.
     public func setUpdateMeta(_ patch: AutoUpdateMetaPatch) throws {
         let disk = Self.readFile(fileURL)
         let mergedChannels = disk?.channels ?? channels
         var meta = disk?.autoUpdate ?? autoUpdate
         if let t = patch.lastCheckAt { meta.lastCheckAt = t }
         if let d = patch.dismissedVersion { meta.dismissedVersion = d }
+        let drafts = disk?.presetDrafts ?? presetDrafts
         try Self.writeFile(
             fileURL,
-            StoreFile(version: STATE_VERSION, channels: mergedChannels, autoUpdate: meta)
+            StoreFile(version: STATE_VERSION, channels: mergedChannels, autoUpdate: meta, presetDrafts: drafts)
         )
         channels = mergedChannels
         autoUpdate = meta
+        presetDrafts = drafts
+    }
+
+    // MARK: - Preset drafts (TS stateStore.get/set/deletePresetDraft)
+
+    /// Draft backed up at wizard `.done` for "💾 프리셋으로 저장", keyed by `PresetDraftRegistry.key`.
+    public func presetDraft(key: String) -> PresetDraft? { presetDrafts[key] }
+
+    public func setPresetDraft(_ draft: PresetDraft, key: String) throws {
+        try mutatePresetDrafts { $0[key] = draft }
+    }
+
+    public func removePresetDraft(key: String) throws {
+        try mutatePresetDrafts { $0[key] = nil }
+    }
+
+    /// Re-read the file (channels + autoUpdate carried forward untouched), apply `change` to
+    /// presetDrafts, write atomically. Mirrors `mutate()` but for the presetDrafts key.
+    private func mutatePresetDrafts(_ change: (inout [String: PresetDraft]) -> Void) throws {
+        let disk = Self.readFile(fileURL)
+        let mergedChannels = disk?.channels ?? channels
+        let meta = disk?.autoUpdate ?? autoUpdate
+        var drafts = disk?.presetDrafts ?? presetDrafts
+        change(&drafts)
+        try Self.writeFile(
+            fileURL,
+            StoreFile(version: STATE_VERSION, channels: mergedChannels, autoUpdate: meta, presetDrafts: drafts)
+        )
+        channels = mergedChannels
+        autoUpdate = meta
+        presetDrafts = drafts
     }
 
     // MARK: - Write (load-merge-save, atomic, 0600)
@@ -262,15 +297,20 @@ public actor SessionStore {
     }
 
     /// Re-read the file (so a concurrent writer's keys survive), apply `change`, write atomically.
-    /// Preserves `autoUpdate` from disk (or in-memory default).
+    /// Preserves `autoUpdate` and `presetDrafts` from disk (or in-memory default).
     private func mutate(_ change: (inout [String: PersistedSession]) -> Void) throws {
         let disk = Self.readFile(fileURL)
         var merged = disk?.channels ?? [:]
         change(&merged)
         let meta = disk?.autoUpdate ?? autoUpdate
-        try Self.writeFile(fileURL, StoreFile(version: STATE_VERSION, channels: merged, autoUpdate: meta))
+        let drafts = disk?.presetDrafts ?? presetDrafts
+        try Self.writeFile(
+            fileURL,
+            StoreFile(version: STATE_VERSION, channels: merged, autoUpdate: meta, presetDrafts: drafts)
+        )
         channels = merged
         autoUpdate = meta
+        presetDrafts = drafts
     }
 
     // MARK: - Disk

@@ -269,8 +269,9 @@ public struct Preset: Codable, Sendable, Equatable {
     }
 }
 
-/// In-memory draft after a normal (non-preset) wizard start — backs the "💾 프리셋으로 저장" modal.
-public struct PresetDraft: Sendable, Equatable {
+/// Draft after a normal (non-preset) wizard start — backs the "💾 프리셋으로 저장" modal.
+/// Persisted via `SessionStore` (`swift-state.json` `presetDrafts` field) so it survives a restart.
+public struct PresetDraft: Sendable, Equatable, Codable {
     public var backend: String
     public var model: String?
     public var effort: String?

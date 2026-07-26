@@ -833,9 +833,10 @@ public actor WizardRegistry {
 }
 
 /// `"guildId:channelId"` → draft for "💾 프리셋으로 저장" after a normal (non-preset) start.
+/// Persisted via `SessionStore` (`swift-state.json` `presetDrafts` field, C16) so a draft survives
+/// a restart before the user taps "save as preset" — mirrors TS `state/store.ts` get/set/deletePresetDraft.
 public actor PresetDraftRegistry {
     public static let shared = PresetDraftRegistry()
-    private var drafts: [String: PresetDraft] = [:]
 
     public init() {}
 
@@ -843,15 +844,15 @@ public actor PresetDraftRegistry {
         "\(guildId):\(channelId)"
     }
 
-    public func set(_ draft: PresetDraft, key: String) {
-        drafts[key] = draft
+    public func set(_ draft: PresetDraft, key: String) async {
+        try? await SessionStore.shared.setPresetDraft(draft, key: key)
     }
 
-    public func get(key: String) -> PresetDraft? {
-        drafts[key]
+    public func get(key: String) async -> PresetDraft? {
+        await SessionStore.shared.presetDraft(key: key)
     }
 
-    public func remove(key: String) {
-        drafts[key] = nil
+    public func remove(key: String) async {
+        try? await SessionStore.shared.removePresetDraft(key: key)
     }
 }

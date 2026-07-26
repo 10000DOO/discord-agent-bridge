@@ -281,6 +281,89 @@ struct SessionStoreTests {
         #expect(await s.binding(channelId: "c1")?.cwd == "/b")
     }
 
+    // MARK: - C16 (preset draft persistence)
+
+    @Test func presetDraftPersistsAcrossInstances() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        let draft = PresetDraft(backend: "codex", model: "o3", effort: "high", permMode: "plan")
+        try await s.setPresetDraft(draft, key: "g1:c1")
+
+        let reloaded = SessionStore(fileURL: url)
+        await reloaded.load()
+        #expect(await reloaded.presetDraft(key: "g1:c1") == draft)
+    }
+
+    @Test func presetDraftsAcrossChannelsDontMix() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        let d1 = PresetDraft(backend: "claude", model: "opus")
+        let d2 = PresetDraft(backend: "grok", model: "grok-4")
+        try await s.setPresetDraft(d1, key: "g1:c1")
+        try await s.setPresetDraft(d2, key: "g1:c2")
+
+        #expect(await s.presetDraft(key: "g1:c1") == d1)
+        #expect(await s.presetDraft(key: "g1:c2") == d2)
+
+        let reloaded = SessionStore(fileURL: url)
+        await reloaded.load()
+        #expect(await reloaded.presetDraft(key: "g1:c1") == d1)
+        #expect(await reloaded.presetDraft(key: "g1:c2") == d2)
+    }
+
+    @Test func removePresetDraftDeletesOnlyThatKey() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        try await s.setPresetDraft(PresetDraft(backend: "claude"), key: "g1:c1")
+        try await s.setPresetDraft(PresetDraft(backend: "grok"), key: "g1:c2")
+        try await s.removePresetDraft(key: "g1:c1")
+
+        #expect(await s.presetDraft(key: "g1:c1") == nil)
+        #expect(await s.presetDraft(key: "g1:c2") != nil)
+    }
+
+    /// Channel binding mutation (`mutate()`) must not clobber presetDrafts written earlier.
+    @Test func channelMutationDoesNotClobberPresetDrafts() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        let draft = PresetDraft(backend: "codex", model: "o3")
+        try await s.setPresetDraft(draft, key: "g1:c1")
+        try await s.upsert(channelId: "c1", sample(.claude, "/ws"))
+
+        #expect(await s.presetDraft(key: "g1:c1") == draft)
+
+        let reloaded = SessionStore(fileURL: url)
+        await reloaded.load()
+        #expect(await reloaded.presetDraft(key: "g1:c1") == draft)
+        #expect(await reloaded.binding(channelId: "c1")?.backend == .claude)
+    }
+
+    /// `setUpdateMeta` must not clobber presetDrafts, and vice versa.
+    @Test func updateMetaMutationDoesNotClobberPresetDrafts() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        let draft = PresetDraft(backend: "grok")
+        try await s.setPresetDraft(draft, key: "g1:c1")
+        try await s.setUpdateMeta(AutoUpdateMetaPatch(lastCheckAt: 99))
+
+        #expect(await s.presetDraft(key: "g1:c1") == draft)
+        #expect(await s.getUpdateMeta().lastCheckAt == 99)
+
+        // And the reverse: a preset-draft write must not clobber autoUpdate.
+        try await s.setPresetDraft(PresetDraft(backend: "codex"), key: "g1:c2")
+        #expect(await s.getUpdateMeta().lastCheckAt == 99)
+    }
+
     /// G-P0-05: turn-time persistSession must not drop binding-resident projectAuth.
     @Test func persistSessionCarriesProjectAuth() async throws {
         let url = tempStoreURL()
