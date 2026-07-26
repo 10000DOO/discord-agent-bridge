@@ -84,6 +84,15 @@ private actor GateableSidecar {
             let session = env.session ?? env.params?["session"]?.stringValue ?? ""
             let text = env.params?["text"]?.stringValue ?? ""
             lastText = text
+            // G-P0-01: optional files[] capture for bridge tests.
+            if let arr = env.params?["files"]?.arrayValue {
+                let paths = arr.compactMap { $0.objectValue?["path"]?.stringValue }.joined(separator: ",")
+                capture?.withLock { $0["files.paths"] = paths }
+                let mimes = arr.compactMap { $0.objectValue?["mime"]?.stringValue }.joined(separator: ",")
+                capture?.withLock { $0["files.mimes"] = mimes }
+            } else {
+                capture?.withLock { $0["files.paths"] = "" }
+            }
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: session))
             if emitsPermission {
                 // Ask for permission; the turn finishes only after session.permission answers.
@@ -246,6 +255,21 @@ struct DabSessionBridgeTests {
     @Test func happyPath() async throws {
         let (bridge, _) = makeDabBridge()
         #expect(try await run(bridge, "hi") == "ok:hi")
+    }
+
+    @Test func runTurnForwardsFilesToSessionSend() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture)
+        let turn = try await bridge.runTurn(
+            channelId: "c",
+            guildId: "g",
+            ownerId: nil,
+            text: "see file",
+            files: [TurnFile(path: "/tmp/ws/.dab-attachments/note.txt", mime: "text/plain")]
+        )
+        #expect(turn.text == "ok:see file")
+        #expect(capture.withLock { $0["files.paths"] } == "/tmp/ws/.dab-attachments/note.txt")
+        #expect(capture.withLock { $0["files.mimes"] } == "text/plain")
     }
 
     @Test func capturesContextUsageAndRateLimitOnTurn() async throws {

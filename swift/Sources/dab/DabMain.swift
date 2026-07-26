@@ -1525,7 +1525,8 @@ struct EventHandler: GatewayEventHandler {
 
         let channelId = payload.channel_id.rawValue
         let binding = await SessionRegistry.shared.binding(channelId: channelId)
-        switch routeDecision(content: payload.content, binding: binding) {
+        let hasAttachments = !payload.attachments.isEmpty
+        switch routeDecision(content: payload.content, binding: binding, hasAttachments: hasAttachments) {
         case .ignore:
             return
         case .usage(let label):
@@ -1566,7 +1567,29 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
-        print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
+        // G-P0-01: download Discord attachments into the session workspace (confined), then
+        // pass paths to the backend (Claude: session.send files; Codex/Grok: text hints).
+        let turnFiles: [TurnFile]
+        if payload.attachments.isEmpty {
+            turnFiles = []
+        } else {
+            let cwd = await resolveTurnCwd(channelId: channelId)
+            let incoming = payload.attachments.map {
+                IncomingAttachment(url: $0.url, name: $0.filename, contentType: $0.content_type)
+            }
+            do {
+                turnFiles = try await downloadAttachments(cwd: cwd, attachments: incoming)
+            } catch {
+                print("dab: attachment download failed channel=\(channelId) err=\(error)")
+                _ = try? await client.createMessage(
+                    channelId: payload.channel_id,
+                    payload: .init(content: "첨부 처리 실패: \(error)")
+                )
+                return
+            }
+        }
+
+        print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80)) files=\(turnFiles.count)")
         // Capabilities gate (TS RendererDispatcher): toolThreads/fileDiff/streaming/usagePanel.
         let caps = await resolveSessionCapabilities(backend: backend, guildId: guildId)
         await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)
@@ -1594,12 +1617,27 @@ struct EventHandler: GatewayEventHandler {
                     guildId: payload.guild_id?.rawValue ?? "dm",
                     ownerId: payload.author?.id.rawValue,
                     text: text,
-                    config: cfg
+                    config: cfg,
+                    files: turnFiles
                 )
             case .codex:
-                turn = try await CodexSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
+                turn = try await CodexSessionBridge.shared.runTurn(
+                    channelId: channelId,
+                    ownerId: payload.author?.id.rawValue,
+                    guildId: payload.guild_id?.rawValue ?? "dm",
+                    text: text,
+                    config: binding,
+                    files: turnFiles
+                )
             case .grok:
-                turn = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
+                turn = try await GrokSessionBridge.shared.runTurn(
+                    channelId: channelId,
+                    ownerId: payload.author?.id.rawValue,
+                    guildId: payload.guild_id?.rawValue ?? "dm",
+                    text: text,
+                    config: binding,
+                    files: turnFiles
+                )
             }
             await StreamStatusHost.shared.end(channelId: channelId)
             let toolCount = turn.tools.reduce(0) { $0 + $1.count }
@@ -1764,6 +1802,20 @@ struct EventHandler: GatewayEventHandler {
             payload: .init(content: ok ? InterruptLabels.done : InterruptLabels.none, flags: [.ephemeral])
         )
     }
+}
+
+// MARK: - Turn workspace cwd (G-P0-01)
+
+/// Session workspace for attachment download: persisted wizard cwd first, else DAB_CWD / home
+/// (matches bridge `cwd` fallbacks so files land where agents can Read them).
+func resolveTurnCwd(channelId: String) async -> String {
+    if let c = await SessionStore.shared.binding(channelId: channelId)?.cwd, !c.isEmpty {
+        return c
+    }
+    if let v = ProcessInfo.processInfo.environment["DAB_CWD"], !v.isEmpty {
+        return v
+    }
+    return NSHomeDirectory()
 }
 
 // MARK: - Resume list + bind (W11-b2 residual)

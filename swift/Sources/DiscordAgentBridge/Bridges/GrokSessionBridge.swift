@@ -76,14 +76,15 @@ public actor GrokSessionBridge {
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized. Cost/tokens from the prompt response are
     /// returned when present (W11-g slice1).
-    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil) async throws -> TurnResult {
+    /// `files`: G-P0-01 best-effort — paths appended to prompt text (no ACP image blocks yet).
+    public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil, files: [TurnFile] = []) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
         let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config)
+            return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config, files: files)
         }
         channelGates[channelId] = task
         defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
@@ -94,8 +95,13 @@ public actor GrokSessionBridge {
         return result
     }
 
-    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?) async throws -> TurnResult {
+    private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?, files: [TurnFile]) async throws -> TurnResult {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
+        // Best-effort: mention attachment paths in text so the agent can open them.
+        let promptText = appendAttachedFileHints(text: text, files: files)
+        if !files.isEmpty {
+            print("dab: grok attachments=\(files.count) (paths in text; ACP image blocks not wired)")
+        }
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
         // buffer is complete when the await returns (see type comment). No actor hop for text/stats;
@@ -146,7 +152,7 @@ public actor GrokSessionBridge {
         }
         defer { unsub() }
 
-        let promptResult = try await channel.client.sessionPrompt(prompt: text)
+        let promptResult = try await channel.client.sessionPrompt(prompt: promptText)
         let out = buf.withLock { $0 }
         let textOut = out.isEmpty ? "(no text)" : out
         let (tools, agents) = statsBox.withLock { ($0.toolsSnapshot(), $0.agentsSnapshot()) }

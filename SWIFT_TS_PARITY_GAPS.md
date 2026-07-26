@@ -35,9 +35,9 @@
 
 | 상태 | 개수 (대략) |
 |------|-------------|
-| `todo` | 아래 표 전부 (초기) |
+| `todo` | P0 나머지 + P1/P2 |
 | `doing` | 0 |
-| `done` | 0 |
+| `done` | 1 (G-P0-01) |
 
 **권장 작업 순서:** P0 → P1 → P2. 한 항목(또는 밀접한 묶음) = 1 커밋.
 
@@ -47,7 +47,7 @@
 
 | ID | 상태 | 기능 | TS 근거 | Swift 현실 | 완료 조건 |
 |----|------|------|---------|------------|-----------|
-| **G-P0-01** | `todo` | **메시지 첨부 → 에이전트 입력** | `messageRouter.ts` downloadAttachments · `fileDownload` 격리 · `TurnInput.files` · sidecar `session.send` files | 첨부 무시. host.file.attach(에이전트→채널)만 있음 | 메시지 attachments를 cwd 하위(예 `.dab-attachments`)에 저장 → `session.send` files 전달 · 탈출 경로 거부 · 단위 테스트 |
+| **G-P0-01** | `done` | **메시지 첨부 → 에이전트 입력** | `messageRouter.ts` downloadAttachments · `fileDownload` 격리 · `TurnInput.files` · sidecar `session.send` files | `AttachmentDownload` + DabMain 배선 · Claude `sessionSend` files · Codex/Grok 경로 힌트 | 메시지 attachments를 cwd 하위(예 `.dab-attachments`)에 저장 → `session.send` files 전달 · 탈출 경로 거부 · 단위 테스트 |
 | **G-P0-02** | `todo` | **턴 리액션 ⏳/✅/❌** | `messageRouter.ts` REACT_WORKING/DONE/ERROR · EventBus 완료 시 swap | reaction 경로 없음 | 턴 수락 시 ⏳ · result ✅ · error ❌ · 권한 실패 best-effort |
 | **G-P0-03** | `todo` | **Claude thinking 스트림 렌더** | `streamEmbed` thinking 경로 · `AgentEvent.thinking` | 이벤트 타입 있음 · DabSessionBridge stream에 미연결 | thinking 델타 → stream 임베드(또는 TS 동등 색/제목) · 답변 버퍼와 분리 |
 | **G-P0-04** | `todo` | **`/agent close` 세션 채널 삭제** | `slashCommands.close` + `deleteSessionChannel` (A4D proj 채널, 컨트롤 제외) | stop+unbind만 | close 후 전용 세션 채널 best-effort 삭제 · 컨트롤/상태 채널 보호 |
@@ -89,15 +89,15 @@
 | 날짜 | ID | 커밋 | 요약 |
 |------|-----|------|------|
 | _(시작)_ | — | — | 문서 생성. 구현 대기. |
+| 2026-07-26 | G-P0-01 | `feat(swift-port): G-P0-01 메시지 첨부→에이전트 입력` | AttachmentDownload (sanitize/confine/fetch 주입) · DabMain 다운로드 · Claude files · Codex/Grok text hint |
 
 ---
 
 ## 6. 다음 착수
 
-1. **G-P0-01** 첨부 파일 입력  
-2. **G-P0-02** 리액션  
-3. **G-P0-03** thinking 렌더  
-4. **G-P0-04** close 채널 삭제  
-5. **G-P0-05** projectAuth  
+1. **G-P0-02** 리액션  
+2. **G-P0-03** thinking 렌더  
+3. **G-P0-04** close 채널 삭제  
+4. **G-P0-05** projectAuth  
 
 완료 후 PLAN §0 / README 호환 매트릭스에 “패리티 갭 문서” 링크를 건다.

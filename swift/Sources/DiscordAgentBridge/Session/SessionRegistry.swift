@@ -62,7 +62,8 @@ public enum RouteDecision: Sendable, Equatable {
 }
 
 /// Explicit prefixes win (one-off override); otherwise a bound channel routes plain text; else ignore.
-public func routeDecision(content: String, binding: SessionConfig?) -> RouteDecision {
+/// `hasAttachments`: empty body + files still routes on a bound channel (G-P0-01).
+public func routeDecision(content: String, binding: SessionConfig?, hasAttachments: Bool = false) -> RouteDecision {
     func strip(_ prefix: String) -> String? {
         guard content.hasPrefix(prefix) else { return nil }
         return String(content.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -73,7 +74,7 @@ public func routeDecision(content: String, binding: SessionConfig?) -> RouteDeci
     if let p = strip("!custom ") { return p.isEmpty ? .usage("!custom") : .prefixCustom(p) }
     if let binding {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty { return .bound(binding.backend, text) }
+        if !text.isEmpty || hasAttachments { return .bound(binding.backend, text) }
     }
     return .ignore
 }

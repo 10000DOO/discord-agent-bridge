@@ -155,12 +155,14 @@ public actor DabSessionBridge {
     /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
     /// Turns on the same channel are serialized. Usage (cost/tokens/duration) from the result
     /// event is returned when present (W11-g slice1).
+    /// `files` are confined workspace paths (G-P0-01) forwarded to sidecar `session.send`.
     public func runTurn(
         channelId: String,
         guildId: String,
         ownerId: String?,
         text: String,
-        config: SessionConfig? = nil
+        config: SessionConfig? = nil,
+        files: [TurnFile] = []
     ) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session. The previous turn is awaited INSIDE the task — that
@@ -173,7 +175,8 @@ public actor DabSessionBridge {
                 guildId: guildId,
                 ownerId: ownerId,
                 text: text,
-                config: config
+                config: config,
+                files: files
             )
         }
         channelGates[channelId] = task
@@ -191,7 +194,8 @@ public actor DabSessionBridge {
         guildId: String,
         ownerId: String?,
         text: String,
-        config: SessionConfig?
+        config: SessionConfig?,
+        files: [TurnFile]
     ) async throws -> TurnResult {
         let client = try await ensureClient()
         let handle = try await sessionHandle(
@@ -201,6 +205,15 @@ public actor DabSessionBridge {
             ownerId: ownerId,
             config: config
         )
+
+        // Files are realpath-confined at download (AttachmentDownload). Forward to sidecar.
+        let fileParams: [[String: String]]? = files.isEmpty
+            ? nil
+            : files.map { f in
+                var o = ["path": f.path]
+                if let mime = f.mime { o["mime"] = mime }
+                return o
+            }
 
         let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
@@ -219,7 +232,7 @@ public actor DabSessionBridge {
 
             Task {
                 do {
-                    try await client.sessionSend(session: handle, text: text)
+                    try await client.sessionSend(session: handle, text: text, files: fileParams)
                 } catch {
                     self.finishTurn(handle: handle, error: error)
                 }
