@@ -59,7 +59,7 @@
 
 | ID | 상태 | 기능 | TS 근거 | Swift 현실 | 완료 조건 |
 |----|------|------|---------|------------|-----------|
-| **G-P1-01** | `todo` | **IdleWatchdog** | `idleWatchdog.ts` 3분 무활동 공지 | 없음 | 턴 arm · 이벤트 note · result/error stop · 1회 공지 |
+| **G-P1-01** | `done` | **IdleWatchdog** | `idleWatchdog.ts` 3분 무활동 공지 | 없음 | 턴 arm · 이벤트 note · result/error stop · 1회 공지 |
 | **G-P1-02** | `todo` | **TranscriptFeed (progress 한 줄)** | `transcriptFeed.ts` progress 메시지 편집 | StreamStatusHost 임베드 위주 | caps.progress 경로에서 TS와 같이 상태 라인 또는 동등 가시성 (Codex progress) |
 | **G-P1-03** | `todo` | **/model · /effort autocomplete** | client autocomplete + catalog | free-text only | Discord autocomplete → provider catalog 목록 |
 | **G-P1-04** | `todo` | **/mode perm 프로필 해석** | `switchPerm` config.profiles 이름 → profile | raw string 위주 | 프로필 이름이면 profile, 아니면 permMode · 테스트 |
@@ -95,12 +95,13 @@
 | 2026-07-26 | G-P0-05 | `feat(swift-port): G-P0-05 projectAuth 인가 배선` | DabMain authorize←store.projectAuth · persistSession/resume/start 보존 · Authorizer store-row 테스트 |
 | 2026-07-26 | G-P0-04 | `feat(swift-port): G-P0-04 close 시 세션 채널 삭제` | `shouldDeleteSessionChannelOnClose` · `deleteSessionChannel` · close 응답 후 provisioner 삭제 · 컨트롤/상태/카테고리 보호 |
 | 2026-07-26 | G-P1-06 | `feat(swift-port): G-P1-06 favorites browseRoots` | `browseRoots(fromFavorites:)` · `/agent start`·reconfigure에 ConfigStore.favorites → allowedRoots · empty=unbounded · 단위 테스트 |
+| 2026-07-26 | G-P1-01 | `feat(swift-port): G-P1-01 IdleWatchdog` | `IdleWatchdog` actor (injectable timer) · DabMain arm/stop · StreamStatusHost noteActivity · KO 공지 · 단위 테스트 |
 | 2026-07-26 | G-P1-07 | `feat(swift-port): G-P1-07 autoProvisionGuild` | Ready→bot id · GuildCreate→`autoProvisionGuild` (Manage Channels) · best-effort log |
 
 ---
 
 ## 6. 다음 착수
 
-1. **G-P1-01** IdleWatchdog (P0 소진 → P1)
+1. **G-P1-02** TranscriptFeed (progress 한 줄)
 
 완료 후 PLAN §0 / README 호환 매트릭스에 “패리티 갭 문서” 링크를 건다.

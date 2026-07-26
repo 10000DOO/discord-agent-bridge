@@ -82,6 +82,8 @@ public actor StreamStatusHost {
         s.phase = .responding
         states[channelId] = s
         scheduleFlush(channelId: channelId, force: false)
+        // G-P1-01: any stream activity resets the turn idle watchdog.
+        Task { await IdleWatchdog.shared.noteActivity(channelId: channelId) }
     }
 
     /// Append a thinking delta (Claude extended thinking). Not mixed into answer text.
@@ -92,6 +94,7 @@ public actor StreamStatusHost {
         s.phase = .thinking
         states[channelId] = s
         scheduleFlush(channelId: channelId, force: false)
+        Task { await IdleWatchdog.shared.noteActivity(channelId: channelId) }
     }
 
     /// Increment tool count (tool_use). Prefer immediate flush when interval allows.
@@ -100,6 +103,7 @@ public actor StreamStatusHost {
         s.toolCount += 1
         states[channelId] = s
         scheduleFlush(channelId: channelId, force: true)
+        Task { await IdleWatchdog.shared.noteActivity(channelId: channelId) }
     }
 
     /// Surface a progress label when no/partial text yet (or append a line).
@@ -114,6 +118,7 @@ public actor StreamStatusHost {
         s.phase = .responding
         states[channelId] = s
         scheduleFlush(channelId: channelId, force: false)
+        Task { await IdleWatchdog.shared.noteActivity(channelId: channelId) }
     }
 
     // MARK: - rate-limited flush

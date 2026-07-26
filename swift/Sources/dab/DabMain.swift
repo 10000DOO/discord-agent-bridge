@@ -61,6 +61,13 @@ struct DabMain {
                 spec: spec
             )
         }
+        // G-P1-01: turn idle watchdog (~3 min no activity → one channel notice).
+        await IdleWatchdog.shared.setPoster { channelId, content in
+            _ = try? await client.createMessage(
+                channelId: ChannelSnowflake(channelId),
+                payload: .init(content: content)
+            )
+        }
         // S3: table/mermaid → PNG when Chrome available + render.enabled.
         await ImageRenderHost.shared.configure(
             configLoad: { try? await ConfigStore.shared.load() }
@@ -1677,6 +1684,8 @@ struct EventHandler: GatewayEventHandler {
                 messageId: controlMsgId.rawValue
             )
         }
+        // G-P1-01: arm idle watchdog for this turn (StreamStatusHost notes reset; stop on end).
+        await IdleWatchdog.shared.arm(channelId: channelId)
         do {
             let turn: TurnResult
             switch backend {
@@ -1710,6 +1719,8 @@ struct EventHandler: GatewayEventHandler {
                     files: turnFiles
                 )
             }
+            // G-P1-01: turn finished — cancel idle notice.
+            await IdleWatchdog.shared.stop(channelId: channelId)
             // G-P0-02: ⏳ → ✅ on successful turn.
             await completeTurnReaction(
                 client: client,
@@ -1818,6 +1829,8 @@ struct EventHandler: GatewayEventHandler {
             }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
+            // G-P1-01: turn failed — cancel idle notice.
+            await IdleWatchdog.shared.stop(channelId: channelId)
             // G-P0-02: ⏳ → ❌ on turn failure.
             await completeTurnReaction(
                 client: client,
