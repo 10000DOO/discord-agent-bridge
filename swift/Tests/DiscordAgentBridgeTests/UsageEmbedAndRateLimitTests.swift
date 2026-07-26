@@ -153,6 +153,39 @@ struct UsageEmbedTests {
         #expect(embed?.description == "Claude Fable 5 · 📁 discord-agent-bridge git:(master)")
     }
 
+    /// G-P1-10: clearableTokens → `/clear` savings hint on context field (TS usageEmbed.test).
+    @Test func clearableTokensHintOnContextField() {
+        let withClearable = ContextUsageInfo(
+            totalTokens: 30, maxTokens: 100, percentage: 30, clearableTokens: 207_600
+        )
+        let embed = buildUsageEmbed(usage: nil, ctxUsage: withClearable)
+        let field = embed?.fields.first { $0.name == "🟢 컨텍스트" }
+        #expect(field?.value.contains("/clear 시 ~207.6K 토큰 절약") == true)
+        // Zero clearable tokens → no hint.
+        let zero = buildUsageEmbed(
+            usage: nil,
+            ctxUsage: ContextUsageInfo(totalTokens: 30, maxTokens: 100, percentage: 30, clearableTokens: 0)
+        )
+        #expect(zero?.fields.first { $0.name == "🟢 컨텍스트" }?.value.contains("/clear") != true)
+    }
+
+    /// G-P1-10: memoryFileCount + mcpServerCount → session composition field.
+    @Test func sessionCompositionFromMemoryAndMcpCounts() {
+        let withCounts = ContextUsageInfo(
+            totalTokens: 30, maxTokens: 100, percentage: 30,
+            memoryFileCount: 1, mcpServerCount: 3
+        )
+        let embed = buildUsageEmbed(usage: nil, ctxUsage: withCounts)
+        let field = embed?.fields.first { $0.name == "⚙️ 세션 구성" }
+        #expect(field?.value == "CLAUDE.md 1 · MCP 3")
+        #expect(field?.inline == true)
+        // Neither count → no field.
+        #expect(
+            (buildUsageEmbed(usage: nil, ctxUsage: ctx)?.fields.map(\.name) ?? [])
+                .contains("⚙️ 세션 구성") == false
+        )
+    }
+
     @Test func customTitleWins() {
         let snap = UsageSnapshot(sevenDay: UsageLimit(utilization: 10), fetchedAt: 1)
         let embed = buildUsageEmbed(

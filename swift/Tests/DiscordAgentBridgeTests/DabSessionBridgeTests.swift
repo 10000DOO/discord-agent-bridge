@@ -133,12 +133,13 @@ private actor GateableSidecar {
             return
         }
         if emitContextAndRateLimit {
+            // G-P1-10: full context_usage extras (clearable / memory / mcp / displayName).
             await emit(
                 session: session,
                 event: .contextUsage(
                     totalTokens: 10, maxTokens: 100, percentage: 10,
                     model: "claude-x", modelDisplayName: "Claude X",
-                    clearableTokens: nil, memoryFileCount: nil, mcpServerCount: nil
+                    clearableTokens: 207_600, memoryFileCount: 1, mcpServerCount: 2
                 )
             )
             await emit(
@@ -278,6 +279,11 @@ struct DabSessionBridgeTests {
         #expect(turn.text == "ok:hi")
         #expect(turn.contextUsage?.percentage == 10)
         #expect(turn.contextUsage?.model == "claude-x")
+        // G-P1-10 usage HUD extras latched onto TurnResult.
+        #expect(turn.contextUsage?.modelDisplayName == "Claude X")
+        #expect(turn.contextUsage?.clearableTokens == 207_600)
+        #expect(turn.contextUsage?.memoryFileCount == 1)
+        #expect(turn.contextUsage?.mcpServerCount == 2)
         #expect(turn.rateLimit?.rateLimitType == "five_hour")
         #expect(turn.rateLimit?.utilization == 50)
     }

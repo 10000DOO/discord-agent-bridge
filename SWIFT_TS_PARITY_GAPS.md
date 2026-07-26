@@ -37,7 +37,7 @@
 |------|-------------|
 | `todo` | P0 나머지 + P1/P2 |
 | `doing` | 0 |
-| `done` | P0 전부 + G-P1-01…07 (G-P1-08…11 · P2 남음) |
+| `done` | P0 전부 + G-P1-01…07 · G-P1-10 (G-P1-08/09/11 · P2 남음) |
 
 **권장 작업 순서:** P0 → P1 → P2. 한 항목(또는 밀접한 묶음) = 1 커밋.
 
@@ -68,7 +68,7 @@
 | **G-P1-07** | `done` | **autoProvisionGuild** | Ready/GuildCreate 자동 채널 구조 | 수동 `/setup`만 | ready 또는 guild create 시 ensure (권한 있을 때) |
 | **G-P1-08** | `todo` | **i18n en** | `i18n.ts` ko/en + locale | 한국어 하드코딩 위주 | locale=en 시 주요 슬래시/에러 문자열 en |
 | **G-P1-09** | `todo` | **Codex usage 패널** | `CodexUsageService` rate limits | unsupported 취급 | 가능하면 app-server rate limit 조회 · 아니면 명시적 unavailable 라인 통일 |
-| **G-P1-10** | `todo` | **usage HUD extras** | context_usage: clearableTokens, memoryFileCount, mcpServerCount, modelDisplayName | 부분 반영 | Claude 이벤트 필드 → usage embed 필드 |
+| **G-P1-10** | `done` | **usage HUD extras** | context_usage: clearableTokens, memoryFileCount, mcpServerCount, modelDisplayName | AgentEvent+TurnResult+buildUsageEmbed | Claude 이벤트 필드 → usage embed 필드 |
 | **G-P1-11** | `todo` | **Grok ACP 세부** | stream/`_meta`/mcpServers | AcpClient TODO | 실용 패리티 범위에서 stream/`_meta` 반영 |
 
 ---
@@ -101,6 +101,7 @@
 | 2026-07-26 | G-P1-02 | `feat(swift-port): G-P1-02 Codex progress 가시성` | `codexProgressEvents` (item/started·turn/started) · CodexSessionBridge→StreamStatusHost.noteProgress · 단위 테스트 |
 | 2026-07-26 | G-P1-04 | `feat(swift-port): G-P1-04 mode perm 프로필 해석` | perm 이름→profile, 아니면 raw permMode |
 | 2026-07-26 | G-P1-03 | `feat(swift-port): G-P1-03 model·effort autocomplete` | DiscordBM `applicationCommandAutocomplete` · `filterAutocompleteChoices` (cap 25) · catalog=binding backend else claude · 60s models cache · `/model`·`/effort` option.autocomplete |
+| 2026-07-26 | G-P1-10 | `feat(swift-port): G-P1-10 usage HUD extras` | AgentEvent.contextUsage 4 extras · ContextUsageInfo/TurnResult latch · buildUsageEmbed clearHint+세션구성 · bridge/embed 단위테스트 |
 
 ---
 
@@ -108,6 +109,6 @@
 
 1. **G-P1-08** i18n en
 2. **G-P1-09** Codex usage 패널
-3. **G-P1-10** usage HUD extras
+3. **G-P1-11** Grok ACP 세부
 
 완료 후 PLAN §0 / README 호환 매트릭스에 “패리티 갭 문서” 링크를 건다.
