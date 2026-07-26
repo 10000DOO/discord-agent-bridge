@@ -162,6 +162,15 @@ struct EventHandler: GatewayEventHandler {
                 try await handleUpdateComponent(payload, action: updateTarget.action, version: updateTarget.version)
                 return
             }
+            // (A5) Interrupt "stop" button: interrupt:<guildId>:<channelId> (drive; does NOT unbind).
+            if let interruptTarget = parseInterruptId(comp.custom_id) {
+                try await handleInterruptComponent(
+                    payload,
+                    guildId: interruptTarget.guildId,
+                    channelId: interruptTarget.channelId
+                )
+                return
+            }
             return
         }
 
@@ -1048,6 +1057,11 @@ struct EventHandler: GatewayEventHandler {
         }
 
         print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
+        // Interrupt control message (minimal stream UX): "응답 중…" + Stop button.
+        // Finalized (disabled) after the turn so a stale click cannot fire.
+        let controlMsgId = await postInterruptControlMessage(
+            client: client, channelId: payload.channel_id, guildId: guildId
+        )
         do {
             let turn: TurnResult
             switch backend {
@@ -1066,6 +1080,10 @@ struct EventHandler: GatewayEventHandler {
             case .grok:
                 turn = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             }
+            await finalizeInterruptControlMessage(
+                client: client, channelId: payload.channel_id, messageId: controlMsgId,
+                guildId: guildId
+            )
             // W16-a: multi-message chunking (TS chunkMessage) — never truncate long replies.
             let body = turn.text.isEmpty ? "(no text)" : turn.text
             for chunk in DiscordText.chunkMessage(body) {
@@ -1121,6 +1139,10 @@ struct EventHandler: GatewayEventHandler {
             }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
+            await finalizeInterruptControlMessage(
+                client: client, channelId: payload.channel_id, messageId: controlMsgId,
+                guildId: guildId
+            )
             // Same chunking on error path so huge error text is not truncated.
             let msg = "⚠️ \(error.localizedDescription)"
             print("dab: \(backend.rawValue) turn failed: \(error)")
@@ -1135,6 +1157,100 @@ struct EventHandler: GatewayEventHandler {
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, outcome: error.localizedDescription, status: "error"))
         }
     }
+
+    /// Interrupt button click: drive-tier, SessionLifecycle.interruptChannel (keeps binding).
+    private func handleInterruptComponent(
+        _ payload: Interaction,
+        guildId: String,
+        channelId: String
+    ) async throws {
+        let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        let decision = await Authorizer(config: .shared).authorize(
+            AuthInput(
+                userId: actorId,
+                roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                action: .drive,
+                guildId: payload.guild_id?.rawValue,
+                channelId: channelId,
+                isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
+            )
+        )
+        guard decision.allowed else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(content: InterruptLabels.denied, flags: [.ephemeral]))
+            )
+            return
+        }
+        // Ack first (deferUpdate keeps the control message), then interrupt.
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
+        let tier = decision.tier?.rawValue ?? "execute"
+        let ok = await SessionLifecycle.shared.interruptChannel(
+            channelId: channelId,
+            actorId: actorId,
+            guildId: guildId,
+            roleTier: tier
+        )
+        _ = try? await client.createFollowupMessage(
+            appId: payload.application_id,
+            token: payload.token,
+            payload: .init(content: ok ? InterruptLabels.done : InterruptLabels.none, flags: [.ephemeral])
+        )
+    }
+}
+
+// MARK: - interrupt control message
+
+/// Post a minimal "응답 중…" + Stop button while a turn runs. Returns message id for finalize.
+func postInterruptControlMessage(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    guildId: String
+) async -> MessageSnowflake? {
+    let ch = channelId.rawValue
+    let btn = buildInterruptButton(guildId: guildId, channelId: ch)
+    let button = Interaction.ActionRow.Button(
+        style: .secondary,
+        label: btn.label,
+        custom_id: btn.customId
+    )
+    let row: Interaction.ActionRow = [.button(button)]
+    do {
+        let resp = try await client.createMessage(
+            channelId: channelId,
+            payload: .init(content: InterruptLabels.responding, components: [row])
+        )
+        return try resp.decode().id
+    } catch {
+        return nil
+    }
+}
+
+/// Disable the interrupt button after the turn ends (stale click guard; TS finalize parity).
+func finalizeInterruptControlMessage(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    messageId: MessageSnowflake?,
+    guildId: String
+) async {
+    guard let messageId else { return }
+    let ch = channelId.rawValue
+    let btn = buildInterruptButton(guildId: guildId, channelId: ch, disabled: true)
+    let button = Interaction.ActionRow.Button(
+        style: .secondary,
+        label: btn.label,
+        custom_id: btn.customId,
+        disabled: true
+    )
+    let row: Interaction.ActionRow = [.button(button)]
+    _ = try? await client.updateMessage(
+        channelId: channelId,
+        messageId: messageId,
+        payload: .init(content: InterruptLabels.finished, components: [row])
+    )
 }
 
 // MARK: - permission buttons

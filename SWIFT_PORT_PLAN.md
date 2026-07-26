@@ -46,14 +46,14 @@
 | **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 · 사이드카 setModel displayName 재해석 |
 | **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · Codex/Grok mid-turn tool · pin status · **바이너리 self-replace** |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
-| **W11 / W16** | overall | Claude 라이브 `session.setModel`/`setEffort` RPC · interrupt **버튼 UI** · host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
+| **W11 / W16** | overall | Claude 라이브 `session.setModel`/`setEffort` RPC · host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
 - 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 중)
 - Claude 라이브 `session.setModel`/`setEffort` RPC 배선 (W11-d는 바인딩 레이어만; 옵션 B 후속)
 - `/mode backend` reconfigure 마법사 팝업 (W11-b2) · HUD 잔여(W11-g)
-- interrupt **버튼 UI**(lib interrupt API는 W14 완료)
+- ~~interrupt **버튼 UI**~~ ✅ (lib interrupt API W14 + pure `InterruptButton` + DabMain 턴 중 컨트롤 메시지·components 핸들러; unbind 없음)
 - host.file.* 실제 Discord 업로드 완전 패리티 (Swift; TS 사이드카 경로는 구현됨)
 - `/config` full A4D(model/effort/locale·notif/render) · auto-update 바이너리 교체
 - 기존 npm 봇 기능 **100% 패리티 미달** (목표 지향, 진행 중 — README 매트릭스에 명시)
@@ -387,6 +387,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W16-d | `/doc path:` 문서 공유. lib `DocumentShare`(5종 ShareErrorCode·load/validate·bodyMode·sink) + `DocumentShareHost` + slash `doc` + dab `postDocumentShare`(createThread+attach+chunk body) + `ClaudeSidecarClient` `host.file.share`/`host.file.attach` 역RPC + DabSessionBridge onFileShare 배선. 워크스페이스 밖 경로 허용(TS 1:1; `escape` 잔존·미생산). 단위테스트 load/error/sink/host/spec + reverse RPC. |
 | 2026-07-26 | W16-b | `/config` **minimal** 설정 패널. lib pure `ConfigPanel` SM(역할 pending→Save server auth · backend/permMode server autosave · dmPolicy global autosave · effective embed) + `ConfigPanelRegistry` + RoleSelect/StringSelect DiscordBM 매핑 + admin slash. **스킵(ponytail)**: model/effort/locale · notif/render 서브패널. 단위테스트 +12. |
 | 2026-07-26 | **W12** | **문서 전용.** 루트 `README.md`/`README.ko.md`를 **Swift-first** 제품 경로로 개편: `swift/scripts/install.sh` · `dab` · 하이브리드 Claude 사이드카 · `~/.dab`(배포) vs `~/.discord-agent-bridge`(config/state) · npm TS→Swift 마이그레이션(env·state 분리·`DAB_CLAUDE_SIDECAR` 의미) · **호환 매트릭스**(100% 미주장·잔여 명시). §0 스냅샷·W12=`done`·다음 잔여 큐 갱신. 코드 변경 없음. |
+| 2026-07-26 | interrupt UI | pure `InterruptButton`(`buildInterruptId`/`parseInterruptId`/`buildInterruptButton`) + 단위테스트. `DabMain` 턴 중 "응답 중…"+⏹️ 중단 컨트롤 메시지(종료 시 disabled) · components `interrupt:<g>:<c>` → drive auth → `SessionLifecycle.interruptChannel`(unbind 없음) · ephemeral followUp. 풀 스트림 임베드는 W11-g 잔여. |
 
 ---
 
