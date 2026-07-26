@@ -433,7 +433,26 @@ struct EventHandler: GatewayEventHandler {
                 _ = await life.stopChannel(
                     channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
                 )
+                // Reply BEFORE delete so the ephemeral ack lands (TS slashCommands.close).
                 try await respondEphemeral(payload, "이 채널의 세션을 종료하고 바인딩을 해제했습니다.")
+                // G-P0-04: A4D dedicated session channel best-effort delete (never control/status/category).
+                if let realGuildId = payload.guild_id?.rawValue {
+                    let serverChannels = await ConfigStore.shared
+                        .loadServerConfig(guildId: realGuildId)?.channels
+                    var chName: String?
+                    var parentId: String?
+                    if let ch = try? await client.getChannel(id: ChannelSnowflake(channelId)).decode() {
+                        chName = ch.name
+                        parentId = ch.parent_id?.rawValue
+                    }
+                    await deleteSessionChannel(
+                        provisioner: resolveGuildProvisioner(client: client, guildId: realGuildId),
+                        channelId: channelId,
+                        channelName: chName,
+                        parentId: parentId,
+                        serverChannels: serverChannels
+                    )
+                }
             case "resume":
                 // W11-d minimal: re-bind registry from non-archived store row (no wizard).
                 if let cfg = await life.resumeBinding(channelId: channelId) {

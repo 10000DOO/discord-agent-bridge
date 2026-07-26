@@ -180,6 +180,58 @@ public func resolveSessionChannelId(
     }
 }
 
+/// Whether `/agent close` should delete this channel (A4D dedicated session channel).
+///
+/// Never deletes control / status / category / sessions-category from server config.
+/// Deletes only when the channel is under the sessions category **or** its name is `proj-*`.
+public func shouldDeleteSessionChannelOnClose(
+    channelId: String,
+    channelName: String?,
+    parentId: String?,
+    serverChannels: ServerChannels?
+) -> Bool {
+    if let sc = serverChannels {
+        if channelId == sc.controlChannelId { return false }
+        if channelId == sc.categoryId { return false }
+        if channelId == sc.sessionsCategoryId { return false }
+        if let status = sc.statusChannelId, !status.isEmpty, channelId == status { return false }
+    }
+    if let parentId,
+       let sessionsCat = serverChannels?.sessionsCategoryId,
+       !sessionsCat.isEmpty,
+       parentId == sessionsCat {
+        return true
+    }
+    if let channelName, channelName.hasPrefix("proj-") {
+        return true
+    }
+    return false
+}
+
+/// Best-effort delete of an A4D session channel after `/agent close` (TS `deleteSessionChannel`).
+/// Call **after** the interaction reply so the ack lands before the channel vanishes.
+public func deleteSessionChannel(
+    provisioner: (any GuildChannelProvisioner)?,
+    channelId: String,
+    channelName: String?,
+    parentId: String?,
+    serverChannels: ServerChannels?,
+    log: (@Sendable (String) -> Void)? = nil
+) async {
+    guard shouldDeleteSessionChannelOnClose(
+        channelId: channelId,
+        channelName: channelName,
+        parentId: parentId,
+        serverChannels: serverChannels
+    ) else { return }
+    guard let provisioner else { return }
+    do {
+        try await provisioner.deleteChannel(id: channelId)
+    } catch {
+        log?("failed to delete session channel: \(error)")
+    }
+}
+
 /// `proj-<basename>` slug, lowercased, non-alnum → `-`, capped at 100 chars.
 public func sessionChannelName(_ folderPath: String) -> String {
     var path = folderPath

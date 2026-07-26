@@ -347,6 +347,120 @@ struct GuildChannelsSessionTests {
     }
 }
 
+// MARK: - deleteSessionChannel / shouldDeleteSessionChannelOnClose (G-P0-04)
+
+@Suite("GuildChannels delete session on close")
+struct GuildChannelsDeleteSessionTests {
+    private let structure = ServerChannels(
+        categoryId: "cat",
+        controlChannelId: "ctrl",
+        sessionsCategoryId: "sess-cat",
+        statusChannelId: "status"
+    )
+
+    @Test func shouldDeleteWhenUnderSessionsCategory() {
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1",
+                channelName: "my-session",
+                parentId: "sess-cat",
+                serverChannels: structure
+            )
+        )
+    }
+
+    @Test func shouldDeleteWhenProjNamePrefix() {
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1",
+                channelName: "proj-thing",
+                parentId: nil,
+                serverChannels: structure
+            )
+        )
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1",
+                channelName: "proj-thing",
+                parentId: nil,
+                serverChannels: nil
+            )
+        )
+    }
+
+    @Test func neverDeletesControlStatusCategory() {
+        for id in ["ctrl", "status", "cat", "sess-cat"] {
+            #expect(
+                !shouldDeleteSessionChannelOnClose(
+                    channelId: id,
+                    channelName: "proj-spoof",
+                    parentId: "sess-cat",
+                    serverChannels: structure
+                ),
+                "must not delete protected id \(id)"
+            )
+        }
+    }
+
+    @Test func skipsOrdinaryBoundChannel() {
+        #expect(
+            !shouldDeleteSessionChannelOnClose(
+                channelId: "general",
+                channelName: "general",
+                parentId: "other-cat",
+                serverChannels: structure
+            )
+        )
+        #expect(
+            !shouldDeleteSessionChannelOnClose(
+                channelId: "general",
+                channelName: nil,
+                parentId: nil,
+                serverChannels: nil
+            )
+        )
+    }
+
+    @Test func deleteSessionChannelCallsProvisionerWhenEligible() async {
+        let prov = FakeProvisioner()
+        prov.seed(id: "sess-1", name: "proj-thing", type: "text")
+        await deleteSessionChannel(
+            provisioner: prov,
+            channelId: "sess-1",
+            channelName: "proj-thing",
+            parentId: "sess-cat",
+            serverChannels: structure
+        )
+        #expect(prov.deleted == ["sess-1"])
+        #expect(prov.channels["sess-1"] == nil)
+    }
+
+    @Test func deleteSessionChannelSkipsControlEvenIfNameLooksLikeSession() async {
+        let prov = FakeProvisioner()
+        prov.seed(id: "ctrl", name: "proj-spoof", type: "text")
+        await deleteSessionChannel(
+            provisioner: prov,
+            channelId: "ctrl",
+            channelName: "proj-spoof",
+            parentId: "sess-cat",
+            serverChannels: structure
+        )
+        #expect(prov.deleted.isEmpty)
+        #expect(prov.channels["ctrl"] != nil)
+    }
+
+    @Test func deleteSessionChannelNoopsWithoutProvisioner() async {
+        await deleteSessionChannel(
+            provisioner: nil,
+            channelId: "sess-1",
+            channelName: "proj-thing",
+            parentId: "sess-cat",
+            serverChannels: structure
+        )
+        // No throw — best-effort only.
+    }
+}
+
 /// Fake that always fails create — for resolveSessionChannelId fallback tests.
 private final class ThrowingProvisioner: GuildChannelProvisioner, @unchecked Sendable {
     let guildId = "g1"
