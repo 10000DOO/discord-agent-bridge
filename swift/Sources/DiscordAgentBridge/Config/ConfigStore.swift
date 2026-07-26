@@ -104,6 +104,19 @@ public actor ConfigStore {
     // MARK: - Server
 
     /// Fail-safe: missing/corrupt/schema-fail → nil (no throw). normalizeModeId on defaults.mode.
+    /// Guild ids that have a `servers/<id>.json` file (for auto-update control-channel fan-out).
+    public func listServerGuildIds() -> [String] {
+        let dir = baseDir.appendingPathComponent("servers", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return []
+        }
+        return names
+            .filter { $0.hasSuffix(".json") }
+            .map { String($0.dropLast(5)) }
+            .filter { !$0.isEmpty }
+            .sorted()
+    }
+
     public func loadServerConfig(guildId: String) -> ServerConfig? {
         let path = serverConfigPath(guildId: guildId)
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }

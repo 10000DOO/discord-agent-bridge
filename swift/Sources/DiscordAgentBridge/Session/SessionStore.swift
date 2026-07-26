@@ -109,9 +109,11 @@ public struct PersistedSession: Codable, Sendable, Equatable {
 }
 
 /// On-disk envelope. `version` gates ordered migrations; unknown keys are ignored on decode.
+/// `autoUpdate` is optional so pre-W16-h files load without a version bump (default applied).
 private struct StoreFile: Codable {
     var version: Int
     var channels: [String: PersistedSession]
+    var autoUpdate: AutoUpdateMeta?
 }
 
 // MARK: - Ordered migrations (fromVersion → next). Port of state/store.ts migrate().
@@ -171,6 +173,7 @@ public actor SessionStore {
 
     private let fileURL: URL
     private var channels: [String: PersistedSession] = [:]
+    private var autoUpdate: AutoUpdateMeta = .empty
 
     public init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? Self.defaultFileURL()
@@ -192,7 +195,9 @@ public actor SessionStore {
 
     /// Read + migrate + decode into memory. Missing or corrupt file → empty state (never throws).
     public func load() {
-        channels = Self.readFile(fileURL)?.channels ?? [:]
+        let file = Self.readFile(fileURL)
+        channels = file?.channels ?? [:]
+        autoUpdate = file?.autoUpdate ?? .empty
     }
 
     public func binding(channelId: String) -> PersistedSession? { channels[channelId] }
@@ -203,6 +208,25 @@ public actor SessionStore {
     /// Non-archived bindings only — resume / stopAll consumers.
     public func active() -> [String: PersistedSession] {
         channels.filter { !$0.value.archived }
+    }
+
+    // MARK: - Auto-update meta (TS stateStore.getUpdateMeta / setUpdateMeta)
+
+    public func getUpdateMeta() -> AutoUpdateMeta { autoUpdate }
+
+    /// Merge patch and persist. Channel bindings are re-read so concurrent writers survive.
+    public func setUpdateMeta(_ patch: AutoUpdateMetaPatch) throws {
+        let disk = Self.readFile(fileURL)
+        let mergedChannels = disk?.channels ?? channels
+        var meta = disk?.autoUpdate ?? autoUpdate
+        if let t = patch.lastCheckAt { meta.lastCheckAt = t }
+        if let d = patch.dismissedVersion { meta.dismissedVersion = d }
+        try Self.writeFile(
+            fileURL,
+            StoreFile(version: STATE_VERSION, channels: mergedChannels, autoUpdate: meta)
+        )
+        channels = mergedChannels
+        autoUpdate = meta
     }
 
     // MARK: - Write (load-merge-save, atomic, 0600)
@@ -237,11 +261,15 @@ public actor SessionStore {
     }
 
     /// Re-read the file (so a concurrent writer's keys survive), apply `change`, write atomically.
+    /// Preserves `autoUpdate` from disk (or in-memory default).
     private func mutate(_ change: (inout [String: PersistedSession]) -> Void) throws {
-        var merged = Self.readFile(fileURL)?.channels ?? [:]
+        let disk = Self.readFile(fileURL)
+        var merged = disk?.channels ?? [:]
         change(&merged)
-        try Self.writeFile(fileURL, StoreFile(version: STATE_VERSION, channels: merged))
+        let meta = disk?.autoUpdate ?? autoUpdate
+        try Self.writeFile(fileURL, StoreFile(version: STATE_VERSION, channels: merged, autoUpdate: meta))
         channels = merged
+        autoUpdate = meta
     }
 
     // MARK: - Disk

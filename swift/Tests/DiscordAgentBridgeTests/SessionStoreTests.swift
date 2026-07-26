@@ -169,6 +169,47 @@ struct SessionStoreTests {
         #expect(await reloaded.active().isEmpty)
     }
 
+    @Test func autoUpdateMetaDefaultsAndPersists() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        await s.load()
+        #expect(await s.getUpdateMeta() == .empty)
+
+        try await s.setUpdateMeta(AutoUpdateMetaPatch(lastCheckAt: 42))
+        #expect(await s.getUpdateMeta().lastCheckAt == 42)
+        #expect(await s.getUpdateMeta().dismissedVersion == nil)
+
+        try await s.setUpdateMeta(AutoUpdateMetaPatch(dismissedVersion: "1.2.3"))
+        #expect(await s.getUpdateMeta().lastCheckAt == 42)
+        #expect(await s.getUpdateMeta().dismissedVersion == "1.2.3")
+
+        // Channel mutation must not clobber autoUpdate.
+        try await s.upsert(channelId: "c1", sample(.claude, "/ws"))
+        #expect(await s.getUpdateMeta().dismissedVersion == "1.2.3")
+
+        let reloaded = SessionStore(fileURL: url)
+        await reloaded.load()
+        #expect(await reloaded.getUpdateMeta().lastCheckAt == 42)
+        #expect(await reloaded.getUpdateMeta().dismissedVersion == "1.2.3")
+        #expect(await reloaded.binding(channelId: "c1")?.backend == .claude)
+    }
+
+    @Test func autoUpdateAbsentInOldFileDefaults() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let fixture: [String: Any] = [
+            "version": 2,
+            "channels": [:] as [String: Any],
+        ]
+        try JSONSerialization.data(withJSONObject: fixture).write(to: url)
+        let s = SessionStore(fileURL: url)
+        await s.load()
+        #expect(await s.getUpdateMeta() == .empty)
+    }
+
     @Test func normalizeModeIdOnLoadForBackendAliases() async throws {
         let url = tempStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

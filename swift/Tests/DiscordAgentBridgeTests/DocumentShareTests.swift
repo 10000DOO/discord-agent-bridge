@@ -327,7 +327,7 @@ struct DocumentShareHostAndSpecTests {
         let names = allSlashCommandSpecs().map(\.name)
         #expect(names.contains("doc"))
         #expect(names == [
-            "agent", "mode", "model", "effort", "stop", "clear", "stop-all", "setup", "doc", "config",
+            "agent", "mode", "model", "effort", "stop", "clear", "stop-all", "setup", "doc", "config", "update",
         ])
     }
 }

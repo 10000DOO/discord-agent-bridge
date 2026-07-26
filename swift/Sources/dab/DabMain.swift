@@ -69,6 +69,8 @@ struct EventHandler: GatewayEventHandler {
         print("ready: username=\(user.username) id=\(user.id) app=\(payload.application.id)")
         await registerAgentCommand(appId: payload.application.id)
         await restoreSessionBindings()
+        // W16-h: version check schedule (posts to control channels when a newer stable exists).
+        await startAutoUpdater(client: client)
     }
 
     /// G5: on boot, load persisted sessions and repopulate the routing map so prefix-less messages
@@ -155,16 +157,21 @@ struct EventHandler: GatewayEventHandler {
                 try await handleConfigComponent(payload, comp: comp)
                 return
             }
+            // (A4) W16-h auto-update Yes/No buttons (admin gate).
+            if let updateTarget = parseUpdateId(comp.custom_id) {
+                try await handleUpdateComponent(payload, action: updateTarget.action, version: updateTarget.version)
+                return
+            }
             return
         }
 
-        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup/doc/config
-        // (TS ACTION_TIER: drive except stop-all + setup + config admin).
+        // (B) Slash — agent/mode/model/effort/stop/clear/stop-all/setup/doc/config/update
+        // (TS ACTION_TIER: drive except stop-all + setup + config + update admin).
         guard let cmd = try? payload.data?.requireApplicationCommand() else { return }
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-        let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup" || cmd.name == "config")
+        let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup" || cmd.name == "config" || cmd.name == "update")
             ? .admin : .drive
         let decision = await Authorizer(config: .shared).authorize(
             AuthInput(
@@ -330,8 +337,11 @@ struct EventHandler: GatewayEventHandler {
             case "stats":
                 let lines = formatStatsLines(bindings: await life.listActiveBindings())
                 let count = lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count
+                let meta = await SessionStore.shared.getUpdateMeta()
+                let dismissed = meta.dismissedVersion.map { " · 무시 `\($0)`" } ?? ""
                 let content =
                     "**활성 세션** (\(count))\n" + lines.joined(separator: "\n")
+                    + "\n**버전** `\(readAppVersion())`\(dismissed)"
                 // W11-g slice2/3: Claude OAuth + Grok weekly embeds when credentials exist.
                 var embeds: [Embed] = []
                 let claudeUsage = await ClaudeUsageService.shared.getUsage()
@@ -472,8 +482,93 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
             }
 
+        case "update":
+            // W16-h: admin version check; if available, show Yes/No prompt ephemerally.
+            guard let updater = await AutoUpdaterRegistry.shared.get() else {
+                try await respondEphemeral(payload, "업데이터가 아직 준비되지 않았어요. 잠시 후 다시 시도하세요.")
+                return
+            }
+            // post:false — we reply here with embed+buttons instead of fanning out to control channels.
+            let result = await updater.checkNow(post: false)
+            let text = formatUpdateCheckReply(result)
+            if result.kind == .available, let latest = result.latestVersion {
+                let (embedSpec, rows) = buildUpdatePrompt(version: latest, currentVersion: result.currentVersion)
+                _ = try await client.createInteractionResponse(
+                    id: payload.id,
+                    token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: text,
+                        embeds: [discordEmbed(from: embedSpec)],
+                        flags: [.ephemeral],
+                        components: discordActionRows(from: rows)
+                    ))
+                )
+            } else {
+                try await respondEphemeral(payload, text)
+            }
+
         default:
             return
+        }
+    }
+
+    /// W16-h: approve → manual path ack; dismiss → persist dismissedVersion. Admin-only.
+    private func handleUpdateComponent(
+        _ payload: Interaction,
+        action: UpdateAction,
+        version: String
+    ) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue ?? "dm"
+        let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        let decision = await Authorizer(config: .shared).authorize(
+            AuthInput(
+                userId: actorId,
+                roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                action: .admin,
+                guildId: payload.guild_id?.rawValue,
+                channelId: channelId,
+                isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
+            )
+        )
+        guard decision.allowed else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(content: UpdateLabels.denied, flags: [.ephemeral]))
+            )
+            return
+        }
+        // Ack first (deferUpdate keeps the prompt message), then drive the updater.
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
+        guard let updater = await AutoUpdaterRegistry.shared.get() else { return }
+        let decidedRow = discordActionRows(from: [buildUpdateDecidedRow(action: action)])
+        let ctx = UpdateDecisionCtx(
+            actorId: actorId,
+            guildId: guildId,
+            channelId: channelId,
+            ack: { [client] text in
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: text, flags: [.ephemeral])
+                )
+            },
+            disableButtons: { [client] in
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(components: decidedRow)
+                )
+            }
+        )
+        switch action {
+        case .approve:
+            await updater.approve(version, ctx: ctx)
+        case .dismiss:
+            await updater.dismiss(version, ctx: ctx)
         }
     }
 

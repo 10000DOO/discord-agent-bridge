@@ -312,7 +312,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
 | **W16-f** | L | `done` | **custom 백엔드**(`Backend.custom`+`!custom` route+persist+`ShellEnv` dotfile env + Claude path env-overlay; wizard/slash 포함) | custom UX |
 | **W16-g** | L | `done` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`). **shipped**: pure formatters + TurnThreadRegistry/ToolThreadHandler/DiffViewHandler(fakes) + ToolActivityHost→DabSessionBridge mid-turn + DabMain createThread/statusEmbed/SessionNotifier. **잔여**: Codex/Grok mid-turn tool events (Claude path only), pin status embed, capabilities gating UI | 도구/상태 가시성 |
-| **W16-h** | L | `todo` | auto-update 승인/무시 버튼(`updateButton`) + 업데이터(설치+재시작). W12 인접 | 자동 업데이트 |
+| **W16-h** | L | `done` | auto-update **shippable slice**: pure semver(`Version`) + npm registry 체크(`Registry`) + Yes/No 버튼 UI(`UpdateButton`) + `AutoUpdater` 오케스트레이터 + `SessionStore` autoUpdate meta(lastCheckAt/dismissedVersion) + `/update` 슬래시(admin) + ready 스케줄 + 컨트롤채널 프롬프트. **ponytail 잔여**: 바이너리 self-replace·서비스 재시작(승인 시 수동 설치 안내만). 설치 포트 DI로 후속 연결 가능 | 자동 업데이트 |
 
 ### 후순위 / 병행 가능 (큐 본선 아님)
 

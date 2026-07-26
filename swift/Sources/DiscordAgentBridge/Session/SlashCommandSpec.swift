@@ -178,7 +178,16 @@ public func configCommandSpec() -> SlashCommandSpec {
     )
 }
 
-/// Every slash command the bot registers (W11-d + lifecycle + W16-c/d/b /setup /doc /config).
+/// `/update` — check registry for a newer stable version (admin; W16-h).
+public func updateCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "update",
+        description: "Check for a new discord-agent-bridge version",
+        requiresAdministrator: true
+    )
+}
+
+/// Every slash command the bot registers (W11-d + lifecycle + W16-c/d/b/h /setup /doc /config /update).
 public func allSlashCommandSpecs() -> [SlashCommandSpec] {
     [
         agentCommandSpec(),
@@ -191,5 +200,6 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         setupCommandSpec(),
         docCommandSpec(),
         configCommandSpec(),
+        updateCommandSpec(),
     ]
 }
