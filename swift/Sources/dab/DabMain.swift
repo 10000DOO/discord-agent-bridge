@@ -46,6 +46,16 @@ struct DabMain {
         await ToolActivityHost.shared.setChannelFactory { channelId in
             turnThreadChannel(client: client, channelId: channelId)
         }
+        // W11-g residual: mid-turn stream status embed edits (text / tool_use / progress).
+        await StreamStatusHost.shared.setUpdater { channelId, messageId, guildId, spec in
+            await editStreamControlMessage(
+                client: client,
+                channelId: ChannelSnowflake(channelId),
+                messageId: MessageSnowflake(messageId),
+                guildId: guildId,
+                spec: spec
+            )
+        }
 
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -1462,11 +1472,18 @@ struct EventHandler: GatewayEventHandler {
         }
 
         print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
-        // Interrupt control message (minimal stream UX): "응답 중…" + Stop button.
-        // Finalized (disabled) after the turn so a stale click cannot fire.
+        // Live stream status embed: yellow "응답 중…" + Stop button (W11-g residual).
+        // Mid-turn text/tool/progress edits via StreamStatusHost; finalize collapses to done.
         let controlMsgId = await postInterruptControlMessage(
             client: client, channelId: payload.channel_id, guildId: guildId
         )
+        if let controlMsgId {
+            await StreamStatusHost.shared.begin(
+                channelId: channelId,
+                guildId: guildId,
+                messageId: controlMsgId.rawValue
+            )
+        }
         do {
             let turn: TurnResult
             switch backend {
@@ -1485,6 +1502,7 @@ struct EventHandler: GatewayEventHandler {
             case .grok:
                 turn = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             }
+            await StreamStatusHost.shared.end(channelId: channelId)
             let toolCount = turn.tools.reduce(0) { $0 + $1.count }
             await finalizeInterruptControlMessage(
                 client: client, channelId: payload.channel_id, messageId: controlMsgId,
@@ -1574,6 +1592,7 @@ struct EventHandler: GatewayEventHandler {
             }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
+            await StreamStatusHost.shared.end(channelId: channelId)
             await finalizeInterruptControlMessage(
                 client: client, channelId: payload.channel_id, messageId: controlMsgId,
                 guildId: guildId
@@ -1676,9 +1695,9 @@ func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
     return ResumeResult(channelId: params.channelId)
 }
 
-// MARK: - interrupt control message
+// MARK: - interrupt / stream control message (W11-g residual)
 
-/// Post a minimal "응답 중…" + Stop button while a turn runs. Returns message id for finalize.
+/// Post yellow "응답 중…" embed + Stop button while a turn runs. Returns message id for finalize.
 func postInterruptControlMessage(
     client: any DiscordClient,
     channelId: ChannelSnowflake,
@@ -1692,10 +1711,11 @@ func postInterruptControlMessage(
         custom_id: btn.customId
     )
     let row: Interaction.ActionRow = [.button(button)]
+    let embed = discordEmbed(from: formatStreamEmbed())
     do {
         let resp = try await client.createMessage(
             channelId: channelId,
-            payload: .init(content: InterruptLabels.responding, components: [row])
+            payload: .init(embeds: [embed], components: [row])
         )
         return try resp.decode().id
     } catch {
@@ -1703,7 +1723,35 @@ func postInterruptControlMessage(
     }
 }
 
-/// Disable the interrupt button after the turn ends (stale click guard; TS finalize parity).
+/// Mid-turn edit of the stream control message (keeps interrupt button enabled).
+func editStreamControlMessage(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    messageId: MessageSnowflake,
+    guildId: String,
+    spec: StreamEmbedSpec
+) async {
+    let ch = channelId.rawValue
+    let btn = buildInterruptButton(guildId: guildId, channelId: ch)
+    let button = Interaction.ActionRow.Button(
+        style: .secondary,
+        label: btn.label,
+        custom_id: btn.customId
+    )
+    let row: Interaction.ActionRow = [.button(button)]
+    _ = try? await client.updateMessage(
+        channelId: channelId,
+        messageId: messageId,
+        payload: .init(
+            // Clear any legacy plain-content body when upgrading mid-flight.
+            content: "",
+            embeds: [discordEmbed(from: spec)],
+            components: [row]
+        )
+    )
+}
+
+/// Collapse the stream embed + disable the interrupt button after the turn ends.
 /// `toolCount` optionally appends " · 🛠️ N" (W11-g slice4 HUD).
 func finalizeInterruptControlMessage(
     client: any DiscordClient,
@@ -1722,10 +1770,11 @@ func finalizeInterruptControlMessage(
         disabled: true
     )
     let row: Interaction.ActionRow = [.button(button)]
+    let embed = discordEmbed(from: formatStreamEmbed(toolCount: toolCount, finalized: true))
     _ = try? await client.updateMessage(
         channelId: channelId,
         messageId: messageId,
-        payload: .init(content: interruptFinishedContent(toolCount: toolCount), components: [row])
+        payload: .init(content: "", embeds: [embed], components: [row])
     )
 }
 

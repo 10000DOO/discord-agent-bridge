@@ -175,6 +175,16 @@ func discordEmbed(from spec: StatusEmbedSpec) -> Embed {
     )
 }
 
+/// Map pure `StreamEmbedSpec` to DiscordBM `Embed` (W11-g residual live stream status).
+func discordEmbed(from spec: StreamEmbedSpec) -> Embed {
+    Embed(
+        title: spec.title,
+        description: spec.description,
+        color: DiscordColor(value: spec.color) ?? DiscordColor(value: DiscordColors.streaming),
+        footer: spec.footer.map { Embed.Footer(text: $0) }
+    )
+}
+
 // MARK: - Tool activity threads (W16-g)
 
 /// DiscordBM-backed TurnThreadChannel for tool_use / tool_result work threads.

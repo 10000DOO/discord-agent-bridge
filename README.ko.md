@@ -208,7 +208,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | `/agent start` 폴더 마법사 | ✅ 폴더 클러스터; **잔여:** resume UI, A4D 채널 생성, preset, reconfigure | ✅ 풀 |
 | 라이브 슬래시 model/effort/mode/clear/stop | ✅ 바인딩 + Claude 라이브 `setModel`/`setEffort` RPC + displayName 재해석 | ✅ |
 | 사용량 / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD; **잔여:** 라이브 스트림 임베드 | ✅ 더 풍부한 패널 |
-| 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude mid-turn; **잔여:** Codex/Grok mid-turn, pin 임베드 | ✅ |
+| 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude/Codex/Grok mid-turn tool; **잔여:** pin 임베드 | ✅ |
 | `/config` 패널 | ✅ **minimal**; 잔여 model/effort/locale · notif/render | ✅ 더 넓은 UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ 레지스트리 체크 + Yes/No UI; **바이너리 자가 교체 미구현** | ✅ npm 재설치 경로 |
@@ -217,7 +217,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | Linux/Windows 서비스 | ❌ macOS launchd 1차 | ✅ launchd / systemd / schtasks |
 | npm global 설치 | ❌ (체크아웃 + 빌드) | ✅ |
 
-**잔여 큐(미완):** W11-g 라이브 스트림 임베드, W16 폴리시, W13-b allowlist — [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+**잔여 큐(미완):** W16 폴리시, W13-b allowlist — [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
 
 ---
 

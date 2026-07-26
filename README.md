@@ -207,8 +207,8 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | 3-layer config | ✅ global → server → binding | ✅ |
 | `/agent start` folder wizard | ✅ folder cluster; **residual:** resume UI, A4D channel create, preset, reconfigure | ✅ full |
 | Live slash model/effort/mode/clear/stop | ✅ binding + Claude live `setModel`/`setEffort` RPC + displayName re-resolve | ✅ |
-| Usage / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD; **residual:** live stream embed | ✅ richer panels |
-| Tool thread / diff / status embed / notifier | ✅ Claude mid-turn path; **residual:** Codex/Grok mid-turn, pin embed | ✅ |
+| Usage / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD + live stream status embed | ✅ richer panels |
+| Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path; **residual:** pin embed | ✅ |
 | `/config` panel | ✅ **minimal**; residual model/effort/locale · notif/render | ✅ fuller UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ registry check + Yes/No UI; **no binary self-replace yet** | ✅ npm reinstall path |
@@ -217,7 +217,7 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Linux/Windows service | ❌ macOS launchd first | ✅ launchd / systemd / schtasks |
 | npm global install | ❌ (checkout + build) | ✅ |
 
-**Residual queue (not complete):** W11-g live stream embed, W16 polish, W13-b allowlist when default perm changes — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+**Residual queue (not complete):** W16 polish, W13-b allowlist when default perm changes — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
 
 ---
 

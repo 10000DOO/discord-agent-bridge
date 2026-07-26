@@ -370,6 +370,10 @@ public actor DabSessionBridge {
         case .text(let t, _):
             box.text += t
             turns[handle] = box
+            // W11-g residual: live stream status embed (rate-limited in StreamStatusHost).
+            if let channelId = sessionMeta[handle]?.channelId {
+                Task { await StreamStatusHost.shared.noteText(channelId: channelId, delta: t) }
+            }
         case .result(let t, let costUsd, let tokensIn, let tokensOut, let durationMs):
             if let t, !t.isEmpty {
                 if box.text.isEmpty {
@@ -439,16 +443,29 @@ public actor DabSessionBridge {
             box.stats.note(event)
             turns[handle] = box
             // W16-g: tool activity → Discord work threads + diffs (fire-and-forget).
+            // W11-g residual: stream status tool-count bump on tool_use only.
             if let channelId = sessionMeta[handle]?.channelId {
                 let ev = event
                 Task { await ToolActivityHost.shared.handle(channelId: channelId, event: ev) }
+                if case .toolUse = event {
+                    Task { await StreamStatusHost.shared.noteToolUse(channelId: channelId) }
+                }
             }
         case .subagentResult:
             // W11-g slice4: pair with Task/Agent tool_use input for the agents field.
             box.stats.note(event)
             turns[handle] = box
+        case .progress(let label, let detail):
+            // W11-g residual: progress line on the live stream embed.
+            if let channelId = sessionMeta[handle]?.channelId {
+                Task {
+                    await StreamStatusHost.shared.noteProgress(
+                        channelId: channelId, label: label, detail: detail
+                    )
+                }
+            }
         default:
-            // thinking / progress — live stream embed is a later W11-g residual.
+            // thinking — not shown on the minimal stream control embed.
             break
         }
     }
@@ -508,6 +525,7 @@ public actor DabSessionBridge {
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
+        await StreamStatusHost.shared.dispose(channelId: channelId)
         guard let handle = sessions.removeValue(forKey: channelId) else { return }
         sessionMeta[handle] = nil
         // Unblock a waiter before the RPC so stop is never stuck on a hung turn.
