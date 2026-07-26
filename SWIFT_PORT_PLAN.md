@@ -43,7 +43,7 @@
 | ID | 상태 | 남은 일 |
 |----|------|---------|
 | **W11-b2** | `done` | folder 클러스터 ✅ · dir:resume ✅ · reconfigure ✅ · A4D ✅ · **preset pick/save ✅** (`addServerPreset`/`removeServerPreset` · folder→preset when non-empty · pick launch · direct · delete · done→💾 저장 모달) |
-| **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **setModel displayName 재해석 + 라이브 RPC** ✅. **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 |
+| **W11-g** | `partial` | slice1–4 ✅ (포맷·Claude/Grok usage·stats·tools/subagent HUD). **setModel displayName** ✅. **잔여:** 라이브 스트림 임베드(턴 중 갱신) |
 | **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · Codex/Grok mid-turn tool · pin status · **바이너리 self-replace** |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
 | **W11 / W16** | overall | host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 · W11-g HUD 잔여 |
@@ -85,7 +85,7 @@ swift run --package-path swift dab grok-smoke
 **제품 문서(W12) 완료.** 기능 패리티 잔여만 남음. 전수조사 결정(2026-07-25) 유지: **TS 파리티 100% 지향**.
 
 0. ~~**W12** 레거시 정책·호환 매트릭스·README~~ ✅
-1. **W11-g slice4+** — tools/subagent HUD · 라이브 스트림 임베드
+1. **W11-g residual** — 라이브 스트림 임베드(턴 중 갱신) · ~~tools/subagent HUD~~ ✅
 2. ~~**W11-b2**~~ ✅ (folder·resume·reconfigure·A4D·preset)
 3. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 설치 포트
 4. **W13-b** (선택) — 기본 permMode/`allowlist` when product default moves off bypass
@@ -289,7 +289,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-f2** | G | `done` | 재시작 1:1 재연결: backend-id 캡처 + lazy resume + 폴백 + 부팅 복원. 데드락(backend_id notify 레이스) 수정 후 `plan/swift-port` 병합(§14.3). T1–T9 병렬/직렬 171 PASS | 재연결 검증 완료 |
 | **W11-d** | G | `done` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/mode perm`·`/stop`·`/clear`·`/agent resume·stats`. 바인딩 레이어(registry+store)·`clearChannel`(§14.6). reconfigure 팝업은 **W11-b2**. Claude 라이브 setModel RPC 미포함 | 세션 조작 슬래시 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
-| **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1–3 ✅**. **setModel displayName ✅**: TS `ClaudeSession.setModel` 재해석 + Swift `sessionSetModel`/`sessionSetEffort` + `DabSessionBridge` + `SessionLifecycle.updateBinding` 라이브 푸시. **잔여(slice4+)**: tools/subagent 집계·라이브 HUD 스트림 임베드. 상세 §14.9 | 패널 모든 정보 최신 표시 |
+| **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1–4 ✅**. **setModel displayName ✅**. **slice4 ✅**: `TurnToolStatsAggregator` + `TurnResult.tools/agents` + `buildToolsValue`/`buildAgentsValue` + `buildUsageEmbed` tools/agents 필드 + Claude `DabSessionBridge` 집계 + DabMain 턴 후 usage embed·`응답 완료 · 🛠️ N`. **잔여**: 라이브 스트림 임베드(턴 중 갱신). 상세 §14.9 | 패널 모든 정보 최신 표시 |
 | **W12** | H | `done` | 레거시 TS 정책, 버전 호환 매트릭스, 루트 README/README.ko 마이그레이션 가이드 | Swift-first 설치·env·경로·호환표·잔여 명시 (100% 미주장) |
 
 ### 신규 WO — 2026-07-25 전수조사 반영 (Phase I~L, 상세 §15)
@@ -391,6 +391,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W11-b2 reconfigure | `/mode backend` **다른 백엔드** → reconfigure 팝업(TS R1/R4). `ChannelWizard` `entry`/`kind`/`isReconfigure` · firstStep=model · back 첫 단계=cancel · 제목/1–3/3·"✅ 전환". 동일 백엔드=기존 `rebindBackend`. confirm=`SessionLifecycle.reconfigureBinding`(stop 3브리지+same channel model/effort/perm) + ephemeral switched + public freshContext. 단위테스트 SM reconfigure + lifecycle. 잔여: A4D·preset. |
 | 2026-07-26 | W11-b2 A4D | `/agent start` 마법사 **done(start path)** → `resolveSessionChannelId`(`createSessionChannel` under server `sessionsCategoryId`) · registry+store bind **새 채널 id** · ephemeral `세션 채널 생성됨: <#id>` · 새 채널 intro+statusEmbed. reconfigure 경로 불변(same channel). provisioner 없음·카테고리 없음·create 실패 → 원 채널 fallback. pure `sessionChannelName`/`createSessionChannel` 기존 + resolve 단위테스트(fake provisioner). **잔여:** preset. |
 | 2026-07-26 | W11-b2 preset | server preset pick/save (TS parity). `ConfigStore.addServerPreset`/`removeServerPreset`(read-after-write 3회) · `ChannelWizard` step=`preset` · pick seed+done · direct · delete · backendAvailable · `launchedFromPreset` · DabMain 로드/삭제 콜백 · done→`PresetDraftRegistry`+💾 버튼·`preset.name` 모달. 단위테스트 ConfigStore+wizard preset. **W11-b2=`done`**. |
+| 2026-07-26 | W11-g slice4 | tools/subagent HUD: pure `TurnToolStat`/`SubagentRun`/`TurnToolStatsAggregator` + `buildToolsValue`/`buildAgentsValue`/`formatSubagentRunDuration` · `UsageEmbedExtras.tools/agents` · Claude `DabSessionBridge` tool_use/result/subagent_result → `TurnResult` · DabMain 턴 후 `buildUsageEmbed` 게시 + interrupt finalize `🛠️ N`. 단위테스트 aggregator/embed/bridge. **잔여:** 라이브 스트림 임베드. |
 
 ---
 
@@ -451,7 +452,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** W11-g slice4+ (HUD) · W16 폴리시 · W13-b(보류). **W11-b2=`done`** (folder·resume·reconfigure·A4D·preset).
+**큐 헤드:** W11-g residual (라이브 스트림 임베드) · W16 폴리시 · W13-b(보류). **W11-b2=`done`** · **W11-g slice4 tools/subagent ✅**.
 
 ---
 
@@ -515,8 +516,8 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2**~~ ✅ (folder·resume·reconfigure·A4D·preset) · ~~**W11-g slice1–3**~~ ✅ · ~~**W12**~~ ✅
-2. **W11-g slice4+** — tools/subagent 집계·라이브 HUD 임베드 (상세 §14.9).
+1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2**~~ ✅ (folder·resume·reconfigure·A4D·preset) · ~~**W11-g slice1–4**~~ ✅ · ~~**W12**~~ ✅
+2. **W11-g residual** — 라이브 스트림 임베드(턴 중 갱신) (상세 §14.9).
 3. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 바이너리 교체.
 4. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영 · §14.4 플래키 근본 판정.
@@ -527,9 +528,9 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 ### 14.9 (기록) W11-g 사용량/HUD 패널 Swift 포팅 + 정보 최신화 — 까먹지 말 것
 사용자 요구(2026-07-24): **Swift 포팅 패널에서 3백엔드(claude/codex/grok) 모두 모델 포함 모든 정보가 항상 최신**으로 표시. (TS는 참고용이라 TS 패널은 손대지 않음.)
 
-- **현재 상태 (slice3 후)**: slice1–2 + **`GrokUsageService`**(TS `modes/grok/usageService.ts`: `~/.grok/auth.json` first non-empty `key` → `cli-chat-proxy.grok.com/v1/billing?format=credits`, `creditUsagePercent` 우선·GrokBuild productUsage 폴백·`sevenDay` only·TTL 캐시·never-throw·mock HTTP 테스트) + `getUsageForBackend` + `/agent stats` Claude+Grok 임베드 + notifier grok getUsage. Codex=`codexUsageUnavailable()`.
-- **잔여(slice4+)**: (1) 이번 턴 도구/서브에이전트 집계 표면화, (2) 라이브 HUD 스트림 임베드(턴 중 갱신).
-- ~~(3) 사이드카 `setModel` displayName 재해석~~ ✅ TS `setModel`에서 latch reset + `captureModelDisplayName()`; Swift 라이브 RPC 배선.
+- **현재 상태 (slice4 후)**: slice1–3 + **tools/subagent HUD**: `TurnToolStatsAggregator`(tool_use 카운트·tool_result 실패·Task/Agent↔subagent_result 페어링) → `TurnResult.tools/agents` → `buildUsageEmbed` `🛠️ 이번 턴 도구`/`🤖 서브에이전트` · DabMain 턴 후 패널 + finalize `응답 완료 · 🛠️ N`. Claude 경로 집계(W16-g ToolActivityHost와 병행).
+- **잔여**: 라이브 HUD 스트림 임베드(턴 중 갱신).
+- ~~setModel displayName 재해석~~ ✅ · ~~tools/subagent 집계~~ ✅
 - **신선도 불변식(핵심)**: 모든 필드를 **렌더 시점 라이브 상태**에서 계산. 설정 변경 시 캐시된 값 재사용 금지(= TS의 래치 버그를 구조적으로 차단). 도구/서브에이전트 집계는 턴마다 리셋, git branch·경과시간도 매번 계산.
 - **백엔드별 모델/컨텍스트 소스 차이(주의)**:
   - **Claude**: `context_usage.model`/`modelDisplayName`을 **영구 Node 사이드카의 `ClaudeSession`(`src/modes/claude/session.ts`)이 생성**(사이드카 서버 `src/sidecar/claude/sessionBridge.ts`가 재사용). ✅ `setModel`이 displayName latch를 리셋 후 재해석. Swift `/model`·`/effort` → `SessionLifecycle.updateBinding` → 라이브 Claude/custom `session.setModel`/`setEffort` RPC.
