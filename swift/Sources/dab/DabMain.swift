@@ -639,7 +639,7 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
-    /// W16-h: approve → manual path ack; dismiss → persist dismissedVersion. Admin-only.
+    /// W16-h: approve → install.sh + restart; dismiss → persist dismissedVersion. Admin-only.
     private func handleUpdateComponent(
         _ payload: Interaction,
         action: UpdateAction,

@@ -47,7 +47,7 @@ public struct UpdateComponentRow: Sendable, Equatable {
 public enum UpdateLabels {
     public static let title = "🔄 새 버전이 있어요"
     public static func body(current: String, latest: String) -> String {
-        "`discord-agent-bridge` \(latest) 버전이 나왔어요 (현재 \(current)).\n지금 업데이트할까요? 관리자만 결정할 수 있어요.\n**예**를 누르면 안내를 표시합니다 (Swift 바이너리 자동 교체는 아직 없어요).\n**아니오**를 누르면 이 버전 알림을 끕니다."
+        "`discord-agent-bridge` \(latest) 버전이 나왔어요 (현재 \(current)).\n지금 업데이트할까요? 관리자만 결정할 수 있어요.\n**예** → git pull + `install.sh` 빌드·설치 후 서비스 재시작.\n**아니오** → 이 버전 알림을 끕니다."
     }
     public static let yes = "예, 업데이트"
     public static let no = "아니오"
@@ -56,9 +56,14 @@ public enum UpdateLabels {
     public static let busy = "이미 업데이트가 진행 중이에요."
     public static let dismissed = "이 버전 알림을 껐어요. 더 새 버전이 나오면 다시 알려드릴게요."
     public static let denied = "자동 업데이트는 서버 관리자(Administrator) 또는 admin 티어만 결정할 수 있어요."
-    /// Approve path when self-replace is not available (Swift shippable slice).
+    /// Install succeeded — about to restart into the new binary.
+    public static let installed = "업데이트를 설치했어요. 곧 재시작합니다…"
+    /// Install failed — process stays on the old binary; operator path.
+    public static let installFailed =
+        "자동 설치에 실패했어요. 수동으로 `bash swift/scripts/install.sh` 후 재시작해 주세요."
+    /// Approve path when install port / plan is unavailable.
     public static let manualOnly =
-        "Swift dab는 자동 설치·재시작을 아직 지원하지 않아요. `swift/scripts/install.sh` 또는 최신 소스로 수동 업데이트하세요."
+        "자동 설치 경로를 찾지 못했어요. 전체 체크아웃에서 `bash swift/scripts/install.sh`로 수동 업데이트하세요."
     public static let upToDate = "최신 버전이에요."
     public static let checkFailed = "버전 확인에 실패했어요 (네트워크/레지스트리)."
     public static let disabled = "자동 업데이트가 꺼져 있어요 (`autoUpdate.enabled=false`)."

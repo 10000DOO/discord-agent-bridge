@@ -46,6 +46,7 @@ func discordActionRows(from rows: [UpdateComponentRow]) -> [Interaction.ActionRo
 /// Wire AutoUpdater ports over ConfigStore + SessionStore + Discord control channels, then start.
 func startAutoUpdater(client: any DiscordClient) async {
     let version = readAppVersion()
+    let dryRun = ProcessInfo.processInfo.environment["DAB_UPDATE_DRY_RUN"] == "1"
     let updater = AutoUpdater(deps: AutoUpdaterDeps(
         currentVersion: version,
         enabled: {
@@ -68,14 +69,47 @@ func startAutoUpdater(client: any DiscordClient) async {
         announce: { text in
             await announceToControlChannels(client: client, text: text)
         },
-        install: nil, // ponytail: self-replace not shipped
-        restart: nil,
+        install: {
+            await installLatestSelfUpdate(
+                dryRun: dryRun,
+                onLog: { msg in
+                    print("dab: \(msg)")
+                    Task {
+                        await AuditLog.shared.record(AuditEntry(
+                            actorId: "system",
+                            roleTier: "admin",
+                            guildId: "-",
+                            channelId: "-",
+                            action: "auto-update",
+                            outcome: msg,
+                            status: msg.contains("failed") || msg.contains("empty") ? "error" : "ok"
+                        ))
+                    }
+                }
+            )
+        },
+        restart: {
+            if dryRun {
+                print("dab: auto-update dry-run — skip restart")
+                return
+            }
+            let strategy = detectRestartStrategy(RestartDetectDeps())
+            performRestart(
+                RestartPerformDeps(
+                    strategy: strategy,
+                    runKickstart: { launchctlKickstart() },
+                    spawnDetached: { path, args in spawnDetachedDab(path: path, args: args) },
+                    exitProcess: { code in Foundation.exit(code) }
+                ),
+                onLog: { print("dab: \($0)") }
+            )
+        },
         messages: .korean,
         onLog: { msg in print("dab: \(msg)") }
     ))
     await AutoUpdaterRegistry.shared.set(updater)
     await updater.start()
-    print("dab: auto-updater started (version \(version))")
+    print("dab: auto-updater started (version \(version)\(dryRun ? ", DAB_UPDATE_DRY_RUN" : ""))")
 }
 
 func postUpdatePromptToControlChannels(client: any DiscordClient, latest: String) async {

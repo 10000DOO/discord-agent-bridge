@@ -70,6 +70,7 @@ struct AutoUpdaterDecisionTests {
         #expect(ctx.disabled == 1)
         #expect(ctx.acks == [UpdateLabels.manualOnly])
         #expect(h.restartCallsBox.withLock { $0 } == 0)
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
     }
 
     @Test func approveWithInstallThenRestart() async {
@@ -79,6 +80,8 @@ struct AutoUpdaterDecisionTests {
         #expect(ctx.disabled == 1)
         #expect(h.installCallsBox.withLock { $0 } == 1)
         #expect(h.restartCallsBox.withLock { $0 } == 1)
+        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installed])
+        #expect(ctx.acks.contains { $0.contains("시작") })
     }
 
     @Test func installFailureDoesNotRestart() async {
@@ -87,6 +90,7 @@ struct AutoUpdaterDecisionTests {
         await h.updater.approve("1.1.0", ctx: ctx.asCtx())
         #expect(h.restartCallsBox.withLock { $0 } == 0)
         #expect(h.installCallsBox.withLock { $0 } == 1)
+        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installFailed])
     }
 
     @Test func dismissPersistsAndAcks() async {
@@ -130,6 +134,7 @@ private final class UpdateHarness: @unchecked Sendable {
     let enabledBox: LockedBox<Bool>
     let installCallsBox: LockedBox<Int>
     let restartCallsBox: LockedBox<Int>
+    let announcesBox: LockedBox<[String]>
 
     init(
         latest: String? = "1.1.0",
@@ -142,6 +147,7 @@ private final class UpdateHarness: @unchecked Sendable {
         let latestBox = LockedBox(latest)
         let installCallsBox = LockedBox(0)
         let restartCallsBox = LockedBox(0)
+        let announcesBox = LockedBox<[String]>([])
         let okBox = LockedBox(installOk)
 
         var install: (@Sendable () async -> UpdateInstallResult)?
@@ -166,7 +172,7 @@ private final class UpdateHarness: @unchecked Sendable {
                 }
             },
             postPrompt: { v in postsBox.withLock { $0.append(v) } },
-            announce: { _ in },
+            announce: { t in announcesBox.withLock { $0.append(t) } },
             install: install,
             restart: { restartCallsBox.withLock { $0 += 1 } },
             messages: .korean,
@@ -178,5 +184,6 @@ private final class UpdateHarness: @unchecked Sendable {
         self.enabledBox = enabledBox
         self.installCallsBox = installCallsBox
         self.restartCallsBox = restartCallsBox
+        self.announcesBox = announcesBox
     }
 }

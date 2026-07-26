@@ -2,8 +2,8 @@ import Foundation
 
 // Auto-update orchestrator (TS `src/update/autoUpdater.ts`).
 // Owns scheduling, check→compare→notify, dismiss, and approve.
-// Install+restart are DI ports — Swift shippable slice wires a no-op self-replace
-// (ponytail: binary self-replace/service restart not shipped; approve → manual path ack).
+// Install+restart are DI ports — production wires `installLatestSelfUpdate` + `performRestart`
+// (install.sh + launchctl; no in-process binary mmap replace).
 
 public let updateDefaultIntervalMs = 24 * 60 * 60 * 1000
 
@@ -32,19 +32,32 @@ public struct AutoUpdateMetaPatch: Sendable, Equatable {
 
 public struct UpdateMessages: Sendable, Equatable {
     public var busy: String
-    public var manualOnly: String
+    public var installed: String
+    public var installFailed: String
     public var dismissed: String
+    /// Used when the install port is nil (no self-update path wired).
+    public var manualOnly: String
 
-    public init(busy: String, manualOnly: String, dismissed: String) {
+    public init(
+        busy: String,
+        installed: String,
+        installFailed: String,
+        dismissed: String,
+        manualOnly: String
+    ) {
         self.busy = busy
-        self.manualOnly = manualOnly
+        self.installed = installed
+        self.installFailed = installFailed
         self.dismissed = dismissed
+        self.manualOnly = manualOnly
     }
 
     public static let korean = UpdateMessages(
         busy: UpdateLabels.busy,
-        manualOnly: UpdateLabels.manualOnly,
-        dismissed: UpdateLabels.dismissed
+        installed: UpdateLabels.installed,
+        installFailed: UpdateLabels.installFailed,
+        dismissed: UpdateLabels.dismissed,
+        manualOnly: UpdateLabels.manualOnly
     )
 }
 
@@ -92,7 +105,7 @@ public struct AutoUpdaterDeps: Sendable {
     public var writeMeta: @Sendable (AutoUpdateMetaPatch) async -> Void
     public var postPrompt: @Sendable (String) async throws -> Void
     public var announce: @Sendable (String) async -> Void
-    /// Optional install port. Swift default: not implemented → approve uses manualOnly.
+    /// Optional install port. nil → approve acks `manualOnly` (no restart).
     public var install: (@Sendable () async -> UpdateInstallResult)?
     public var restart: (@Sendable () -> Void)?
     public var messages: UpdateMessages
@@ -217,7 +230,7 @@ public actor AutoUpdater {
     }
 
     /// [Yes] click. Without install port → manual-only ack (no restart).
-    /// With install port (future): install then restart on success.
+    /// With install port: install then announce + restart on success; on failure keep process.
     public func approve(_ version: String, ctx: UpdateDecisionCtx) async {
         if updating {
             await ctx.ack(deps.messages.busy)
@@ -227,24 +240,24 @@ public actor AutoUpdater {
         await ctx.disableButtons()
 
         guard let install = deps.install else {
-            // ponytail: no self-replace for Swift dab binary — ceiling is notify+dismiss+manual path;
-            // upgrade when shipping install.sh/service restart wiring.
             await ctx.ack(deps.messages.manualOnly)
-            deps.onLog("auto-update: approve \(version) — self-replace skipped (manual path)")
+            deps.onLog("auto-update: approve \(version) — no install port (manual path)")
             updating = false
             return
         }
 
+        await ctx.ack("업데이트 설치를 시작합니다…")
         let result = await install()
         if !result.ok {
-            deps.onLog("auto-update: install failed code=\(result.code)")
-            await deps.announce(deps.messages.manualOnly)
+            deps.onLog("auto-update: install failed code=\(result.code) stderr=\(result.stderr.prefix(200))")
+            await deps.announce(deps.messages.installFailed)
             updating = false
             return
         }
-        await deps.announce(deps.messages.manualOnly)
+        await deps.announce(deps.messages.installed)
+        deps.onLog("auto-update: install ok for \(version) — restarting")
         deps.restart?()
-        // If restart returns (tests), release guard.
+        // If restart returns (tests / dry-run), release guard.
         updating = false
     }
 

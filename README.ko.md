@@ -211,7 +211,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude/Codex/Grok mid-turn tool; **잔여:** pin 임베드 | ✅ |
 | `/config` 패널 | ✅ 역할·mode/model/effort/perm·dm·알림; 잔여 locale · render(S3) | ✅ 더 넓은 UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
-| Auto-update | ✅ 레지스트리 체크 + Yes/No UI; **바이너리 자가 교체 미구현** | ✅ npm 재설치 경로 |
+| Auto-update | ✅ 레지스트리 체크 + Yes/No + **install.sh·launchctl 재시작** | ✅ npm 재설치 경로 |
 | Chromium 표/mermaid 렌더 | ❌ defer | ✅ 선택 |
 | Host file Discord 첨부 | partial / 잔여 | ✅ (사이드카 경로) |
 | Linux/Windows 서비스 | ✅ launchd / systemd / schtasks 스크립트 | ✅ launchd / systemd / schtasks |

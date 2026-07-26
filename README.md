@@ -211,7 +211,7 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path; **residual:** pin embed | ✅ |
 | `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif; residual locale · render(S3) | ✅ fuller UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
-| Auto-update | ✅ registry check + Yes/No UI; **no binary self-replace yet** | ✅ npm reinstall path |
+| Auto-update | ✅ registry check + Yes/No + **install.sh + launchctl restart** | ✅ npm reinstall path |
 | Chromium table/mermaid render | ❌ deferred | ✅ optional |
 | Host file attach to Discord | partial / residual | ✅ (sidecar path) |
 | Linux/Windows service | ✅ launchd / systemd / schtasks scripts | ✅ launchd / systemd / schtasks |
