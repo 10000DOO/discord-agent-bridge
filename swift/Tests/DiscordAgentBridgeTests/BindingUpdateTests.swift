@@ -60,4 +60,90 @@ struct BindingUpdateTests {
         #expect(!lines[1].contains("`"))
         #expect(!lines[1].contains("effort="))
     }
+
+    // MARK: - G-P1-04 /mode perm profile resolution
+
+    private var sampleProfiles: [String: Profile] {
+        [
+            "readonly": Profile(
+                permissionMode: "plan",
+                allowedTools: ["Read", "Glob", "Grep"],
+                policyTier: "read-only"
+            ),
+            "edit": Profile(
+                permissionMode: "acceptEdits",
+                allowedTools: ["Read", "Edit", "Write", "Bash"],
+                policyTier: "normal"
+            ),
+        ]
+    }
+
+    @Test func resolveModePermKnownProfileStoresNameAndBundledMode() {
+        let r = resolveModePerm(value: "readonly", profiles: sampleProfiles)
+        #expect(r.permMode == "plan")
+        #expect(r.permissionProfile == "readonly")
+        #expect(r.updatePermissionProfile == true)
+        #expect(r.display == "readonly")
+        let patch = r.bindingPatch
+        #expect(patch.permMode == "plan")
+        #expect(patch.permissionProfile == "readonly")
+        #expect(patch.updatePermissionProfile == true)
+    }
+
+    @Test func resolveModePermUnknownValueIsRawPermMode() {
+        let r = resolveModePerm(value: "bypassPermissions", profiles: sampleProfiles)
+        #expect(r.permMode == "bypassPermissions")
+        #expect(r.permissionProfile == nil)
+        #expect(r.updatePermissionProfile == false)
+        #expect(r.display == "bypassPermissions")
+        let patch = r.bindingPatch
+        #expect(patch.permMode == "bypassPermissions")
+        #expect(patch.updatePermissionProfile == false)
+    }
+
+    @Test func resolveModePermProfileNameWinsOverSameNamedMode() {
+        // A key present in profiles is always treated as a profile (TS hasOwnProperty).
+        var profiles = sampleProfiles
+        profiles["plan"] = Profile(
+            permissionMode: "acceptEdits",
+            allowedTools: ["Read"],
+            policyTier: "normal"
+        )
+        let r = resolveModePerm(value: "plan", profiles: profiles)
+        #expect(r.permissionProfile == "plan")
+        #expect(r.permMode == "acceptEdits")
+        #expect(r.updatePermissionProfile == true)
+    }
+
+    @Test func applyPatchSessionWritesPermissionProfileWhenFlagged() {
+        let s = PersistedSession(
+            backend: .claude, cwd: "/x", guildId: "g",
+            permMode: "default", permissionProfile: nil, updatedAt: "t0"
+        )
+        let viaProfile = applyPatch(
+            to: s,
+            BindingPatch(
+                permMode: "plan",
+                permissionProfile: "readonly",
+                updatePermissionProfile: true
+            ),
+            now: "t1"
+        )
+        #expect(viaProfile.permMode == "plan")
+        #expect(viaProfile.permissionProfile == "readonly")
+        #expect(viaProfile.updatedAt == "t1")
+
+        // Raw permMode switch: do not touch existing profile.
+        let withProfile = PersistedSession(
+            backend: .claude, cwd: "/x", guildId: "g",
+            permMode: "plan", permissionProfile: "readonly", updatedAt: "t0"
+        )
+        let raw = applyPatch(
+            to: withProfile,
+            BindingPatch(permMode: "acceptEdits"),
+            now: "t2"
+        )
+        #expect(raw.permMode == "acceptEdits")
+        #expect(raw.permissionProfile == "readonly")
+    }
 }

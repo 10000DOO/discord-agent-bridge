@@ -62,7 +62,7 @@
 | **G-P1-01** | `done` | **IdleWatchdog** | `idleWatchdog.ts` 3분 무활동 공지 | 없음 | 턴 arm · 이벤트 note · result/error stop · 1회 공지 |
 | **G-P1-02** | `done` | **TranscriptFeed (progress 한 줄)** | `transcriptFeed.ts` progress 메시지 편집 | StreamStatusHost 임베드 위주 | caps.progress 경로에서 TS와 같이 상태 라인 또는 동등 가시성 (Codex progress) |
 | **G-P1-03** | `todo` | **/model · /effort autocomplete** | client autocomplete + catalog | free-text only | Discord autocomplete → provider catalog 목록 |
-| **G-P1-04** | `todo` | **/mode perm 프로필 해석** | `switchPerm` config.profiles 이름 → profile | raw string 위주 | 프로필 이름이면 profile, 아니면 permMode · 테스트 |
+| **G-P1-04** | `done` | **/mode perm 프로필 해석** | `switchPerm` config.profiles 이름 → profile | raw string 위주 | 프로필 이름이면 profile, 아니면 permMode · 테스트 |
 | **G-P1-05** | `todo` | **`/agent resume` 깊이** | re-attach + intro | store→registry 최소 re-bind | TS에 가깝게: intro/status · 라이브 세션 재연결 시도 |
 | **G-P1-06** | `done` | **favorites → browseRoots** | `app.ts` browseRoots: config.favorites | schema 보존만 · 위자드 unbounded | DirectoryBrowser/ChannelWizard에 favorites allowedRoots 주입 |
 | **G-P1-07** | `done` | **autoProvisionGuild** | Ready/GuildCreate 자동 채널 구조 | 수동 `/setup`만 | ready 또는 guild create 시 ensure (권한 있을 때) |

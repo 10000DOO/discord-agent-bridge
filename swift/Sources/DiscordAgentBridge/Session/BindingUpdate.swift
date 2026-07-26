@@ -6,6 +6,11 @@ public struct BindingPatch: Sendable, Equatable {
     public var effort: String?
     public var permMode: String?
     public var backend: Backend?
+    /// Named permission profile (SessionStore `permissionProfile`). Applied only when
+    /// `updatePermissionProfile` is true so a raw permMode switch can leave it alone.
+    public var permissionProfile: String?
+    /// When true, write `permissionProfile` (including nil) onto the persisted session.
+    public var updatePermissionProfile: Bool
     /// When true, wipe `backendSessionId` so the next turn starts fresh (not resume).
     public var clearBackendSessionId: Bool
 
@@ -14,14 +19,68 @@ public struct BindingPatch: Sendable, Equatable {
         effort: String? = nil,
         permMode: String? = nil,
         backend: Backend? = nil,
+        permissionProfile: String? = nil,
+        updatePermissionProfile: Bool = false,
         clearBackendSessionId: Bool = false
     ) {
         self.model = model
         self.effort = effort
         self.permMode = permMode
         self.backend = backend
+        self.permissionProfile = permissionProfile
+        self.updatePermissionProfile = updatePermissionProfile
         self.clearBackendSessionId = clearBackendSessionId
     }
+}
+
+// MARK: - G-P1-04 /mode perm profile resolution (TS switchPerm)
+
+/// Result of resolving a `/mode perm` value against `config.profiles`.
+public struct ModePermResolution: Sendable, Equatable {
+    public var permMode: String
+    /// Set when `value` named a known profile; nil for a raw permMode switch.
+    public var permissionProfile: String?
+    /// Whether the caller should persist `permissionProfile` (profile path only).
+    public var updatePermissionProfile: Bool
+
+    public init(permMode: String, permissionProfile: String?, updatePermissionProfile: Bool) {
+        self.permMode = permMode
+        self.permissionProfile = permissionProfile
+        self.updatePermissionProfile = updatePermissionProfile
+    }
+
+    /// Display label for the slash reply (TS: `resolved.profile ?? resolved.permMode`).
+    public var display: String { permissionProfile ?? permMode }
+
+    /// Binding patch carrying resolved permMode (+ profile when applicable).
+    public var bindingPatch: BindingPatch {
+        BindingPatch(
+            permMode: permMode,
+            permissionProfile: permissionProfile,
+            updatePermissionProfile: updatePermissionProfile
+        )
+    }
+}
+
+/// TS `switchPerm`: if `value` is a key in `config.profiles`, store that profile and its
+/// bundled `permissionMode`; otherwise treat `value` as a raw permission mode and leave
+/// any existing `permissionProfile` untouched.
+public func resolveModePerm(
+    value: String,
+    profiles: [String: Profile]
+) -> ModePermResolution {
+    if let profile = profiles[value] {
+        return ModePermResolution(
+            permMode: profile.permissionMode,
+            permissionProfile: value,
+            updatePermissionProfile: true
+        )
+    }
+    return ModePermResolution(
+        permMode: value,
+        permissionProfile: nil,
+        updatePermissionProfile: false
+    )
 }
 
 /// Apply a patch to the in-memory routing config.
@@ -41,6 +100,7 @@ public func applyPatch(to session: PersistedSession, _ p: BindingPatch, now: Str
     if let m = p.model { s.model = m }
     if let e = p.effort { s.effort = e }
     if let pm = p.permMode { s.permMode = pm }
+    if p.updatePermissionProfile { s.permissionProfile = p.permissionProfile }
     if p.clearBackendSessionId { s.backendSessionId = nil }
     s.updatedAt = now
     return s

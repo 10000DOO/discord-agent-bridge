@@ -400,17 +400,21 @@ struct EventHandler: GatewayEventHandler {
                     ))
                 )
             case "perm":
+                // G-P1-04 / TS switchPerm: known config.profiles name → profile + bundled
+                // permissionMode; otherwise raw permMode (existing permissionProfile kept).
                 guard let value = try? sub.requireOption(named: "value").requireString(), !value.isEmpty else {
                     try await respondEphemeral(payload, "perm 값이 필요합니다.")
                     return
                 }
+                let profiles = (try? await ConfigStore.shared.load())?.profiles ?? [:]
+                let resolved = resolveModePerm(value: value, profiles: profiles)
                 let ok = await life.updateBinding(
-                    channelId: channelId, patch: BindingPatch(permMode: value),
+                    channelId: channelId, patch: resolved.bindingPatch,
                     actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
                 )
                 try await respondEphemeral(
                     payload,
-                    ok ? "권한 모드를 `\(value)`(으)로 바꿨습니다."
+                    ok ? "권한 모드를 `\(resolved.display)`(으)로 바꿨습니다."
                        : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
                 )
             default:

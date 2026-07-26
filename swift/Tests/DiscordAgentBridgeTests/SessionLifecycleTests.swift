@@ -326,6 +326,59 @@ struct SessionLifecycleTests {
         #expect(await store.binding(channelId: "c1")?.model == "gpt-5")
     }
 
+    // G-P1-04: /mode perm profile path persists permissionProfile + resolved permMode.
+    @Test func updateBindingModePermProfilePersistsProfileAndPermMode() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B", cwd: "/x", guildId: "g",
+                model: "opus", effort: "high", permMode: "default",
+                permissionProfile: nil, updatedAt: "t0"
+            )
+        )
+        await reg.bind(
+            channelId: "c1",
+            SessionConfig(backend: .claude, model: "opus", effort: "high", permMode: "default")
+        )
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-perm-prof" }
+        )
+        let profiles: [String: Profile] = [
+            "readonly": Profile(
+                permissionMode: "plan",
+                allowedTools: ["Read"],
+                policyTier: "read-only"
+            ),
+        ]
+        let resolved = resolveModePerm(value: "readonly", profiles: profiles)
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: resolved.bindingPatch,
+            actorId: "u", guildId: "g"
+        ) == true)
+        let row = await store.binding(channelId: "c1")
+        #expect(row?.permMode == "plan")
+        #expect(row?.permissionProfile == "readonly")
+        #expect(row?.model == "opus")
+        #expect(row?.effort == "high")
+        #expect(row?.backendSessionId == "B")
+        #expect(await reg.binding(channelId: "c1")?.permMode == "plan")
+
+        // Raw mode keeps the stored profile (TS: profile not in override).
+        let raw = resolveModePerm(value: "acceptEdits", profiles: profiles)
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: raw.bindingPatch,
+            actorId: "u", guildId: "g"
+        ) == true)
+        let afterRaw = await store.binding(channelId: "c1")
+        #expect(afterRaw?.permMode == "acceptEdits")
+        #expect(afterRaw?.permissionProfile == "readonly")
+    }
+
     @Test func rebindBackendSameKeepsModelDifferentDrops() async throws {
         let reg = SessionRegistry()
         let store = freshTempStore()
