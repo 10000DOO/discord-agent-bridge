@@ -46,7 +46,7 @@
 | **W16-g** | ship + residual | toolThread/diff/status/notifier ✅ · Codex/Grok mid-turn tool ✅ · **capabilities 게이팅 ✅** · **잔여: pin status embed** · **gap:** Codex parentByThread/collab child-thread · Grok plan/thought progress |
 | **W16-h** | ship + residual | 체크·승인 UI ✅ · **바이너리 self-replace·서비스 재시작**(승인 시 수동 설치 안내만) |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
-| **기타** | overall | host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
+| **기타** | overall | ~~host.file.attach Discord 업로드~~ ✅ · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
@@ -56,7 +56,7 @@
 - ~~tools/subagent HUD · 라이브 스트림 임베드~~ ✅ (W11-g)
 - ~~interrupt **버튼 UI**~~ ✅ (W14 lib + pure `InterruptButton` + DabMain)
 - ~~capabilities 렌더 게이팅~~ ✅ (W16-g 흡수: toolThreads/fileDiff/streaming/usagePanel)
-- host.file.* 실제 Discord 업로드 완전 패리티 (Swift; TS 사이드카 경로는 구현됨)
+- ~~host.file.attach 실제 Discord 업로드~~ ✅ (`FileAttach`+`FileAttachHost`+`postFileAttach`+cwd 감금; share는 W16-d)
 - `/config` **locale** · **render(S3)** · pin status embed · auto-update **바이너리 self-replace**
 - 기존 npm 봇 기능 **100% 패리티 미달** (목표 지향, 진행 중 — README 매트릭스에 명시)
 
@@ -91,7 +91,7 @@ swift run --package-path swift dab grok-smoke
 2. **W16 폴리시 잔여** — pin status embed · `/config` locale · auto-update **바이너리 self-replace** · (S3) render 서브패널
 3. **W16-g gap** (선택) — Codex parentByThread/collab · Grok plan/thought
 4. **W13-b** (선택) — 기본 permMode/`allowlist` when product default moves off bypass
-5. 부수: host.file Discord 업로드 · Linux/Windows 서비스 · `verify.sh` `--scratch-path` · §14.4 플래키 판정
+5. 부수: ~~host.file.attach Discord 업로드~~ ✅ · Linux/Windows 서비스 · `verify.sh` `--scratch-path` · §14.4 플래키 판정
 
 ---
 
@@ -399,6 +399,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W16-g residual | **Codex·Grok mid-turn tool 활동**: pure `codexToolEvents` (commandExecution/fileChange/mcp/webSearch/collab/subAgent) + `grokToolEvents` (tool_call/tool_call_update terminal) · Codex/Grok bridges → `TurnToolStatsAggregator` + `ToolActivityHost` (resetTurn/dispose) · spawnAgent pairing. **gap:** Codex parentByThread · Grok plan/thought. |
 | 2026-07-26 | W16-g capabilities | pure `resolveCapabilities`(backend←global←server←`DAB_CAPS`) + ToolActivityHost 게이팅 + DabMain StreamStatus/usage post 가드 · Config optional capabilities. TS RendererDispatcher 정렬(toolThreads/fileDiff/streaming/usagePanel). |
 | 2026-07-26 | docs snapshot | **W11=`done`** · **W11-g=`done`**(live stream 포함) · **W11-b2=`done`**. §0 잔여 = W16 폴리시(pin status·locale·self-replace) · W16-g gap · W13-b 보류 · host.file/S3/Linux·Windows. 코드 변경 없음. |
+| 2026-07-26 | host.file.attach | **host.file.attach Discord 업로드**. lib `FileAttach`(`attachFileConfined`/`resolveConfinedAttachPath`·cwd 감금) + `FileAttachHost` + dab `postFileAttach`(createMessage files) + `DabSessionBridge` `onFileAttach` 배선. 단위테스트 path/host + reverse RPC. |
 
 ---
 

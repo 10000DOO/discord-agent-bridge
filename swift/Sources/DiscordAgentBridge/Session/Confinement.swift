@@ -3,9 +3,8 @@ import Foundation
 // realpath-based workspace confinement — pure helpers ported 1:1 from TS
 // `sessionOrchestrator.ts:838-875` (findConfinementViolation / realpathOrResolve / isWithin).
 //
-// ponytail: 배선 잠재 — Swift에는 Discord 첨부를 다운로드/전달하는 경로가 아직 없어 감시할
-//   `files`가 없다(감시 대상 부재). 첨부 파이프라인 착수 시 브리지 send 전단 / DabMain 턴빌드에서
-//   이 순수 헬퍼를 소비한다. 배선 없이 헬퍼+테스트만 두는 것이 억지 배선(죽은 코드)보다 낫다.
+// Consumed by `attachFileConfined` / `resolveConfinedAttachPath` (host.file.attach) and
+// turn inbound `files` pre-filter when present. TOCTOU note below still applies.
 // NOTE(원본 sessionOrchestrator.ts:834-837 주석): 이 검사는 TOCTOU 프리필터일 뿐이다(체크 후 tail
 //   컴포넌트가 심링크로 교체될 수 있음). 최종 가드는 파일 open 지점에 있어야 하며, 이 함수를 유일한
 //   confinement 집행으로 취급하지 말 것.

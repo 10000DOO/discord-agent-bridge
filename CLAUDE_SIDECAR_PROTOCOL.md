@@ -12,7 +12,7 @@
 | TS Host 클라이언트 | `src/modes/claude/sidecarClient.ts` |
 | opt-in 배선 | `DAB_CLAUDE_SIDECAR=1` (`src/app.ts`) |
 | Swift 클라이언트 | `swift/Sources/DiscordAgentBridge/Sidecar/` |
-| host.file.attach/share | TS 경로 구현 (역RPC). Swift Host는 아직 unsupported 응답 |
+| host.file.attach/share | TS + Swift Host 구현 (역RPC). attach=채널 첨부 업로드+cwd 감금, share=문서 스레드 |
 
 ---
 

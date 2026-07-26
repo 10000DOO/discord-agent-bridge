@@ -66,6 +66,53 @@ func allCommandPayloads() -> [Payloads.ApplicationCommandCreate] {
 
 /// Post a markdown file into a `📄` thread on `channelId` (TS shareDocument + wiring.shareDocumentFor).
 /// Resolves cwd from SessionStore (binding) and options from global documentShare config.
+/// host.file.attach Discord sink: confine path under session cwd, read bytes, post as
+/// channel attachment (TS `SessionWiring.sendFileFor` + `attachFileConfined` 1:1).
+func postFileAttach(
+    client: any DiscordClient,
+    channelId: String,
+    path: String,
+    name: String? = nil,
+    cwd: String? = nil
+) async throws -> String {
+    let resolvedCwd: String
+    if let cwd {
+        resolvedCwd = cwd
+    } else if let session = await SessionStore.shared.binding(channelId: channelId), !session.archived {
+        resolvedCwd = session.cwd
+    } else if await SessionRegistry.shared.binding(channelId: channelId) != nil {
+        resolvedCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? NSHomeDirectory()
+    } else {
+        throw FileAttachHostError.noSession
+    }
+
+    let chId = channelId
+    let result = await attachFileConfined(
+        workspaceRoot: resolvedCwd,
+        sendFile: { absPath, filename in
+            let display = filename ?? (absPath as NSString).lastPathComponent
+            let data = try Data(contentsOf: URL(fileURLWithPath: absPath))
+            var buf = ByteBufferAllocator().buffer(capacity: data.count)
+            buf.writeBytes(data)
+            _ = try await client.createMessage(
+                channelId: ChannelSnowflake(chId),
+                payload: Payloads.CreateMessage(
+                    files: [RawFile(data: buf, filename: display)],
+                    attachments: [Payloads.Attachment(index: 0, filename: display)]
+                )
+            )
+            return "Sent \(display) to the channel."
+        },
+        requestedPath: path,
+        filename: name
+    )
+    if result.isError {
+        throw FileAttachHostError.refused(result.text)
+    }
+    return result.text
+}
+
 func postDocumentShare(
     client: any DiscordClient,
     channelId: String,

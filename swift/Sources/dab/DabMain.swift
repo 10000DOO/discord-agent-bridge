@@ -42,6 +42,10 @@ struct DabMain {
         await DocumentShareHost.shared.setShareHandler { channelId, path in
             try await postDocumentShare(client: client, channelId: channelId, path: path)
         }
+        // host.file.attach reverse RPC → confined path + channel attachment upload.
+        await FileAttachHost.shared.setAttachHandler { channelId, path, name in
+            try await postFileAttach(client: client, channelId: channelId, path: path, name: name)
+        }
         // W16-g: tool_use / tool_result → Discord work threads (+ diffs) via createThread.
         await ToolActivityHost.shared.setChannelFactory { channelId in
             turnThreadChannel(client: client, channelId: channelId)

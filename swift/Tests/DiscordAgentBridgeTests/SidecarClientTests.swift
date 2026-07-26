@@ -295,6 +295,69 @@ struct SidecarClientTests {
         fakeTask.cancel()
     }
 
+    @Test func reverseRpcHostFileAttachWired() async throws {
+        // Single consumer on sidecar.lines: answer session.start + capture reverse res.
+        let pair = InMemorySidecarTransport.makePair()
+        let resBox = LockedBox<Envelope?>(nil)
+        let pump = Task {
+            for try await line in pair.sidecar.lines {
+                guard let env = try? parseEnvelope(line) else { continue }
+                if env.type == .req, env.method == "session.start", let id = env.id {
+                    let out = try serializeEnvelope(res(
+                        id: id,
+                        method: "session.start",
+                        result: .object(["session": .string("sess-attach"), "backendSessionId": .null])
+                    ))
+                    try await pair.sidecar.writeLine(out + "\n")
+                }
+                if env.type == .res, env.id == "s-attach-1" {
+                    resBox.withLock { $0 = env }
+                    break
+                }
+            }
+        }
+
+        if let line = try? serializeEnvelope(notify(method: "sidecar.ready", params: ["v": .number(1)])) {
+            try? await pair.sidecar.writeLine(line + "\n")
+        }
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
+        try await client.connect()
+        let started = try await client.sessionStart(
+            SessionStartParams(cwd: "/tmp", guildId: "g", channelId: "c", permMode: "default")
+        )
+
+        let attachBox = LockedBox<(String, String?)?>(nil)
+        client.registerSessionHandlers(
+            handle: started.session,
+            handlers: SidecarSessionHandlers(
+                onEvent: { _ in },
+                onFileAttach: { path, name in
+                    attachBox.withLock { $0 = (path, name) }
+                    return "Sent \(name ?? path) to the channel."
+                }
+            )
+        )
+
+        let reverse = req(
+            id: "s-attach-1",
+            method: "host.file.attach",
+            params: ["path": .string("/tmp/ws/out.txt"), "name": .string("out.txt")],
+            session: started.session
+        )
+        try await pair.sidecar.writeLine(try serializeEnvelope(reverse) + "\n")
+        _ = await pump.result
+
+        let got = attachBox.withLock { $0 }
+        #expect(got?.0 == "/tmp/ws/out.txt")
+        #expect(got?.1 == "out.txt")
+        let env = resBox.withLock { $0 }
+        #expect(env?.result?["ok"]?.boolValue == true)
+        #expect(env?.result?["message"]?.stringValue == "Sent out.txt to the channel.")
+
+        await client.close()
+        await pair.sidecar.close()
+    }
+
     @Test func reverseRpcHostFileShareWired() async throws {
         // Single consumer on sidecar.lines: answer session.start + capture reverse res.
         let pair = InMemorySidecarTransport.makePair()

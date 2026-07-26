@@ -309,7 +309,7 @@ public actor DabSessionBridge {
         let store = self.store
         let persistBackend = backend
         let persistModel = model
-        // W16-d: host.file.share reverse RPC → DocumentShareHost (Discord sink wired in dab).
+        // host.file.share / host.file.attach reverse RPC → Host sinks (Discord wired in dab).
         let shareChannelId = channelId
         // Extend the chain *synchronously* in the event callback so arrival order is kept
         // even when work hops onto this actor.
@@ -337,6 +337,9 @@ public actor DabSessionBridge {
                             backendSessionId: backendId
                         )
                     }
+                },
+                onFileAttach: { path, name in
+                    try await FileAttachHost.shared.attach(channelId: shareChannelId, path: path, name: name)
                 },
                 onFileShare: { path in
                     try await DocumentShareHost.shared.share(channelId: shareChannelId, path: path)
