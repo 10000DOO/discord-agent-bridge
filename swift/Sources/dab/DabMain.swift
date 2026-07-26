@@ -1141,12 +1141,12 @@ struct EventHandler: GatewayEventHandler {
                     ))
                 )
                 // Intro + status embed on the bound session channel (TS postSessionIntro).
-                _ = try? await client.createMessage(
+                // W16-g residual: best-effort pin so status stays at the top of the channel.
+                _ = await postSessionStatusIntro(
+                    client: client,
                     channelId: ChannelSnowflake(bindChannelId),
-                    payload: .init(
-                        content: "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
-                        embeds: [statusEmbed]
-                    )
+                    content: "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
+                    embed: statusEmbed
                 )
             } else {
                 _ = try? await client.createInteractionResponse(

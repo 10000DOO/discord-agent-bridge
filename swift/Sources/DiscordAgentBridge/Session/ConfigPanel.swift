@@ -7,14 +7,19 @@ import Foundation
 //   - Role tiers (3 role-selects) batch into pending → Save writes servers/<guildId>.json auth
 //   - defaults.mode / model / effort / permissionMode AUTO-SAVE to server on each select change
 //   - auth.dmPolicy AUTO-SAVE to GLOBAL config.json (server has no dmPolicy field)
+//   - locale AUTO-SAVE to GLOBAL config.json (process-wide UI language; ko/en)
 //   - Notifications sub-panel: enable toggle + status channel select → server.notifications
 //   - Embed shows effective global+server auth / defaults / limits
 //
-// ponytail residual: locale select (row budget used by dmPolicy) · image/chromium (S3).
+// Layout: roleRows free 5th row holds locale (defaultRows already at 5 with dmPolicy).
+// ponytail residual: image/chromium sub-panel (S3).
 
 // MARK: - Ids
 
 public let CONFIG_PANEL_PREFIX = "config."
+
+/// Closed set offered by the locale select (TS i18n ships ko/en only).
+public let CONFIG_LOCALES: [String] = ["ko", "en"]
 
 public enum ConfigPanelIds {
     public static let roleAdmin = "config.role.admin"
@@ -24,6 +29,7 @@ public enum ConfigPanelIds {
     public static let model = "config.default.model"
     public static let effort = "config.default.effort"
     public static let permMode = "config.default.permMode"
+    public static let locale = "config.default.locale"
     public static let dmPolicy = "config.dmPolicy"
     public static let save = "config.save"
     public static let notifOpen = "config.notif.open"
@@ -47,7 +53,7 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
     public var dmPolicy: String
     /// Display-only (resolved global→server limits).
     public var limits: LimitsSection
-    /// Display-only locale (server override else global). Not editable in this residual.
+    /// UI language: panel edits GLOBAL config.locale (server.locale still wins when set).
     public var locale: String
     /// Default model (resolved; panel edits server claudeModel / codexModel by backend).
     public var model: String
@@ -178,7 +184,7 @@ public struct ConfigPanelRow: Sendable, Equatable {
 public struct ConfigPanelView: Sendable, Equatable {
     public var title: String
     public var description: String
-    /// Primary message: role tiers + Save (+ notif) (≤4 rows).
+    /// Primary message: role tiers + Save (+ notif) + locale (≤5 rows).
     public var roleRows: [ConfigPanelRow]
     /// Follow-up: backend / model / effort / permMode / dmPolicy (≤5 rows).
     public var defaultRows: [ConfigPanelRow]
@@ -261,6 +267,9 @@ public final class ConfigPanel: @unchecked Sendable {
         case ConfigPanelIds.dmPolicy:
             guard let value = input.value, !value.isEmpty else { return .pending }
             return await autosaveDmPolicy(value)
+        case ConfigPanelIds.locale:
+            guard let value = input.value, !value.isEmpty else { return .pending }
+            return await autosaveLocale(value)
         case ConfigPanelIds.notifOpen:
             return await .notifPanel(renderNotifications())
         case ConfigPanelIds.notifToggle:
@@ -339,6 +348,13 @@ public final class ConfigPanel: @unchecked Sendable {
                 WizardSelectOption(label: $0, value: $0, isDefault: $0 == d.dmPolicy)
             }
         )
+        let localeSelect = ConfigPanelComponent.select(
+            customId: ConfigPanelIds.locale,
+            placeholder: "Bot language (global)",
+            options: CONFIG_LOCALES.map {
+                WizardSelectOption(label: localeLabel($0), value: $0, isDefault: $0 == d.locale)
+            }
+        )
 
         return ConfigPanelView(
             title: "Bot config",
@@ -348,6 +364,8 @@ public final class ConfigPanel: @unchecked Sendable {
                 ConfigPanelRow(components: [exec]),
                 ConfigPanelRow(components: [read]),
                 ConfigPanelRow(components: [save, notif]),
+                // 5th row: locale (defaultRows already at Discord's 5-row budget with dmPolicy).
+                ConfigPanelRow(components: [localeSelect]),
             ],
             defaultRows: [
                 ConfigPanelRow(components: [backendSelect]),
@@ -493,6 +511,21 @@ public final class ConfigPanel: @unchecked Sendable {
         return .autosaved(notice: "DM policy (global) → `\(policy)`")
     }
 
+    private func autosaveLocale(_ locale: String) async -> ConfigPanelResult {
+        guard CONFIG_LOCALES.contains(locale) else {
+            return .ignored
+        }
+        do {
+            var config = try await store.load()
+            config.locale = locale
+            try await store.save(config)
+            defaults.locale = locale
+        } catch {
+            return .autosaved(notice: "locale 저장 실패: \(error)")
+        }
+        return .autosaved(notice: "언어 (global) → \(localeLabel(locale))")
+    }
+
     // MARK: Notifications
 
     private func toggleNotifications() async -> ConfigPanelResult {
@@ -609,12 +642,21 @@ public final class ConfigPanel: @unchecked Sendable {
         defaults: mode=`\(d.backend)` model=`\(d.model)` effort=`\(d.effort)` perm=`\(d.permMode)` locale=`\(d.locale)`
         limits: maxSessions/user=\(lim.maxSessionsPerUser) permTimeout=\(lim.permissionTimeoutSec)s codexTimeoutMs=\(lim.codexTimeoutMs)
 
-        Role picks batch until **Save roles**. Backend / model / effort / perm / DM policy auto-save on change. 🔔 opens notifications.
+        Role picks batch until **Save roles**. Backend / model / effort / perm / DM / locale auto-save on change. 🔔 opens notifications.
         """
     }
 }
 
 // MARK: - Helpers
+
+/// Human label for a locale code (TS `config.locale.ko` / `config.locale.en`).
+public func localeLabel(_ locale: String) -> String {
+    switch locale {
+    case "ko": return "한국어 (ko)"
+    case "en": return "English (en)"
+    default: return locale
+    }
+}
 
 private func formatRoleList(_ roleIds: [String]) -> String {
     if roleIds.isEmpty { return "—" }

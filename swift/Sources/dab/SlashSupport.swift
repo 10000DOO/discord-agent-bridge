@@ -222,6 +222,37 @@ func discordEmbed(from spec: StatusEmbedSpec) -> Embed {
     )
 }
 
+/// Best-effort pin of a channel message (W16-g residual). Missing Manage Messages / pin
+/// permission or channel pin-cap failures are ignored — intro still stays in the channel.
+func pinMessageBestEffort(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    messageId: MessageSnowflake
+) async {
+    _ = try? await client.pinMessage(channelId: channelId, messageId: messageId)
+}
+
+/// Post session status intro embed and pin it when possible (wizard bind / start).
+@discardableResult
+func postSessionStatusIntro(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    content: String,
+    embed: Embed
+) async -> MessageSnowflake? {
+    do {
+        let resp = try await client.createMessage(
+            channelId: channelId,
+            payload: .init(content: content, embeds: [embed])
+        )
+        let messageId = try resp.decode().id
+        await pinMessageBestEffort(client: client, channelId: channelId, messageId: messageId)
+        return messageId
+    } catch {
+        return nil
+    }
+}
+
 /// Map pure `StreamEmbedSpec` to DiscordBM `Embed` (W11-g residual live stream status).
 func discordEmbed(from spec: StreamEmbedSpec) -> Embed {
     Embed(

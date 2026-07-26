@@ -42,8 +42,8 @@
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W16-b** | ship + residual | model/effort·notif ✅ · **locale select**(행 예산) · **이미지/chromium 서브패널 = S3 defer** |
-| **W16-g** | ship + residual | toolThread/diff/status/notifier ✅ · Codex/Grok mid-turn tool ✅ · **capabilities 게이팅 ✅** · **잔여: pin status embed** · **gap:** Codex parentByThread/collab child-thread · Grok plan/thought progress |
+| **W16-b** | ship + residual | model/effort·notif ✅ · **locale select ✅** (global `config.locale`, roleRows 5th; ko/en) · **이미지/chromium 서브패널 = S3 defer** |
+| **W16-g** | ship + residual | toolThread/diff/status/notifier ✅ · Codex/Grok mid-turn tool ✅ · **capabilities 게이팅 ✅** · **pin status embed ✅** (best-effort) · **gap:** Codex parentByThread/collab child-thread · Grok plan/thought progress |
 | **W16-h** | ship + residual | 체크·승인 UI ✅ · **바이너리 self-replace·서비스 재시작**(승인 시 수동 설치 안내만) |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
 | **기타** | overall | ~~host.file.attach Discord 업로드~~ ✅ · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
@@ -57,7 +57,7 @@
 - ~~interrupt **버튼 UI**~~ ✅ (W14 lib + pure `InterruptButton` + DabMain)
 - ~~capabilities 렌더 게이팅~~ ✅ (W16-g 흡수: toolThreads/fileDiff/streaming/usagePanel)
 - ~~host.file.attach 실제 Discord 업로드~~ ✅ (`FileAttach`+`FileAttachHost`+`postFileAttach`+cwd 감금; share는 W16-d)
-- `/config` **locale** · **render(S3)** · pin status embed · auto-update **바이너리 self-replace**
+- ~~`/config` locale select~~ ✅ (global autosave) · ~~pin status embed~~ ✅ · **render(S3)** · auto-update **바이너리 self-replace**
 - 기존 npm 봇 기능 **100% 패리티 미달** (목표 지향, 진행 중 — README 매트릭스에 명시)
 
 ### 빠른 실행

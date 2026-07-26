@@ -84,6 +84,7 @@ struct ConfigPanelTests {
         #expect(isConfigPanelId("config.default.backend"))
         #expect(isConfigPanelId("config.default.model"))
         #expect(isConfigPanelId("config.default.effort"))
+        #expect(isConfigPanelId("config.default.locale"))
         #expect(isConfigPanelId("config.dmPolicy"))
         #expect(isConfigPanelId("config.notif.open"))
         #expect(isConfigPanelId("config.notif.toggle"))
@@ -93,7 +94,7 @@ struct ConfigPanelTests {
         #expect(!isConfigPanelId("wizard.back"))
     }
 
-    @Test func renderHasRolesSaveNotifAndDefaultSelects() async throws {
+    @Test func renderHasRolesSaveNotifLocaleAndDefaultSelects() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
         try await seedGlobal(store)
@@ -103,7 +104,8 @@ struct ConfigPanelTests {
         #expect(view.title == "Bot config")
         #expect(view.description.contains("dmPolicy"))
         #expect(view.description.contains("effort="))
-        #expect(view.roleRows.count == 4)
+        #expect(view.description.contains("locale="))
+        #expect(view.roleRows.count == 5)
         #expect(view.defaultRows.count == 5)
 
         let roleComps = view.roleRows.flatMap(\.components)
@@ -124,6 +126,10 @@ struct ConfigPanelTests {
             if case .button(let id, _, _) = $0 { return id == ConfigPanelIds.notifOpen }
             return false
         })
+        // Locale sits on roleRows 5th (defaultRows already at budget with dmPolicy).
+        #expect(defaultSelected(selectById(view.roleRows, ConfigPanelIds.locale)) == "ko")
+        let localeOpts = selectById(view.roleRows, ConfigPanelIds.locale)
+        #expect(localeOpts?.map(\.value) == CONFIG_LOCALES)
 
         let defaultIds = view.defaultRows.flatMap(\.components).compactMap { c -> String? in
             if case .select(let id, _, _) = c { return id }
@@ -285,6 +291,45 @@ struct ConfigPanelTests {
         // Server file may exist if other fields written; dmPolicy is not a server field.
         let server = await store.loadServerConfig(guildId: "g1")
         #expect(server == nil || server?.auth?.adminRoleIds == nil || true)
+    }
+
+    @Test func autosaveLocaleWritesGlobalConfig() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.locale, value: "en"))
+        guard case .autosaved(let notice) = r else {
+            Issue.record("expected autosaved, got \(r)")
+            return
+        }
+        #expect(notice.contains("English") || notice.contains("en"))
+        let global = try await store.load()
+        #expect(global.locale == "en")
+        // Global-only — server.locale left untouched.
+        let server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.locale == nil)
+        // In-memory defaults + re-render mark en selected.
+        #expect(defaultSelected(selectById(panel.render().roleRows, ConfigPanelIds.locale)) == "en")
+    }
+
+    @Test func autosaveLocaleRejectsUnknownCode() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.locale, value: "ja"))
+        #expect(r == .ignored)
+        let global = try await store.load()
+        #expect(global.locale == "ko")
+    }
+
+    @Test func localeLabelKoEn() {
+        #expect(localeLabel("ko") == "한국어 (ko)")
+        #expect(localeLabel("en") == "English (en)")
+        #expect(localeLabel("fr") == "fr")
     }
 
     @Test func unknownBackendDoesNotWriteMode() async throws {
