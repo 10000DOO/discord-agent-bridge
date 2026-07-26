@@ -1,6 +1,6 @@
 # TS→Swift 포팅 패리티 감사 — 발견된 누락/차이 전수 목록
 
-> 상태: `구현중` · 갱신: 2026-07-27 · 브랜치: `plan/swift-port` · 다음 액션: Critical 16건 전부 완료(전체 테스트 1027개 통과) — High(2장) 26건을 순서대로 WO 단위 실행 시작.
+> 상태: `구현중` · 갱신: 2026-07-27 · 브랜치: `plan/swift-port` · 다음 액션: Critical 16건 전부 완료(전체 테스트 1027개 통과). High 26건 중 H3/H25/H26 완료, H11/H21/H22는 현행 유지 결정 — 나머지 19건을 6장 WO-P19부터 순서대로 실행 중(현재 WO-P19).
 > ⚠️ 본문의 file:line은 드리프트할 수 있음 — 실행 전 반드시 심볼명으로 재확인할 것
 > ⚠️ 기존 docs/*-parity.md 문서들은 이번 조사에서 **참고하지 않았음** — 전부 `src/`(TypeScript 원본)와 `swift/Sources/`(Swift 포팅본)를 직접 열어 대조한 결과만 기록함.
 
@@ -41,7 +41,34 @@
 
 ### High (26건)
 
-전부 ⏳ 대기 — Critical 먼저 끝내고 순서대로 진행 예정.
+| # | 내용 | 상태 |
+|---|---|---|
+| H1 | 권한 임베드 상세정보 부족 | ⏳ 대기 (WO-P21) |
+| H2 | 결정 후 재렌더링 다운그레이드 + i18n 키 없음 | ⏳ 대기 (WO-P21) |
+| H3 | 미응답 시 자동거부 타임아웃 (Swift만 추가) | ✅ 완료 (Q4, 1장 참고) |
+| H4 | [보안] headless 브라우저 네트워크 차단 없음 | ⏳ 대기 (WO-P19) |
+| H5 | Chromium 설치가 Node/npx 셸아웃에 의존 | ⏳ 대기 (WO-P28) |
+| H6 | Chromium 설치 사전 안내 프롬프트 없음 | ⏳ 대기 (WO-P28) |
+| H7 | Chromium 설치 진행률 표시 없음 | ⏳ 대기 (WO-P28) |
+| H8 | 스트림 임베드 경과시간/델타개수 손실 | ⏳ 대기 (WO-P29) |
+| H9 | 텍스트/생각 디바운스 간격 통일됨(TS는 다름) | ⏳ 대기 (WO-P29) |
+| H10 | 턴 중간 사용량/레이트리밋 이벤트 소실 | ⏳ 대기 (WO-P29) |
+| H11 | Capabilities 8→4 축소 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
+| H12 | i18n 240개 중 102개만 포팅, 방향 깨짐 | ⏳ 대기 (WO-P32, 마지막) |
+| H13 | ChannelWizard 동시 상호작용 직렬화 큐 없음 | ⏳ 대기 (WO-P26) |
+| H14 | 프리셋 삭제 optimistic 저장 정합성 | ⏳ 대기 (WO-P25) |
+| H15 | DM 구조적 차단 가드 없음 | ⏳ 대기 (WO-P20) |
+| H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ⏳ 대기 (WO-P27) |
+| H17 | 부팅 안전망 + PID 파일 없음 | ⏳ 대기 (WO-P30) |
+| H18 | config.json 엄격 검증 부족 | ⏳ 대기 (WO-P24) |
+| H19 | permissionProfile null vs 필드없음 구분 안됨 | ⏳ 대기 (WO-P23) |
+| H20 | [배포] resolveCli PATH 폴백 없음 | ⏳ 대기 (WO-P22) |
+| H21 | ModeRegistry 개방형 vs 고정 enum | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
+| H22 | eventBus 범용 vs 전용 액터 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
+| H23 | (원 조사에서 결번 — 해당 항목 없음) | — |
+| H24 | Codex 앱서버 실패 원인 분류 없음 | ⏳ 대기 (WO-P31) |
+| H25 | Codex 자동승인이 Claude 전용 목록 곁눈질 (Swift만 추가) | ✅ 완료 (Q4, 1장 참고) |
+| H26 | 메시지 전송 재시도 없음 | ✅ 완료 (C14와 동일 커밋, 1장 참고) |
 
 ### 이번 감사와 무관하게 작업 중 발견한 기존 버그 (참고, 이 문서의 C/H 목록에는 없음)
 
@@ -232,3 +259,29 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 18 | WO-P18: 로거 포팅 (`src/core/logger.ts`) [완료: 1장 C11 참고] | C11 | `Session/Log.swift`(신규), 전역(모든 `print`/`fputs` 호출부) | **가장 넓게 퍼짐 — 마지막에 진행**(다른 WO들이 먼저 끝나 print 호출부가 안정된 뒤 일괄 교체) |
 
 완료 판정은 매 WO 공통: `swift build --package-path swift` 성공 + 해당 영역 유닛 테스트 신규 작성·필터 통과 + 문서(`docs/swift-port-parity-gaps.md`) 해당 C#/H# 옆에 `[구현됨: file:line]` 표기.
+
+### High 26건 실행 계획 (Critical 16건 전부 완료 후 착수, 2026-07-27)
+
+> 사용자 지시: "크리티컬이 모두 종료되면 high문제들도 순차적으로 모두 완료해야 돼." H3/H25/H26은 이미 Q4/C14로 완료(1장 참고). 아래는 나머지 23건(H1,H2,H4~H24 중 H23은 애초 조사에서 결번)의 실행 순서 — 보안/정합성 문제 먼저, 완성도/UX 다음, 가장 넓게 퍼진 i18n(H12)은 C11과 같은 이유로 마지막.
+
+| 순서 | WO | 충족 | 대상 파일(주 파일) | 비고 |
+|---|---|---|---|---|
+| 19 | WO-P19: headless 브라우저 네트워크 차단 [보안] | H4 | `BrowserImageRenderer.swift` | 독립, 보안 최우선 |
+| 20 | WO-P20: DM 구조적 차단 가드 | H15 | `dab/DabMain.swift`(메시지 라우팅) | 독립 |
+| 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift` | 같은 권한 UI 묶음 |
+| 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
+| 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 | H19 | `ConfigResolver.swift` | 독립 |
+| 24 | WO-P24: `config.json` 엄격 검증 | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
+| 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |
+| 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |
+| 27 | WO-P27: 슬래시 커맨드 서버별 즉시 등록 + 신규 서버 재등록 | H16 | `dab/DabMain.swift` | 독립 |
+| 28 | WO-P28: Chromium 설치 인프로세스화 + 사전 안내 + 진행률 표시 | H5, H6, H7 | `ChromiumProvisioner.swift`, `dab/DabMain.swift` | 크로미움 설치 3건 묶음 |
+| 29 | WO-P29: 스트림 임베드 정보 손실 + 디바운스 간격 + 중간 사용량 이벤트 | H8, H9, H10 | `Render/StreamEmbed.swift`, `Render/StreamStatusHost.swift`, `dab/DabMain.swift` | 스트리밍 세부 3건 묶음 |
+| 30 | WO-P30: 부팅 안전망(`installGlobalSafetyNet`) + PID 파일 | H17 | `dab/DabMain.swift` | 독립 |
+| 31 | WO-P31: Codex 앱서버 실패 원인 분류 | H24 | `Codex/AppServerClient.swift` | 독립 |
+| 32 | WO-P32: i18n 240개 키 전체 포팅 (`ChannelWizard`/`DirectoryBrowser`/`ResumeWizard`/`FolderPanel`/`ConfigPanel`) | H12 | `I18n.swift`, 전역(위저드류 전 파일) | **가장 넓게 퍼짐 — 마지막**(C11과 동일 사유) |
+
+**코드 변경 없이 "현재 설계 유지"로 결론(오케스트레이터 판단 — 지금 당장의 버그가 아니라 향후 확장성 메모이고, 억지로 추상화를 새로 만드는 게 오히려 과설계라 YAGNI 원칙상 보류):**
+- H11: `Capabilities` 8→4 축소 — 지금 4개 백엔드가 전부 true라 무해함. 5번째 백엔드가 생기면 그때 세분화.
+- H21: `ModeRegistry` 개방형 구조 vs Swift 고정 `Backend` enum — 지금 4개 백엔드에 문제없음. 5번째 백엔드 추가 시 재검토.
+- H22: `eventBus` 범용 pub/sub vs 관심사별 전용 액터 — 지금 렌더러에 충분함. 새 이벤트 소비자가 실제로 필요해지면 그때 확장.
