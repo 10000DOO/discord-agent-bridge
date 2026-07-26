@@ -539,6 +539,9 @@ public func validateAppConfig(_ c: AppConfig) throws {
     if let m = c.documentShare?.bodyMode, !BODY_MODES.contains(m) {
         throw ConfigValidationError.invalidField("documentShare.bodyMode")
     }
+    for (name, profile) in c.profiles where !PERM_MODES.contains(profile.permissionMode) {
+        throw ConfigValidationError.invalidField("profiles.\(name).permissionMode")
+    }
 }
 
 /// Server file: require version + non-empty guildId; optional nested enums when present.

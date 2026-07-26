@@ -60,7 +60,7 @@
 | H15 | DM 구조적 차단 가드 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ⏳ 대기 (WO-P27) |
 | H17 | 부팅 안전망 + PID 파일 없음 | ⏳ 대기 (WO-P30) |
-| H18 | config.json 엄격 검증 부족 | ⏳ 대기 (WO-P24) |
+| H18 | config.json 엄격 검증 부족 | ✅ 완료 (빌드+테스트 확인) |
 | H19 | permissionProfile null vs 필드없음 구분 안됨 | ✅ 완료 (빌드+테스트 확인) |
 | H20 | [배포] resolveCli PATH 폴백 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H21 | ModeRegistry 개방형 vs 고정 enum | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
@@ -197,7 +197,11 @@
 - **H13.** 같은 채널에서 버튼 연타(동시 컴포넌트 상호작용) 시 상태머신을 보호하는 직렬화 큐(`enqueueWizard`)가 없음 — `ChannelWizard`가 락 없는 `@unchecked Sendable` 클래스라 두 인터랙션이 동시에 상태를 레이스할 수 있음.
 - **H14.** 프리셋 삭제 시 TS는 `onDeletePreset`의 반환값(설정 파일 기준 최신 목록)으로 화면을 갱신하는데, Swift는 로컬에서 먼저 낙관적으로 지우고 저장은 `try?`로 fire-and-forget(`ChannelWizard.swift:508-513`) — 디스크 저장이 실패해도 화면엔 이미 사라진 것처럼 보임.
 - **H17.** 부팅 시 stray `Task{}` 예외를 잡아주는 앱 레벨 안전망(`installGlobalSafetyNet`)과 PID 파일 기록/삭제가 없음.
-- **H18.** `config.json` 전체를 TS의 zod처럼 엄격 검증하지 않고 일부 enum 필드만 스팟체크(`ConfigSchema.swift:485-507`) — `profiles` 안의 이상한 값이 Codable 디코딩만 통과하면 걸러지지 않을 수 있음.
+- **H18. [구현됨: `Config/ConfigSchema.swift` `validateAppConfig(_:)`]** `config.json` 전체를 TS의 zod처럼 엄격 검증하지 않고 일부 enum 필드만 스팟체크(`ConfigSchema.swift:485-507`) — `profiles` 안의 이상한 값이 Codable 디코딩만 통과하면 걸러지지 않을 수 있음.
+  - **범위 확정**: TS 대비 실제로 빠진 검증은 `profiles` 각 항목의 `permissionMode` 하나뿐 — `defaults.mode`/서버 `defaults.mode`, `presets[].permMode`는 TS 자체가 고정 enum이 아닌 느슨한 `z.string()`(설계 의도)라 Swift도 검증 안 하는 게 패리티고, 배열/객체 타입은 `Codable` 디코딩 시점에 이미 강제됨. 서버 레벨 `defaults.permissionMode`는 기존 `validateServerConfig`가 이미 검증 중.
+  - **구현**: `validateAppConfig(_:)`의 기존 검사(dmPolicy/defaults.permissionMode/logLevel/unknownCommand/chromium.decision/documentShare.bodyMode) 다음에 `c.profiles`를 순회하며 각 프로필의 `permissionMode`가 기존 `PERM_MODES` 집합에 속하는지 확인하는 루프를 추가 — 안 맞으면 기존 네이밍 관례를 따라 `ConfigValidationError.invalidField("profiles.\(name).permissionMode")`를 던짐. `Dictionary` 순회 순서는 비결정적이지만(여러 프로필이 동시에 잘못돼도 어느 것이 먼저 걸리는지는 무관 — TS `z.record` 검증도 첫 실패에서 멈추는 방식이라 동일 특성) 요구사항상 문제없음.
+  - 유닛 테스트 5건 신규(`ConfigValidationTests.swift`, `validateAppConfig`에 대한 첫 테스트 파일): `profileWithValidPermissionModePasses`, `profileWithInvalidPermissionModeThrows`(에러 문자열에 프로필 이름 포함까지 확인), `emptyProfilesPasses`(회귀 없음), `existingDmPolicyCheckStillThrows`/`existingLogLevelCheckStillThrows`(기존 검사 회귀 확인) — 기존 `ConfigStoreTests.swift`의 `do { ... #expect(Bool(false)) } catch { #expect(String(describing: error).contains(...)) }` 패턴을 그대로 재사용(`ConfigValidationError`가 `Equatable`이 아니라 `#expect(throws: value)` 값 비교 대신 이 패턴 사용).
+  - 최종 확인: `swift build --package-path swift` 성공, `swift test --filter ConfigValidationTests` 5건 전부 통과.
 - **H19. [구현됨: `Config/ConfigSchema.swift` `ServerDefaultsPartial`(신규 `permissionProfileExplicitlyNull` 필드 + 커스텀 `init(from:)`), `Config/ConfigResolver.swift` `merge`]** 서버 레벨에서 `permissionProfile: null`로 명시적으로 지워도 "필드 없음"과 구분이 안 돼(`String?`) 무시됨(코드 자체 주석이 인정, `ConfigResolver.swift:202-208`, 수정 전).
   - **범위**: 쓰기(write) 경로는 손대지 않음 — Swift엔 서버 레벨 `permissionProfile`을 실제로 쓰는 코드가 아직 없어서(전체 grep 0건), 이번 수정은 사람이 JSON을 직접 편집하거나 향후 쓰기 기능이 생겼을 때를 위한 읽기(디코딩) 쪽만 고침(YAGNI — 없는 쓰기 UI를 새로 만들지 않음).
   - **구현**: `ServerDefaultsPartial`에 `permissionProfileExplicitlyNull: Bool = false`(디폴트값이라 기존 호출부 15곳 이상 무변경) 추가, 명시적 `CodingKeys`(원래 8개 필드만 나열, 새 플래그는 영속화 대상에서 제외)와 커스텀 `init(from:)`으로 "키 없음/명시적 null/문자열" 3단계를 구분해서 디코딩. `ConfigResolver.merge`의 overlay 구성부에서 이 플래그가 서면 `overlay["permissionProfile"] = NSNull()`을 채우도록 확장 — 이미 있던 `applyOverlay`의 NSNull 처리 로직(`ConfigResolver.swift:246`)은 손대지 않고 그대로 재사용.
@@ -288,7 +292,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 [완료: 1장 H1/H2 참고] | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift`, `PermissionGate.swift` | 같은 권한 UI 묶음 |
 | 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] [완료: 2장 H20 참고] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
 | 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 [완료: 2장 H19 참고] | H19 | `ConfigResolver.swift` | 독립 |
-| 24 | WO-P24: `config.json` 엄격 검증 | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
+| 24 | WO-P24: `config.json` 엄격 검증 [완료: 2장 H18 참고] | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
 | 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |
 | 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |
 | 27 | WO-P27: 슬래시 커맨드 서버별 즉시 등록 + 신규 서버 재등록 | H16 | `dab/DabMain.swift` | 독립 |
