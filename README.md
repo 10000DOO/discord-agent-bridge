@@ -161,7 +161,7 @@ Typical flow: **`/setup` → `/config` → `/agent start`**, then normal message
 
 Permission modes: `default` · `acceptEdits` · `plan` · `bypassPermissions` (and backend-specific profiles where catalogued). Default smoke path may still use `bypassPermissions` — prefer `default` when using the Allow/Deny UI.
 
-> **Parity note:** Swift is the product path at **~99% product parity** (port mainline complete). Residual is **W13-b product-deferred** (keep `bypassPermissions` default) plus optional polish — not incomplete mainline work. See [Compatibility matrix](#swift-vs-typescript-compatibility) and [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+> **Parity note:** Swift is the product path at **~99% product parity** (port mainline complete; **P0–P2 gap backlog closed**). Residual is **W13-b product-deferred** (keep `bypassPermissions` default) and intentional **OK-DIFF** only — not incomplete mainline work. See [Compatibility matrix](#swift-vs-typescript-compatibility), [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0, and [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
 
 ---
 
@@ -181,12 +181,15 @@ If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge
    | Concern | Legacy TS | Swift |
    |---|---|---|
    | Token | wizard / service env | `~/.dab/env` → `DISCORD_BOT_TOKEN` |
+   | First-time guild structure | `discord-agent-bridge --setup` | Discord **`/setup`** (admin) |
    | Config root | `DAB_HOME` or `~/.discord-agent-bridge` | **same** |
    | Auto-start | `discord-agent-bridge service install` | `swift/scripts/install.sh` · `install-linux.sh` · `install-windows.ps1` |
+   | Service uninstall | `service uninstall` | `uninstall.sh` / `uninstall-linux.sh` / `install-windows.ps1 -Uninstall` |
    | Claude process | in-process **or** `DAB_CLAUDE_SIDECAR=1` | **always sidecar** |
    | Sidecar spawn override | (sidecar path) | `DAB_CLAUDE_SIDECAR_CMD` |
    | Working dir default | config / wizard | `DAB_CWD` env + wizard folder step |
    | Binary / logs (deploy) | under service home | `~/.dab/` |
+   | Full npm CLI | `discord-agent-bridge …` | not reimplemented — scripts + `/setup` + env (see [`swift/README.md`](swift/README.md#cli--service-equivalents-ts-npm--swift)) |
 
 6. **Do not run both mains** against one bot token. Sidecar alone is fine (spawned by Swift).
 
@@ -194,7 +197,7 @@ If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge
 
 ## Swift vs TypeScript compatibility
 
-Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **~99% product parity — port mainline complete.** Residual: **W13-b product-deferred** (keep bypass default; not incomplete work) · **optional polish** only.
+Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **~99% product parity — port mainline complete; P0–P2 gap backlog closed.** Residual: **W13-b product-deferred** (keep bypass default) · intentional **OK-DIFF** · optional polish only. Full gap list: [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
 
 | Area | Swift (`dab`) | Legacy TS main |
 |---|---|---|
@@ -217,7 +220,7 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Linux/Windows service | ✅ launchd / systemd / schtasks scripts | ✅ launchd / systemd / schtasks |
 | npm global install | ❌ (checkout + build) | ✅ |
 
-**Residual (not mainline incomplete work):** **W13-b** product-deferred (allowlist when default perm moves off bypass) · **optional polish** (comment diet, flaky test triage, UX) — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+**Residual (not mainline incomplete work):** **W13-b** product-deferred (allowlist when default perm moves off bypass) · **OK-DIFF** (sidecar always, Chromium CLI, etc.) · **optional polish** — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0 and [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
 
 ---
 
@@ -255,7 +258,7 @@ Gate (must pass): Swift build + Swift tests under `swift/`. Backend smokes (`sid
 swift test --package-path swift --scratch-path /tmp/dab-ci
 ```
 
-Port tracking: [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md). Package notes: [`swift/README.md`](swift/README.md).
+Port tracking: [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md). Parity gaps (closed): [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md). Package notes: [`swift/README.md`](swift/README.md).
 
 ---
 

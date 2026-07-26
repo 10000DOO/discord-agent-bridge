@@ -3,6 +3,7 @@
 SwiftPM package for the Swift port of discord-agent-bridge.
 
 - **Design / progress:** [`../SWIFT_PORT_PLAN.md`](../SWIFT_PORT_PLAN.md) (§0 snapshot)
+- **Parity gap backlog:** [`../SWIFT_TS_PARITY_GAPS.md`](../SWIFT_TS_PARITY_GAPS.md) (P0–P2 closed; OK-DIFF / DEFER only)
 - **Claude sidecar protocol:** [`../CLAUDE_SIDECAR_PROTOCOL.md`](../CLAUDE_SIDECAR_PROTOCOL.md)
 - **Discord library:** [DiscordBM](https://github.com/DiscordBM/DiscordBM) (executable `dab` only)
 - **Library target:** Foundation-only (Claude sidecar + Codex app-server + Grok ACP clients)
@@ -12,10 +13,10 @@ SwiftPM package for the Swift port of discord-agent-bridge.
 | Piece | Status |
 |-------|--------|
 | Gateway + slash + `!claude`/`!codex`/`!grok`/`!custom` | **working** (W11–W16) |
-| Claude sidecar / Codex app-server / Grok ACP | done |
+| Claude sidecar / Codex app-server / Grok ACP | **done** — Discord-wired (`!codex`/`!grok`, session bridges) |
 | Table/mermaid → PNG (S3) | **done** — headless Chrome CLI (not puppeteer-in-Swift) |
-| Mainline port | **complete** (~99% product parity) |
-| Residual | **W13-b product-deferred** (keep bypass default) · optional polish only |
+| Mainline port | **complete** (~99% product parity; P0–P2 gap backlog closed) |
+| Residual | **W13-b product-deferred** (keep bypass default) · OK-DIFF only |
 
 ## Requirements
 
@@ -31,14 +32,14 @@ swift test --package-path swift --scratch-path /tmp/dab-ci
 swift build --package-path swift --scratch-path /tmp/dab-ci
 ```
 
-## Run (Discord + `!dab` Claude)
+## Run (Discord + agents)
 
-Token from env (preferred) or first CLI argument. Run from **repo root** so the sidecar spawn can find `src/sidecar` / `node_modules`.
+Token from env (preferred) or first CLI argument. Run from **repo root** so the Claude sidecar spawn can find `src/sidecar` / `node_modules`.
 
 ```bash
 export DISCORD_BOT_TOKEN=your_bot_token   # or DISCORD_TOKEN
 # optional:
-export DAB_CWD="$HOME/Projects/my-repo"  # Claude working directory (default: home)
+export DAB_CWD="$HOME/Projects/my-repo"  # session working directory (default: home)
 export DAB_PERM_MODE=bypassPermissions   # default; skips tool permission UI — use only in trusted envs
 # export DAB_PERM_MODE=default           # safer; tools may hang without permission UI
 export DAB_TURN_TIMEOUT_SEC=120
@@ -52,17 +53,37 @@ On success:
 ready: username=<bot> id=<snowflake> app=<application id>
 ```
 
-In any guild channel the bot can see, send:
+In Discord (bound session channel, or with prefix):
 
 ```text
-!dab what files are in the current directory?
+!claude what files are in the current directory?
+!codex summarize the last commit
+!grok explain this error
 ```
 
-Flow: lazy-spawn Node Claude sidecar → `session.start` once per channel → `session.send` → collect text events until `result` (or timeout) → bot replies once (≤2000 chars).
+Slash path: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel. Prefix paths spawn/bind per channel without the full wizard.
+
+Flow (Claude): lazy-spawn Node sidecar → `session.start` once per channel → `session.send` → stream/result → bot replies (chunked / embeds / optional PNG). Codex/Grok use native stdio clients the same way.
 
 Missing token → usage on stderr, exit 1.
 
 Enable **Message Content Intent** in the [Discord Developer Portal](https://discord.com/developers/applications) for the bot application.
+
+### CLI / service equivalents (TS npm ↔ Swift)
+
+Swift does **not** ship a full npm-style CLI (`discord-agent-bridge --setup` / `service install`). OS install scripts + Discord `/setup` + env cover the same jobs:
+
+| Concern | Legacy TS (npm) | Swift |
+|---------|-----------------|--------|
+| Interactive first-time setup | `discord-agent-bridge --setup` | Discord **`/setup`** (admin) + edit `~/.dab/env` |
+| Install auto-start service | `discord-agent-bridge service install` | `bash swift/scripts/install.sh` (macOS) · `install-linux.sh` · `install-windows.ps1` |
+| Uninstall service | `discord-agent-bridge service uninstall` | `uninstall.sh` / `uninstall-linux.sh` / `install-windows.ps1 -Uninstall` |
+| Status / restart | `service status` / `service restart` | `launchctl` / `systemctl --user` / `schtasks` (see Deploy below) |
+| One-shot run | `discord-agent-bridge` / `npm run dev` | `swift run --package-path swift dab` |
+| Token / secrets | wizard / service env | `~/.dab/env` → `DISCORD_BOT_TOKEN` |
+| Config root | `DAB_HOME` or `~/.discord-agent-bridge` | **same** |
+
+Root README migration table: [Migrating from npm TypeScript → Swift `dab`](../README.md#migrating-from-npm-typescript--swift-dab).
 
 ### Env summary
 
@@ -122,12 +143,12 @@ swift run --package-path swift dab codex-smoke
 CODEX_CMD=/path/to/codex swift run --package-path swift dab codex-smoke
 ```
 
-Library: `CodexAppServerClient` (JSON-RPC NDJSON over stdio; inject `SidecarTransport` for tests). Not wired to Discord/`AgentMode` yet.
+Library: `CodexAppServerClient` (JSON-RPC NDJSON over stdio; inject `SidecarTransport` for tests). Discord path: `CodexSessionBridge` + `!codex` / bound session backend.
 
 ## Deploy (service install)
 
 Runs `dab` as a **per-user** OS auto-start service. Pick the script for your platform
-(mirrors TS `service/*`: launchd / systemd / schtasks).
+(mirrors TS `service/*` / `discord-agent-bridge service install`: launchd / systemd / schtasks).
 
 **Deploy unit = the whole repo checkout.** The launcher `cd`s into the repo root so
 the Claude sidecar spawn can find `src/sidecar` / `dist` + `node_modules`. Keep the
@@ -205,11 +226,14 @@ add that bin dir to `run.sh` / `run.cmd` or export `PATH` in `env`.
 
 | Path | Role |
 |------|------|
-| `Sources/DiscordAgentBridge/` | Library: token helpers, sidecar protocol + client |
+| `Sources/DiscordAgentBridge/` | Library: sessions, bridges, render, config, usage |
 | `Sources/DiscordAgentBridge/Sidecar/` | Envelope, AgentEvent, spawn, transport, ClaudeSidecarClient |
-| `Sources/DiscordAgentBridge/Codex/` | Codex app-server JSON-RPC client scaffold (W10) |
-| `Sources/dab/` | Executable: Discord `!dab` path + `sidecar-smoke` / `codex-smoke` |
-| `Tests/DiscordAgentBridgeTests/` | Protocol roundtrip + fake-transport client tests |
+| `Sources/DiscordAgentBridge/Codex/` | Codex app-server JSON-RPC client |
+| `Sources/DiscordAgentBridge/Grok/` | Grok ACP client |
+| `Sources/DiscordAgentBridge/Bridges/` | Claude / Codex / Grok session bridges (Discord turn path) |
+| `Sources/DiscordAgentBridge/Session/` | Lifecycle, store, wizards, confinement, FileDownload, … |
+| `Sources/dab/` | Executable: Discord gateway + slash + smokes |
+| `Tests/DiscordAgentBridgeTests/` | Library unit tests (no live Discord token) |
 
 ## Note
 
