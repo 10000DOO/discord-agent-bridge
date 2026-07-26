@@ -221,3 +221,35 @@ struct RestartStrategyTests {
         #expect(exits.withLock { $0 } == [0])
     }
 }
+
+@Suite("PID file (H17)")
+struct PidFileTests {
+    private func tempDir() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-pidfile-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    @Test func writePidFileWritesPidAsString() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try writePidFile(baseDir: dir, pid: 4242)
+        let written = try String(contentsOf: pidFilePath(baseDir: dir), encoding: .utf8)
+        #expect(written == "4242")
+        #expect(pidFilePath(baseDir: dir).lastPathComponent == "agent.pid")
+    }
+
+    @Test func removePidFileDeletesExistingFile() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try writePidFile(baseDir: dir, pid: 1)
+        removePidFile(baseDir: dir)
+        #expect(!FileManager.default.fileExists(atPath: pidFilePath(baseDir: dir).path))
+    }
+
+    @Test func removePidFileNoOpWhenMissing() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        removePidFile(baseDir: dir) // must not throw/crash when agent.pid was never written
+        #expect(!FileManager.default.fileExists(atPath: pidFilePath(baseDir: dir).path))
+    }
+}

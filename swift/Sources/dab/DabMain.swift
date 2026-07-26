@@ -169,6 +169,13 @@ struct EventHandler: GatewayEventHandler {
         log.info("auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()
+        // H17: record this process's PID (TS app.ts:611-619) so an operator can later
+        // `kill $(cat agent.pid)` a foreground/detached instance. Best-effort — never blocks boot.
+        do {
+            try writePidFile(baseDir: await ConfigStore.shared.dir, pid: ProcessInfo.processInfo.processIdentifier)
+        } catch {
+            log.warn("failed to write pid file: \(error)")
+        }
         // C10: eagerly reconnect every restored channel now, instead of waiting for its next
         // message — TS `resumeAll()` + `app.ts`'s boot attach loop (10003 detection + cleanup).
         let resumeSummary = await SessionLifecycle.shared.resumeAll(channelGone: { channelId in

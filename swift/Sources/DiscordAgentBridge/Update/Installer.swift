@@ -41,6 +41,32 @@ public func launchdPlistPath(home: String = NSHomeDirectory()) -> String {
     (home as NSString).appendingPathComponent("Library/LaunchAgents/com.discord-agent-bridge.plist")
 }
 
+// MARK: - PID file (H17, TS `update/environment.ts:48` `pidFilePath` + `installer.ts:88-97`)
+
+/// `<baseDir>/agent.pid` — lets an operator later `kill $(cat agent.pid)` a foreground/
+/// detached instance. `baseDir` mirrors TS's `configStore.dir` (here: `ConfigStore.dir`).
+public func pidFilePath(baseDir: URL) -> URL {
+    baseDir.appendingPathComponent("agent.pid", isDirectory: false)
+}
+
+/// Record this process's PID (TS `writePidFile`). Throws on write failure — the caller
+/// (`DabMain.onReady`) wraps this in a warn-and-continue, matching TS's `try/catch` at
+/// `app.ts:611-619` (best-effort: a write failure never blocks boot).
+public func writePidFile(baseDir: URL, pid: Int32) throws {
+    try String(pid).write(to: pidFilePath(baseDir: baseDir), atomically: true, encoding: .utf8)
+}
+
+/// Remove the PID file. No-op when absent (never throws) — mirrors TS `removePidFile`
+/// (`installer.ts:94-97`). Not wired to any shutdown path in production: TS itself only calls
+/// this from `App.destroy()`, which nothing in `cli.ts`/`app.ts` invokes on a real process kill
+/// (no SIGTERM/SIGINT handler exists there either) — so a stale file after `kill` is the TS
+/// behavior being matched, not a gap (see swift-port-parity-gaps.md H17).
+public func removePidFile(baseDir: URL) {
+    let target = pidFilePath(baseDir: baseDir)
+    guard FileManager.default.fileExists(atPath: target.path) else { return }
+    try? FileManager.default.removeItem(at: target)
+}
+
 /// Decide restart strategy after in-place upgrade (TS `detectRestartStrategy`).
 /// - `DAB_SUPERVISED=1` → supervised
 /// - darwin + plist present → supervised (old-install fallback)
