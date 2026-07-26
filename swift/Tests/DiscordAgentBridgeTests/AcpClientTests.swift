@@ -5,6 +5,10 @@ import Foundation
 /// Minimal fake `grok agent stdio`: answers initialize / session/* and can emit notifications + permissions.
 actor FakeGrokAcp {
     private let transport: InMemorySidecarTransport
+    /// Last session/new or session/load params (G-P1-11 meta/mcpServers assertions).
+    private(set) var lastSessionParams: JSONValue?
+    /// Last session/prompt params.
+    private(set) var lastPromptParams: JSONValue?
 
     init(transport: InMemorySidecarTransport) {
         self.transport = transport
@@ -43,18 +47,21 @@ actor FakeGrokAcp {
                 ]),
             ])
         case "session/new":
+            lastSessionParams = msg["params"]
             await write([
                 "jsonrpc": .string("2.0"),
                 "id": id,
                 "result": .object(["sessionId": .string("sess-abc")]),
             ])
         case "session/load":
+            lastSessionParams = msg["params"]
             await write([
                 "jsonrpc": .string("2.0"),
                 "id": id,
                 "result": .object([:]),
             ])
         case "session/prompt":
+            lastPromptParams = msg["params"]
             // First text block routes the fake: "boom" → error response (turn failure);
             // else stream two agent_message_chunk updates then the terminator result.
             let firstText = msg["params"]?["prompt"]?.arrayValue?.first?["text"]?.stringValue ?? ""
@@ -69,6 +76,10 @@ actor FakeGrokAcp {
                 ])
                 return
             }
+            // Hold path: "hold" never completes until process closes (concurrent prompt test).
+            if firstText == "hold" {
+                return
+            }
             for chunk in ["Hello", ", grok"] {
                 await pushNotification(
                     method: "session/update",
@@ -78,6 +89,7 @@ actor FakeGrokAcp {
                     ])])
                 )
             }
+            let promptBlocks = msg["params"]?["prompt"] ?? .null
             await write([
                 "jsonrpc": .string("2.0"),
                 "id": id,
@@ -86,6 +98,16 @@ actor FakeGrokAcp {
                     "stopReason": .string("end_turn"),
                     "echoSessionId": msg["params"]?["sessionId"] ?? .null,
                     "echoText": .string(firstText),
+                    "echoPrompt": promptBlocks,
+                    "_meta": .object([
+                        "totalTokens": .number(42),
+                        "modelId": .string("grok-4.5"),
+                        "usage": .object([
+                            "inputTokens": .number(10),
+                            "outputTokens": .number(5),
+                            "costUsdTicks": .number(1e9),
+                        ]),
+                    ]),
                 ]),
             ])
         case "ping":
@@ -147,10 +169,21 @@ struct ResolveGrokSpawnTests {
             grokCommand: "/opt/grok",
             model: "grok-4",
             effort: "high",
-            bypassPermissions: true
+            bypassPermissions: true,
+            isGrokModel: { _ in true }
         )
         #expect(spawn.command == "/opt/grok")
         #expect(spawn.args == ["agent", "-m", "grok-4", "--reasoning-effort", "high", "--always-approve", "stdio"])
+    }
+
+    @Test func omitsModelWhenIsGrokModelRejects() {
+        let spawn = resolveGrokSpawn(
+            env: [:],
+            model: "opus",
+            effort: "high",
+            isGrokModel: { _ in false }
+        )
+        #expect(spawn.args == ["agent", "--reasoning-effort", "high", "stdio"])
     }
 
     @Test func grokCmdEnvAppendsStdio() {
@@ -648,5 +681,173 @@ struct GrokPromptTurnTests {
         }
         await client.close()
         await pair.sidecar.close()
+    }
+
+    @Test func lastPromptResultStoredAfterSuccess() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+        #expect(client.lastPromptResult == nil)
+        let result = try await client.sessionPrompt(prompt: "hi")
+        #expect(client.lastPromptResult == result)
+        #expect(result["stopReason"]?.stringValue == "end_turn")
+        #expect(result["_meta"]?["modelId"]?.stringValue == "grok-4.5")
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func concurrentPromptRejected() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+
+        let first = Task { try await client.sessionPrompt(prompt: "hold") }
+        // Let the first request leave the client and set promptInFlight.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        do {
+            _ = try await client.sessionPrompt(prompt: "second")
+            Issue.record("expected already-in-flight error")
+        } catch let err as AcpClientError {
+            #expect(err.message.contains("already in flight"))
+        }
+        first.cancel()
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func multimodalPromptBlocks() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+        let result = try await client.sessionPrompt(blocks: [
+            .text("see this"),
+            .image(data: "aW1n", mimeType: "image/png"),
+        ])
+        #expect(result["echoPrompt"]?.arrayValue?.count == 2)
+        #expect(result["echoPrompt"]?.arrayValue?[0]["type"]?.stringValue == "text")
+        #expect(result["echoPrompt"]?.arrayValue?[1]["type"]?.stringValue == "image")
+        #expect(result["echoPrompt"]?.arrayValue?[1]["mimeType"]?.stringValue == "image/png")
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func emptyBlocksBecomeSpaceText() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+        let result = try await client.sessionPrompt(blocks: [])
+        #expect(result["echoText"]?.stringValue == " ")
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+}
+
+@Suite("GrokAcpClient session meta / mcpServers (G-P1-11)")
+struct GrokAcpSessionMetaMcpTests {
+    @Test func sessionNewAttachesMetaAndEmptyMcpByDefault() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(
+            cwd: "/ws",
+            meta: AcpSessionMeta(rules: "be terse", systemPromptOverride: "X")
+        )
+        // sessionNew awaits the RPC response, so lastSessionParams is already set.
+        let params = await fake.lastSessionParams
+        #expect(params?["cwd"]?.stringValue == "/ws")
+        #expect(params?["mcpServers"]?.arrayValue?.isEmpty == true)
+        #expect(params?["_meta"]?["rules"]?.stringValue == "be terse")
+        #expect(params?["_meta"]?["systemPromptOverride"]?.stringValue == "X")
+        #expect(params?["_meta"]?["agentProfile"] == nil)
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func sessionNewOmitsMetaWhenNil() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/tmp/ws")
+        let params = await fake.lastSessionParams
+        #expect(params?["_meta"] == nil)
+        #expect(params?["mcpServers"]?.arrayValue?.isEmpty == true)
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func mcpServersForwardedAsNameValueEnvArray() async throws {
+        let mcp = [
+            AcpMcpServerConfig(
+                name: "discord",
+                command: "/usr/bin/node",
+                args: ["/tmp/attach.mjs"],
+                env: [
+                    AcpMcpEnvVar(name: "DAB_ATTACH_URL", value: "http://127.0.0.1:9"),
+                    AcpMcpEnvVar(name: "DAB_ATTACH_TOKEN", value: "tok"),
+                    AcpMcpEnvVar(name: "DAB_WORKSPACE", value: "/ws"),
+                ]
+            ),
+        ]
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeGrokAcp(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000, mcpServers: mcp)
+        _ = try await client.initialize()
+        _ = try await client.sessionNew(cwd: "/ws")
+        let servers = await fake.lastSessionParams?["mcpServers"]?.arrayValue
+        #expect(servers?.count == 1)
+        #expect(servers?[0]["name"]?.stringValue == "discord")
+        #expect(servers?[0]["command"]?.stringValue == "/usr/bin/node")
+        let env = servers?[0]["env"]?.arrayValue
+        #expect(env?.count == 3)
+        #expect(env?[0]["name"]?.stringValue == "DAB_ATTACH_URL")
+        #expect(env?[0]["value"]?.stringValue == "http://127.0.0.1:9")
+
+        try await client.sessionLoad(sessionId: "sess-9", cwd: "/ws")
+        let loadParams = await fake.lastSessionParams
+        #expect(loadParams?["sessionId"]?.stringValue == "sess-9")
+        let loadServers = loadParams?["mcpServers"]?.arrayValue
+        #expect(loadServers?.count == 1)
+        #expect(loadServers?[0]["name"]?.stringValue == "discord")
+
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func metaAndMcpWireHelpers() {
+        let meta = AcpSessionMeta(rules: "r", agentProfile: .string("default"))
+        let j = meta.asJSON()
+        #expect(j["rules"]?.stringValue == "r")
+        #expect(j["agentProfile"]?.stringValue == "default")
+        #expect(j["systemPromptOverride"] == nil)
+
+        let blockText = AcpPromptBlock.text("hi").asJSON()
+        #expect(blockText["type"]?.stringValue == "text")
+        let blockImg = AcpPromptBlock.image(data: "qq", mimeType: "image/jpeg").asJSON()
+        #expect(blockImg["type"]?.stringValue == "image")
+        #expect(blockImg["data"]?.stringValue == "qq")
     }
 }

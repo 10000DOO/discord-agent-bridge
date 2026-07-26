@@ -29,7 +29,15 @@ public actor GrokSessionBridge {
             // grok emits permission asks answered via the Discord gate (onPermission). model/effort
             // from the bound config. No permMode bound → bypass (danger default parity).
             let bypass = grokBypassPermMode(config?.permMode)
-            let spawn = resolveGrokSpawn(model: config?.model, effort: config?.effort, bypassPermissions: bypass)
+            // Drop a leaked non-grok model id from `-m` (TS isGrokModel). Catalog
+            // `isKnownModel` is actor-isolated; spawn is sync — use name heuristic here.
+            // (Full catalog inject: resolveGrokSpawn(isGrokModel:).)
+            let spawn = resolveGrokSpawn(
+                model: config?.model,
+                effort: config?.effort,
+                bypassPermissions: bypass,
+                isGrokModel: { $0.lowercased().contains("grok") }
+            )
             print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
             return try GrokAcpClient(spawn: spawn, requestTimeoutMs: max(5, sec) * 1000, onPermission: onPermission)
         },

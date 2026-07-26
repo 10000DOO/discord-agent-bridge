@@ -1,9 +1,12 @@
 import Foundation
 
 // Long-lived JSON-RPC 2.0 client over one `grok agent stdio` child (NDJSON).
-// Mirrors src/modes/grok/agent/acpClient.ts (scaffold: request/notify/permission + initialize/session).
-// TODO(TS parity): prompt() as async stream of session/update chunks; activePrompt id not in pending map;
-// MCP servers on session/new; stderr-classified exit errors; model guard via isGrokModel.
+// Mirrors src/modes/grok/agent/acpClient.ts (request/notify/permission + initialize/session/prompt).
+//
+// ponytail: no AsyncIterator prompt stream — updates go through onNotification while sessionPrompt
+// awaits the session/prompt RESPONSE (bridge folds text synchronously before return). Separate
+// control vs prompt timeouts and stderr-classified exit errors need ProcessSidecarTransport
+// stderr capture; add when fail-fast control or actionable exit hints become necessary.
 
 // MARK: - Types
 
@@ -49,6 +52,94 @@ public struct AcpPermissionRequest: Sendable, Equatable {
     }
 }
 
+/// Optional session/new `_meta` (TS AcpSessionMeta / 15-agent-mode.md).
+public struct AcpSessionMeta: Sendable, Equatable {
+    public var rules: String?
+    public var systemPromptOverride: String?
+    /// Wire: string profile name or object (JSONValue covers both).
+    public var agentProfile: JSONValue?
+
+    public init(rules: String? = nil, systemPromptOverride: String? = nil, agentProfile: JSONValue? = nil) {
+        self.rules = rules
+        self.systemPromptOverride = systemPromptOverride
+        self.agentProfile = agentProfile
+    }
+
+    public func asJSON() -> JSONValue {
+        var o: [String: JSONValue] = [:]
+        if let rules { o["rules"] = .string(rules) }
+        if let systemPromptOverride { o["systemPromptOverride"] = .string(systemPromptOverride) }
+        if let agentProfile { o["agentProfile"] = agentProfile }
+        return .object(o)
+    }
+}
+
+/// MCP env entry — Grok wire format is `[{name,value}]`, not a string map (-32602 if map).
+public struct AcpMcpEnvVar: Sendable, Equatable {
+    public var name: String
+    public var value: String
+
+    public init(name: String, value: String) {
+        self.name = name
+        self.value = value
+    }
+
+    public func asJSON() -> JSONValue {
+        .object(["name": .string(name), "value": .string(value)])
+    }
+}
+
+/// MCP server entry for session/new and session/load (TS AcpMcpServerConfig).
+public struct AcpMcpServerConfig: Sendable, Equatable {
+    public var name: String
+    public var command: String
+    public var args: [String]?
+    public var env: [AcpMcpEnvVar]?
+
+    public init(name: String, command: String, args: [String]? = nil, env: [AcpMcpEnvVar]? = nil) {
+        self.name = name
+        self.command = command
+        self.args = args
+        self.env = env
+    }
+
+    public func asJSON() -> JSONValue {
+        var o: [String: JSONValue] = [
+            "name": .string(name),
+            "command": .string(command),
+        ]
+        if let args {
+            o["args"] = .array(args.map { .string($0) })
+        }
+        if let env {
+            o["env"] = .array(env.map { $0.asJSON() })
+        }
+        return .object(o)
+    }
+}
+
+/// Multimodal prompt blocks for session/prompt (text + image base64).
+public enum AcpPromptBlock: Sendable, Equatable {
+    case text(String)
+    case image(data: String, mimeType: String)
+
+    public func asJSON() -> JSONValue {
+        switch self {
+        case .text(let text):
+            return .object([
+                "type": .string("text"),
+                "text": .string(text),
+            ])
+        case .image(let data, let mimeType):
+            return .object([
+                "type": .string("image"),
+                "data": .string(data),
+                "mimeType": .string(mimeType),
+            ])
+        }
+    }
+}
+
 public typealias AcpNotificationHandler = @Sendable (String, JSONValue?) -> Void
 public typealias AcpPermissionHandler = @Sendable (AcpPermissionRequest) async -> AcpPermissionDecision
 
@@ -73,6 +164,7 @@ public final class GrokAcpClient: @unchecked Sendable {
     private let requestTimeoutNs: UInt64
     private let ownsTransport: Bool
     private let permissionHandler: AcpPermissionHandler?
+    private let mcpServers: [AcpMcpServerConfig]
 
     private struct PendingRpc {
         let method: String
@@ -88,6 +180,8 @@ public final class GrokAcpClient: @unchecked Sendable {
         var started = false
         var initializeResult: JSONValue?
         var sessionId: String?
+        var promptInFlight = false
+        var lastPromptResult: JSONValue?
     }
 
     private let state = LockedBox(State())
@@ -98,11 +192,13 @@ public final class GrokAcpClient: @unchecked Sendable {
         transport: SidecarTransport,
         requestTimeoutMs: Int = 60_000,
         ownsTransport: Bool = false,
+        mcpServers: [AcpMcpServerConfig] = [],
         onPermission: AcpPermissionHandler? = nil
     ) {
         self.transport = transport
         self.requestTimeoutNs = UInt64(requestTimeoutMs) * 1_000_000
         self.ownsTransport = ownsTransport
+        self.mcpServers = mcpServers
         self.permissionHandler = onPermission
         startReading()
     }
@@ -116,6 +212,7 @@ public final class GrokAcpClient: @unchecked Sendable {
         bypassPermissions: Bool = false,
         requestTimeoutMs: Int = 60_000,
         environment: [String: String]? = nil,
+        mcpServers: [AcpMcpServerConfig] = [],
         onPermission: AcpPermissionHandler? = nil
     ) throws {
         let resolved =
@@ -134,6 +231,7 @@ public final class GrokAcpClient: @unchecked Sendable {
             transport: transport,
             requestTimeoutMs: requestTimeoutMs,
             ownsTransport: true,
+            mcpServers: mcpServers,
             onPermission: onPermission
         )
     }
@@ -148,6 +246,11 @@ public final class GrokAcpClient: @unchecked Sendable {
 
     public var isClosed: Bool {
         state.withLock { $0.closed }
+    }
+
+    /// stopReason/usage from the most recent completed prompt turn (nil until one completes).
+    public var lastPromptResult: JSONValue? {
+        state.withLock { $0.lastPromptResult }
     }
 
     // Multicast notification subscription. Returns unsubscribe.
@@ -178,14 +281,14 @@ public final class GrokAcpClient: @unchecked Sendable {
     }
 
     /// Create a fresh session; returns backend sessionId.
-    /// TODO(TS): attach `_meta` (rules/systemPromptOverride/agentProfile) and mcpServers.
-    public func sessionNew(cwd: String, meta: JSONValue? = nil) async throws -> String {
+    /// `_meta` attached only when provided; `mcpServers` from client construction (empty default).
+    public func sessionNew(cwd: String, meta: AcpSessionMeta? = nil) async throws -> String {
         var paramsObj: [String: JSONValue] = [
             "cwd": .string(cwd),
-            "mcpServers": .array([]),
+            "mcpServers": .array(mcpServers.map { $0.asJSON() }),
         ]
         if let meta {
-            paramsObj["_meta"] = meta
+            paramsObj["_meta"] = meta.asJSON()
         }
         let result = try await request(method: "session/new", params: .object(paramsObj))
         guard let sid = extractAcpSessionId(result) else {
@@ -195,43 +298,59 @@ public final class GrokAcpClient: @unchecked Sendable {
         return sid
     }
 
-    /// Resume an existing session (session/load).
+    /// Resume an existing session (session/load). Forwards the same mcpServers as session/new.
     public func sessionLoad(sessionId: String, cwd: String) async throws {
         let params: JSONValue = .object([
             "sessionId": .string(sessionId),
             "cwd": .string(cwd),
-            "mcpServers": .array([]),
+            "mcpServers": .array(mcpServers.map { $0.asJSON() }),
         ])
         _ = try await request(method: "session/load", params: params)
         state.withLock { $0.sessionId = sessionId }
     }
 
-    /// Run one prompt turn. session/update text chunks stream to `onNotification` subscribers
+    /// Run one prompt turn (plain text). session/update chunks stream to `onNotification`
     /// meanwhile; this BLOCKS until the `session/prompt` RESPONSE — the turn terminator
-    /// (acpClient.ts:341-342, 470-475). Returns the prompt result (stopReason/usage); throws on
-    /// prompt error or child exit (in-flight reject). Requires a prior sessionNew/sessionLoad.
+    /// (acpClient.ts). Returns the prompt result (stopReason/usage); throws on prompt error or
+    /// child exit. Requires a prior sessionNew/sessionLoad.
     ///
     /// ponytail: the prompt turn shares the control-request timeout (requestTimeoutMs). The c3
     /// bridge owns the turn timeout by creating the client with requestTimeoutMs = the turn budget
     /// (like CodexSessionBridge). TS separates control/prompt timeouts (acpClient.ts:162) — split
     /// here only if fast-failing control requests becomes necessary.
     public func sessionPrompt(prompt: String) async throws -> JSONValue {
+        try await sessionPrompt(blocks: [.text(prompt)])
+    }
+
+    /// Multimodal prompt turn (text + image blocks). Empty `blocks` → single space text block
+    /// (TS acpClient.prompt empty-array fallback). One prompt in flight at a time.
+    public func sessionPrompt(blocks: [AcpPromptBlock]) async throws -> JSONValue {
         let sid = state.withLock { $0.sessionId }
         guard let sid else {
             throw AcpClientError("grok agent stdio: no session — call sessionNew or sessionLoad first.")
         }
+        let claimed = state.withLock { s -> Bool in
+            if s.promptInFlight { return false }
+            s.promptInFlight = true
+            s.lastPromptResult = nil
+            return true
+        }
+        guard claimed else {
+            throw AcpClientError("A grok prompt is already in flight.")
+        }
+        defer { state.withLock { $0.promptInFlight = false } }
+
+        let normalized: [AcpPromptBlock] = blocks.isEmpty ? [.text(" ")] : blocks
         let params: JSONValue = .object([
             "sessionId": .string(sid),
-            "prompt": .array([.object([
-                "type": .string("text"),
-                "text": .string(prompt),
-            ])]),
+            "prompt": .array(normalized.map { $0.asJSON() }),
         ])
-        return try await request(method: "session/prompt", params: params)
+        let result = try await request(method: "session/prompt", params: params)
+        state.withLock { $0.lastPromptResult = result }
+        return result
     }
 
-    /// Low-level control request (initialize / session/*). Not used for streaming prompt turns.
-    /// TODO(TS): session/prompt uses activePrompt stream; response terminates updates, not pending map.
+    /// Low-level control request (initialize / session/*). Prompt turns use sessionPrompt.
     public func request(method: String, params: JSONValue? = nil) async throws -> JSONValue {
         let closed = state.withLock { $0.closed }
         if closed { throw AcpClientError("Grok ACP client is closed.") }
@@ -419,6 +538,7 @@ public final class GrokAcpClient: @unchecked Sendable {
             let pending = Array(s.pending.values)
             s.pending = [:]
             s.closed = true
+            s.promptInFlight = false
             return pending
         }
         for p in all {
