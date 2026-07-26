@@ -94,10 +94,7 @@ public func buildStatusEmbed(_ status: SessionStatus) -> StatusEmbedSpec {
     )
 }
 
-/// usagePanel capability for a backend (TS Capabilities.usagePanel).
+/// usagePanel capability for a backend (TS mode.capabilities.usagePanel defaults).
 public func backendSupportsUsagePanel(_ backend: Backend) -> Bool {
-    switch backend {
-    case .codex: return false
-    case .claude, .grok, .custom: return true
-    }
+    defaultCapabilities(for: backend).usagePanel
 }

@@ -13,6 +13,8 @@ public actor ToolActivityHost {
 
     private var factory: TurnThreadChannelFactory?
     private var states: [String: ChannelState] = [:]
+    /// Per-channel render caps (set by dab each turn). Absent → allEnabled.
+    private var capsByChannel: [String: Capabilities] = [:]
 
     private struct ChannelState {
         var registry: TurnThreadRegistry
@@ -27,17 +29,33 @@ public actor ToolActivityHost {
         self.factory = factory
     }
 
+    /// Bind render capabilities for a session channel (toolThreads / fileDiff gates).
+    public func setCapabilities(channelId: String, _ caps: Capabilities) {
+        capsByChannel[channelId] = caps
+    }
+
     /// Handle a tool_use or tool_result AgentEvent for a session channel.
+    /// Gated by channel caps: `toolThreads` → ToolThreadHandler, `fileDiff` → DiffViewHandler.
     public func handle(channelId: String, event: AgentEvent) async {
+        let caps = capsByChannel[channelId] ?? .allEnabled
+        if !caps.toolThreads && !caps.fileDiff { return }
         switch event {
         case .toolUse(let id, let name, let input, let parent):
             let state = ensureState(channelId: channelId)
-            state.diff.noteToolUse(id: id, name: name, input: input, parentToolUseId: parent)
-            await state.toolThread.handleToolUse(id: id, name: name, input: input, parentToolUseId: parent)
+            if caps.fileDiff {
+                state.diff.noteToolUse(id: id, name: name, input: input, parentToolUseId: parent)
+            }
+            if caps.toolThreads {
+                await state.toolThread.handleToolUse(id: id, name: name, input: input, parentToolUseId: parent)
+            }
         case .toolResult(let id, let ok, let content, let parent):
             let state = ensureState(channelId: channelId)
-            await state.diff.handleResult(id: id, ok: ok, content: content, parentToolUseId: parent)
-            await state.toolThread.handleToolResult(id: id, ok: ok, content: content, parentToolUseId: parent)
+            if caps.fileDiff {
+                await state.diff.handleResult(id: id, ok: ok, content: content, parentToolUseId: parent)
+            }
+            if caps.toolThreads {
+                await state.toolThread.handleToolResult(id: id, ok: ok, content: content, parentToolUseId: parent)
+            }
         default:
             break
         }
@@ -53,6 +71,7 @@ public actor ToolActivityHost {
 
     /// Drop all state for a channel (session stop / detach).
     public func dispose(channelId: String) {
+        capsByChannel.removeValue(forKey: channelId)
         if let state = states.removeValue(forKey: channelId) {
             state.registry.reset()
             state.toolThread.resetTurn()

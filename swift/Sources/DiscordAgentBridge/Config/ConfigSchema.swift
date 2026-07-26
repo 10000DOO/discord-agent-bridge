@@ -185,6 +185,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var logLevel: String
     public var favorites: [String]
     public var autoUpdate: AutoUpdateSection
+    /// Optional render-capability overrides (toolThreads/fileDiff/usagePanel/streaming).
+    /// Absent → backend mode defaults; merged under server + DAB_CAPS (see resolveCapabilities).
+    public var capabilities: CapabilitiesPartial?
 
     public init(
         version: Int = CONFIG_VERSION,
@@ -203,7 +206,8 @@ public struct AppConfig: Codable, Sendable, Equatable {
         locale: String = "ko",
         logLevel: String = "info",
         favorites: [String] = [],
-        autoUpdate: AutoUpdateSection = AutoUpdateSection()
+        autoUpdate: AutoUpdateSection = AutoUpdateSection(),
+        capabilities: CapabilitiesPartial? = nil
     ) {
         self.version = version
         self.discord = discord
@@ -222,6 +226,7 @@ public struct AppConfig: Codable, Sendable, Equatable {
         self.logLevel = logLevel
         self.favorites = favorites
         self.autoUpdate = autoUpdate
+        self.capabilities = capabilities
     }
 }
 
@@ -377,6 +382,8 @@ public struct ServerConfig: Codable, Sendable, Equatable {
     public var presets: [Preset]?
     public var channels: ServerChannels?
     public var notifications: NotificationsSection?
+    /// Per-guild render-capability overrides (merged over global; under DAB_CAPS).
+    public var capabilities: CapabilitiesPartial?
 
     public init(
         version: Int = CONFIG_VERSION,
@@ -389,7 +396,8 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         favorites: [String]? = nil,
         presets: [Preset]? = nil,
         channels: ServerChannels? = nil,
-        notifications: NotificationsSection? = nil
+        notifications: NotificationsSection? = nil,
+        capabilities: CapabilitiesPartial? = nil
     ) {
         self.version = version
         self.guildId = guildId
@@ -402,6 +410,7 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         self.presets = presets
         self.channels = channels
         self.notifications = notifications
+        self.capabilities = capabilities
     }
 }
 

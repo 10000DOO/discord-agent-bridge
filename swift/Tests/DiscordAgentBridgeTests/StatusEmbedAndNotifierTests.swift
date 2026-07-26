@@ -21,7 +21,7 @@ struct StatusEmbedTests {
         #expect(embed.color == DiscordColors.idle)
     }
 
-    @Test func codexFooterAndNullSession() {
+    @Test func usagePanelFalseFooterAndNullSession() {
         let embed = buildStatusEmbed(SessionStatus(
             mode: "codex",
             cwd: "/ws",
@@ -31,8 +31,10 @@ struct StatusEmbedTests {
         ))
         #expect(embed.footer == "사용량/한도 정보 없음 (Codex CLI 제한)")
         #expect(embed.fields.contains { $0.value == "`—`" })
-        #expect(!backendSupportsUsagePanel(.codex))
+        // TS mode defaults: all backends expose usagePanel (context % / tools HUD).
+        #expect(backendSupportsUsagePanel(.codex))
         #expect(backendSupportsUsagePanel(.claude))
+        #expect(backendSupportsUsagePanel(.grok))
     }
 }
 
