@@ -416,6 +416,21 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         )
     }
 
+    /// Live model switch (CLAUDE_SIDECAR_PROTOCOL.md §3.6). Takes effect on the next turn
+    /// without restarting the session. Sidecar may return `unsupported`.
+    public func sessionSetModel(session: String, model: String? = nil) async throws {
+        var params: [String: JSONValue] = ["session": .string(session)]
+        if let model { params["model"] = .string(model) }
+        _ = try await request(method: "session.setModel", params: params, session: session)
+    }
+
+    /// Live effort switch (CLAUDE_SIDECAR_PROTOCOL.md §3.6). Sidecar may return `unsupported`.
+    public func sessionSetEffort(session: String, effort: String? = nil) async throws {
+        var params: [String: JSONValue] = ["session": .string(session)]
+        if let effort { params["effort"] = .string(effort) }
+        _ = try await request(method: "session.setEffort", params: params, session: session)
+    }
+
     public func sessionsList(cwd: String, limit: Int? = nil) async throws -> SessionsListResult {
         var params: [String: JSONValue] = ["cwd": .string(cwd)]
         if let limit { params["limit"] = .number(Double(limit)) }

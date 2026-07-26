@@ -257,9 +257,10 @@ struct EventHandler: GatewayEventHandler {
                 channelId: channelId, patch: BindingPatch(model: value),
                 actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
             )
+            // Claude live session: updateBinding also fires session.setModel (W11-g).
             try await respondEphemeral(
                 payload,
-                ok ? "모델을 `\(value)`(으)로 바꿨습니다. (다음 턴/ensure에 적용)"
+                ok ? "모델을 `\(value)`(으)로 바꿨습니다. (라이브 Claude 세션은 즉시, 그 외는 다음 턴/ensure)"
                    : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
             )
 
@@ -274,7 +275,7 @@ struct EventHandler: GatewayEventHandler {
             )
             try await respondEphemeral(
                 payload,
-                ok ? "추론 강도를 `\(value)`(으)로 바꿨습니다. (다음 턴/ensure에 적용)"
+                ok ? "추론 강도를 `\(value)`(으)로 바꿨습니다. (라이브 Claude 세션은 즉시, 그 외는 다음 턴/ensure)"
                    : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
             )
 

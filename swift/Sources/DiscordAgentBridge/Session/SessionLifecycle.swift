@@ -10,6 +10,8 @@ import Foundation
 public struct SessionLifecycle: Sendable {
     public typealias ChannelOp = @Sendable (String) async -> Void
     public typealias InterruptOp = @Sendable (String) async -> Bool
+    /// Live field switch on an open Claude session (`channelId`, `value`) → applied?
+    public typealias LiveFieldOp = @Sendable (String, String) async -> Bool
 
     private let registry: SessionRegistry
     private let store: SessionStore
@@ -20,6 +22,8 @@ public struct SessionLifecycle: Sendable {
     private let interruptClaude: InterruptOp
     private let interruptCodex: InterruptOp
     private let interruptGrok: InterruptOp
+    private let setModelClaude: LiveFieldOp
+    private let setEffortClaude: LiveFieldOp
     private let now: @Sendable () -> String
 
     public init(
@@ -32,6 +36,12 @@ public struct SessionLifecycle: Sendable {
         interruptClaude: @escaping InterruptOp = { await DabSessionBridge.shared.interrupt(channelId: $0) },
         interruptCodex: @escaping InterruptOp = { await CodexSessionBridge.shared.interrupt(channelId: $0) },
         interruptGrok: @escaping InterruptOp = { await GrokSessionBridge.shared.interrupt(channelId: $0) },
+        setModelClaude: @escaping LiveFieldOp = {
+            await DabSessionBridge.shared.setModel(channelId: $0, model: $1)
+        },
+        setEffortClaude: @escaping LiveFieldOp = {
+            await DabSessionBridge.shared.setEffort(channelId: $0, effort: $1)
+        },
         // Default cannot call internal `iso8601Now` from a public default-arg expression.
         now: (@Sendable () -> String)? = nil
     ) {
@@ -44,6 +54,8 @@ public struct SessionLifecycle: Sendable {
         self.interruptClaude = interruptClaude
         self.interruptCodex = interruptCodex
         self.interruptGrok = interruptGrok
+        self.setModelClaude = setModelClaude
+        self.setEffortClaude = setEffortClaude
         self.now = now ?? { iso8601Now() }
     }
 
@@ -252,6 +264,9 @@ public struct SessionLifecycle: Sendable {
     }
 
     /// Patch model/effort/permMode on registry+store without stopping the live session.
+    /// When the channel is Claude and a live sidecar session exists, also pushes
+    /// `session.setModel` / `session.setEffort` (TS orchestrator.setModel/setEffort).
+    /// Codex/Grok stay binding-only (next ensure/turn picks up the new fields).
     /// Returns false when no binding exists (TS `router.noSession`).
     @discardableResult
     public func updateBinding(
@@ -270,6 +285,18 @@ public struct SessionLifecycle: Sendable {
         session = applyPatch(to: session, patch, now: now())
         try? await store.upsert(channelId: channelId, session)
         await registry.bind(channelId: channelId, sessionConfig(from: session))
+
+        // Live in-place switch for Claude sidecar backends (W11-g setModel displayName
+        // re-resolution requires the RPC). `.custom` also rides DabSessionBridge.
+        // Best-effort: binding already updated; a missing/unsupported live session is fine.
+        if session.backend == .claude || session.backend == .custom {
+            if let model = patch.model {
+                _ = await setModelClaude(channelId, model)
+            }
+            if let effort = patch.effort {
+                _ = await setEffortClaude(channelId, effort)
+            }
+        }
 
         let action: String
         if patch.model != nil { action = "model" }

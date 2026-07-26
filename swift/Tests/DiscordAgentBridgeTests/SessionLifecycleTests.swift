@@ -263,6 +263,69 @@ struct SessionLifecycleTests {
         #expect(await reg.binding(channelId: "c1")?.model == "new-model")
     }
 
+    // W11-g residual: Claude /model and /effort push live setModel/setEffort when bound.
+    @Test func updateBindingClaudePushesLiveSetModelAndEffort() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B", cwd: "/x", guildId: "g",
+                model: "old", effort: "low", permMode: "default", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude, model: "old", effort: "low"))
+        let live = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            setModelClaude: { ch, m in live.withLock { $0.append("model:\(ch):\(m)") }; return true },
+            setEffortClaude: { ch, e in live.withLock { $0.append("effort:\(ch):\(e)") }; return true },
+            now: { "T-live" }
+        )
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: BindingPatch(model: "sonnet"),
+            actorId: "u", guildId: "g"
+        ) == true)
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: BindingPatch(effort: "high"),
+            actorId: "u", guildId: "g"
+        ) == true)
+        #expect(live.withLock { $0 } == ["model:c1:sonnet", "effort:c1:high"])
+        #expect(await store.binding(channelId: "c1")?.model == "sonnet")
+        #expect(await store.binding(channelId: "c1")?.effort == "high")
+        #expect(await store.binding(channelId: "c1")?.backendSessionId == "B")
+    }
+
+    @Test func updateBindingCodexDoesNotPushClaudeLiveSetModel() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .codex, backendSessionId: "t1", cwd: "/x", guildId: "g",
+                model: "old", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .codex, model: "old"))
+        let live = LockedBox(0)
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            setModelClaude: { _, _ in live.withLock { $0 += 1 }; return true },
+            setEffortClaude: { _, _ in live.withLock { $0 += 1 }; return true },
+            now: { "T-codex" }
+        )
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: BindingPatch(model: "gpt-5"),
+            actorId: "u", guildId: "g"
+        ) == true)
+        #expect(live.withLock { $0 } == 0)
+        #expect(await store.binding(channelId: "c1")?.model == "gpt-5")
+    }
+
     @Test func rebindBackendSameKeepsModelDifferentDrops() async throws {
         let reg = SessionRegistry()
         let store = freshTempStore()

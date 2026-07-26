@@ -70,6 +70,13 @@ actor FakeSidecar {
                 try? await transport.writeLine(out + "\n")
             }
 
+        case "session.setModel", "session.setEffort":
+            if let out = try? serializeEnvelope(
+                res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session)
+            ) {
+                try? await transport.writeLine(out + "\n")
+            }
+
         case "sessions.list":
             let result: JSONValue = .object([
                 "sessions": .array([
@@ -236,6 +243,26 @@ struct SidecarClientTests {
         let list = try await client.sessionsList(cwd: "/tmp", limit: 10)
         #expect(list.sessions.count == 1)
         #expect(list.sessions[0].sessionId == "backend-1")
+
+        await client.close()
+        await pair.sidecar.close()
+        fakeTask.cancel()
+    }
+
+    @Test func sessionSetModelAndSetEffort() async throws {
+        // W11-g residual: live session.setModel / session.setEffort RPC on the client.
+        let pair = InMemorySidecarTransport.makePair()
+        let fake = FakeSidecar(transport: pair.sidecar)
+        let fakeTask = Task { await fake.run() }
+
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
+        try await client.connect()
+        let started = try await client.sessionStart(
+            SessionStartParams(cwd: "/tmp", guildId: "g", channelId: "c", permMode: "default")
+        )
+        // Must not throw against a supporting fake (protocol §3.6).
+        try await client.sessionSetModel(session: started.session, model: "sonnet")
+        try await client.sessionSetEffort(session: started.session, effort: "high")
 
         await client.close()
         await pair.sidecar.close()

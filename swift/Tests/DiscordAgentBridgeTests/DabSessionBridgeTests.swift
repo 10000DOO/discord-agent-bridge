@@ -100,6 +100,16 @@ private actor GateableSidecar {
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
         case "session.interrupt":
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
+        case "session.setModel":
+            if let m = env.params?["model"]?.stringValue {
+                capture?.withLock { $0["setModel"] = m }
+            }
+            await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
+        case "session.setEffort":
+            if let e = env.params?["effort"]?.stringValue {
+                capture?.withLock { $0["setEffort"] = e }
+            }
+            await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
         default:
             await writeEnv(resError(id: id, method: method, error: makeError(code: "unsupported", message: method)))
         }
@@ -502,5 +512,23 @@ struct DabSessionBridgeTests {
         await bridge.stop(channelId: "c")
         await #expect(throws: (any Error).self) { _ = try await t.value }
         #expect(await bridge.isLive(channelId: "c") == false)
+    }
+
+    // W11-g residual: live setModel/setEffort RPC when a session handle exists.
+    @Test func setModelAndSetEffortOnLiveSession() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture)
+        #expect(try await run(bridge, "hi") == "ok:hi")
+        #expect(await bridge.isLive(channelId: "c") == true)
+
+        #expect(await bridge.setModel(channelId: "c", model: "sonnet") == true)
+        #expect(await bridge.setEffort(channelId: "c", effort: "high") == true)
+        // No live handle → false (does not throw).
+        #expect(await bridge.setModel(channelId: "missing", model: "opus") == false)
+        #expect(await bridge.setEffort(channelId: "missing", effort: "low") == false)
+
+        let got = capture.withLock { $0 }
+        #expect(got["setModel"] == "sonnet")
+        #expect(got["setEffort"] == "high")
     }
 }

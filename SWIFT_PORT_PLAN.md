@@ -43,15 +43,15 @@
 | ID | 상태 | 남은 일 |
 |----|------|---------|
 | **W11-b2** | `done` | folder 클러스터 ✅ · dir:resume ✅ · reconfigure ✅ · A4D ✅ · **preset pick/save ✅** (`addServerPreset`/`removeServerPreset` · folder→preset when non-empty · pick launch · direct · delete · done→💾 저장 모달) |
-| **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 · 사이드카 setModel displayName 재해석 |
+| **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **setModel displayName 재해석 + 라이브 RPC** ✅. **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 |
 | **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · Codex/Grok mid-turn tool · pin status · **바이너리 self-replace** |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
-| **W11 / W16** | overall | Claude 라이브 `session.setModel`/`setEffort` RPC · host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
+| **W11 / W16** | overall | host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 · W11-g HUD 잔여 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
 - 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 중)
-- Claude 라이브 `session.setModel`/`setEffort` RPC 배선 (W11-d는 바인딩 레이어만; 옵션 B 후속)
+- ~~Claude 라이브 `session.setModel`/`setEffort` RPC 배선~~ ✅ (W11-g residual: client+bridge+lifecycle; TS displayName 재해석)
 - ~~`/mode backend` reconfigure 마법사 팝업~~ ✅ (W11-b2) · HUD 잔여(W11-g)
 - ~~interrupt **버튼 UI**~~ ✅ (lib interrupt API W14 + pure `InterruptButton` + DabMain 턴 중 컨트롤 메시지·components 핸들러; unbind 없음)
 - host.file.* 실제 Discord 업로드 완전 패리티 (Swift; TS 사이드카 경로는 구현됨)
@@ -85,7 +85,7 @@ swift run --package-path swift dab grok-smoke
 **제품 문서(W12) 완료.** 기능 패리티 잔여만 남음. 전수조사 결정(2026-07-25) 유지: **TS 파리티 100% 지향**.
 
 0. ~~**W12** 레거시 정책·호환 매트릭스·README~~ ✅
-1. **W11-g slice4+** — tools/subagent HUD · 라이브 스트림 임베드 · setModel displayName
+1. **W11-g slice4+** — tools/subagent HUD · 라이브 스트림 임베드
 2. ~~**W11-b2**~~ ✅ (folder·resume·reconfigure·A4D·preset)
 3. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 설치 포트
 4. **W13-b** (선택) — 기본 permMode/`allowlist` when product default moves off bypass
@@ -289,7 +289,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-f2** | G | `done` | 재시작 1:1 재연결: backend-id 캡처 + lazy resume + 폴백 + 부팅 복원. 데드락(backend_id notify 레이스) 수정 후 `plan/swift-port` 병합(§14.3). T1–T9 병렬/직렬 171 PASS | 재연결 검증 완료 |
 | **W11-d** | G | `done` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/mode perm`·`/stop`·`/clear`·`/agent resume·stats`. 바인딩 레이어(registry+store)·`clearChannel`(§14.6). reconfigure 팝업은 **W11-b2**. Claude 라이브 setModel RPC 미포함 | 세션 조작 슬래시 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
-| **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1 ✅**: 순수 포맷터 + TurnResult usage + 완료 라인 + stats model·effort. **slice2 ✅**: `mentionOnComplete`·`formatRateLimitLine`/`formatUsageWindows`·`ClaudeUsageService`(OAuth file+keychain·mock HTTP)·`buildUsageEmbed`·Claude `context_usage`/`rate_limit` 캡처→TurnResult→DabMain 라인·`/agent stats` Claude usage 임베드. **slice3 ✅**: `GrokUsageService`(auth.json·billing mock HTTP·sevenDay only)·`getUsageForBackend`·`/agent stats` Grok 임베드·notifier grok getUsage. **잔여(slice4+)**: tools/subagent 집계·라이브 HUD 스트림 임베드·사이드카 setModel displayName 재해석. 상세 §14.9 | 패널 모든 정보 최신 표시 |
+| **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1–3 ✅**. **setModel displayName ✅**: TS `ClaudeSession.setModel` 재해석 + Swift `sessionSetModel`/`sessionSetEffort` + `DabSessionBridge` + `SessionLifecycle.updateBinding` 라이브 푸시. **잔여(slice4+)**: tools/subagent 집계·라이브 HUD 스트림 임베드. 상세 §14.9 | 패널 모든 정보 최신 표시 |
 | **W12** | H | `done` | 레거시 TS 정책, 버전 호환 매트릭스, 루트 README/README.ko 마이그레이션 가이드 | Swift-first 설치·env·경로·호환표·잔여 명시 (100% 미주장) |
 
 ### 신규 WO — 2026-07-25 전수조사 반영 (Phase I~L, 상세 §15)
@@ -516,7 +516,7 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 
 ### 14.7 남은 큐 (순서)
 1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2**~~ ✅ (folder·resume·reconfigure·A4D·preset) · ~~**W11-g slice1–3**~~ ✅ · ~~**W12**~~ ✅
-2. **W11-g slice4+** — tools/subagent 집계·라이브 HUD 임베드·setModel displayName (상세 §14.9).
+2. **W11-g slice4+** — tools/subagent 집계·라이브 HUD 임베드 (상세 §14.9).
 3. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 바이너리 교체.
 4. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영 · §14.4 플래키 근본 판정.
@@ -528,10 +528,11 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 사용자 요구(2026-07-24): **Swift 포팅 패널에서 3백엔드(claude/codex/grok) 모두 모델 포함 모든 정보가 항상 최신**으로 표시. (TS는 참고용이라 TS 패널은 손대지 않음.)
 
 - **현재 상태 (slice3 후)**: slice1–2 + **`GrokUsageService`**(TS `modes/grok/usageService.ts`: `~/.grok/auth.json` first non-empty `key` → `cli-chat-proxy.grok.com/v1/billing?format=credits`, `creditUsagePercent` 우선·GrokBuild productUsage 폴백·`sevenDay` only·TTL 캐시·never-throw·mock HTTP 테스트) + `getUsageForBackend` + `/agent stats` Claude+Grok 임베드 + notifier grok getUsage. Codex=`codexUsageUnavailable()`.
-- **잔여(slice4+)**: (1) 이번 턴 도구/서브에이전트 집계 표면화, (2) 라이브 HUD 스트림 임베드(턴 중 갱신), (3) 사이드카 `setModel` displayName 재해석 버그 수정.
+- **잔여(slice4+)**: (1) 이번 턴 도구/서브에이전트 집계 표면화, (2) 라이브 HUD 스트림 임베드(턴 중 갱신).
+- ~~(3) 사이드카 `setModel` displayName 재해석~~ ✅ TS `setModel`에서 latch reset + `captureModelDisplayName()`; Swift 라이브 RPC 배선.
 - **신선도 불변식(핵심)**: 모든 필드를 **렌더 시점 라이브 상태**에서 계산. 설정 변경 시 캐시된 값 재사용 금지(= TS의 래치 버그를 구조적으로 차단). 도구/서브에이전트 집계는 턴마다 리셋, git branch·경과시간도 매번 계산.
 - **백엔드별 모델/컨텍스트 소스 차이(주의)**:
-  - **Claude**: `context_usage.model`/`modelDisplayName`을 **영구 Node 사이드카의 `ClaudeSession`(`src/modes/claude/session.ts`)이 생성**(사이드카 서버 `src/sidecar/claude/sessionBridge.ts`가 재사용). ⚠️ **알려진 버그**: `setModel`이 `modelDisplayName`을 init 때 래치(`modelDisplayNameRequested`)로 **1회만** 해석 → `/model` 변경 후에도 옛 표시명 유지. **slice2에서 사이드카 쪽 교정**: `setModel`에서 `this.modelDisplayName=null; this.modelDisplayNameRequested=false; this.captureModelDisplayName()`로 재해석. (Swift `/model`이 사이드카 `session.setModel`을 실제 호출해야 발현 — 라이브 setModel RPC 아직 미포함.)
+  - **Claude**: `context_usage.model`/`modelDisplayName`을 **영구 Node 사이드카의 `ClaudeSession`(`src/modes/claude/session.ts`)이 생성**(사이드카 서버 `src/sidecar/claude/sessionBridge.ts`가 재사용). ✅ `setModel`이 displayName latch를 리셋 후 재해석. Swift `/model`·`/effort` → `SessionLifecycle.updateBinding` → 라이브 Claude/custom `session.setModel`/`setEffort` RPC.
   - **Codex/Grok**: slice1은 turn usage 토큰/비용만 `TurnResult.usage`로. **context_usage 패널용 totalTokens/maxTokens/model 생성은 slice2** (Codex tokenUsage 스트림 집계·Grok `_meta.totalTokens` + contextWindow).
 - **착수 순서**: W11-d 이후. slice1(포맷·완료 라인) → slice2(패널·한도).
 

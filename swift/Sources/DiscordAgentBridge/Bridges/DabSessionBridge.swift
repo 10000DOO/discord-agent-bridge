@@ -542,6 +542,32 @@ public actor DabSessionBridge {
         return true
     }
 
+    /// Live `session.setModel` on an open Claude session (TS orchestrator.setModel / W11-g).
+    /// Returns `true` when a live handle accepted the RPC; `false` when no session or RPC failed
+    /// (binding layer still owns persistence — caller updates registry/store separately).
+    @discardableResult
+    public func setModel(channelId: String, model: String) async -> Bool {
+        guard let handle = sessions[channelId], let client, !client.isClosed else { return false }
+        do {
+            try await client.sessionSetModel(session: handle, model: model)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Live `session.setEffort` on an open Claude session. Same contract as `setModel`.
+    @discardableResult
+    public func setEffort(channelId: String, effort: String) async -> Bool {
+        guard let handle = sessions[channelId], let client, !client.isClosed else { return false }
+        do {
+            try await client.sessionSetEffort(session: handle, effort: effort)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Test/inspection: whether this channel still holds a live sidecar session handle.
     public func isLive(channelId: String) -> Bool {
         sessions[channelId] != nil

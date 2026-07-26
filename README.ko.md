@@ -206,7 +206,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | 역할 인가 / 감사 / 경로 confinement | ✅ (allowlist·기본 perm 전환은 보류) | ✅ |
 | 3계층 config | ✅ global → server → binding | ✅ |
 | `/agent start` 폴더 마법사 | ✅ 폴더 클러스터; **잔여:** resume UI, A4D 채널 생성, preset, reconfigure | ✅ 풀 |
-| 라이브 슬래시 model/effort/mode/clear/stop | ✅ 바인딩 레이어; **Claude 라이브 `setModel` RPC** 일부 잔여 | ✅ |
+| 라이브 슬래시 model/effort/mode/clear/stop | ✅ 바인딩 + Claude 라이브 `setModel`/`setEffort` RPC + displayName 재해석 | ✅ |
 | 사용량 / HUD | ✅ stats + Claude/Grok usage; **잔여:** tools/subagent HUD, 라이브 스트림 임베드 | ✅ 더 풍부한 패널 |
 | 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude mid-turn; **잔여:** Codex/Grok mid-turn, pin 임베드 | ✅ |
 | `/config` 패널 | ✅ **minimal**; 잔여 model/effort/locale · notif/render | ✅ 더 넓은 UI |

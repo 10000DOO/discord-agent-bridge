@@ -431,11 +431,16 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
   // Change the model on the LIVE query mid-session (SDK setModel). A model name or
   // alias ('opus'/'sonnet'/'haiku') is accepted; the SDK resolves it. Takes effect on
   // the next turn of this same session — no restart, no lost context. activeModel is
-  // updated so the usage panel reflects the new choice.
+  // updated so the usage panel reflects the new choice. modelDisplayName is re-latched
+  // via supportedModels() so context_usage does not keep the previous model's label
+  // (W11-g residual: setModel displayName re-resolution).
   async setModel(model?: string): Promise<void> {
     if (this.closed) throw new Error('Claude session is closed.');
     await this.query.setModel(model);
     if (typeof model === 'string' && model.length > 0) this.activeModel = model;
+    this.modelDisplayName = null;
+    this.modelDisplayNameRequested = false;
+    this.captureModelDisplayName();
   }
 
   // Change the reasoning effort on the LIVE query mid-session via applyFlagSettings (the

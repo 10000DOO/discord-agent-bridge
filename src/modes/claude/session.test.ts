@@ -456,6 +456,74 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(events.some((e) => e.kind === 'error')).toBe(false);
   });
 
+  // W11-g residual: setModel must re-resolve modelDisplayName (not keep the init latch).
+  it('re-resolves modelDisplayName after setModel', async () => {
+    const { ctx, events } = makeCtx();
+    const state = { supportedModelsCalls: 0, setModelCalls: [] as Array<string | undefined> };
+    // Pushable message queue so a second result can fire after setModel.
+    const queue: unknown[] = [
+      { type: 'system', subtype: 'init', session_id: 'sess-switch', model: 'claude-opus-4-8' },
+      { type: 'result', subtype: 'success', result: 'turn1' },
+    ];
+    let wake: (() => void) | null = null;
+    const push = (msg: unknown) => {
+      queue.push(msg);
+      wake?.();
+      wake = null;
+    };
+    const query = {
+      async *[Symbol.asyncIterator]() {
+        for (;;) {
+          while (queue.length > 0) yield queue.shift()!;
+          await new Promise<void>((r) => {
+            wake = r;
+          });
+        }
+      },
+      close() {},
+      async setModel(model?: string) {
+        state.setModelCalls.push(model);
+      },
+      async supportedModels() {
+        state.supportedModelsCalls++;
+        return [
+          { value: 'claude-opus-4-8', resolvedModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', description: '' },
+          { value: 'claude-sonnet-4', resolvedModel: 'claude-sonnet-4', displayName: 'Claude Sonnet 4', description: '' },
+        ];
+      },
+      async getContextUsage() {
+        // Let captureModelDisplayName()'s async supportedModels settle first.
+        await new Promise((r) => setTimeout(r, 20));
+        return { totalTokens: 1, maxTokens: 100, percentage: 1 };
+      },
+    };
+    const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.filter((e) => e.kind === 'context_usage').length >= 1);
+    expect(events.find((e) => e.kind === 'context_usage')).toMatchObject({
+      model: 'claude-opus-4-8',
+      modelDisplayName: 'Claude Opus 4.8',
+    });
+    expect(state.supportedModelsCalls).toBe(1);
+
+    await session.setModel('claude-sonnet-4');
+    expect(state.setModelCalls).toEqual(['claude-sonnet-4']);
+    await waitFor(() => state.supportedModelsCalls >= 2);
+    expect(state.supportedModelsCalls).toBe(2);
+
+    // Second turn result → context_usage must carry the NEW display name.
+    push({ type: 'result', subtype: 'success', result: 'turn2' });
+    await waitFor(() => events.filter((e) => e.kind === 'context_usage').length >= 2);
+    const usages = events.filter((e) => e.kind === 'context_usage');
+    expect(usages[usages.length - 1]).toMatchObject({
+      model: 'claude-sonnet-4',
+      modelDisplayName: 'Claude Sonnet 4',
+    });
+
+    await session.stop();
+  });
+
   it('maps system/task_notification to a subagent_result event', async () => {
     const { ctx, events } = makeCtx();
     const { queryFn } = fakeQueryFn([

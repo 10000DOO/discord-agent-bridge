@@ -206,7 +206,7 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Auth roles / audit / path confinement | ✅ (allowlist default-mode still deferred) | ✅ |
 | 3-layer config | ✅ global → server → binding | ✅ |
 | `/agent start` folder wizard | ✅ folder cluster; **residual:** resume UI, A4D channel create, preset, reconfigure | ✅ full |
-| Live slash model/effort/mode/clear/stop | ✅ binding layer; **Claude live `setModel` RPC** partial residual | ✅ |
+| Live slash model/effort/mode/clear/stop | ✅ binding + Claude live `setModel`/`setEffort` RPC + displayName re-resolve | ✅ |
 | Usage / HUD | ✅ stats + Claude/Grok usage; **residual:** tools/subagent HUD, live stream embed | ✅ richer panels |
 | Tool thread / diff / status embed / notifier | ✅ Claude mid-turn path; **residual:** Codex/Grok mid-turn, pin embed | ✅ |
 | `/config` panel | ✅ **minimal**; residual model/effort/locale · notif/render | ✅ fuller UI |
