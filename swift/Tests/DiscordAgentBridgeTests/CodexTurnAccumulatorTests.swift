@@ -194,6 +194,74 @@ struct CodexTurnStepTests {
         ]), mintId: &seq, parentByThread: &parents).isEmpty)
     }
 
+    // G-P1-02: TS eventMapper item/started → progress; turn/started → "작업 중".
+    @Test func progressEventsTurnStarted() {
+        #expect(codexProgressEvents(method: "turn/started", params: nil) == [
+            .progress(label: CodexProgressLabels.working, detail: nil),
+        ])
+    }
+
+    @Test func progressEventsItemStartedCommandExecution() {
+        // eventMapper.test.ts: maps item/started commandExecution to progress
+        let events = codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object([
+                "type": .string("commandExecution"),
+                "command": .string("ls -la"),
+            ])])
+        )
+        #expect(events == [
+            .progress(label: CodexProgressLabels.commandExecution, detail: "ls -la"),
+        ])
+    }
+
+    @Test func progressEventsItemStartedVariants() {
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object([
+                "type": .string("web_search"),
+                "query": .string("swift actors"),
+            ])])
+        ) == [.progress(label: CodexProgressLabels.webSearch, detail: "swift actors")])
+
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object([
+                "type": .string("fileChange"),
+                "changes": .array([
+                    .object(["path": .string("a.ts")]),
+                    .object(["path": .string("b.ts")]),
+                ]),
+            ])])
+        ) == [.progress(label: CodexProgressLabels.fileChange, detail: "2개 파일")])
+
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object([
+                "type": .string("mcpToolCall"),
+                "tool": .string("read_file"),
+            ])])
+        ) == [.progress(label: CodexProgressLabels.mcpToolCall, detail: "read_file")])
+
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object(["type": .string("image")])])
+        ) == [.progress(label: CodexProgressLabels.image, detail: nil)])
+
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object(["type": .string("file_search")])])
+        ) == [.progress(label: CodexProgressLabels.fileSearch, detail: nil)])
+
+        // agentMessage / unknown → no progress (text path handles deltas)
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object(["type": .string("agentMessage")])])
+        ).isEmpty)
+        #expect(codexProgressEvents(method: "item/completed", params: nil).isEmpty)
+        #expect(codexProgressEvents(method: "item/agentMessage/delta", params: nil).isEmpty)
+    }
+
     @Test func toolEventsSpawnAgentRegistersChildThread() {
         var seq = 0
         var parents: [String: String] = [:]

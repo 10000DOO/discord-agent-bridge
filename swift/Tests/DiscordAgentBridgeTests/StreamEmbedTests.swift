@@ -180,4 +180,22 @@ struct StreamStatusHostTests {
         #expect(answerEdit?.description == "Final answer")
         await host.dispose(channelId: "c3")
     }
+
+    // G-P1-02: progress line surfaces as stream embed description (TS transcriptFeed parity).
+    @Test func progressFlushShowsLabelAndDetail() async {
+        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let edits = LockedBox<[StreamEmbedSpec]>([])
+        await host.setUpdater { _, _, _, spec in
+            edits.withLock { $0.append(spec) }
+        }
+        await host.begin(channelId: "c4", guildId: "g", messageId: "m")
+        await host.noteProgress(channelId: "c4", label: "명령 실행 중", detail: "ls -la")
+        for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let got = edits.withLock { $0.last }
+        #expect(got?.title == "응답 중…")
+        #expect(got?.description == "명령 실행 중: ls -la")
+        await host.dispose(channelId: "c4")
+    }
 }

@@ -5,6 +5,7 @@ import Foundation
 // turn/completed, turn|thread/failed, error). Pure: no state, never throws.
 //
 // Tool mid-turn events live in `codexToolEvents` (W16-g residual) so the text fold stays simple.
+// Progress (`item/started` / `turn/started`) lives in `codexProgressEvents` (G-P1-02).
 
 public enum CodexTurnStep: Equatable {
     case appendText(String)   // item/agentMessage/delta → params.delta
@@ -47,6 +48,76 @@ public func codexTurnStep(method: String, params: JSONValue?) -> CodexTurnStep {
     }
 }
 
+// MARK: - Progress mid-turn (G-P1-02 / TS eventMapper mapItemStarted + turn/started)
+
+/// TS PROGRESS_LABELS (eventMapper.ts) — KO status lines for TranscriptFeed / StreamStatusHost.
+public enum CodexProgressLabels {
+    public static let working = "작업 중"
+    public static let commandExecution = "명령 실행 중"
+    public static let fileChange = "파일 수정 중"
+    public static let fileSearch = "파일 탐색 중"
+    public static let webSearch = "웹 검색 중"
+    public static let image = "이미지 생성 중"
+    public static let mcpToolCall = "도구 실행 중"
+    public static let collabAgentToolCall = "서브에이전트 작업 중"
+}
+
+/// Map codex app-server notifications → `progress` AgentEvents.
+/// Pure; never throws. Unknown methods / non-progress items → `[]`.
+///
+/// TS: `item/started` → progressForItem; `turn/started` → `{kind:'progress', label:'작업 중'}`.
+/// Swift surfaces these via `StreamStatusHost.noteProgress` (embed detail ≈ TranscriptFeed line).
+public func codexProgressEvents(method: String, params: JSONValue?) -> [AgentEvent] {
+    switch method {
+    case "turn/started":
+        return [.progress(label: CodexProgressLabels.working, detail: nil)]
+    case "item/started":
+        let item = params?["item"] ?? params
+        guard let item else { return [] }
+        let type = item["type"]?.stringValue ?? ""
+        if let ev = codexProgressForItem(type: type, item: item) {
+            return [ev]
+        }
+        return []
+    default:
+        return []
+    }
+}
+
+private func codexProgressForItem(type: String, item: JSONValue) -> AgentEvent? {
+    switch type {
+    case "commandExecution", "command_execution":
+        return .progress(label: CodexProgressLabels.commandExecution, detail: item["command"]?.stringValue)
+    case "fileChange", "file_change":
+        return .progress(label: CodexProgressLabels.fileChange, detail: codexFileChangeProgressDetail(item))
+    case "webSearch", "web_search":
+        return .progress(label: CodexProgressLabels.webSearch, detail: item["query"]?.stringValue)
+    case "mcpToolCall", "mcp_tool_call":
+        let detail = item["tool"]?.stringValue
+            ?? item["server"]?.stringValue
+            ?? item["name"]?.stringValue
+        return .progress(label: CodexProgressLabels.mcpToolCall, detail: detail)
+    case "collabAgentToolCall", "collab_agent_tool_call":
+        let detail = item["agentRole"]?.stringValue ?? item["tool"]?.stringValue
+        return .progress(label: CodexProgressLabels.collabAgentToolCall, detail: detail)
+    case "image":
+        return .progress(label: CodexProgressLabels.image, detail: nil)
+    case "fileSearch", "file_search":
+        return .progress(label: CodexProgressLabels.fileSearch, detail: nil)
+    default:
+        return nil
+    }
+}
+
+/// TS fileChangeDetail: one path, or "N개 파일".
+private func codexFileChangeProgressDetail(_ item: JSONValue) -> String? {
+    guard let arr = item["changes"]?.arrayValue else { return nil }
+    let paths = arr.compactMap { $0["path"]?.stringValue }.filter { !$0.isEmpty }
+    if paths.isEmpty { return nil }
+    if paths.count == 1 { return paths[0] }
+    return "\(paths.count)개 파일"
+}
+
 // MARK: - Tool mid-turn events (W16-g residual / TS eventMapper mapItemCompleted)
 
 /// Map codex app-server notifications → tool_use / tool_result / subagent_result AgentEvents.
@@ -58,7 +129,7 @@ public func codexTurnStep(method: String, params: JSONValue?) -> CodexTurnStep {
 /// `threadId` is a child get `parentToolUseId` so TurnThreadRegistry routes into the spawn thread.
 ///
 /// Remaining gaps vs TS `eventMapper.ts`:
-/// - No progress / thinking / mid-turn tokenUsage (text + tools only for Discord activity).
+/// - No thinking / mid-turn tokenUsage (progress = G-P1-02 via `codexProgressEvents`).
 /// - Tool events fire on `item/completed` only (TS same for tools) — not on `item/started`.
 public func codexToolEvents(
     method: String,

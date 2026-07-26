@@ -322,6 +322,21 @@ public actor CodexSessionBridge {
     private func onNotification(channelId: String, method: String, params: JSONValue?) {
         guard var box = turns[channelId], !box.done else { return }
 
+        // G-P1-02: item/started + turn/started → stream embed progress (TS transcriptFeed).
+        let progressEvs = codexProgressEvents(method: method, params: params)
+        if !progressEvs.isEmpty {
+            let ch = channelId
+            for ev in progressEvs {
+                if case .progress(let label, let detail) = ev {
+                    Task {
+                        await StreamStatusHost.shared.noteProgress(
+                            channelId: ch, label: label, detail: detail
+                        )
+                    }
+                }
+            }
+        }
+
         // W16-g residual: tool_use / tool_result mid-turn → stats + Discord work threads.
         // parentByThread mutates on collab spawnAgent (TS MapContext.onSpawnThread).
         var parentMap = parentByThread[channelId] ?? [:]
