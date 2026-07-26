@@ -60,6 +60,31 @@ struct FormatStreamEmbedTests {
         #expect(StreamEmbedLabels.responding == InterruptLabels.responding)
         #expect(StreamEmbedLabels.responded == InterruptLabels.finished)
     }
+
+    // G-P0-03: thinking phase → purple + "생각 중…"
+    @Test func liveThinkingPhase() {
+        let e = formatStreamEmbed(partialText: "hmm…", phase: .thinking)
+        #expect(e.title == StreamEmbedLabels.thinking)
+        #expect(e.title == "생각 중…")
+        #expect(e.description == "hmm…")
+        #expect(e.color == DiscordColors.thinking)
+        #expect(e.footer == nil)
+    }
+
+    @Test func liveThinkingWithToolCount() {
+        let e = formatStreamEmbed(partialText: "plan", toolCount: 1, phase: .thinking)
+        #expect(e.title == "생각 중…")
+        #expect(e.color == DiscordColors.thinking)
+        #expect(e.footer == "🛠️ 1")
+    }
+
+    @Test func finalizedIgnoresThinkingPhase() {
+        // Collapse always uses yellow "응답 완료" (answer path owns the control message).
+        let e = formatStreamEmbed(partialText: "x", toolCount: 2, finalized: true, phase: .thinking)
+        #expect(e.title == "응답 완료 · 🛠️ 2")
+        #expect(e.color == DiscordColors.streaming)
+        #expect(e.description == nil)
+    }
 }
 
 @Suite("StreamStatusHost")
@@ -71,6 +96,7 @@ struct StreamStatusHostTests {
             edits.withLock { $0.append(spec) }
         }
         await host.noteText(channelId: "c1", delta: "hi")
+        await host.noteThinking(channelId: "c1", delta: "hmm")
         await host.noteToolUse(channelId: "c1")
         #expect(edits.withLock { $0.isEmpty })
     }
@@ -120,5 +146,38 @@ struct StreamStatusHostTests {
         #expect(got.count == 1)
         #expect(got.first?.description == "Hello")
         await host.dispose(channelId: "c2")
+    }
+
+    // G-P0-03: thinking buffer is separate from answer text; purple title while active.
+    @Test func thinkingFlushIsPurpleAndSeparateFromText() async {
+        let host = StreamStatusHost(minFlushInterval: 0.05)
+        let edits = LockedBox<[StreamEmbedSpec]>([])
+        await host.setUpdater { _, _, _, spec in
+            edits.withLock { $0.append(spec) }
+        }
+        await host.begin(channelId: "c3", guildId: "g", messageId: "m")
+        await host.noteThinking(channelId: "c3", delta: "ponder")
+        await host.noteThinking(channelId: "c3", delta: "ing")
+        for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let thinkEdit = edits.withLock { $0.last }
+        #expect(thinkEdit?.title == "생각 중…")
+        #expect(thinkEdit?.color == DiscordColors.thinking)
+        #expect(thinkEdit?.description == "pondering")
+
+        // Answer text switches phase back to yellow responding; thinking not mixed in.
+        await host.noteText(channelId: "c3", delta: "Final answer")
+        var lastDesc: String?
+        for _ in 0..<100 {
+            lastDesc = edits.withLock { $0.last?.description }
+            if lastDesc == "Final answer" { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let answerEdit = edits.withLock { $0.last }
+        #expect(answerEdit?.title == "응답 중…")
+        #expect(answerEdit?.color == DiscordColors.streaming)
+        #expect(answerEdit?.description == "Final answer")
+        await host.dispose(channelId: "c3")
     }
 }

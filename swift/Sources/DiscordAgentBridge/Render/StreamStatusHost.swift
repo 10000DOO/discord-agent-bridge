@@ -1,8 +1,9 @@
 import Foundation
 
-// Per-channel live stream status coordinator (W11-g residual).
-// Accumulates mid-turn text / tool_use / progress and rate-limits Discord edits
+// Per-channel live stream status coordinator (W11-g residual + G-P0-03 thinking).
+// Accumulates mid-turn text / thinking / tool_use / progress and rate-limits Discord edits
 // (≈1s debounce, immediate on tool_use when the interval allows).
+// Thinking is buffered separately from answer text (TS streamEmbed kind:'thinking').
 // Discord I/O injected once via updater (library never imports DiscordBM).
 
 /// Edit the control message for a channel (dab maps StreamEmbedSpec → DiscordBM).
@@ -28,7 +29,12 @@ public actor StreamStatusHost {
     private struct ChannelState {
         var messageId: String
         var guildId: String
+        /// Answer stream buffer (AgentEvent.text) — never mixed with thinking.
         var partialText: String = ""
+        /// Extended-thinking buffer (AgentEvent.thinking) — separate from reply.
+        var thinkingText: String = ""
+        /// Last non-tool event phase drives embed title/color.
+        var phase: StreamEmbedPhase = .responding
         var toolCount: Int = 0
         var active: Bool = true
         var lastFlush: Date?
@@ -69,10 +75,21 @@ public actor StreamStatusHost {
         states.removeValue(forKey: channelId)
     }
 
-    /// Append a text delta (Claude stream). Debounced flush.
+    /// Append a text delta (Claude stream). Debounced flush. Switches phase → responding.
     public func noteText(channelId: String, delta: String) {
         guard !delta.isEmpty, var s = states[channelId], s.active else { return }
         s.partialText += delta
+        s.phase = .responding
+        states[channelId] = s
+        scheduleFlush(channelId: channelId, force: false)
+    }
+
+    /// Append a thinking delta (Claude extended thinking). Not mixed into answer text.
+    /// Debounced flush; phase → thinking (purple "생각 중…").
+    public func noteThinking(channelId: String, delta: String) {
+        guard !delta.isEmpty, var s = states[channelId], s.active else { return }
+        s.thinkingText += delta
+        s.phase = .thinking
         states[channelId] = s
         scheduleFlush(channelId: channelId, force: false)
     }
@@ -94,6 +111,7 @@ public actor StreamStatusHost {
         } else {
             s.partialText += "\n" + line
         }
+        s.phase = .responding
         states[channelId] = s
         scheduleFlush(channelId: channelId, force: false)
     }
@@ -129,7 +147,7 @@ public actor StreamStatusHost {
             return
         }
 
-        // Debounce: re-arm interval from latest text/progress event.
+        // Debounce: re-arm interval from latest text/thinking/progress event.
         s.flushTask?.cancel()
         let waitNs = UInt64(max(0, minInterval) * 1_000_000_000)
         let task = Task {
@@ -149,7 +167,13 @@ public actor StreamStatusHost {
         s.lastFlush = Date()
         let messageId = s.messageId
         let guildId = s.guildId
-        let spec = formatStreamEmbed(partialText: s.partialText, toolCount: s.toolCount)
+        // Thinking phase shows thinking buffer only; answer text stays in partialText.
+        let displayText = s.phase == .thinking ? s.thinkingText : s.partialText
+        let spec = formatStreamEmbed(
+            partialText: displayText,
+            toolCount: s.toolCount,
+            phase: s.phase
+        )
         states[channelId] = s
         guard let updater else { return }
         await updater(channelId, messageId, guildId, spec)

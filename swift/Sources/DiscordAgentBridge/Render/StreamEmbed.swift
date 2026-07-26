@@ -1,7 +1,7 @@
 import Foundation
 
 // Live stream status embed pure builders (TS `src/discord/renderers/streamEmbed.ts`).
-// Yellow "응답 중…" while a turn runs; collapse to "응답 완료" on finalize.
+// Yellow "응답 중…" while answer text streams; purple "생각 중…" for thinking deltas.
 // Discord I/O lives in dab (StreamStatusHost sink); this file is format-only.
 
 /// Discord embed description hard limit (TS `EMBED_DESC_LIMIT`).
@@ -10,6 +10,14 @@ public let streamEmbedDescLimit = 4096
 public enum StreamEmbedLabels {
     public static let responding = InterruptLabels.responding
     public static let responded = InterruptLabels.finished
+    /// TS `stream.thinking` / i18n ko.
+    public static let thinking = "생각 중…"
+}
+
+/// Which live stream phase the control embed shows (TS kind: text | thinking).
+public enum StreamEmbedPhase: Sendable, Equatable {
+    case responding
+    case thinking
 }
 
 /// Pure embed payload for the live/final stream control message.
@@ -33,12 +41,14 @@ public struct StreamEmbedSpec: Sendable, Equatable {
 }
 
 /// Live or finalized stream status embed.
-/// - Live: title "응답 중…", description = clipped partial text, footer = tool count when > 0.
+/// - Live responding: title "응답 중…", yellow, description = clipped partial answer text.
+/// - Live thinking: title "생각 중…", purple (`DiscordColors.thinking`), description = thinking buffer.
 /// - Finalized: title "응답 완료" (+ " · 🛠️ N"), no body (answer is posted separately).
 public func formatStreamEmbed(
     partialText: String = "",
     toolCount: Int = 0,
-    finalized: Bool = false
+    finalized: Bool = false,
+    phase: StreamEmbedPhase = .responding
 ) -> StreamEmbedSpec {
     if finalized {
         return StreamEmbedSpec(
@@ -55,10 +65,20 @@ public func formatStreamEmbed(
         desc = DiscordText.truncate(partialText, streamEmbedDescLimit)
     }
     let footer: String? = toolCount > 0 ? "🛠️ \(toolCount)" : nil
-    return StreamEmbedSpec(
-        title: StreamEmbedLabels.responding,
-        description: desc,
-        color: DiscordColors.streaming,
-        footer: footer
-    )
+    switch phase {
+    case .thinking:
+        return StreamEmbedSpec(
+            title: StreamEmbedLabels.thinking,
+            description: desc,
+            color: DiscordColors.thinking,
+            footer: footer
+        )
+    case .responding:
+        return StreamEmbedSpec(
+            title: StreamEmbedLabels.responding,
+            description: desc,
+            color: DiscordColors.streaming,
+            footer: footer
+        )
+    }
 }

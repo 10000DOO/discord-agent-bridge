@@ -116,14 +116,13 @@ public actor GrokSessionBridge {
                 let ch = channelId
                 Task { await StreamStatusHost.shared.noteText(channelId: ch, delta: delta) }
             }
-            // W16-g gap: agent_thought_chunk / plan → StreamStatusHost progress text.
-            // Thought is not part of the reply buffer (TS thinking stream); plan reuses progress.
+            // W16-g / G-P0-03: agent_thought_chunk → thinking stream (purple); plan → progress.
+            // Thought is not part of the reply buffer (TS thinking stream).
             let ch = channelId
             for pev in grokProgressEvents(method: method, params: params) {
                 switch pev {
                 case .thinking(let text, _):
-                    // Delta-friendly: accumulate into the live embed body (not the answer buffer).
-                    Task { await StreamStatusHost.shared.noteText(channelId: ch, delta: text) }
+                    Task { await StreamStatusHost.shared.noteThinking(channelId: ch, delta: text) }
                 case .progress(let label, let detail):
                     Task {
                         await StreamStatusHost.shared.noteProgress(

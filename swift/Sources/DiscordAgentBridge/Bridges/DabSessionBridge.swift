@@ -480,9 +480,11 @@ public actor DabSessionBridge {
                     )
                 }
             }
-        default:
-            // thinking — not shown on the minimal stream control embed.
-            break
+        case .thinking(let t, _):
+            // G-P0-03: thinking deltas → purple stream embed only; never reply buffer.
+            if let channelId = sessionMeta[handle]?.channelId, !t.isEmpty {
+                Task { await StreamStatusHost.shared.noteThinking(channelId: channelId, delta: t) }
+            }
         }
     }
 
