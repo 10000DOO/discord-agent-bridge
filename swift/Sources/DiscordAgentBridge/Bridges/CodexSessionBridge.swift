@@ -62,6 +62,9 @@ public actor CodexSessionBridge {
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent turn/start on the same thread).
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    /// childThreadId → spawn tool_use id (TS CodexAppSession.parentByThread). Session-scoped
+    /// so collab child-thread tools keep routing after spawn across the client lifetime.
+    private var parentByThread: [String: [String: String]] = [:]
     /// Per-channel FIFO chain so delta → completed notifications cannot reorder across the
     /// sync-handler → actor hop (`Task { await onNotification }`). Under parallel load a
     /// bare Task hop can finish the turn before appendText, yielding "(empty result)".
@@ -314,7 +317,15 @@ public actor CodexSessionBridge {
         guard var box = turns[channelId], !box.done else { return }
 
         // W16-g residual: tool_use / tool_result mid-turn → stats + Discord work threads.
-        let toolEvs = codexToolEvents(method: method, params: params, mintId: &box.toolIdSeq)
+        // parentByThread mutates on collab spawnAgent (TS MapContext.onSpawnThread).
+        var parentMap = parentByThread[channelId] ?? [:]
+        let toolEvs = codexToolEvents(
+            method: method,
+            params: params,
+            mintId: &box.toolIdSeq,
+            parentByThread: &parentMap
+        )
+        parentByThread[channelId] = parentMap
         if !toolEvs.isEmpty {
             for ev in toolEvs {
                 box.stats.note(ev)
@@ -410,6 +421,7 @@ public actor CodexSessionBridge {
         }
         turns[channelId] = nil
         activeTurnIds[channelId] = nil
+        parentByThread[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()

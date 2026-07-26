@@ -50,22 +50,29 @@ public func codexTurnStep(method: String, params: JSONValue?) -> CodexTurnStep {
 // MARK: - Tool mid-turn events (W16-g residual / TS eventMapper mapItemCompleted)
 
 /// Map codex app-server notifications → tool_use / tool_result / subagent_result AgentEvents.
-/// Pure; never throws. Unknown methods / non-tool items → `[]`.
+/// Pure aside from `mintId` / `parentByThread` mutation; never throws. Unknown methods /
+/// non-tool items → `[]`.
 ///
-/// Gaps vs TS `eventMapper.ts` (documented, best-effort):
-/// - No `parentByThread` / collab spawn child-thread routing (single-thread channel model).
+/// `parentByThread` (childThreadId → spawn tool_use id) matches TS `MapContext.parentByThread`
+/// + `onSpawnThread`: collab `spawnAgent` registers the child; later items whose notification
+/// `threadId` is a child get `parentToolUseId` so TurnThreadRegistry routes into the spawn thread.
+///
+/// Remaining gaps vs TS `eventMapper.ts`:
 /// - No progress / thinking / mid-turn tokenUsage (text + tools only for Discord activity).
-/// - Tool events fire on `item/completed` only (TS same) — not on `item/started`.
+/// - Tool events fire on `item/completed` only (TS same for tools) — not on `item/started`.
 public func codexToolEvents(
     method: String,
     params: JSONValue?,
-    mintId: inout Int
+    mintId: inout Int,
+    parentByThread: inout [String: String]
 ) -> [AgentEvent] {
     guard method == "item/completed" else { return [] }
     let item = params?["item"] ?? params
     guard let item else { return [] }
     let type = item["type"]?.stringValue ?? ""
     let id = codexItemId(item, mintId: &mintId)
+    // TS resolveParent(params.threadId, parentByThread) — notification-level thread, not item.
+    let parentToolUseId = resolveCodexParent(threadId: params?["threadId"]?.stringValue, parentByThread: parentByThread)
 
     switch type {
     case "commandExecution", "command_execution":
@@ -77,8 +84,8 @@ public func codexToolEvents(
             ?? item["exit_code"]?.numberValue.map { Int($0) }
         let ok = (exitCode ?? 0) == 0
         return [
-            .toolUse(id: id, name: "shell", input: .object(["command": .string(command)]), parentToolUseId: nil),
-            .toolResult(id: id, ok: ok, content: output, parentToolUseId: nil),
+            .toolUse(id: id, name: "shell", input: .object(["command": .string(command)]), parentToolUseId: parentToolUseId),
+            .toolResult(id: id, ok: ok, content: output, parentToolUseId: parentToolUseId),
         ]
 
     case "fileChange", "file_change":
@@ -87,8 +94,8 @@ public func codexToolEvents(
         let status = item["status"]?.stringValue
         let ok = status != "failed" && status != "declined"
         return [
-            .toolUse(id: id, name: "apply_patch", input: .object(["changes": changes]), parentToolUseId: nil),
-            .toolResult(id: id, ok: ok, content: body, parentToolUseId: nil),
+            .toolUse(id: id, name: "apply_patch", input: .object(["changes": changes]), parentToolUseId: parentToolUseId),
+            .toolResult(id: id, ok: ok, content: body, parentToolUseId: parentToolUseId),
         ]
 
     case "mcpToolCall", "mcp_tool_call":
@@ -97,12 +104,12 @@ public func codexToolEvents(
             ?? "mcp_tool_call"
         let input = item["arguments"] ?? item["input"] ?? .object([:])
         var events: [AgentEvent] = [
-            .toolUse(id: id, name: name, input: input, parentToolUseId: nil),
+            .toolUse(id: id, name: name, input: input, parentToolUseId: parentToolUseId),
         ]
         if let result = item["result"]?.stringValue ?? item["output"]?.stringValue {
             let status = item["status"]?.stringValue
             let ok = status != "failed" && item["error"] == nil
-            events.append(.toolResult(id: id, ok: ok, content: result, parentToolUseId: nil))
+            events.append(.toolResult(id: id, ok: ok, content: result, parentToolUseId: parentToolUseId))
         }
         return events
 
@@ -112,11 +119,16 @@ public func codexToolEvents(
             input["query"] = .string(query)
         }
         return [
-            .toolUse(id: id, name: "web_search", input: .object(input), parentToolUseId: nil),
+            .toolUse(id: id, name: "web_search", input: .object(input), parentToolUseId: parentToolUseId),
         ]
 
     case "collabAgentToolCall", "collab_agent_tool_call":
-        return mapCodexCollabAgent(item: item, id: id)
+        return mapCodexCollabAgent(
+            item: item,
+            id: id,
+            parentToolUseId: parentToolUseId,
+            parentByThread: &parentByThread
+        )
 
     case "subAgentActivity", "sub_agent_activity":
         let statusRaw = item["status"]?.stringValue ?? item["state"]?.stringValue
@@ -129,8 +141,10 @@ public func codexToolEvents(
             let taskId = item["taskId"]?.stringValue
                 ?? item["id"]?.stringValue
                 ?? "subagent"
+            // TS: toolUseId ?? parentToolUseId(item) ?? resolved parent from thread map.
             let toolUseId = item["toolUseId"]?.stringValue
                 ?? item["parentToolUseId"]?.stringValue
+                ?? parentToolUseId
             return [
                 .subagentResult(
                     taskId: taskId,
@@ -149,6 +163,11 @@ public func codexToolEvents(
     }
 }
 
+private func resolveCodexParent(threadId: String?, parentByThread: [String: String]) -> String? {
+    guard let threadId, !threadId.isEmpty else { return nil }
+    return parentByThread[threadId]
+}
+
 private func codexItemId(_ item: JSONValue, mintId: inout Int) -> String {
     if let id = item["id"]?.stringValue, !id.isEmpty { return id }
     if let id = item["itemId"]?.stringValue, !id.isEmpty { return id }
@@ -156,7 +175,12 @@ private func codexItemId(_ item: JSONValue, mintId: inout Int) -> String {
     return "codex-tool-\(mintId)"
 }
 
-private func mapCodexCollabAgent(item: JSONValue, id: String) -> [AgentEvent] {
+private func mapCodexCollabAgent(
+    item: JSONValue,
+    id: String,
+    parentToolUseId: String?,
+    parentByThread: inout [String: String]
+) -> [AgentEvent] {
     let tool = item["tool"]?.stringValue
         ?? item["name"]?.stringValue
         ?? item["toolName"]?.stringValue
@@ -182,14 +206,16 @@ private func mapCodexCollabAgent(item: JSONValue, id: String) -> [AgentEvent] {
         if let description = item["description"]?.stringValue {
             input["description"] = .string(description)
         }
+        // TS mapCollabAgent + onSpawnThread(childThreadId, spawnToolId).
         if let child = item["threadId"]?.stringValue
             ?? item["childThreadId"]?.stringValue
             ?? item["agentThreadId"]?.stringValue
             ?? item["thread"]?["id"]?.stringValue {
             input["threadId"] = .string(child)
+            parentByThread[child] = id
         }
         var events: [AgentEvent] = [
-            .toolUse(id: id, name: "spawnAgent", input: .object(input), parentToolUseId: nil),
+            .toolUse(id: id, name: "spawnAgent", input: .object(input), parentToolUseId: parentToolUseId),
         ]
         let status = item["status"]?.stringValue
         let resultText = item["result"]?.stringValue ?? item["output"]?.stringValue
@@ -199,7 +225,7 @@ private func mapCodexCollabAgent(item: JSONValue, id: String) -> [AgentEvent] {
                 id: id,
                 ok: ok,
                 content: resultText ?? (ok ? "spawned" : "failed"),
-                parentToolUseId: nil
+                parentToolUseId: parentToolUseId
             ))
         }
         return events
@@ -208,12 +234,12 @@ private func mapCodexCollabAgent(item: JSONValue, id: String) -> [AgentEvent] {
     let name = tool.isEmpty ? "collabAgentToolCall" : tool
     let input = item["arguments"] ?? item["input"] ?? item
     var events: [AgentEvent] = [
-        .toolUse(id: id, name: name, input: input, parentToolUseId: nil),
+        .toolUse(id: id, name: name, input: input, parentToolUseId: parentToolUseId),
     ]
     if let result = item["result"]?.stringValue ?? item["output"]?.stringValue {
         let status = item["status"]?.stringValue
         let ok = status != "failed" && item["error"] == nil
-        events.append(.toolResult(id: id, ok: ok, content: result, parentToolUseId: nil))
+        events.append(.toolResult(id: id, ok: ok, content: result, parentToolUseId: parentToolUseId))
     }
     return events
 }

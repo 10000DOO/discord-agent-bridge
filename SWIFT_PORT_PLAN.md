@@ -43,7 +43,7 @@
 | ID | 상태 | 남은 일 |
 |----|------|---------|
 | **W16-b** | ship + residual | model/effort·notif ✅ · **locale select ✅** (global `config.locale`, roleRows 5th; ko/en) · **이미지/chromium 서브패널 = S3 defer** |
-| **W16-g** | ship + residual | toolThread/diff/status/notifier ✅ · Codex/Grok mid-turn tool ✅ · **capabilities 게이팅 ✅** · **pin status embed ✅** (best-effort) · **gap:** Codex parentByThread/collab child-thread · Grok plan/thought progress |
+| **W16-g** | ship + residual | toolThread/diff/status/notifier ✅ · Codex/Grok mid-turn tool ✅ · **capabilities 게이팅 ✅** · **pin status embed ✅** (best-effort) · **Codex parentByThread/collab ✅** · **Grok plan/thought progress ✅** |
 | **W16-h** | ship + residual | 체크·승인 UI ✅ · **바이너리 self-replace·서비스 재시작**(승인 시 수동 설치 안내만) |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
 | **기타** | overall | ~~host.file.attach Discord 업로드~~ ✅ · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
@@ -318,7 +318,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W16-d** | L | `done` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
 | **W16-f** | L | `done` | **custom 백엔드**(`Backend.custom`+`!custom` route+persist+`ShellEnv` dotfile env + Claude path env-overlay; wizard/slash 포함) | custom UX |
-| **W16-g** | L | `done` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`). **shipped**: pure formatters + TurnThreadRegistry/ToolThreadHandler/DiffViewHandler(fakes) + ToolActivityHost→Dab/Codex/Grok mid-turn + DabMain createThread/statusEmbed/SessionNotifier · **capabilities 게이팅**(`resolveCapabilities` backend←global←server←`DAB_CAPS`, toolThreads/fileDiff/streaming/usagePanel). **잔여**: pin status embed. **gap**: Codex parentByThread/collab child-thread · Grok plan/thought progress | 도구/상태 가시성 |
+| **W16-g** | L | `done` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`). **shipped**: pure formatters + TurnThreadRegistry/ToolThreadHandler/DiffViewHandler(fakes) + ToolActivityHost→Dab/Codex/Grok mid-turn + DabMain createThread/statusEmbed/SessionNotifier · **capabilities 게이팅**(`resolveCapabilities` backend←global←server←`DAB_CAPS`, toolThreads/fileDiff/streaming/usagePanel) · **Codex parentByThread/collab** (`codexToolEvents` + bridge session map → `parentToolUseId`) · **Grok plan/thought progress**. **잔여**: pin status embed(best-effort 이미 포함). | 도구/상태 가시성 |
 | **W16-h** | L | `done` | auto-update **shippable slice**: pure semver(`Version`) + npm registry 체크(`Registry`) + Yes/No 버튼 UI(`UpdateButton`) + `AutoUpdater` 오케스트레이터 + `SessionStore` autoUpdate meta(lastCheckAt/dismissedVersion) + `/update` 슬래시(admin) + ready 스케줄 + 컨트롤채널 프롬프트. **ponytail 잔여**: 바이너리 self-replace·서비스 재시작(승인 시 수동 설치 안내만). 설치 포트 DI로 후속 연결 가능 | 자동 업데이트 |
 
 ### 후순위 / 병행 가능 (큐 본선 아님)
@@ -397,6 +397,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W11-g slice4 | tools/subagent HUD: pure `TurnToolStat`/`SubagentRun`/`TurnToolStatsAggregator` + `buildToolsValue`/`buildAgentsValue`/`formatSubagentRunDuration` · `UsageEmbedExtras.tools/agents` · Claude `DabSessionBridge` tool_use/result/subagent_result → `TurnResult` · DabMain 턴 후 `buildUsageEmbed` 게시 + interrupt finalize `🛠️ N`. 단위테스트 aggregator/embed/bridge. |
 | 2026-07-26 | W11-g live stream | pure `formatStreamEmbed` + `StreamStatusHost`(1s debounce / tool force) · DabMain yellow "응답 중…" embed + interrupt · Claude mid-turn text/tool/progress · finalize collapse. W11-g=`done`. |
 | 2026-07-26 | W16-g residual | **Codex·Grok mid-turn tool 활동**: pure `codexToolEvents` (commandExecution/fileChange/mcp/webSearch/collab/subAgent) + `grokToolEvents` (tool_call/tool_call_update terminal) · Codex/Grok bridges → `TurnToolStatsAggregator` + `ToolActivityHost` (resetTurn/dispose) · spawnAgent pairing. **gap:** Codex parentByThread · Grok plan/thought. |
+| 2026-07-26 | W16-g collab | **Codex parentByThread/collab child-thread**: `codexToolEvents` + `parentByThread` inout (spawnAgent registers child→spawn id; notification `threadId` → `parentToolUseId`) · `CodexSessionBridge` session-scoped map · TurnThreadRegistry parent keys. 단위테스트 spawn register + child attach + round-trip. |
 | 2026-07-26 | W16-g capabilities | pure `resolveCapabilities`(backend←global←server←`DAB_CAPS`) + ToolActivityHost 게이팅 + DabMain StreamStatus/usage post 가드 · Config optional capabilities. TS RendererDispatcher 정렬(toolThreads/fileDiff/streaming/usagePanel). |
 | 2026-07-26 | docs snapshot | **W11=`done`** · **W11-g=`done`**(live stream 포함) · **W11-b2=`done`**. §0 잔여 = W16 폴리시(pin status·locale·self-replace) · W16-g gap · W13-b 보류 · host.file/S3/Linux·Windows. 코드 변경 없음. |
 | 2026-07-26 | host.file.attach | **host.file.attach Discord 업로드**. lib `FileAttach`(`attachFileConfined`/`resolveConfinedAttachPath`·cwd 감금) + `FileAttachHost` + dab `postFileAttach`(createMessage files) + `DabSessionBridge` `onFileAttach` 배선. 단위테스트 path/host + reverse RPC. |
@@ -526,7 +527,7 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 ### 14.7 남은 큐 (순서)
 1. ~~**W11 전부**~~ ✅ · ~~**W12**~~ ✅ · ~~**W16 ship**~~ ✅ (b model/effort/notif · g mid-turn+capabilities · h 체크 UI)
 2. **W16 폴리시 잔여** — pin status embed · `/config` locale · auto-update 바이너리 self-replace · (S3) render.
-3. **W16-g gap** (선택) — Codex parentByThread/collab · Grok plan/thought.
+3. ~~**W16-g gap** (선택) — Codex parentByThread/collab · Grok plan/thought.~~ ✅
 4. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
 - 부수 TODO: host.file Discord 업로드 · Linux/Windows 서비스 · `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정.
 

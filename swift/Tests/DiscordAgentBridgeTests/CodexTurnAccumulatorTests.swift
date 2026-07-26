@@ -60,6 +60,7 @@ struct CodexTurnStepTests {
 
     @Test func toolEventsCommandExecution() {
         var seq = 0
+        var parents: [String: String] = [:]
         let events = codexToolEvents(
             method: "item/completed",
             params: .object(["item": .object([
@@ -69,7 +70,8 @@ struct CodexTurnStepTests {
                 "aggregatedOutput": .string("a\nb"),
                 "exitCode": .number(0),
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         #expect(events == [
             .toolUse(id: "c1", name: "shell", input: .object(["command": .string("ls")]), parentToolUseId: nil),
@@ -79,6 +81,7 @@ struct CodexTurnStepTests {
 
     @Test func toolEventsFailedCommand() {
         var seq = 0
+        var parents: [String: String] = [:]
         let events = codexToolEvents(
             method: "item/completed",
             params: .object(["item": .object([
@@ -88,13 +91,15 @@ struct CodexTurnStepTests {
                 "aggregatedOutput": .string("err"),
                 "exitCode": .number(1),
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         #expect(events.contains(.toolResult(id: "c2", ok: false, content: "err", parentToolUseId: nil)))
     }
 
     @Test func toolEventsFileChange() {
         var seq = 0
+        var parents: [String: String] = [:]
         let changes: JSONValue = .array([.object([
             "path": .string("a.ts"),
             "kind": .object(["type": .string("add")]),
@@ -108,7 +113,8 @@ struct CodexTurnStepTests {
                 "status": .string("completed"),
                 "changes": changes,
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         #expect(events.count == 2)
         #expect(events[0] == .toolUse(
@@ -122,6 +128,7 @@ struct CodexTurnStepTests {
 
     @Test func toolEventsWebAndMcp() {
         var seq = 0
+        var parents: [String: String] = [:]
         let web = codexToolEvents(
             method: "item/completed",
             params: .object(["item": .object([
@@ -129,7 +136,8 @@ struct CodexTurnStepTests {
                 "id": .string("w1"),
                 "query": .string("cats"),
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         #expect(web == [
             .toolUse(id: "w1", name: "web_search", input: .object(["query": .string("cats")]), parentToolUseId: nil),
@@ -145,7 +153,8 @@ struct CodexTurnStepTests {
                 "result": .string("ok"),
                 "status": .string("completed"),
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         #expect(mcp == [
             .toolUse(id: "m1", name: "search", input: .object(["q": .string("x")]), parentToolUseId: nil),
@@ -155,13 +164,15 @@ struct CodexTurnStepTests {
 
     @Test func toolEventsMintIdWhenMissing() {
         var seq = 0
+        var parents: [String: String] = [:]
         let events = codexToolEvents(
             method: "item/completed",
             params: .object(["item": .object([
                 "type": .string("commandExecution"),
                 "command": .string("pwd"),
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         #expect(seq == 1)
         #expect(events.first == .toolUse(
@@ -174,16 +185,18 @@ struct CodexTurnStepTests {
 
     @Test func toolEventsIgnoresNonCompletedMethods() {
         var seq = 0
+        var parents: [String: String] = [:]
         #expect(codexToolEvents(method: "item/started", params: .object([
             "item": .object(["type": .string("commandExecution"), "id": .string("c")]),
-        ]), mintId: &seq).isEmpty)
+        ]), mintId: &seq, parentByThread: &parents).isEmpty)
         #expect(codexToolEvents(method: "item/agentMessage/delta", params: .object([
             "delta": .string("hi"),
-        ]), mintId: &seq).isEmpty)
+        ]), mintId: &seq, parentByThread: &parents).isEmpty)
     }
 
-    @Test func toolEventsSpawnAgent() {
+    @Test func toolEventsSpawnAgentRegistersChildThread() {
         var seq = 0
+        var parents: [String: String] = [:]
         let events = codexToolEvents(
             method: "item/completed",
             params: .object(["item": .object([
@@ -195,7 +208,8 @@ struct CodexTurnStepTests {
                 "threadId": .string("child-thread-9"),
                 "status": .string("completed"),
             ])]),
-            mintId: &seq
+            mintId: &seq,
+            parentByThread: &parents
         )
         guard case .toolUse(let id, let name, let input, _)? = events.first else {
             Issue.record("expected tool_use"); return
@@ -206,6 +220,81 @@ struct CodexTurnStepTests {
         #expect(input["agentNickname"]?.stringValue == "Scout")
         #expect(input["threadId"]?.stringValue == "child-thread-9")
         #expect(events.count == 2) // + tool_result on completed spawn
+        // TS MapContext.onSpawnThread(child, spawnToolId)
+        #expect(parents["child-thread-9"] == "spawn-1")
+    }
+
+    @Test func toolEventsAttachesParentToolUseIdFromParentByThread() {
+        // TS eventMapper.test: parentByThread child-t → spawn-1 on child-thread item.
+        var seq = 0
+        var parents: [String: String] = ["child-t": "spawn-1"]
+        let events = codexToolEvents(
+            method: "item/completed",
+            params: .object([
+                "threadId": .string("child-t"),
+                "item": .object([
+                    "type": .string("commandExecution"),
+                    "id": .string("c9"),
+                    "command": .string("pwd"),
+                    "aggregatedOutput": .string("/"),
+                    "exitCode": .number(0),
+                ]),
+            ]),
+            mintId: &seq,
+            parentByThread: &parents
+        )
+        #expect(events == [
+            .toolUse(
+                id: "c9",
+                name: "shell",
+                input: .object(["command": .string("pwd")]),
+                parentToolUseId: "spawn-1"
+            ),
+            .toolResult(id: "c9", ok: true, content: "/", parentToolUseId: "spawn-1"),
+        ])
+    }
+
+    @Test func toolEventsSpawnThenChildCommandRoundTrip() {
+        var seq = 0
+        var parents: [String: String] = [:]
+        _ = codexToolEvents(
+            method: "item/completed",
+            params: .object(["item": .object([
+                "type": .string("collabAgentToolCall"),
+                "id": .string("spawn-1"),
+                "tool": .string("spawnAgent"),
+                "threadId": .string("child-t"),
+                "status": .string("completed"),
+            ])]),
+            mintId: &seq,
+            parentByThread: &parents
+        )
+        let child = codexToolEvents(
+            method: "item/completed",
+            params: .object([
+                "threadId": .string("child-t"),
+                "item": .object([
+                    "type": .string("fileChange"),
+                    "id": .string("f-child"),
+                    "status": .string("completed"),
+                    "changes": .array([.object([
+                        "path": .string("x.ts"),
+                        "diff": .string("+x"),
+                    ])]),
+                ]),
+            ]),
+            mintId: &seq,
+            parentByThread: &parents
+        )
+        #expect(child.count == 2)
+        guard case .toolUse(_, _, _, let parentUse)? = child.first else {
+            Issue.record("expected tool_use"); return
+        }
+        guard case .toolResult(_, _, _, let parentResult)? = child.dropFirst().first else {
+            Issue.record("expected tool_result"); return
+        }
+        #expect(parentUse == "spawn-1")
+        #expect(parentResult == "spawn-1")
     }
 
     @Test func failurePaths() {
