@@ -412,6 +412,17 @@ private func configPanelActionRow(_ row: ConfigPanelRow) -> Interaction.ActionRo
                 min_values: minValues,
                 max_values: maxValues
             ))
+        case .userSelect(let customId, let placeholder, let defaultUserIds, let minValues, let maxValues):
+            let defaults: [Interaction.ActionRow.DefaultValue]? = defaultUserIds.isEmpty
+                ? nil
+                : defaultUserIds.map { Interaction.ActionRow.DefaultValue(id: UserSnowflake($0)) }
+            return .userSelect(Interaction.ActionRow.SelectMenu(
+                custom_id: customId,
+                placeholder: placeholder,
+                default_values: defaults,
+                min_values: minValues,
+                max_values: maxValues
+            ))
         case .channelSelect(let customId, let placeholder, let defaultChannelIds, let minValues, let maxValues):
             let defaults: [Interaction.ActionRow.DefaultValue]? = defaultChannelIds.isEmpty
                 ? nil

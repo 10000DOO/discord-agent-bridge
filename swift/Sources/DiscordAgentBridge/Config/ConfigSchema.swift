@@ -31,17 +31,27 @@ public struct GlobalAuth: Codable, Sendable, Equatable {
     public var adminRoleIds: [String]
     public var executeRoleIds: [String]
     public var readOnlyRoleIds: [String]
+    /// User-id-based tier grants (OR'd with the matching *RoleIds set — either satisfies the tier).
+    public var adminUserIds: [String]
+    public var executeUserIds: [String]
+    public var readOnlyUserIds: [String]
     public var dmPolicy: String
 
     public init(
         adminRoleIds: [String] = [],
         executeRoleIds: [String] = [],
         readOnlyRoleIds: [String] = [],
+        adminUserIds: [String] = [],
+        executeUserIds: [String] = [],
+        readOnlyUserIds: [String] = [],
         dmPolicy: String = "deny"
     ) {
         self.adminRoleIds = adminRoleIds
         self.executeRoleIds = executeRoleIds
         self.readOnlyRoleIds = readOnlyRoleIds
+        self.adminUserIds = adminUserIds
+        self.executeUserIds = executeUserIds
+        self.readOnlyUserIds = readOnlyUserIds
         self.dmPolicy = dmPolicy
     }
 
@@ -287,10 +297,23 @@ public struct ServerAuthPartial: Codable, Sendable, Equatable {
     public var adminRoleIds: [String]?
     public var executeRoleIds: [String]?
     public var readOnlyRoleIds: [String]?
-    public init(adminRoleIds: [String]? = nil, executeRoleIds: [String]? = nil, readOnlyRoleIds: [String]? = nil) {
+    public var adminUserIds: [String]?
+    public var executeUserIds: [String]?
+    public var readOnlyUserIds: [String]?
+    public init(
+        adminRoleIds: [String]? = nil,
+        executeRoleIds: [String]? = nil,
+        readOnlyRoleIds: [String]? = nil,
+        adminUserIds: [String]? = nil,
+        executeUserIds: [String]? = nil,
+        readOnlyUserIds: [String]? = nil
+    ) {
         self.adminRoleIds = adminRoleIds
         self.executeRoleIds = executeRoleIds
         self.readOnlyRoleIds = readOnlyRoleIds
+        self.adminUserIds = adminUserIds
+        self.executeUserIds = executeUserIds
+        self.readOnlyUserIds = readOnlyUserIds
     }
 }
 
@@ -512,6 +535,9 @@ func configDefaultsDict() -> [String: Any] {
             "adminRoleIds": [String](),
             "executeRoleIds": [String](),
             "readOnlyRoleIds": [String](),
+            "adminUserIds": [String](),
+            "executeUserIds": [String](),
+            "readOnlyUserIds": [String](),
             "dmPolicy": "deny",
         ] as [String: Any],
         "defaults": [

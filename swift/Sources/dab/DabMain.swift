@@ -102,7 +102,7 @@ struct EventHandler: GatewayEventHandler {
         // READY only carries UnavailableGuild stubs; full guilds arrive as GuildCreate (boot + join).
         await BotGatewayIdentity.shared.setUserId(user.id.rawValue)
         print("dab: auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
-        await registerAgentCommand(appId: payload.application.id)
+        await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
         await startAutoUpdater(client: client)
@@ -115,14 +115,44 @@ struct EventHandler: GatewayEventHandler {
         let guildId = payload.id.rawValue
         let botId = await BotGatewayIdentity.shared.getUserId()
         let canManage = botCanManageChannels(guild: payload, botUserId: botId)
+        // (OK-2) cache owner + admin-flagged role ids so the message path can compute
+        // isAdministrator without gateway-provided member.permissions (Q1).
+        let adminRoleIds = Set(payload.roles.filter { $0.permissions.contains(.administrator) }.map(\.id.rawValue))
+        await GuildAdminCache.shared.setGuild(guildId: guildId, ownerId: payload.owner_id.rawValue, adminRoleIds: adminRoleIds)
         // Never throws — autoProvisionGuild swallows create failures so one guild never kills ready.
         await runAutoProvisionGuild(client: client, guildId: guildId, manageChannels: canManage)
+    }
+
+    /// Q1-b: keep GuildAdminCache current when a role's Administrator bit (or the role itself)
+    /// changes, so the message path reflects it without a restart.
+    func onGuildRoleCreate(_ payload: Gateway.GuildRole) async throws {
+        await GuildAdminCache.shared.setRoleIsAdmin(
+            guildId: payload.guild_id.rawValue,
+            roleId: payload.role.id.rawValue,
+            isAdmin: payload.role.permissions.contains(.administrator)
+        )
+    }
+
+    func onGuildRoleUpdate(_ payload: Gateway.GuildRole) async throws {
+        await GuildAdminCache.shared.setRoleIsAdmin(
+            guildId: payload.guild_id.rawValue,
+            roleId: payload.role.id.rawValue,
+            isAdmin: payload.role.permissions.contains(.administrator)
+        )
+    }
+
+    func onGuildRoleDelete(_ payload: Gateway.GuildRoleDelete) async throws {
+        await GuildAdminCache.shared.removeRole(guildId: payload.guild_id.rawValue, roleId: payload.role_id.rawValue)
     }
 
     /// G5: on boot, load persisted sessions and repopulate the routing map so prefix-less messages
     /// reach the saved backend. Does NOT spawn any backend — resume is lazy on the first message.
     /// Skips archived bindings (TS resumeAll filters `archived == true`).
     private func restoreSessionBindings() async {
+        let imported = await LegacyStateImport.runIfNeeded()
+        if imported > 0 {
+            print("dab: imported \(imported) channel binding(s) from legacy state.json")
+        }
         await SessionStore.shared.load()
         let active = await SessionStore.shared.active()
         for (channelId, ps) in active {
@@ -135,10 +165,12 @@ struct EventHandler: GatewayEventHandler {
     }
 
     /// Register slash commands (W11-d set). Dev: instant per-guild via `DAB_DEV_GUILD_ID`; else global (~1h).
-    private func registerAgentCommand(appId: ApplicationSnowflake) async {
+    /// `guildIds`: every guild the bot belongs to (Ready.guilds) — used only for the post-register sweep below.
+    private func registerAgentCommand(appId: ApplicationSnowflake, guildIds: [String]) async {
         let cmds = allCommandPayloads()
+        let devGuildId = ProcessInfo.processInfo.environment["DAB_DEV_GUILD_ID"].flatMap { $0.isEmpty ? nil : $0 }
         do {
-            if let g = ProcessInfo.processInfo.environment["DAB_DEV_GUILD_ID"], !g.isEmpty {
+            if let g = devGuildId {
                 _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(g), payload: cmds)
                 print("dab: registered \(cmds.map(\.name).joined(separator: ", ")) to guild \(g)")
             } else {
@@ -147,6 +179,15 @@ struct EventHandler: GatewayEventHandler {
             }
         } catch {
             print("dab: slash register failed: \(error)")
+        }
+        // (OK-2 leftover) Q2: sweep guild-scoped commands left by a predecessor that registered
+        // per-guild (e.g. the old TS bridge) — every boot, global-registration mode only.
+        await sweepStaleGuildCommands(knownGuildIds: guildIds, devGuildId: devGuildId) { guildId in
+            do {
+                _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(guildId), payload: [])
+            } catch {
+                print("dab: guild command cleanup failed for \(guildId): \(error)")
+            }
         }
     }
 
@@ -252,17 +293,28 @@ struct EventHandler: GatewayEventHandler {
             ? .admin : .drive
         // G-P0-05: per-project ACL from store narrows (nil = no extra gate).
         let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
-        let decision = await Authorizer(config: .shared).authorize(
-            AuthInput(
-                userId: actorId,
-                roleIds: payload.member?.roles.map(\.rawValue) ?? [],
-                action: authAction,
-                guildId: payload.guild_id?.rawValue,
-                channelId: channelId,
-                isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
-            ),
-            projectAuth: projectAuth
-        )
+        // First-admin bootstrap: a guild with NO admin roles/users yet lets /setup through
+        // unconditionally so whoever runs it first can claim admin without touching Discord's own
+        // role UI. Fires at most once per guild — adminUserIds is no longer empty afterward.
+        let setupBootstrap: Bool
+        if cmd.name == "setup", let bootstrapGuildId = payload.guild_id?.rawValue {
+            setupBootstrap = await Authorizer(config: .shared).isSetupBootstrapEligible(guildId: bootstrapGuildId)
+        } else {
+            setupBootstrap = false
+        }
+        let decision = setupBootstrap
+            ? AuthResult(allowed: true, tier: .admin)
+            : await Authorizer(config: .shared).authorize(
+                AuthInput(
+                    userId: actorId,
+                    roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                    action: authAction,
+                    guildId: payload.guild_id?.rawValue,
+                    channelId: channelId,
+                    isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
+                ),
+                projectAuth: projectAuth
+            )
         guard decision.allowed else {
             await AuditLog.shared.record(AuditEntry(
                 actorId: actorId,
@@ -564,6 +616,9 @@ struct EventHandler: GatewayEventHandler {
             let store = ConfigStore.shared
             let existing = await store.loadServerConfig(guildId: realGuildId)?.channels
             if await isGuildChannelsAlreadyDone(existing: existing, provisioner: provisioner) {
+                if setupBootstrap {
+                    await registerSetupBootstrapAdmin(guildId: realGuildId, userId: actorId)
+                }
                 let control = existing?.controlChannelId ?? ""
                 try await respondEphemeral(
                     payload,
@@ -573,6 +628,9 @@ struct EventHandler: GatewayEventHandler {
             }
             do {
                 let channels = try await ensureGuildChannels(provisioner: provisioner, configStore: store)
+                if setupBootstrap {
+                    await registerSetupBootstrapAdmin(guildId: realGuildId, userId: actorId)
+                }
                 try await respondEphemeral(
                     payload,
                     I18n.t("cmd.setup.done", ["control": "<#\(channels.controlChannelId)>"])
@@ -720,6 +778,17 @@ struct EventHandler: GatewayEventHandler {
 
         default:
             return
+        }
+    }
+
+    /// First-admin bootstrap follow-up: commits the /setup actor as this guild's first admin.
+    /// Called only when `setupBootstrap` fired (guild had no admin roles/users yet). Best-effort —
+    /// a write failure is logged but does not block the /setup success reply (it already ran).
+    private func registerSetupBootstrapAdmin(guildId: String, userId: String) async {
+        do {
+            try await ConfigStore.shared.addServerAdminUserId(guildId: guildId, userId: userId)
+        } catch {
+            print("dab: setup bootstrap admin registration failed guild=\(guildId) user=\(userId): \(error)")
         }
     }
 
@@ -944,6 +1013,16 @@ struct EventHandler: GatewayEventHandler {
                 payload: .updateMessage(.init(embeds: embeds, components: rows))
             )
         case .renderPanel(let sub):
+            let (embeds, rows) = discordPayload(from: sub)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    embeds: embeds,
+                    flags: [.ephemeral],
+                    components: rows
+                ))
+            )
+        case .accessPanel(let sub):
             let (embeds, rows) = discordPayload(from: sub)
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
@@ -1698,13 +1777,23 @@ struct EventHandler: GatewayEventHandler {
         let guildId = payload.guild_id?.rawValue ?? "dm"
 
         // Deny-by-default authorization gate (W13-a). This is the single funnel all four execute
-        // routes (prefix*/bound) converge on (D4). Message path grants NO Administrator promotion
-        // (Q2) — the gateway message event does not carry member.permissions, so isAdministrator
-        // stays false (fail-secure); only role tiers / dmPolicy apply.
+        // routes (prefix*/bound) converge on (D4). The gateway message event does not carry a
+        // pre-computed member.permissions (unlike interactions), so isAdministrator is computed
+        // from GuildAdminCache (OK-2 fix) — owner id / admin-flagged role ids captured on
+        // GuildCreate and kept current via onGuildRoleCreate/Update/Delete (Q1-b). DMs (no
+        // guild_id) stay false — dmPolicy is authoritative there.
         // G-P0-05: store projectAuth intersects (narrows only) when present on the binding.
+        var isAdmin = false
+        if let gid = payload.guild_id?.rawValue {
+            isAdmin = await GuildAdminCache.shared.isAdministrator(
+                guildId: gid,
+                userId: actorId,
+                roleIds: payload.member?.roles?.map(\.rawValue) ?? []
+            )
+        }
         let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
-            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: false),
+            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: isAdmin),
             projectAuth: projectAuth
         )
         let tier = decision.tier?.rawValue ?? "none"

@@ -120,8 +120,22 @@ public struct Authorizer: Sendable {
             adminRoleIds: s?.adminRoleIds ?? global.adminRoleIds,
             executeRoleIds: s?.executeRoleIds ?? global.executeRoleIds,
             readOnlyRoleIds: s?.readOnlyRoleIds ?? global.readOnlyRoleIds,
+            adminUserIds: s?.adminUserIds ?? global.adminUserIds,
+            executeUserIds: s?.executeUserIds ?? global.executeUserIds,
+            readOnlyUserIds: s?.readOnlyUserIds ?? global.readOnlyUserIds,
             dmPolicy: global.dmPolicy
         )
+    }
+
+    /// True when this guild's EFFECTIVE admin allowlists (role + user, server-over-global) are
+    /// both empty — a guild that has never had an admin bootstrapped. `/setup` uses this to grant
+    /// itself once, without an existing Discord Administrator or role, so the first person to run
+    /// it can claim admin. Stops firing the moment any admin role/user exists (widen-once).
+    public func isSetupBootstrapEligible(guildId: String) async -> Bool {
+        let global = await config.loadAuth()
+        let server = await config.loadServerConfig(guildId: guildId)
+        let effective = Self.effectiveAuth(global: global, server: server)
+        return effective.adminRoleIds.isEmpty && effective.adminUserIds.isEmpty
     }
 
     // Resolve the actor's highest tier, then check it clears the action's minimum tier and
@@ -133,7 +147,7 @@ public struct Authorizer: Sendable {
             return AuthResult(allowed: true, tier: .admin)
         }
 
-        guard let tier = resolveTier(auth, input.roleIds) else {
+        guard let tier = resolveTier(auth, input.roleIds, input.userId) else {
             return AuthResult(allowed: false, reason: "No authorized role for this actor (fail-secure).")
         }
 
@@ -156,13 +170,15 @@ public struct Authorizer: Sendable {
         return AuthResult(allowed: true, tier: tier)
     }
 
-    // Highest tier the actor's roles grant, or nil if none match (deny-by-default).
-    private func resolveTier(_ auth: GlobalAuth, _ roleIds: [String]) -> RoleTier? {
+    // Highest tier the actor's roles OR user id grant, or nil if none match (deny-by-default).
+    private func resolveTier(_ auth: GlobalAuth, _ roleIds: [String], _ userId: String) -> RoleTier? {
         let roles = Set(roleIds)
-        func has(_ allow: [String]) -> Bool { allow.contains { roles.contains($0) } }
-        if has(auth.adminRoleIds) { return .admin }
-        if has(auth.executeRoleIds) { return .execute }
-        if has(auth.readOnlyRoleIds) { return .readOnly }
+        func has(_ allowRoles: [String], _ allowUsers: [String]) -> Bool {
+            allowRoles.contains { roles.contains($0) } || allowUsers.contains(userId)
+        }
+        if has(auth.adminRoleIds, auth.adminUserIds) { return .admin }
+        if has(auth.executeRoleIds, auth.executeUserIds) { return .execute }
+        if has(auth.readOnlyRoleIds, auth.readOnlyUserIds) { return .readOnly }
         return nil
     }
 }

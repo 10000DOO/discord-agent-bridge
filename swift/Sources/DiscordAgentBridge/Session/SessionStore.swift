@@ -179,7 +179,8 @@ public actor SessionStore {
         self.fileURL = fileURL ?? Self.defaultFileURL()
     }
 
-    private static func defaultFileURL() -> URL {
+    // internal (not private): LegacyStateImport needs this exact path to gate its one-time import.
+    static func defaultFileURL() -> URL {
         let env = ProcessInfo.processInfo.environment
         let dir: URL
         if let home = env["DAB_HOME"], !home.isEmpty {

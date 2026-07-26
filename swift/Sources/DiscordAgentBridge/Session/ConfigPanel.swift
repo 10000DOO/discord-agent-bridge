@@ -39,6 +39,11 @@ public enum ConfigPanelIds {
     public static let renderToggle = "config.render.toggle"
     public static let renderInstall = "config.render.install"
     public static let renderDecline = "config.render.decline"
+    public static let accessOpen = "config.access.open"
+    public static let accessAdmin = "config.access.admin"
+    public static let accessExecute = "config.access.execute"
+    public static let accessReadOnly = "config.access.readOnly"
+    public static let accessSave = "config.access.save"
 }
 
 /// True when a component id belongs to a `/config` panel (router routing predicate).
@@ -52,6 +57,10 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
     public var adminRoleIds: [String]
     public var executeRoleIds: [String]
     public var readOnlyRoleIds: [String]
+    /// Direct user-id tiers (D절 신규 기능) — OR'd with the role tiers above by `Authorizer`.
+    public var adminUserIds: [String]
+    public var executeUserIds: [String]
+    public var readOnlyUserIds: [String]
     public var backend: String
     public var permMode: String
     public var dmPolicy: String
@@ -68,6 +77,9 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
         adminRoleIds: [String],
         executeRoleIds: [String],
         readOnlyRoleIds: [String],
+        adminUserIds: [String] = [],
+        executeUserIds: [String] = [],
+        readOnlyUserIds: [String] = [],
         backend: String,
         permMode: String,
         dmPolicy: String,
@@ -79,6 +91,9 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
         self.adminRoleIds = adminRoleIds
         self.executeRoleIds = executeRoleIds
         self.readOnlyRoleIds = readOnlyRoleIds
+        self.adminUserIds = adminUserIds
+        self.executeUserIds = executeUserIds
+        self.readOnlyUserIds = readOnlyUserIds
         self.backend = backend
         self.permMode = permMode
         self.dmPolicy = dmPolicy
@@ -162,6 +177,8 @@ public enum ConfigPanelResult: Sendable, Equatable {
     case renderUpdated(ConfigPanelSubView)
     /// Install Chromium — router runs ChromiumProvisioner.
     case renderInstall
+    /// 👤 opened user-access sub-panel (fresh ephemeral message).
+    case accessPanel(ConfigPanelSubView)
     case ignored
 }
 
@@ -172,6 +189,13 @@ public enum ConfigPanelComponent: Sendable, Equatable {
         customId: String,
         placeholder: String,
         defaultRoleIds: [String],
+        minValues: Int,
+        maxValues: Int
+    )
+    case userSelect(
+        customId: String,
+        placeholder: String,
+        defaultUserIds: [String],
         minValues: Int,
         maxValues: Int
     )
@@ -220,6 +244,13 @@ private struct PendingRoles {
     var readOnlyRoleIds: [String]?
 }
 
+/// Mirrors `PendingRoles` for the Access sub-panel's user-id tiers (D절 신규 기능).
+private struct PendingUsers {
+    var adminUserIds: [String]?
+    var executeUserIds: [String]?
+    var readOnlyUserIds: [String]?
+}
+
 private enum RoleTierKey {
     case admin, execute, readOnly
 }
@@ -239,6 +270,7 @@ public final class ConfigPanel: @unchecked Sendable {
     private let efforts: [ModelChoice]
     private let permModes: [ModelChoice]
     private var pending = PendingRoles()
+    private var pendingUsers = PendingUsers()
 
     public init(options: ConfigPanelOptions) {
         self.ownerId = options.ownerId
@@ -259,6 +291,11 @@ public final class ConfigPanel: @unchecked Sendable {
             // Absent values = malformed; ignore (never blank a tier from a glitch).
             guard let values = input.values else { return .ignored }
             setTier(tier, roleIds: values)
+            return .pending
+        }
+        if let tier = Self.accessTier(for: input.id) {
+            guard let values = input.values else { return .ignored }
+            setUserTier(tier, userIds: values)
             return .pending
         }
         switch input.id {
@@ -296,6 +333,10 @@ public final class ConfigPanel: @unchecked Sendable {
             return .renderInstall
         case ConfigPanelIds.renderDecline:
             return await declineChromium()
+        case ConfigPanelIds.accessOpen:
+            return .accessPanel(renderAccess())
+        case ConfigPanelIds.accessSave:
+            return await saveAccess()
         case ConfigPanelIds.save:
             return await saveRoles()
         default:
@@ -335,6 +376,11 @@ public final class ConfigPanel: @unchecked Sendable {
         let renderBtn = ConfigPanelComponent.button(
             customId: ConfigPanelIds.renderOpen,
             label: "🖼 Image render",
+            style: .secondary
+        )
+        let accessBtn = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.accessOpen,
+            label: "👤 Access",
             style: .secondary
         )
 
@@ -386,7 +432,7 @@ public final class ConfigPanel: @unchecked Sendable {
                 ConfigPanelRow(components: [admin]),
                 ConfigPanelRow(components: [exec]),
                 ConfigPanelRow(components: [read]),
-                ConfigPanelRow(components: [save, notif, renderBtn]),
+                ConfigPanelRow(components: [save, notif, renderBtn, accessBtn]),
                 // 5th row: locale (defaultRows already at Discord's 5-row budget with dmPolicy).
                 ConfigPanelRow(components: [localeSelect]),
             ],
@@ -411,6 +457,15 @@ public final class ConfigPanel: @unchecked Sendable {
         }
     }
 
+    private static func accessTier(for id: String) -> RoleTierKey? {
+        switch id {
+        case ConfigPanelIds.accessAdmin: return .admin
+        case ConfigPanelIds.accessExecute: return .execute
+        case ConfigPanelIds.accessReadOnly: return .readOnly
+        default: return nil
+        }
+    }
+
     private func setTier(_ tier: RoleTierKey, roleIds: [String]) {
         // De-dupe while preserving order.
         var seen = Set<String>()
@@ -419,6 +474,16 @@ public final class ConfigPanel: @unchecked Sendable {
         case .admin: pending.adminRoleIds = unique
         case .execute: pending.executeRoleIds = unique
         case .readOnly: pending.readOnlyRoleIds = unique
+        }
+    }
+
+    private func setUserTier(_ tier: RoleTierKey, userIds: [String]) {
+        var seen = Set<String>()
+        let unique = userIds.filter { seen.insert($0).inserted }
+        switch tier {
+        case .admin: pendingUsers.adminUserIds = unique
+        case .execute: pendingUsers.executeUserIds = unique
+        case .readOnly: pendingUsers.readOnlyUserIds = unique
         }
     }
 
@@ -459,6 +524,87 @@ public final class ConfigPanel: @unchecked Sendable {
         backend=\(d.backend) model=\(d.model) effort=\(d.effort) perm=\(d.permMode) dmPolicy=\(d.dmPolicy)
         """
         return .saved(summary: summary)
+    }
+
+    // MARK: Access (user-id tiers, D절 신규 기능)
+
+    /// Commits the pending user-id tiers. Mirrors `saveRoles()` exactly (same `.saved`
+    /// result — Save always finalizes the whole `/config` session, panel included).
+    private func saveAccess() async -> ConfigPanelResult {
+        let existing = await store.loadServerConfig(guildId: guildId)
+        let d = defaults
+        let adminUserIds = pendingUsers.adminUserIds ?? existing?.auth?.adminUserIds ?? d.adminUserIds
+        let executeUserIds = pendingUsers.executeUserIds ?? existing?.auth?.executeUserIds ?? d.executeUserIds
+        let readOnlyUserIds = pendingUsers.readOnlyUserIds ?? existing?.auth?.readOnlyUserIds ?? d.readOnlyUserIds
+
+        var auth = existing?.auth ?? ServerAuthPartial()
+        auth.adminUserIds = adminUserIds
+        auth.executeUserIds = executeUserIds
+        auth.readOnlyUserIds = readOnlyUserIds
+
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.auth = auth
+
+        do {
+            try await store.saveServerConfig(next)
+        } catch {
+            return .autosaved(notice: "유저 권한 저장 실패: \(error)")
+        }
+
+        defaults.adminUserIds = adminUserIds
+        defaults.executeUserIds = executeUserIds
+        defaults.readOnlyUserIds = readOnlyUserIds
+        pendingUsers = PendingUsers()
+
+        let summary = """
+        유저 권한을 저장했습니다.
+        admin: \(formatUserList(adminUserIds))
+        execute: \(formatUserList(executeUserIds))
+        read-only: \(formatUserList(readOnlyUserIds))
+        """
+        return .saved(summary: summary)
+    }
+
+    private func renderAccess() -> ConfigPanelSubView {
+        let d = defaults
+        let admin = userSelect(
+            ConfigPanelIds.accessAdmin,
+            placeholder: "Admin users",
+            defaultUserIds: pendingUsers.adminUserIds ?? d.adminUserIds
+        )
+        let exec = userSelect(
+            ConfigPanelIds.accessExecute,
+            placeholder: "Execute users",
+            defaultUserIds: pendingUsers.executeUserIds ?? d.executeUserIds
+        )
+        let read = userSelect(
+            ConfigPanelIds.accessReadOnly,
+            placeholder: "Read-only users",
+            defaultUserIds: pendingUsers.readOnlyUserIds ?? d.readOnlyUserIds
+        )
+        let save = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.accessSave,
+            label: "Save access",
+            style: .success
+        )
+        return ConfigPanelSubView(
+            title: "User access (admin/execute/read-only)",
+            description: """
+            Grant tiers directly by Discord user id, independent of roles.
+            admin: \(formatUserList(pendingUsers.adminUserIds ?? d.adminUserIds))
+            execute: \(formatUserList(pendingUsers.executeUserIds ?? d.executeUserIds))
+            read-only: \(formatUserList(pendingUsers.readOnlyUserIds ?? d.readOnlyUserIds))
+            Picks batch until **Save access**.
+            """,
+            rows: [
+                ConfigPanelRow(components: [admin]),
+                ConfigPanelRow(components: [exec]),
+                ConfigPanelRow(components: [read]),
+                ConfigPanelRow(components: [save]),
+            ]
+        )
     }
 
     private func autosaveBackend(_ backend: String) async -> ConfigPanelResult {
@@ -717,6 +863,20 @@ public final class ConfigPanel: @unchecked Sendable {
         )
     }
 
+    private func userSelect(
+        _ customId: String,
+        placeholder: String,
+        defaultUserIds: [String]
+    ) -> ConfigPanelComponent {
+        .userSelect(
+            customId: customId,
+            placeholder: placeholder,
+            defaultUserIds: defaultUserIds,
+            minValues: 0,
+            maxValues: 25
+        )
+    }
+
     private func buildDescription() -> String {
         let d = defaults
         let lim = d.limits
@@ -748,6 +908,11 @@ public func localeLabel(_ locale: String) -> String {
 private func formatRoleList(_ roleIds: [String]) -> String {
     if roleIds.isEmpty { return "—" }
     return roleIds.map { "<@&\($0)>" }.joined(separator: ", ")
+}
+
+private func formatUserList(_ userIds: [String]) -> String {
+    if userIds.isEmpty { return "—" }
+    return userIds.map { "<@\($0)>" }.joined(separator: ", ")
 }
 
 /// Build string-select options (≤25). Ensures the current value is present and marked default.
@@ -795,6 +960,9 @@ public func configPanelDefaults(
         adminRoleIds: effective.adminRoleIds,
         executeRoleIds: effective.executeRoleIds,
         readOnlyRoleIds: effective.readOnlyRoleIds,
+        adminUserIds: effective.adminUserIds,
+        executeUserIds: effective.executeUserIds,
+        readOnlyUserIds: effective.readOnlyUserIds,
         backend: backend,
         permMode: perm,
         dmPolicy: global.auth.dmPolicy,

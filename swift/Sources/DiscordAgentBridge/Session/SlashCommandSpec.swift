@@ -229,3 +229,18 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         updateCommandSpec(),
     ]
 }
+
+/// Runs `clear` once per guild the bot currently belongs to, so guild-scoped commands left by a
+/// predecessor that registered per-guild (e.g. a decommissioned client) don't linger alongside the
+/// global set (OK-2 leftover). Global-registration boots only — dev boots (`DAB_DEV_GUILD_ID` set)
+/// register on purpose to exactly one guild and must be skipped entirely, so that guild is never swept.
+public func sweepStaleGuildCommands(
+    knownGuildIds: [String],
+    devGuildId: String?,
+    clear: (String) async -> Void
+) async {
+    guard devGuildId == nil else { return }
+    for guildId in knownGuildIds {
+        await clear(guildId)
+    }
+}

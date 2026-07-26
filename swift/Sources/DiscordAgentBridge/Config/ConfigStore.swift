@@ -209,6 +209,50 @@ public actor ConfigStore {
         return true
     }
 
+    /// Register `userId` as a server-scoped admin (auth.adminUserIds) for `guildId`. Used by the
+    /// first-admin bootstrap: /setup grants itself once when a guild has no admins yet, then
+    /// commits the actor as that guild's first admin. Idempotent — already-registered is a no-op.
+    /// Preserves all other server fields (mirrors addServerPreset's read-modify-write-and-verify).
+    public func addServerAdminUserId(guildId: String, userId: String) throws {
+        let existing = loadServerConfig(guildId: guildId)
+        var ids = existing?.auth?.adminUserIds ?? []
+        guard !ids.contains(userId) else { return }
+        ids.append(userId)
+        var auth = existing?.auth ?? ServerAuthPartial()
+        auth.adminUserIds = ids
+        let next = ServerConfig(
+            version: existing?.version ?? CONFIG_VERSION,
+            guildId: guildId,
+            auth: auth,
+            defaults: existing?.defaults,
+            limits: existing?.limits,
+            locale: existing?.locale,
+            auditChannelId: existing?.auditChannelId,
+            favorites: existing?.favorites,
+            presets: existing?.presets,
+            channels: existing?.channels,
+            notifications: existing?.notifications,
+            capabilities: existing?.capabilities
+        )
+        var lastErr: Error?
+        for _ in 0..<3 {
+            do {
+                try saveServerConfig(next)
+                let reloaded = loadServerConfig(guildId: guildId)
+                if reloaded?.auth?.adminUserIds?.contains(userId) == true {
+                    return
+                }
+                lastErr = ConfigStoreError.validation(
+                    "admin userId \(userId) not found after save (read-after-write verification failed)"
+                )
+            } catch {
+                lastErr = error
+            }
+        }
+        throw lastErr
+            ?? ConfigStoreError.validation("admin bootstrap save verification failed for guild \(guildId)")
+    }
+
     // MARK: - Nice-to-have (cheap)
 
     /// Append tool to global autoAllowClaudeTools (§7A/§8.1 always-allow). Idempotent: a tool
@@ -277,6 +321,9 @@ public actor ConfigStore {
             adminRoleIds: auth.adminRoleIds ?? [],
             executeRoleIds: auth.executeRoleIds ?? [],
             readOnlyRoleIds: auth.readOnlyRoleIds ?? [],
+            adminUserIds: auth.adminUserIds ?? [],
+            executeUserIds: auth.executeUserIds ?? [],
+            readOnlyUserIds: auth.readOnlyUserIds ?? [],
             dmPolicy: auth.dmPolicy ?? "deny"
         )
     }
@@ -288,6 +335,9 @@ public actor ConfigStore {
         var adminRoleIds: [String]?
         var executeRoleIds: [String]?
         var readOnlyRoleIds: [String]?
+        var adminUserIds: [String]?
+        var executeUserIds: [String]?
+        var readOnlyUserIds: [String]?
         var dmPolicy: String?
     }
 
