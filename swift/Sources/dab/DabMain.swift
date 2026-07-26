@@ -92,7 +92,10 @@ struct DabMain {
         }
         // G-P1-01: turn idle watchdog (~3 min no activity → one channel notice).
         await IdleWatchdog.shared.setPoster { channelId, content in
-            _ = try? await client.createMessage(
+            // C14: retry-wrapped (no guildId in scope here — onGone omitted, the live
+            // channelDelete event / boot resumeAll already cover cleanup).
+            _ = await createMessageWithRetry(
+                client: client,
                 channelId: ChannelSnowflake(channelId),
                 payload: .init(content: content)
             )
@@ -477,11 +480,17 @@ struct EventHandler: GatewayEventHandler {
                             : noSession
                     )
                     if ok, let ch = payload.channel_id {
-                        _ = try? await client.createMessage(
+                        _ = await createMessageWithRetry(
+                            client: client,
                             channelId: ch,
                             payload: .init(content:
                                 I18n.t("cmd.mode.freshContext", ["backend": backend.rawValue])
-                            )
+                            ),
+                            onGone: {
+                                await SessionLifecycle.shared.stopChannel(
+                                    channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                                )
+                            }
                         )
                     }
                     return
@@ -1376,11 +1385,18 @@ struct EventHandler: GatewayEventHandler {
                         payload: .updateMessage(.init(content: text, embeds: [], components: []))
                     )
                     if ok, let ch = payload.channel_id {
-                        _ = try? await client.createMessage(
+                        let gid = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
+                        _ = await createMessageWithRetry(
+                            client: client,
                             channelId: ch,
                             payload: .init(content:
                                 "⚠️ \(p.backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
-                            )
+                            ),
+                            onGone: {
+                                await SessionLifecycle.shared.stopChannel(
+                                    channelId: p.channelId, actorId: "system", guildId: gid, roleTier: "execute"
+                                )
+                            }
                         )
                     }
                 } else {
@@ -1812,9 +1828,15 @@ struct EventHandler: GatewayEventHandler {
         case .ignore:
             return
         case .usage(let label):
-            _ = try? await client.createMessage(
+            _ = await createMessageWithRetry(
+                client: client,
                 channelId: payload.channel_id,
-                payload: .init(content: "Usage: `\(label) <prompt>`")
+                payload: .init(content: "Usage: `\(label) <prompt>`"),
+                onGone: {
+                    await SessionLifecycle.shared.stopChannel(
+                        channelId: channelId, actorId: "system", guildId: payload.guild_id?.rawValue ?? "dm", roleTier: "execute"
+                    )
+                }
             )
         case .prefixClaude(let text):
             await runAndReply(.claude, payload, text: text, binding: nil)
@@ -1858,9 +1880,15 @@ struct EventHandler: GatewayEventHandler {
         let tier = decision.tier?.rawValue ?? "none"
         guard decision.allowed else {
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "drive", mode: backend.rawValue, outcome: decision.reason, status: "denied"))
-            _ = try? await client.createMessage(
+            _ = await createMessageWithRetry(
+                client: client,
                 channelId: payload.channel_id,
-                payload: .init(content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]))
+                payload: .init(content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"])),
+                onGone: {
+                    await SessionLifecycle.shared.stopChannel(
+                        channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                    )
+                }
             )
             return
         }
@@ -1879,9 +1907,15 @@ struct EventHandler: GatewayEventHandler {
                 turnFiles = try await downloadAttachments(cwd: cwd, attachments: incoming)
             } catch {
                 print("dab: attachment download failed channel=\(channelId) err=\(error)")
-                _ = try? await client.createMessage(
+                _ = await createMessageWithRetry(
+                    client: client,
                     channelId: payload.channel_id,
-                    payload: .init(content: "첨부 처리 실패: \(error)")
+                    payload: .init(content: "첨부 처리 실패: \(error)"),
+                    onGone: {
+                        await SessionLifecycle.shared.stopChannel(
+                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                        )
+                    }
                 )
                 return
             }
@@ -1977,7 +2011,16 @@ struct EventHandler: GatewayEventHandler {
             )
             // W11-g slice1: optional done-line footer (cost/tokens/duration) after answer chunks.
             if let usage = turn.usage, let line = buildResultLine(usage) {
-                _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: line))
+                _ = await createMessageWithRetry(
+                    client: client,
+                    channelId: payload.channel_id,
+                    payload: .init(content: line),
+                    onGone: {
+                        await SessionLifecycle.shared.stopChannel(
+                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                        )
+                    }
+                )
             }
             // W11-g slice2/4: usage embed — caps.usagePanel only (TS RendererDispatcher).
             var usageSnap: UsageResult? = nil
@@ -2007,15 +2050,27 @@ struct EventHandler: GatewayEventHandler {
                     ctxUsage: turn.contextUsage,
                     extras: embedExtras
                 ) {
-                    _ = try? await client.createMessage(
+                    _ = await createMessageWithRetry(
+                        client: client,
                         channelId: payload.channel_id,
-                        payload: .init(embeds: [discordEmbed(from: spec)])
+                        payload: .init(embeds: [discordEmbed(from: spec)]),
+                        onGone: {
+                            await SessionLifecycle.shared.stopChannel(
+                                channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                            )
+                        }
                     )
                 } else if let ctx = turn.contextUsage {
                     // Fallback: plain context line when no panel fields (no OAuth / tools).
-                    _ = try? await client.createMessage(
+                    _ = await createMessageWithRetry(
+                        client: client,
                         channelId: payload.channel_id,
-                        payload: .init(content: formatContextUsageLine(ctx))
+                        payload: .init(content: formatContextUsageLine(ctx)),
+                        onGone: {
+                            await SessionLifecycle.shared.stopChannel(
+                                channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                            )
+                        }
                     )
                 }
             }
@@ -2023,17 +2078,29 @@ struct EventHandler: GatewayEventHandler {
             // Always (not usagePanel-gated) — matches TS RendererDispatcher.rateLimit.
             if let rl = turn.rateLimit {
                 let line = formatRateLimitLine(rl, usage: usageSnap)
-                _ = try? await client.createMessage(
+                _ = await createMessageWithRetry(
+                    client: client,
                     channelId: payload.channel_id,
-                    payload: .init(content: line)
+                    payload: .init(content: line),
+                    onGone: {
+                        await SessionLifecycle.shared.stopChannel(
+                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                        )
+                    }
                 )
             }
             // W11-g slice2: mentionOnComplete — ping session owner (binding) or message author.
             let ownerId = await resolveOwnerId(channelId: channelId, messageAuthorId: actorId)
             if let mention = mentionOnCompleteContent(ownerId: ownerId) {
-                _ = try? await client.createMessage(
+                _ = await createMessageWithRetry(
+                    client: client,
                     channelId: payload.channel_id,
-                    payload: .init(content: mention)
+                    payload: .init(content: mention),
+                    onGone: {
+                        await SessionLifecycle.shared.stopChannel(
+                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                        )
+                    }
                 )
             }
             // W16-g: status-channel notification (result + rate_limit when present).
@@ -2075,7 +2142,16 @@ struct EventHandler: GatewayEventHandler {
             let msg = "⚠️ \(error.localizedDescription)"
             print("dab: \(backend.rawValue) turn failed: \(error)")
             for chunk in DiscordText.chunkMessage(msg) {
-                _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: chunk))
+                _ = await createMessageWithRetry(
+                    client: client,
+                    channelId: payload.channel_id,
+                    payload: .init(content: chunk),
+                    onGone: {
+                        await SessionLifecycle.shared.stopChannel(
+                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                        )
+                    }
+                )
             }
             // W16-g: status-channel error notification.
             let errEv = AgentEvent.error(message: error.localizedDescription, retryable: true)
@@ -2471,7 +2547,10 @@ func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) 
     let detail = prompt.detail.map { ": `\($0)`" } ?? ""
     let mention = prompt.approverId.map { " <@\($0)>" } ?? ""
     let content = "🔐 \(I18n.t("perm.request.title"))\(mention): **\(prompt.toolName)**\(detail)"
-    _ = try? await client.createMessage(
+    // C14: retry-wrapped (PermissionPrompt carries no guildId — onGone omitted, same as the
+    // idle watchdog poster above).
+    _ = await createMessageWithRetry(
+        client: client,
         channelId: ChannelSnowflake(prompt.channelId),
         payload: .init(content: content, components: [row])
     )

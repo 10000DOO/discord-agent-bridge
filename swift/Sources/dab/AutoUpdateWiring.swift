@@ -130,7 +130,11 @@ func postUpdatePromptToControlChannels(client: any DiscordClient, latest: String
         } else {
             content = adminRoles.map { "<@&\($0)>" }.joined(separator: " ")
         }
-        _ = try? await client.createMessage(
+        // C14: retry-wrapped. onGone omitted — a control channel has no session binding to
+        // clean up (TS never does so either; a stale controlChannelId config entry is a
+        // separate, pre-existing concern this WO does not touch).
+        _ = await createMessageWithRetry(
+            client: client,
             channelId: ChannelSnowflake(controlId),
             payload: .init(content: content, embeds: [embed], components: components)
         )
@@ -144,7 +148,9 @@ func announceToControlChannels(client: any DiscordClient, text: String) async {
               let controlId = server.channels?.controlChannelId,
               !controlId.isEmpty
         else { continue }
-        _ = try? await client.createMessage(
+        // C14: retry-wrapped (control channel — no session binding to clean up, see above).
+        _ = await createMessageWithRetry(
+            client: client,
             channelId: ChannelSnowflake(controlId),
             payload: .init(content: text)
         )
