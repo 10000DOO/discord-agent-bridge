@@ -1485,9 +1485,10 @@ struct EventHandler: GatewayEventHandler {
             case .grok:
                 turn = try await GrokSessionBridge.shared.runTurn(channelId: channelId, ownerId: payload.author?.id.rawValue, guildId: payload.guild_id?.rawValue ?? "dm", text: text, config: binding)
             }
+            let toolCount = turn.tools.reduce(0) { $0 + $1.count }
             await finalizeInterruptControlMessage(
                 client: client, channelId: payload.channel_id, messageId: controlMsgId,
-                guildId: guildId
+                guildId: guildId, toolCount: toolCount
             )
             // W16-a: multi-message chunking (TS chunkMessage) — never truncate long replies.
             let body = turn.text.isEmpty ? "(no text)" : turn.text
@@ -1498,17 +1499,46 @@ struct EventHandler: GatewayEventHandler {
             if let usage = turn.usage, let line = buildResultLine(usage) {
                 _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: line))
             }
-            // W11-g slice2: context_usage summary line when the bridge captured one.
-            if let ctx = turn.contextUsage {
+            // W11-g slice2/4: usage embed (limits + context + tools/subagent HUD) when anything present.
+            let usageSnap: UsageResult?
+            switch backend {
+            case .claude, .custom:
+                usageSnap = await ClaudeUsageService.shared.getUsage()
+            case .grok:
+                usageSnap = await GrokUsageService.shared.getUsage()
+            case .codex:
+                usageSnap = nil
+            }
+            let usageTitle: String
+            switch backend {
+            case .claude, .custom: usageTitle = "Claude 사용량"
+            case .grok: usageTitle = "Grok 사용량"
+            case .codex: usageTitle = "Codex 사용량"
+            }
+            let embedExtras = UsageEmbedExtras(
+                meta: UsageSessionMeta(permMode: binding?.permMode),
+                title: usageTitle,
+                tools: turn.tools,
+                agents: turn.agents
+            )
+            if let spec = buildUsageEmbed(
+                usage: usageSnap,
+                ctxUsage: turn.contextUsage,
+                extras: embedExtras
+            ) {
+                _ = try? await client.createMessage(
+                    channelId: payload.channel_id,
+                    payload: .init(embeds: [discordEmbed(from: spec)])
+                )
+            } else if let ctx = turn.contextUsage {
+                // Fallback: plain context line when no panel fields (no OAuth / tools).
                 _ = try? await client.createMessage(
                     channelId: payload.channel_id,
                     payload: .init(content: formatContextUsageLine(ctx))
                 )
             }
-            // W11-g slice2: rate_limit notice (event fields; enrich with Claude usage snapshot if any).
+            // W11-g slice2: rate_limit notice (event fields; enrich with usage snapshot if any).
             if let rl = turn.rateLimit {
-                let usageSnap = (backend == .claude || backend == .custom)
-                    ? await ClaudeUsageService.shared.getUsage() : nil
                 let line = formatRateLimitLine(rl, usage: usageSnap)
                 _ = try? await client.createMessage(
                     channelId: payload.channel_id,
@@ -1674,11 +1704,13 @@ func postInterruptControlMessage(
 }
 
 /// Disable the interrupt button after the turn ends (stale click guard; TS finalize parity).
+/// `toolCount` optionally appends " · 🛠️ N" (W11-g slice4 HUD).
 func finalizeInterruptControlMessage(
     client: any DiscordClient,
     channelId: ChannelSnowflake,
     messageId: MessageSnowflake?,
-    guildId: String
+    guildId: String,
+    toolCount: Int = 0
 ) async {
     guard let messageId else { return }
     let ch = channelId.rawValue
@@ -1693,7 +1725,7 @@ func finalizeInterruptControlMessage(
     _ = try? await client.updateMessage(
         channelId: channelId,
         messageId: messageId,
-        payload: .init(content: InterruptLabels.finished, components: [row])
+        payload: .init(content: interruptFinishedContent(toolCount: toolCount), components: [row])
     )
 }
 

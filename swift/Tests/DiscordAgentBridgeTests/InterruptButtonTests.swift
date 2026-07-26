@@ -56,4 +56,12 @@ struct InterruptButtonSpecTests {
         #expect(b.disabled)
         #expect(parseInterruptId(b.customId)?.channelId == "c1")
     }
+
+    @Test func respondingAndFinishedContentWithToolCount() {
+        #expect(interruptRespondingContent() == InterruptLabels.responding)
+        #expect(interruptRespondingContent(toolCount: 0) == "응답 중…")
+        #expect(interruptRespondingContent(toolCount: 3) == "응답 중… · 🛠️ 3")
+        #expect(interruptFinishedContent() == InterruptLabels.finished)
+        #expect(interruptFinishedContent(toolCount: 5) == "응답 완료 · 🛠️ 5")
+    }
 }

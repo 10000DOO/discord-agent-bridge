@@ -16,6 +16,18 @@ public enum InterruptLabels {
     public static let finished = "응답 완료"
 }
 
+/// Live control-message content while a turn runs (optional tool count HUD, W11-g slice4).
+public func interruptRespondingContent(toolCount: Int = 0) -> String {
+    if toolCount <= 0 { return InterruptLabels.responding }
+    return "\(InterruptLabels.responding) · 🛠️ \(toolCount)"
+}
+
+/// Control-message content after the turn ends (optional tool count).
+public func interruptFinishedContent(toolCount: Int = 0) -> String {
+    if toolCount <= 0 { return InterruptLabels.finished }
+    return "\(InterruptLabels.finished) · 🛠️ \(toolCount)"
+}
+
 public struct InterruptButtonSpec: Sendable, Equatable {
     public var customId: String
     public var label: String

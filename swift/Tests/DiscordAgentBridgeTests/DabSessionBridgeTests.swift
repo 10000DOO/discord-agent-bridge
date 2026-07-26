@@ -16,10 +16,11 @@ private actor GateableSidecar {
     private let reqCapture: LockedBox<[String]>?        // records "start" / "resume:<backendId>"
     private let resumeFails: Bool                       // session.resume → error (forces fallback)
     private let emitContextAndRateLimit: Bool           // W11-g slice2: context_usage + rate_limit before result
+    private var emitToolsAndSubagentOnce: Bool          // W11-g slice4: one turn of tool/subagent events
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitToolsAndSubagent: Bool = false) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -30,6 +31,7 @@ private actor GateableSidecar {
         self.reqCapture = reqCapture
         self.resumeFails = resumeFails
         self.emitContextAndRateLimit = emitContextAndRateLimit
+        self.emitToolsAndSubagentOnce = emitToolsAndSubagent
     }
 
     func run() async {
@@ -135,6 +137,37 @@ private actor GateableSidecar {
                 event: .rateLimit(resetAt: nil, rateLimitType: "five_hour", utilization: 50)
             )
         }
+        if emitToolsAndSubagentOnce {
+            // One-shot: next turn must see empty aggregates (fresh TurnBox per turn).
+            emitToolsAndSubagentOnce = false
+            // Bash ×2 (one fail) + Task spawn + subagent completed (TS defaultSet aggregate case).
+            await emit(session: session, event: .toolUse(id: "t1", name: "Bash", input: .object([:]), parentToolUseId: nil))
+            await emit(session: session, event: .toolUse(id: "t2", name: "Bash", input: .object([:]), parentToolUseId: nil))
+            await emit(session: session, event: .toolResult(id: "t2", ok: false, content: "boom", parentToolUseId: nil))
+            await emit(
+                session: session,
+                event: .toolUse(
+                    id: "t3",
+                    name: "Task",
+                    input: .object([
+                        "subagent_type": .string("developer"),
+                        "description": .string("Fix bug"),
+                    ]),
+                    parentToolUseId: nil
+                )
+            )
+            await emit(
+                session: session,
+                event: .subagentResult(
+                    taskId: "task-1",
+                    status: .completed,
+                    summary: "ok",
+                    toolUseId: "t3",
+                    durationMs: 12_000,
+                    toolUses: 2
+                )
+            )
+        }
         await emit(session: session, event: .text(text: "ok:\(text)", delta: true))
         let resultText: String? = resultEchoesText ? "ok:\(text)" : nil
         await emit(session: session, event: .result(text: resultText, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
@@ -164,6 +197,7 @@ private func makeDabBridge(
     reqCapture: LockedBox<[String]>? = nil,
     resumeFails: Bool = false,
     emitContextAndRateLimit: Bool = false,
+    emitToolsAndSubagent: Bool = false,
     resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
@@ -174,7 +208,8 @@ private func makeDabBridge(
                 transport: pair.sidecar, gate: gate, resultEchoesText: resultEchoesText,
                 capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm,
                 emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails,
-                emitContextAndRateLimit: emitContextAndRateLimit
+                emitContextAndRateLimit: emitContextAndRateLimit,
+                emitToolsAndSubagent: emitToolsAndSubagent
             )
             Task { await server.run() }
             return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
@@ -221,6 +256,26 @@ struct DabSessionBridgeTests {
         #expect(turn.contextUsage?.model == "claude-x")
         #expect(turn.rateLimit?.rateLimitType == "five_hour")
         #expect(turn.rateLimit?.utilization == 50)
+    }
+
+    @Test func aggregatesToolsAndSubagentOnTurn() async throws {
+        let (bridge, _) = makeDabBridge(emitToolsAndSubagent: true)
+        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        #expect(turn.text == "ok:hi")
+        let byName = Dictionary(uniqueKeysWithValues: turn.tools.map { ($0.name, $0) })
+        #expect(byName["Bash"]?.count == 2)
+        #expect(byName["Bash"]?.failed == 1)
+        #expect(byName["Task"]?.count == 1)
+        #expect(byName["Task"]?.failed == 0)
+        #expect(turn.agents.count == 1)
+        #expect(turn.agents[0].status == .completed)
+        #expect(turn.agents[0].type == "developer")
+        #expect(turn.agents[0].description == "Fix bug")
+        #expect(turn.agents[0].durationMs == 12_000)
+        // Next turn resets aggregates (no tools emitted → empty).
+        let turn2 = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "again")
+        #expect(turn2.tools.isEmpty)
+        #expect(turn2.agents.isEmpty)
     }
 
     @Test func resultTextDedup() async throws {

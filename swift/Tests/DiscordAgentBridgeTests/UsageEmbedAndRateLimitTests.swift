@@ -168,4 +168,119 @@ struct UsageEmbedTests {
         let embed = buildUsageEmbed(usage: .snapshot(snap), ctxUsage: nil)
         #expect(embed?.title == "Grok 사용량")
     }
+
+    @Test func toolsFieldTop4WithFailureAndOverflow() {
+        let tools = [
+            TurnToolStat(name: "Bash", count: 20, failed: 0),
+            TurnToolStat(name: "Read", count: 3, failed: 0),
+            TurnToolStat(name: "Edit", count: 1, failed: 1),
+            TurnToolStat(name: "Grep", count: 2, failed: 0),
+            TurnToolStat(name: "Glob", count: 1, failed: 0),
+        ]
+        let embed = buildUsageEmbed(
+            usage: nil,
+            ctxUsage: ctx,
+            extras: UsageEmbedExtras(tools: tools)
+        )
+        let field = embed?.fields.first { $0.name == "🛠️ 이번 턴 도구" }
+        #expect(field?.value == "✅ Bash ×20 · ✅ Read ×3 · ✅ Grep ×2 · ❌ Edit ×1 · +1")
+        #expect(
+            (buildUsageEmbed(usage: nil, ctxUsage: ctx, extras: UsageEmbedExtras(tools: []))?.fields.map(\.name) ?? [])
+                .contains("🛠️ 이번 턴 도구") == false
+        )
+    }
+
+    @Test func agentsFieldWithStatusIconTypeAndDuration() {
+        let agents = [
+            SubagentRun(
+                status: .completed,
+                summary: "long summary",
+                type: "developer",
+                description: "Fix model list",
+                durationMs: 12_000
+            ),
+            SubagentRun(status: .failed, summary: "it broke"),
+        ]
+        let embed = buildUsageEmbed(
+            usage: nil,
+            ctxUsage: ctx,
+            extras: UsageEmbedExtras(agents: agents)
+        )
+        let field = embed?.fields.first { $0.name == "🤖 서브에이전트" }
+        #expect(field?.value == "✅ developer: Fix model list (12초)\n❌ it broke")
+    }
+
+    @Test func agentsFieldCapsAt1024() {
+        let agents = (0..<5).map { i in
+            SubagentRun(status: .completed, summary: "run-\(i) " + String(repeating: "x", count: 400))
+        }
+        let embed = buildUsageEmbed(
+            usage: nil,
+            ctxUsage: ctx,
+            extras: UsageEmbedExtras(agents: agents)
+        )
+        let field = embed?.fields.first { $0.name == "🤖 서브에이전트" }
+        #expect(field != nil)
+        #expect((field?.value.count ?? 0) <= 1024)
+    }
+
+    @Test func toolsOnlyPanelWithoutUsageOrContext() {
+        let tools = [TurnToolStat(name: "Read", count: 1)]
+        let embed = buildUsageEmbed(
+            usage: nil,
+            ctxUsage: nil,
+            extras: UsageEmbedExtras(tools: tools)
+        )
+        #expect(embed != nil)
+        #expect(embed?.fields.map(\.name) == ["🛠️ 이번 턴 도구"])
+        #expect(embed?.fields.first?.value == "✅ Read ×1")
+    }
+}
+
+@Suite("TurnToolStatsAggregator pure")
+struct TurnToolStatsAggregatorTests {
+    @Test func countsToolsFailuresAndSubagentPairing() {
+        var agg = TurnToolStatsAggregator()
+        agg.note(.toolUse(id: "t1", name: "Bash", input: .object([:]), parentToolUseId: nil))
+        agg.note(.toolUse(id: "t2", name: "Bash", input: .object([:]), parentToolUseId: nil))
+        agg.note(.toolResult(id: "t2", ok: false, content: "boom", parentToolUseId: nil))
+        agg.note(.toolUse(
+            id: "t3",
+            name: "Task",
+            input: .object([
+                "subagent_type": .string("developer"),
+                "description": .string("Fix bug"),
+            ]),
+            parentToolUseId: nil
+        ))
+        agg.note(.subagentResult(
+            taskId: "task-1",
+            status: .completed,
+            summary: "ok",
+            toolUseId: "t3",
+            durationMs: 12_000,
+            toolUses: nil
+        ))
+        let tools = Dictionary(uniqueKeysWithValues: agg.toolsSnapshot().map { ($0.name, $0) })
+        #expect(tools["Bash"]?.count == 2)
+        #expect(tools["Bash"]?.failed == 1)
+        #expect(tools["Task"]?.count == 1)
+        #expect(agg.totalToolCount == 3)
+        #expect(agg.agentsSnapshot().count == 1)
+        #expect(agg.agentsSnapshot()[0].type == "developer")
+        #expect(agg.agentsSnapshot()[0].description == "Fix bug")
+        #expect(buildToolsValue(agg.toolsSnapshot()) == "❌ Bash ×2 · ✅ Task ×1")
+        #expect(buildAgentsValue(agg.agentsSnapshot()) == "✅ developer: Fix bug (12초)")
+
+        agg.reset()
+        #expect(agg.toolsSnapshot().isEmpty)
+        #expect(agg.agentsSnapshot().isEmpty)
+        #expect(agg.totalToolCount == 0)
+    }
+
+    @Test func subagentRunDurationFormatting() {
+        #expect(DiscordAgentBridge.formatSubagentRunDuration(0) == "0초")
+        #expect(DiscordAgentBridge.formatSubagentRunDuration(12_000) == "12초")
+        #expect(DiscordAgentBridge.formatSubagentRunDuration(72_000) == "1분 12초")
+    }
 }

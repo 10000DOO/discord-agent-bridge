@@ -54,11 +54,81 @@ public struct UsageSessionMeta: Sendable, Equatable {
 public struct UsageEmbedExtras: Sendable, Equatable {
     public var meta: UsageSessionMeta?
     public var title: String?
+    /// Turn-local tool aggregates (W11-g slice4).
+    public var tools: [TurnToolStat]
+    /// Turn-local subagent runs (W11-g slice4).
+    public var agents: [SubagentRun]
 
-    public init(meta: UsageSessionMeta? = nil, title: String? = nil) {
+    public init(
+        meta: UsageSessionMeta? = nil,
+        title: String? = nil,
+        tools: [TurnToolStat] = [],
+        agents: [SubagentRun] = []
+    ) {
         self.meta = meta
         self.title = title
+        self.tools = tools
+        self.agents = agents
     }
+}
+
+// Discord embed hard limit for one field value.
+private let fieldValueMax = 1024
+// Top-N tool names shown on the tools line (claude-hud toolsMaxVisible analog).
+private let toolsMaxVisible = 4
+// Most recent subagent runs shown (Discord field is narrow — keep the tail short).
+private let agentsMaxVisible = 5
+// Per-run label budget so one long description cannot eat the whole field.
+private let agentLabelMax = 100
+
+/// "(12초)" / "(3분 12초)" duration suffix for a subagent run (TS formatRunDuration).
+public func formatSubagentRunDuration(_ ms: Int) -> String {
+    let totalSec = max(0, Int((Double(ms) / 1000.0).rounded()))
+    if totalSec < 60 { return "\(totalSec)초" }
+    return "\(totalSec / 60)분 \(totalSec % 60)초"
+}
+
+/// "✅ Bash ×20 · ✅ Read ×3 · ❌ Edit ×1 · +N" — top names by count; ❌ when any failure.
+public func buildToolsValue(_ tools: [TurnToolStat]) -> String? {
+    let sorted = tools.filter { $0.count > 0 }.sorted { $0.count > $1.count }
+    if sorted.isEmpty { return nil }
+    var shown = sorted.prefix(toolsMaxVisible).map { s in
+        "\(s.failed > 0 ? "❌" : "✅") \(s.name) ×\(s.count)"
+    }
+    if sorted.count > toolsMaxVisible {
+        shown.append("+\(sorted.count - toolsMaxVisible)")
+    }
+    return shown.joined(separator: " · ")
+}
+
+/// "✅ developer: Fix model list (12초)" lines for the most recent runs, capped to field limit.
+public func buildAgentsValue(_ agents: [SubagentRun]) -> String? {
+    if agents.isEmpty { return nil }
+    let tail = agents.suffix(agentsMaxVisible)
+    let lines = tail.map { run -> String in
+        let icon: String
+        switch run.status {
+        case .completed: icon = "✅"
+        case .failed: icon = "❌"
+        case .stopped: icon = "⏹️"
+        }
+        let text: String
+        if run.type != nil || run.description != nil {
+            text = [run.type, run.description].compactMap { $0 }.joined(separator: ": ")
+        } else {
+            text = run.summary
+        }
+        let clipped = text.count > agentLabelMax
+            ? String(text.prefix(agentLabelMax - 1)) + "…"
+            : text
+        let duration = run.durationMs.map { " (\(formatSubagentRunDuration($0)))" } ?? ""
+        return "\(icon) \(clipped)\(duration)"
+    }
+    let value = lines.joined(separator: "\n")
+    if value.count > fieldValueMax {
+        return String(value.prefix(fieldValueMax - 1)) + "…"
+    }
+    return value
 }
 
 private let barLen = 10
@@ -145,7 +215,7 @@ private func buildDescription(
     return segments.isEmpty ? nil : segments.joined(separator: " · ")
 }
 
-/// Build the usage embed. Nil when nothing should be shown (unavailable AND no context).
+/// Build the usage embed. Nil when nothing should be shown (no usage, context, tools, or agents).
 public func buildUsageEmbed(
     usage: UsageResult?,
     ctxUsage: ContextUsageInfo?,
@@ -157,7 +227,10 @@ public func buildUsageEmbed(
         return nil
     }()
     let haveUsage = snap != nil
-    if !haveUsage && ctxUsage == nil { return nil }
+    let tools = extras?.tools ?? []
+    let agents = extras?.agents ?? []
+    // Slice4: tools/agents alone can open a panel (turn HUD) even without OAuth/context.
+    if !haveUsage && ctxUsage == nil && tools.isEmpty && agents.isEmpty { return nil }
 
     let meta = extras?.meta
     var fields: [UsageEmbedField] = []
@@ -199,6 +272,13 @@ public func buildUsageEmbed(
         if !composition.isEmpty {
             fields.append(UsageEmbedField(name: "⚙️ 세션 구성", value: composition.joined(separator: " · "), inline: true))
         }
+    }
+
+    if let toolsValue = buildToolsValue(tools) {
+        fields.append(UsageEmbedField(name: "🛠️ 이번 턴 도구", value: toolsValue, inline: true))
+    }
+    if let agentsValue = buildAgentsValue(agents) {
+        fields.append(UsageEmbedField(name: "🤖 서브에이전트", value: agentsValue))
     }
 
     if fields.isEmpty { return nil }

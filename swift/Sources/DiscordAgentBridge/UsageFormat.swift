@@ -100,23 +100,130 @@ public struct RateLimitInfo: Sendable, Equatable {
     }
 }
 
-/// Bridge `runTurn` return: reply text + optional usage / context / rate-limit (W11-g).
+// MARK: - Turn tools / subagent HUD (W11-g slice4, TS usageEmbed + renderers/index)
+
+/// One tool name's turn-local aggregate: ×count with failed > 0 → ❌.
+public struct TurnToolStat: Sendable, Equatable {
+    public var name: String
+    public var count: Int
+    public var failed: Int
+
+    public init(name: String, count: Int, failed: Int = 0) {
+        self.name = name
+        self.count = count
+        self.failed = failed
+    }
+}
+
+/// One completed subagent run (subagent_result paired with Task/Agent tool_use input).
+public struct SubagentRun: Sendable, Equatable {
+    public var status: AgentEvent.SubagentStatus
+    public var summary: String
+    public var type: String?
+    public var description: String?
+    public var durationMs: Int?
+
+    public init(
+        status: AgentEvent.SubagentStatus,
+        summary: String,
+        type: String? = nil,
+        description: String? = nil,
+        durationMs: Int? = nil
+    ) {
+        self.status = status
+        self.summary = summary
+        self.type = type
+        self.description = description
+        self.durationMs = durationMs
+    }
+}
+
+/// Turn-local tool_use / tool_result / subagent_result aggregator (TS renderers/index noteToolEvent).
+/// Snapshot at turn end so the next turn never sees stale counts (fresh TurnBox per turn).
+public struct TurnToolStatsAggregator: Sendable {
+    private var toolCounts: [String: (count: Int, failed: Int)] = [:]
+    private var toolNamesById: [String: String] = [:]
+    private var taskInputsById: [String: (type: String?, description: String?)] = [:]
+    private var agentRuns: [SubagentRun] = []
+
+    public init() {}
+
+    public mutating func note(_ event: AgentEvent) {
+        switch event {
+        case .toolUse(let id, let name, let input, _):
+            toolNamesById[id] = name
+            var stat = toolCounts[name] ?? (count: 0, failed: 0)
+            stat.count += 1
+            toolCounts[name] = stat
+            // Claude Task/Agent spawn — pair type/description with later subagent_result.
+            if name == "Task" || name == "Agent" {
+                taskInputsById[id] = (
+                    type: input["subagent_type"]?.stringValue,
+                    description: input["description"]?.stringValue
+                )
+            }
+        case .toolResult(let id, let ok, _, _):
+            guard !ok, let name = toolNamesById[id], var stat = toolCounts[name] else { return }
+            stat.failed += 1
+            toolCounts[name] = stat
+        case .subagentResult(_, let status, let summary, let toolUseId, let durationMs, _):
+            let started = toolUseId.flatMap { taskInputsById[$0] }
+            agentRuns.append(SubagentRun(
+                status: status,
+                summary: summary,
+                type: started?.type,
+                description: started?.description,
+                durationMs: durationMs
+            ))
+        default:
+            break
+        }
+    }
+
+    public func toolsSnapshot() -> [TurnToolStat] {
+        toolCounts.map { TurnToolStat(name: $0.key, count: $0.value.count, failed: $0.value.failed) }
+    }
+
+    public func agentsSnapshot() -> [SubagentRun] { agentRuns }
+
+    /// Total tool_use count this turn (for "응답 완료 · 🛠️ N").
+    public var totalToolCount: Int {
+        toolCounts.values.reduce(0) { $0 + $1.count }
+    }
+
+    public mutating func reset() {
+        toolCounts.removeAll()
+        toolNamesById.removeAll()
+        taskInputsById.removeAll()
+        agentRuns.removeAll()
+    }
+}
+
+/// Bridge `runTurn` return: reply text + optional usage / context / rate-limit / tools HUD (W11-g).
 public struct TurnResult: Sendable, Equatable {
     public var text: String
     public var usage: TurnUsage?
     public var contextUsage: ContextUsageInfo?
     public var rateLimit: RateLimitInfo?
+    /// Turn-local tool aggregates for the usage embed (empty when no tools fired).
+    public var tools: [TurnToolStat]
+    /// Turn-local subagent runs for the usage embed (empty when none completed).
+    public var agents: [SubagentRun]
 
     public init(
         text: String,
         usage: TurnUsage? = nil,
         contextUsage: ContextUsageInfo? = nil,
-        rateLimit: RateLimitInfo? = nil
+        rateLimit: RateLimitInfo? = nil,
+        tools: [TurnToolStat] = [],
+        agents: [SubagentRun] = []
     ) {
         self.text = text
         self.usage = usage
         self.contextUsage = contextUsage
         self.rateLimit = rateLimit
+        self.tools = tools
+        self.agents = agents
     }
 }
 

@@ -61,9 +61,23 @@ public actor DabSessionBridge {
         var usage: TurnUsage?
         var contextUsage: ContextUsageInfo?
         var rateLimit: RateLimitInfo?
+        /// Turn-local tools/subagent HUD aggregates (W11-g slice4).
+        var stats = TurnToolStatsAggregator()
         var done = false
         var continuation: CheckedContinuation<TurnResult, Error>?
         var timeoutTask: Task<Void, Never>?
+    }
+
+    /// Build TurnResult from the live box (tools/agents snapshotted at finish).
+    private func makeTurnResult(box: TurnBox, text: String) -> TurnResult {
+        TurnResult(
+            text: text,
+            usage: box.usage,
+            contextUsage: box.contextUsage,
+            rateLimit: box.rateLimit,
+            tools: box.stats.toolsSnapshot(),
+            agents: box.stats.agentsSnapshot()
+        )
     }
 
     private var cwd: String {
@@ -370,15 +384,7 @@ public actor DabSessionBridge {
             }
             turns[handle] = box
             let out = box.text.isEmpty ? "(empty result)" : box.text
-            finishTurnUnlocked(
-                handle: handle,
-                result: TurnResult(
-                    text: out,
-                    usage: box.usage,
-                    contextUsage: box.contextUsage,
-                    rateLimit: box.rateLimit
-                )
-            )
+            finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: out))
         case .contextUsage:
             // W11-g slice2: keep latest context_usage for the turn result / panel.
             if let info = ContextUsageInfo.from(event: event) {
@@ -429,13 +435,20 @@ public actor DabSessionBridge {
                 )
             }
         case .toolUse, .toolResult:
+            // W11-g slice4: turn-local tool counts for usage embed HUD.
+            box.stats.note(event)
+            turns[handle] = box
             // W16-g: tool activity → Discord work threads + diffs (fire-and-forget).
             if let channelId = sessionMeta[handle]?.channelId {
                 let ev = event
                 Task { await ToolActivityHost.shared.handle(channelId: channelId, event: ev) }
             }
+        case .subagentResult:
+            // W11-g slice4: pair with Task/Agent tool_use input for the agents field.
+            box.stats.note(event)
+            turns[handle] = box
         default:
-            // thinking / progress / subagent — full HUD tools panel is later slice.
+            // thinking / progress — live stream embed is a later W11-g residual.
             break
         }
     }
@@ -460,12 +473,7 @@ public actor DabSessionBridge {
             } else {
                 finishTurnUnlocked(
                     handle: handle,
-                    result: TurnResult(
-                        text: box.text + "\n…(timeout)",
-                        usage: box.usage,
-                        contextUsage: box.contextUsage,
-                        rateLimit: box.rateLimit
-                    )
+                    result: makeTurnResult(box: box, text: box.text + "\n…(timeout)")
                 )
             }
         }
@@ -486,14 +494,7 @@ public actor DabSessionBridge {
         if let error {
             cont?.resume(throwing: error)
         } else {
-            cont?.resume(
-                returning: result ?? TurnResult(
-                    text: box.text,
-                    usage: box.usage,
-                    contextUsage: box.contextUsage,
-                    rateLimit: box.rateLimit
-                )
-            )
+            cont?.resume(returning: result ?? makeTurnResult(box: box, text: box.text))
         }
     }
 
@@ -529,15 +530,7 @@ public actor DabSessionBridge {
         try? await client?.sessionInterrupt(session: handle)
         if let box = turns[handle], !box.done {
             let partial = box.text.isEmpty ? "(interrupted)" : box.text
-            finishTurnUnlocked(
-                handle: handle,
-                result: TurnResult(
-                    text: partial,
-                    usage: box.usage,
-                    contextUsage: box.contextUsage,
-                    rateLimit: box.rateLimit
-                )
-            )
+            finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: partial))
         }
         return true
     }
