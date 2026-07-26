@@ -140,7 +140,7 @@ Typical flow: **`/setup` → `/config` → `/agent start`**, then normal message
 
 1. **`/setup`** (admin) — control channel, sessions category, status channel (reuses existing).
 2. **`/config`** (admin) — role tiers + defaults (mode/model/effort/perm, dmPolicy) + notifications + **image/chromium render** sub-panels (enable + Install Chromium).
-3. **`/agent start`** — wizard: **folder → backend → model → effort → permission**. Folder browser supports navigate / create / native pick. On confirm, the channel is bound (dedicated A4D session-channel creation is still residual on the Swift path).
+3. **`/agent start`** — wizard: **folder → backend → model → effort → permission**. Folder browser supports navigate / create / native pick. On confirm, creates an A4D session channel when `/setup` has run, then binds it.
 4. In a bound channel, **send normal messages**. Prefix shortcuts still work: `!claude` / `!codex` / `!grok` / `!custom`.
 
 ### Key commands (Swift)
@@ -161,7 +161,7 @@ Typical flow: **`/setup` → `/config` → `/agent start`**, then normal message
 
 Permission modes: `default` · `acceptEdits` · `plan` · `bypassPermissions` (and backend-specific profiles where catalogued). Default smoke path may still use `bypassPermissions` — prefer `default` when using the Allow/Deny UI.
 
-> **Parity note:** Swift is the product path but **not 100% of the old npm UX yet**. See [Compatibility matrix](#swift-vs-typescript-compatibility) and residual work in [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+> **Parity note:** Swift is the product path at **~99% product parity** (port mainline complete). Residual is **W13-b product-deferred** (keep `bypassPermissions` default) plus optional polish — not incomplete mainline work. See [Compatibility matrix](#swift-vs-typescript-compatibility) and [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
 
 ---
 
@@ -194,7 +194,7 @@ If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge
 
 ## Swift vs TypeScript compatibility
 
-Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **Parity ~99%** (residual: W13-b permMode default / allowlist 보류 · optional polish).
+Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **~99% product parity — port mainline complete.** Residual: **W13-b product-deferred** (keep bypass default; not incomplete work) · **optional polish** only.
 
 | Area | Swift (`dab`) | Legacy TS main |
 |---|---|---|
@@ -203,21 +203,21 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Codex / Grok | ✅ native stdio clients | ✅ |
 | Custom backend + shell env | ✅ | ✅ |
 | Session bind / restart reconnect | ✅ `SessionStore` + lazy resume | ✅ orchestrator |
-| Auth roles / audit / path confinement | ✅ (allowlist default-mode still deferred) | ✅ |
+| Auth roles / audit / path confinement | ✅ (W13-b tool allowlist **product-deferred** while default stays `bypassPermissions`) | ✅ |
 | 3-layer config | ✅ global → server → binding | ✅ |
-| `/agent start` folder wizard | ✅ folder cluster; **residual:** resume UI, A4D channel create, preset, reconfigure | ✅ full |
+| `/agent start` folder wizard | ✅ folder · resume · reconfigure · A4D · preset | ✅ full |
 | Live slash model/effort/mode/clear/stop | ✅ binding + Claude live `setModel`/`setEffort` RPC + displayName re-resolve | ✅ |
 | Usage / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD + live stream status embed | ✅ richer panels |
-| Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path; **residual:** pin embed | ✅ |
-| `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif·locale·render(S3) | ✅ fuller UI |
+| Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path + pin (best-effort) | ✅ |
+| `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif·locale·**image render (S3)** | ✅ fuller UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ registry check + Yes/No + **install.sh + launchctl restart** | ✅ npm reinstall path |
-| Chromium table/mermaid render | ✅ headless Chrome CLI (system Chrome or provisioned) | ✅ puppeteer |
-| Host file attach to Discord | partial / residual | ✅ (sidecar path) |
+| Chromium table/mermaid render | ✅ **headless Chrome CLI** (system Chrome or provisioned; not puppeteer-in-Swift) | ✅ puppeteer |
+| Host file attach to Discord | ✅ confined upload (`host.file.attach`) | ✅ (sidecar path) |
 | Linux/Windows service | ✅ launchd / systemd / schtasks scripts | ✅ launchd / systemd / schtasks |
 | npm global install | ❌ (checkout + build) | ✅ |
 
-**Residual queue (not complete):** W16 polish, W13-b allowlist when default perm changes — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+**Residual (not mainline incomplete work):** **W13-b** product-deferred (allowlist when default perm moves off bypass) · **optional polish** (comment diet, flaky test triage, UX) — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
 
 ---
 
@@ -237,7 +237,7 @@ Optional Claude sidecar inside the **TS main**:
 DAB_CLAUDE_SIDECAR=1 npm run dev   # from a checkout
 ```
 
-New installs should prefer **Swift** ([Step 2](#step-2--install--run-swift)). The TS main may be removed after parity closes.
+New installs should prefer **Swift** ([Step 2](#step-2--install--run-swift)). Port mainline is complete (~99%); the TS main remains as reference/sidecar host and may be removed later.
 
 ---
 

@@ -14,7 +14,8 @@ SwiftPM package for the Swift port of discord-agent-bridge.
 | Gateway + slash + `!claude`/`!codex`/`!grok`/`!custom` | **working** (W11–W16) |
 | Claude sidecar / Codex app-server / Grok ACP | done |
 | Table/mermaid → PNG (S3) | **done** — headless Chrome CLI (not puppeteer-in-Swift) |
-| Residual | W13-b 보류 · optional polish (~99% parity) |
+| Mainline port | **complete** (~99% product parity) |
+| Residual | **W13-b product-deferred** (keep bypass default) · optional polish only |
 
 ## Requirements
 
@@ -77,14 +78,16 @@ Enable **Message Content Intent** in the [Discord Developer Portal](https://disc
 | `DAB_CHROMIUM_CACHE` | `~/.dab/chromium` | provisioned Chrome for Testing cache |
 | `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | system scan | override Chrome binary |
 
-### Image render (S3)
+### Image render (S3 — done)
 
-GFM tables and ` ```mermaid ` ` fences in answers (and `/doc` body) become PNG attachments when:
+GFM tables and fenced `mermaid` blocks in answers (and `/doc` body) become PNG attachments when:
 
-1. `config.render.enabled` is true (default; toggle in `/config` → 🖼), and
-2. a browser is available: system Chrome/Edge/Chromium **or** provisioned under `DAB_CHROMIUM_CACHE` (Install button downloads via `npx @puppeteer/browsers` when Node is present).
+1. `config.render.enabled` is true (default; toggle in `/config` → 🖼 render panel), and
+2. a browser is available: system Chrome/Edge/Chromium **or** provisioned under `DAB_CHROMIUM_CACHE` (Install Chromium downloads via `npx @puppeteer/browsers` when Node is present).
 
-Implementation: headless Chrome CLI (`--headless=new --screenshot=… file://…`), not embedded puppeteer. Render failures fall back to raw markdown. Caps: 15s timeout, 20k chars/block, 2000 table cells, max 2 concurrent.
+**Approach vs TS:** TypeScript uses **puppeteer** in-process. Swift uses **headless Chrome CLI** only (`--headless=new --screenshot=… file://…`) — no puppeteer runtime in the Swift binary. Mermaid.js is loaded from `DAB_MERMAID_JS`, else repo `node_modules/mermaid/dist/mermaid.min.js`, else `~/.dab/render/mermaid.min.js`.
+
+Render failures fall back to raw markdown (never throw into the turn path). Caps: 15s timeout, 20k chars/block, 2000 table cells, max 2 concurrent.
 
 ## Sidecar smoke (W9)
 

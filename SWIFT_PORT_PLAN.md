@@ -14,16 +14,16 @@
 
 | 항목 | 상태 |
 |------|------|
-| **전체 단계** | Phase A~F **MVP 완료**, Phase G **W11 완료**, Phase H **W12 문서 완료**, Phase I~L **W13–W16 `done`**, **S3 Chromium `done`**(CLI headless). W13-b 보류. **제품 경로 = Swift `dab`** (TS 메인 = 레거시/참고 + Claude 사이드카) |
+| **전체 단계** | **포팅 본선 완료.** Phase A~F MVP · G W11 · H W12 · I~L W13–W16 · **S3 Chromium** 전부 `done`. **제품 경로 = Swift `dab`** (TS 메인 = 레거시/참고 + Claude 사이드카) |
 | **브랜치** | `plan/swift-port` |
 | **TS 기본 경로** | 레거시 in-process Claude (변경 없음). **권장 설치 아님** — README는 Swift-first |
 | **TS 사이드카** | 메인 opt-in `DAB_CLAUDE_SIDECAR=1` · **Swift Claude는 항상 사이드카** |
 | **Swift 봇** | `bash swift/scripts/install.sh` 또는 `swift run --package-path swift dab` · 슬래시+`!claude`/`!codex`/`!grok`/`!custom` |
 | **설정/상태** | `DAB_HOME` 또는 `~/.discord-agent-bridge/` (`config.json`, `servers/`, `swift-state.json`) · 배포 바이너리/시크릿은 `~/.dab/` |
 | **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` (수백 테스트; 일부 병렬 플래키 이슈 잔존 §14.4). ⚠️ 그냥 `swift test`는 인덱서 락 hang — **§14.2 필독** |
-| **패리티** | **~99%** — W13-b 보류 · optional polish만 남음. S3 = headless Chrome CLI (puppeteer-in-Swift 아님). 루트 README 호환 매트릭스 기준 |
+| **패리티** | **~99% 제품 패리티.** 본선 기능 큐 소진. 잔여는 **W13-b 제품 결정 보류**(미완 아님) + **optional polish**(S1 주석 다이어트 등). S3 = headless Chrome CLI (puppeteer-in-Swift 아님). 루트 README 호환 매트릭스 기준 |
 
-### 완료 (W1–W12 · W13a/c/d · W14–W15 · **W16 전부** · W11 전부)
+### 완료 (W1–W12 · W13a/c/d · W14–W15 · **W16 전부** · **S3** · W11 전부)
 
 | ID | 요약 |
 |----|------|
@@ -34,21 +34,21 @@
 | W9 | Swift 사이드카 클라이언트 + Discord `!claude` → Claude 답글 (MVP) |
 | W10 | Codex/Grok 텍스트 경로 (`!codex`/`!grok`) 3백엔드 완성 |
 | **W11** | **전체 `done`**: a·b1·**b2**(folder·resume·reconfigure·A4D·preset)·c·d·e·f1·f2·**g**(HUD·setModel·live stream)·h |
-| W13·W14·W15 | 보안(a/c/d)·라이프사이클·3계층 config (**W13-b 보류**) |
+| W13·W14·W15 | 보안(a/c/d)·라이프사이클·3계층 config (**W13-b = 제품 결정 보류 Q5=B**) |
 | **W16** | **a~h `done`** (폴리시 잔여 클리어): chunk·`/config` model/effort/notif/**locale**·`/setup`·`/doc`·Always-Allow·custom·toolThread/diff/status/**pin**/notifier·Codex/Grok mid-turn+**parentByThread/collab**+**plan/thought**·capabilities·auto-update 체크+**install+restart** · **host.file.attach** · **Linux/Windows 서비스 스크립트** |
 | **W12** | **레거시 정책·호환 매트릭스·루트 README/README.ko 마이그레이션 가이드** |
+| **S3** | **Chromium 표·mermaid PNG `done`**: pure BlockParser/HtmlTemplates/AnswerDelivery + headless Chrome CLI `BrowserImageRenderer` + `ChromiumProvisioner` + `/config` 🖼 서브패널 (puppeteer-in-Swift 아님) |
 
-### 진행 중 / 부분 완료 (잔여)
+### 제품 결정 보류 · optional only (본선 아님)
 
-| ID | 상태 | 남은 일 |
-|----|------|---------|
-| **S3** | `done` | Chromium 표·mermaid PNG: pure BlockParser/HtmlTemplates/AnswerDelivery + headless Chrome CLI `BrowserImageRenderer` + `ChromiumProvisioner` + `/config` 🖼 서브패널. (W13-b 무관) |
-| **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
-| **optional polish** | 선택 | `verify.sh` `--scratch-path` · §14.4 플래키 판정 · 기타 UX 다듬기 |
+| ID | 상태 | 설명 |
+|----|------|------|
+| **W13-b** | `보류(Q5=B)` · **미완 아님** | 툴 allowlist + 기본 permMode `bypassPermissions`→`default` 전환. **제품 결정으로 bypass 기본 유지** — allowlist 소비처가 없어 dead-code 이식 보류. 기본을 `default`로 바꿀 때 재개 |
+| **optional polish** | 선택 | S1 주석 다이어트 · S2 renderer 병합 · `verify.sh` `--scratch-path` · §14.4 플래키 판정 · 기타 UX 다듬기 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
-- 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 중)
+- 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 — 의도적)
 - ~~Claude 라이브 `session.setModel`/`setEffort` RPC + displayName~~ ✅ (W11-g)
 - ~~`/mode backend` reconfigure · folder · resume · A4D · preset~~ ✅ (W11-b2)
 - ~~tools/subagent HUD · 라이브 스트림 임베드~~ ✅ (W11-g)
@@ -56,7 +56,7 @@
 - ~~capabilities 렌더 게이팅~~ ✅ (W16-g 흡수: toolThreads/fileDiff/streaming/usagePanel)
 - ~~host.file.attach 실제 Discord 업로드~~ ✅ (`FileAttach`+`FileAttachHost`+`postFileAttach`+cwd 감금; share는 W16-d)
 - ~~`/config` locale select~~ ✅ · ~~pin status embed~~ ✅ · ~~auto-update install+restart~~ ✅ · ~~Codex parentByThread/collab~~ ✅ · ~~Grok plan/thought~~ ✅ · ~~Linux/Windows 서비스~~ ✅ · ~~render(S3) Chromium CLI~~ ✅
-- 기존 npm 봇 기능 **~99% 패리티** (잔여: W13-b 보류 · optional polish — README 매트릭스)
+- 기존 npm 봇 기능 **~99% 제품 패리티** (본선 완료; W13-b 제품 보류 · optional polish — README 매트릭스)
 
 ### 빠른 실행
 
@@ -82,10 +82,13 @@ swift run --package-path swift dab grok-smoke
 
 ### 다음에 할 일 (우선순위)
 
-**W11·W12·W16·S3 전부 완료.** 큐 본선 기능 잔여 = W13-b 보류 + optional polish.
+**포팅 본선 완료.** W11·W12·W13a/c/d·W14·W15·W16·S3 전부 `done`. 본선 기능 큐 소진.
 
-1. **W13-b** (`보류(Q5=B)`) — 기본 permMode/`allowlist` when product default moves off bypass
-2. **optional polish** — `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정 · UX 다듬기
+| 우선 | 항목 | 비고 |
+|------|------|------|
+| — | **(본선 없음)** | 제품 기능 포팅 큐 종료 |
+| 선택 | **optional polish** | S1 주석 다이어트 · S2 renderer 병합 · `verify.sh` `--scratch-path` · §14.4 플래키 · UX |
+| 제품 재개 시 | **W13-b** (`보류(Q5=B)`) | 기본 permMode를 `default`로 바꿀 때 allowlist 이식 — **미완 작업이 아니라 제품 보류** |
 
 ---
 
@@ -296,7 +299,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 |----|-------|------|------|-----------|
 | **W13** | I | `done` | **보안 하드닝(P0)** — 인가·confinement·audit. **범위: a·c·d**(b는 Q5=B로 보류). 커밋 `a004311` | 프로덕션 안전 |
 | **W13-a** | I | `done` | 역할-티어 인가(`core/auth.ts`→lib) + `DabMain` msg/interaction 진입점 배선. deny-by-default·Administrator 승격·dmPolicy·projectAuth ACL | 무인가 실행 경로 0 |
-| **W13-b** | I | `보류(Q5=B)` | 툴 allowlist/프로필(`permissionResolver.ts`·`autoAllowClaudeTools`) + Claude 기본 permMode `bypassPermissions`→`default`. **보류**: bypass 기본 유지 시 allowlist 소비처 없음(dead-code) → 사용자가 기본 `default`를 원할 때 재개(`docs/w13-security-hardening.md` 4장 부록) | allowlist 없는 자동승인 제거 |
+| **W13-b** | I | `보류(Q5=B)` · **제품 결정(미완 아님)** | 툴 allowlist/프로필(`permissionResolver.ts`·`autoAllowClaudeTools`) + Claude 기본 permMode `bypassPermissions`→`default`. **Q5=B**: bypass 기본 유지 → allowlist 소비처 없음(dead-code) → **포팅 본선에서 제외**. 기본을 `default`로 바꿀 때 재개 | allowlist 없는 자동승인 제거(재개 시) |
 | **W13-c** | I | `done` | 파일 realpath confinement(`sessionOrchestrator.ts:838-875`) **순수 헬퍼+테스트만**(Q4). 배선은 첨부 다운로드 경로 부재로 잠재 — 첨부 파이프라인 착수 시 브리지 send 전단에 결합 | 심링크 탈출 차단(헬퍼 준비) |
 | **W13-d** | I | `done` | 감사 로그(`auditLog.ts`→append-only JSONL + secret redaction) **turn/denied만**(Q7=A; start/stop은 W14) | who/what 기록 |
 | **W14** | J | `done` | 라이프사이클 정합 — SessionLifecycle + 3-bridge stop/interrupt + slash + channelDelete | stop/interrupt/정리 |
@@ -305,7 +308,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W15** | K | `done` | 설정/상태 성숙(TS동일) | 3-계층 config |
 | **W15-a** | K | `done` | 3-계층 config 이식(`ConfigStore`/`ConfigResolver`/`ConfigSchema`) — global→server→binding, 검증·0600·원자쓰기·corrupt→null, Authorizer server auth, `normalizeModeId` | 레이어링 config |
 | **W15-b** | K | `done` | SessionStore ordered migrations(STATE_VERSION=2) + `archived`/`markArchived` + load `normalizeModeId` aliases + optional profile/projectAuth/createdAt; stop hard-remove 유지; restore/stopAll skip archived | version 마이그레이션 |
-| **W16** | L | `done` | 기능 완전누락(전수조사 A/B/D) — a~h **전부 `done`** · 폴리시 잔여 클리어(S3 Chromium만 defer) | UI/명령 파리티 |
+| **W16** | L | `done` | 기능 완전누락(전수조사 A/B/D) — a~h **전부 `done`** · 폴리시 잔여 클리어 · **S3 Chromium도 `done`**(본선 밖 후순위였으나 완료) | UI/명령 파리티 |
 | **W16-a** | L | `done` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`→`DiscordText.chunkMessage`, 코드펜스 인지) + `DabMain` 성공/에러 순차 `createMessage`. `clip` 유지(단일 메시지 호출처용) | 2000자 초과 무손실 |
 | **W16-b** | L | `done` | `/config` 설정 패널: admin 슬래시·역할 티어 RoleSelect+Save · defaults mode/**model**/**effort**/permMode autosave(server)·dmPolicy autosave(global)·**locale select**(global `config.locale`, roleRows 5th; ko/en)·**알림 서브패널**(enable+status channelSelect→`server.notifications`)·effective embed. **이미지/chromium 서브패널 → S3** | 패널 동작 |
 | **W16-c** | L | `done` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
@@ -398,6 +401,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | host.file.attach | **host.file.attach Discord 업로드**. lib `FileAttach`(`attachFileConfined`/`resolveConfinedAttachPath`·cwd 감금) + `FileAttachHost` + dab `postFileAttach`(createMessage files) + `DabSessionBridge` `onFileAttach` 배선. 단위테스트 path/host + reverse RPC. |
 | 2026-07-26 | docs snapshot | **W16=`done`** 폴리시 잔여 클리어: pin status embed · config locale · host.file.attach · Grok plan/thought · W16-h install+restart · Codex parentByThread/collab · Linux/Windows 서비스 스크립트. §0 잔여 = **S3 Chromium(defer)** · **W13-b(보류 Q5=B)** · optional polish. 코드 변경 없음. |
 | 2026-07-26 | **S3 Chromium** | 표·mermaid→PNG full port (CLI headless, no puppeteer-in-Swift). pure `BlockParser`/`HtmlTemplates`/`AnswerDelivery`/`FindChrome` + `BrowserImageRenderer`(max 2, 15s, size caps, never throw) + `ChromiumProvisioner`(system Chrome / `npx @puppeteer/browsers`) + `ImageRenderHost` + DabMain/`/doc` deliverAnswer + `/config` 🖼 서브패널. **W13-b 유지 보류.** swift test **792** PASS. |
+| 2026-07-26 | **docs closeout** | **포팅 본선 완료** 선언. §0: S3·W16 완료 반영 · W13-b = **제품 결정 보류(미완 아님)** · Next = optional only(S1 등). 루트 README/README.ko 호환 매트릭스(image render ✅ · Chromium headless CLI · 잔여 큐 정리) · `swift/README` Render 정렬. 코드 변경 없음. 패리티 **~99%**. |
 
 ---
 
@@ -458,7 +462,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** **W13-b(`보류(Q5=B)`)** · optional polish. **W11·W12·W16·S3=`done`**.
+**큐 헤드:** **포팅 본선 완료** — 본선 기능 큐 소진. 선택만 남음: optional polish(S1·S2·verify scratch·플래키) · **W13-b는 제품 결정 보류(미완 아님)**. **W11·W12·W16·S3=`done`**.
 
 ---
 
@@ -486,7 +490,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` **W11=`done`** + **W12 문서 완료** + **W16=`done`** + **S3=`done`**(headless Chrome CLI 표·mermaid PNG). **다음** = W13-b(`보류(Q5=B)`) · optional polish. **패리티 ~99%.**
+`plan/swift-port` **포팅 본선 완료** — **W11=`done`** + **W12** + **W16=`done`** + **S3=`done`**(headless Chrome CLI 표·mermaid PNG). **다음** = optional polish only · **W13-b는 제품 결정 보류(미완 아님)**. **패리티 ~99%.**
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
 **해결: 격리 빌드 경로로 실행하라.**
@@ -523,9 +527,9 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11 전부**~~ ✅ · ~~**W12**~~ ✅ · ~~**W16 전부**~~ ✅ · ~~**S3 Chromium**~~ ✅ (CLI headless)
-2. **W13-b** (`보류(Q5=B)`) — 기본 permMode/`allowlist` when product default moves off bypass.
-3. **optional polish** — `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정 · UX 다듬기.
+1. ~~**W11 전부**~~ ✅ · ~~**W12**~~ ✅ · ~~**W13a/c/d·W14·W15**~~ ✅ · ~~**W16 전부**~~ ✅ · ~~**S3 Chromium**~~ ✅ (CLI headless) → **포팅 본선 완료**
+2. **optional polish** (선택) — S1 주석 다이어트 · S2 renderer 병합 · `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정 · UX 다듬기
+3. **W13-b** (`보류(Q5=B)` · **제품 결정, 미완 아님**) — 기본 permMode를 `default`로 바꿀 때만 allowlist 이식 재개
 
 ### 14.8 병렬 작업 교훈
 신규파일/디스조인트 슬라이스(테스트 하드닝·배포·권한 lib)는 병렬로 잘 됐음. **단 여러 에이전트가 동시에 `swift build/test`를 돌리면 `.build` 락 경합**(+인덱서까지)으로 hang·지연 → 병렬 빌드는 **각자 `--scratch-path` 분리** 필수. 핫파일(브리지/DabMain) 배선은 직렬.
@@ -589,4 +593,4 @@ TS 4영역(A 인터랙션/위저드 · B 렌더러/HUD · C 코어/권한/config
 - 테이블/mermaid→PNG 렌더(S3), Chromium 프로비저닝. ~~fileAttach~~ ✅ · fileDiff는 capabilities/tool path. ~~streaming 실시간 편집~~ → **W11-g live stream embed**로 ship(풀 메시지 스트리밍 편집은 별도·미요구). ~~folder/preset/A4D/resume~~ → **W11-b2 범위로 완료**.
 
 ### 15.5 미확정 (착수 전 재확인) — 대부분 해소
-- ~~preset·A4D·resume 위저드~~ ✅ (W11-b2) · ~~pin status embed~~ ✅ · ~~auto-update install+restart~~ ✅ · ~~Linux/Windows 서비스~~ ✅. **잔여 미확정/선택**: profile(권한 프로파일) UX · W13-b 기본 permMode 전환 시점.
+- ~~preset·A4D·resume 위저드~~ ✅ (W11-b2) · ~~pin status embed~~ ✅ · ~~auto-update install+restart~~ ✅ · ~~Linux/Windows 서비스~~ ✅ · ~~S3 Chromium~~ ✅. **잔여 선택/재개**: optional polish · profile(권한 프로파일) UX · **W13-b 기본 permMode 전환 시점(제품 결정 보류)**.
