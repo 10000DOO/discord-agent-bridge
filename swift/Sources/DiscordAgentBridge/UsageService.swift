@@ -7,6 +7,15 @@ import Foundation
 // Codex: short-lived `codex app-server` → `account/rateLimits/read`.
 // NEVER throws into callers. Structural Codex fallback → `codexUsageUnavailable()`.
 
+// C11: names mirror TS's `createLogger('usage', ...)` (Claude) / `createLogger('grok-usage',
+// ...)` test naming (`grep -rn "createLogger(" src`); Codex has no TS test-named equivalent,
+// so `codex-usage` follows the same pattern. All `log(...)` call sites below are warnings
+// (recoverable — usage becomes "unavailable", never a thrown error), matching TS's
+// `this.logger.warn(...)` throughout `usageService.ts`.
+public let claudeUsageLog = Logger(name: "usage")
+public let grokUsageLog = Logger(name: "grok-usage")
+public let codexUsageLog = Logger(name: "codex-usage")
+
 // MARK: - Public snapshot shapes
 
 public struct UsageLimit: Sendable, Equatable {
@@ -139,7 +148,7 @@ public actor ClaudeUsageService {
         readKeychain: (@Sendable () -> String?)? = nil,
         writeKeychain: (@Sendable (String) -> Void)? = nil,
         nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
-        log: @escaping @Sendable (String) -> Void = { msg in fputs("dab usage: \(msg)\n", stderr) }
+        log: @escaping @Sendable (String) -> Void = { msg in claudeUsageLog.warn(msg) }
     ) {
         self.userAgent = "claude-code/\(userAgentVersion)"
         self.cacheMs = max(0, cacheSec) * 1000
@@ -431,7 +440,7 @@ public actor GrokUsageService {
         http: any UsageHTTPPerforming = URLSessionUsageHTTP(),
         authPath: String? = nil,
         nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
-        log: @escaping @Sendable (String) -> Void = { msg in fputs("dab grok usage: \(msg)\n", stderr) }
+        log: @escaping @Sendable (String) -> Void = { msg in grokUsageLog.warn(msg) }
     ) {
         self.cacheMs = max(0, cacheSec) * 1000
         self.http = http
@@ -577,7 +586,7 @@ public actor CodexUsageService {
         codexHome: String? = nil,
         requestRateLimits: CodexRateLimitsRequestFn? = nil,
         nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
-        log: @escaping @Sendable (String) -> Void = { msg in fputs("dab codex usage: \(msg)\n", stderr) }
+        log: @escaping @Sendable (String) -> Void = { msg in codexUsageLog.warn(msg) }
     ) {
         self.cacheMs = max(0, cacheSec) * 1000
         self.nowMs = nowMs

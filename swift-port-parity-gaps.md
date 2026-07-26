@@ -1,6 +1,6 @@
 # TS→Swift 포팅 패리티 감사 — 발견된 누락/차이 전수 목록
 
-> 상태: `구현중` · 갱신: 2026-07-26 · 브랜치: `plan/swift-port` · 다음 액션: Critical(1장) 항목을 우선순위 순으로 WO 단위 실행 — 6장 참고.
+> 상태: `구현중` · 갱신: 2026-07-27 · 브랜치: `plan/swift-port` · 다음 액션: Critical 16건 전부 완료(전체 테스트 1027개 통과) — High(2장) 26건을 순서대로 WO 단위 실행 시작.
 > ⚠️ 본문의 file:line은 드리프트할 수 있음 — 실행 전 반드시 심볼명으로 재확인할 것
 > ⚠️ 기존 docs/*-parity.md 문서들은 이번 조사에서 **참고하지 않았음** — 전부 `src/`(TypeScript 원본)와 `swift/Sources/`(Swift 포팅본)를 직접 열어 대조한 결과만 기록함.
 
@@ -13,19 +13,19 @@
 | # | 내용 | 상태 |
 |---|---|---|
 | C1 | Codex 생각중(thinking) 스트림 | ✅ 완료 (빌드+테스트 확인) |
-| C2 | Codex 사용량 패널 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
+| C2 | Codex 사용량 패널 | ✅ 완료 (빌드+전체테스트 확인) |
 | C3 | Codex 동적 도구(파일첨부/문서공유) | ✅ 완료 (빌드+테스트 확인) |
 | C4 | Codex 재개목록 SQLite 읽기 | ✅ 완료 (빌드+테스트 확인) |
 | C5 | Grok MCP 파일첨부/문서공유 루프백 | ✅ 완료 (빌드+테스트 확인) |
 | C6 | 첨부 이미지 실제 이미지로 전달 | ✅ 완료 (빌드+테스트 확인) |
-| C7 | Grok 사용량 패널 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
-| C8 | Grok 재개목록 SQLite 읽기 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
+| C7 | Grok 사용량 패널 | ✅ 완료 (빌드+전체테스트 확인) |
+| C8 | Grok 재개목록 SQLite 읽기 | ✅ 완료 (빌드+전체테스트 확인) |
 | C9 | Claude 권한 프로필(allowedTools) 배선 | ✅ 완료 (빌드+테스트 확인) |
-| C10 | 부팅 시 세션 즉시 재연결 + 채널삭제 감지 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
-| C11 | 로거 포팅 | ⏳ 대기 (제일 마지막 예정) |
-| C12 | CLI 진입점(`--version`/`--setup`) | ✅ 완료 (필터 테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
-| C13 | `dab service status/restart` | ✅ 완료 (필터 테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
-| C14 | 메시지 전송 재시도 엔진 | ✅ 완료 (필터 테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
+| C10 | 부팅 시 세션 즉시 재연결 + 채널삭제 감지 | ✅ 완료 (빌드+전체테스트 확인) |
+| C11 | 로거 포팅 | ✅ 완료 (빌드+전체테스트 확인) |
+| C12 | CLI 진입점(`--version`/`--setup`) | ✅ 완료 (빌드+전체테스트 확인) |
+| C13 | `dab service status/restart` | ✅ 완료 (빌드+전체테스트 확인) |
+| C14 | 메시지 전송 재시도 엔진 | ✅ 완료 (빌드+전체테스트 확인) |
 | C15 | "도구 사용 알림" 배선 | ✅ 완료 (빌드+테스트 확인) |
 | C16 | 프리셋 초안 디스크 저장 | ✅ 완료 (빌드+테스트 확인) |
 
@@ -36,7 +36,7 @@
 | Q1 | Linux/Windows 지원 범위 | ✅ 결정 완료 (덤 취급, 작업 안 함) |
 | Q2 | 설정화면(`/config`) TS 원복 | ✅ 완료 (빌드+테스트 확인) |
 | Q3 | Codex 모델 저장 키 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
-| Q4 | 권한 타임아웃/Codex 자동승인 제거 | ✅ 완료 (테스트 확인, 최종 빌드/전체테스트는 사용자 확인 예정) |
+| Q4 | 권한 타임아웃/Codex 자동승인 제거 | ✅ 완료 (빌드+전체테스트 확인) |
 | Q5 | 채널 삭제 가드 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 
 ### High (26건)
@@ -99,7 +99,14 @@
   - **조사 결과 정정**: TS `resumeAll()` 자체는 순차 for문(`Promise.allSettled` 아님) — 병렬 `Promise.allSettled`는 `app.ts`의 별도 boot attach 단계(`wiring.attachWithRetry`, Discord 렌더러 재구독 + 채널 존재확인)에서만 쓰인다. Swift엔 TS의 "wiring/attach" 객체 자체가 없다(렌더러가 channelId만 받는 stateless 클로저라 재구독할 대상이 없음) — 그래서 채널 존재확인(10003)과 백엔드 재연결을 채널당 한 번에 처리해도 동일 효과이고, 오히려 TS가 갖고 있는 "resume 직후 gone 판명되면 즉시 kill"하는 낭비(코드 주석에 명시된 orphan 문제)가 없어진다(gone 체크를 resume보다 먼저 함). `DiscordAgentBridge`(라이브러리)는 DiscordBM 의존성이 없어(10003 감지에 필요) 실제 Discord API 호출은 `dab` 실행파일에서만 가능 — `SessionLifecycle`은 기존 `stopClaude`/`interruptClaude` 등과 동일한 클로저 주입 패턴을 그대로 따름(3안 중 사용자가 이 옵션을 확정).
   - **구현**: `SessionLifecycle.resumeAll(channelGone:resumeSession:)` 신규 — `store.active()`(non-archived)를 `TaskGroup`으로 병렬 순회, 채널마다 `channelGone`이 10003을 확인하면 기존 `stopChannel`(=`onChannelDelete`와 동일 경로: 3개 브릿지 stop + registry.unbind + store.remove)로 하드 클린업하고 resume은 아예 시도하지 않음, 아니면 `resumeSession`(기본값은 기존 `softEnsureLive` 재사용)으로 재연결 시도. 두 클로저 모두 non-throwing이라 한 채널의 실패가 다른 채널에 전파되지 않음(`Promise.allSettled`와 동일 보장이 타입 시스템으로 보장됨). `channelGone` 기본값 `{ _ in false }`(TS `wiring.ts`가 문서화한 "safe default — never reports gone"과 동일), `resumeSession`은 nil이면 `softEnsureLive`로 폴백 — 둘 다 파라미터로만 주입하고 `init()`은 무변경(기존 `SessionLifecycleTests` 11개 전부 무영향). `DabMain.swift`의 `onReady`는 `restoreSessionBindings()` 직후 `resumeAll(channelGone:)`을 호출하며, `channelGone` 구현(`channelConfirmedGone`)은 `client.getChannel(id:)` → `.httpResponse.asError()` → `.jsonError(let e)` → `e.code == .unknownChannel`로 판별(그 외 네트워크 오류 등은 전부 false — 일시 오류가 클린업을 트리거 못 하게).
   - 유닛 테스트 3건 추가(`SessionLifecycleTests.swift` "MARK: - C10 resumeAll"): `resumeAllCleansUpGoneChannelWithoutCallingResumeSession`(gone → stopChannel만, resume 호출 안 됨), `resumeAllResumesLiveChannelWithoutStopping`(안 gone → resumeSession만, stop 호출 안 됨), `resumeAllHandlesEachChannelIndependently`(gone/성공-resume/실패-resume 3채널 동시 처리 — 서로 결과가 전혀 안 섞임, 실패한 채널도 다른 채널에 영향 없음). `swift test --filter SessionLifecycleTests` 27건 전부 통과(빌드 10.52s, 테스트 0.031s), `dab` 실행파일 타겟(`DiscordBM` 의존 — `channelConfirmedGone`)도 같은 빌드에서 링크 확인. `channelConfirmedGone` 자체는 `dab` 실행파일 전용 코드라 이 저장소의 테스트 구조상(테스트 타겟이 `DiscordAgentBridge` 라이브러리만 대상) 단위테스트 불가 — 기존 `GuildChannelProvisionerAdapter.channelExists` 등 동일 계열 미검증 코드와 같은 처지. 전체 빌드/전체 테스트 최종 확인은 사용자가 별도 진행.
-- **C11. 로거(`src/core/logger.ts`) 전체 미포팅.** 레벨 게이팅 없는 `print`/`fputs`가 산재(`DabMain.swift`에만 `print` 15곳 + `fputs` 21곳). `config.logLevel`은 스키마 검증만 되고 **어디서도 읽히지 않음**(전체 grep 6건 전부 `ConfigSchema.swift` 내부 선언). 일반 로그는 `redact()` 처리도 안 됨(`AuditLog.swift`만 문자열 패턴 스크러빙 적용).
+- **C11. [구현됨: `Session/Log.swift`(신규 — `LogLevel`/`LogSink`/`ConsoleSink`/`Logger`/`currentLogLevel`), 전역 `print`/`fputs` 호출부 다수]** 로거(`src/core/logger.ts`) 전체 미포팅이었음. 레벨 게이팅 없는 `print`/`fputs`가 산재(`DabMain.swift`에만 `print` 46곳 + `fputs` 21곳, 그 외 9개 파일에 각 1~9곳, 총 99곳). `config.logLevel`은 스키마 검증만 되고 **어디서도 읽히지 않았음**(전체 grep 6건 전부 `ConfigSchema.swift` 내부 선언). 일반 로그는 `redact()` 처리도 안 됨(`AuditLog.swift`만 문자열 패턴 스크러빙 적용).
+  - **구현**: `Session/Log.swift` 신규 — TS `LogLevel`/`LEVEL_ORDER`를 그대로 미러링한 `LogLevel` enum(Comparable), TS `LogSink`/`consoleSink`를 미러링한 `LogSink` 프로토콜 + `ConsoleSink`(error/warn → 기존 `fputs(..., stderr)` 컨벤션 그대로, 나머지 → `print`), TS `RedactingLogger`를 미러링한 `Logger` struct(actor 아님 — 상태가 불변 name/level/sink뿐이라 `AuditLog`(append-only 파일 순서 보장 때문에 actor)와 달리 오버헤드 불필요, 3안 중 사용자 사전 확정). 메시지는 기존 `redactSecrets`(`Session/AuditLog.swift:63`, TS `redactString` 포트)를 재사용해 스크러빙 — TS `redact()`의 재귀 객체 마스킹은 이식하지 않음(Swift 호출부 전수 확인 결과 전부 문자열 보간이고 별도 meta 객체를 넘기는 곳이 없음, 구조화 로깅 호출부 없음 확인 완료).
+  - TS는 `app.ts`에서 config를 1회 읽어 만든 단일 `'app'` 로거를 의존성 주입으로 전체에 threading하지만, Swift는 파일마다 지연 생성되는 `private let log = Logger(name: "...")` 전역이 흩어져 있어 생성 시점이 부팅 config 로드 시점과 어긋날 수 있음 — 그래서 `level`을 명시하지 않으면 매 호출마다 전역 `currentLogLevel`(`LockedBox<LogLevel>` 재사용, 기존 `Sidecar/LockedBox.swift` 패턴)을 동적으로 읽도록 설계(명시적 `level`을 준 경우만 고정 — 테스트용). `DabMain.swift`의 `onReady` 이전, 기존 `ConfigStore.shared.load()` 호출(로케일 적용과 같은 지점)이 성공하면 그 값으로 `currentLogLevel`을 1회 설정, 실패 시 기본 "info" 유지.
+  - 로거 이름은 TS `grep -rn "createLogger(" src` 확인 결과 프로덕션 호출은 사실상 `'app'`(`app.ts`) 하나뿐이라(테스트만 `'usage'`/`'grok-usage'` 등 사용) TS와 1:1 매핑할 지점이 많지 않음 — `DabMain.swift`는 TS `app.ts`의 boot/이벤트 핸들러 역할과 대응되므로 `"app"`으로, `UsageService.swift`의 3개 actor(Claude/Grok/Codex)는 TS 테스트 네이밍(`'usage'`/`'grok-usage'`)을 그대로 따르고 Codex는 대응 이름이 없어 동일 패턴으로 `"codex-usage"`, 그 외 파일(`DabSessionBridge`→`"claude"`, `CodexSessionBridge`→`"codex"`, `GrokSessionBridge`→`"grok"`, `AutoUpdateWiring`→`"auto-update"`, `ConfigStore`→`"config"`, `CodexDiscovery`→`"codex-discovery"`, `SessionPersist`→`"session-persist"`, `GuildChannelProvisionerAdapter`→`"guild-provision"`)는 파일명 기반으로 지음.
+  - **CLI 출력 제외**: `DabMain.swift`의 `--version`/`--setup` 안내/토큰 누락 usage 에러, `codex-smoke`/`grok-smoke`/`sidecar-smoke` 서브커맨드 진단 출력, `attach-mcp` 서브커맨드의 stdio JSON-RPC 와이어 프로토콜 출력(`writeAttachMcpLine` — 로그가 아니라 Grok 프로세스가 파싱하는 프로토콜 그 자체라 감싸면 프로토콜이 깨짐)은 전부 그대로 둠. `Service/ServiceCommand.swift`의 `log:` 기본값(`{ print($0) }`)도 `dab service status/restart`의 사용자 대면 CLI 출력(한국어 안내문)이라 로거 대상에서 제외 — 애초 조사 시 "1곳"으로 집계됐던 곳이지만 실제로는 CLI 출력이라 판단해 전환 대상에서 뺌(오케스트레이터 확인 필요).
+  - 유닛 테스트 7건 신규(`LogTests.swift`): 임계값 미달 억제, 임계값 이상 통과 + 포맷(`[LEVEL] name: msg`) 확인, 민감정보 스크러빙 확인, `level` 미지정 시 `currentLogLevel` 동적 반영, `level` 명시 시 `currentLogLevel` 변경 무시, `LogLevel` 순서 비교. 전역 `currentLogLevel`을 변경하는 테스트가 있어 `I18nTests.swift`와 동일하게 `@Suite("Logger", .serialized)` 적용.
+  - **수정(오케스트레이터 빌드 검증 중 발견)**: `UsageService.swift`의 `claudeUsageLog`/`grokUsageLog`/`codexUsageLog` 3개를 처음엔 `private let`으로 선언했는데, 이걸 참조하는 `ClaudeUsageService`/`GrokUsageService`/`CodexUsageService`의 이니셜라이저가 전부 `public init`이라 "기본 인자값이 이니셜라이저보다 낮은 접근수준을 참조할 수 없다"는 Swift 규칙에 걸려 빌드 실패 — `public let`으로 수정해 해결.
+  - 최종 확인: `swift build --package-path swift`, `swift build --package-path swift --target dab` 모두 성공, `swift test --package-path swift` 전체 스위트 1027개 테스트 전부 통과(3.591초, 기존 테스트 회귀 없음).
 - **C12. [초안 구현됨: `DiscordAgentBridge/Token.swift`(`DiscordToken.resolve(configToken:)`), `dab/DabMain.swift`(`--version`/`--setup` 분기, `printSetupGuidance()`, `configToken` 배선)]** CLI 진입점(`src/cli.ts`) 전체 미포팅이었음. `--version`/`--setup`/`service <sub>` argv 분기, `needsSetup()` 게이트가 없었고, `DabMain.swift:8-26`(수정 전)이 곧바로 `DiscordToken.resolve()`(env var 또는 argv[1])로 토큰을 읽어 `config.json`의 `discord.token`/`discord.clientId` 필드를 완전히 우회했다(스키마엔 있지만 읽는 곳 전무 — 죽은 필드).
   - **범위**: `service <sub>`는 C13(별도 WO)이라 이번 변경에서 완전히 제외. `--version`/`--setup` + config.json 토큰 배선만 다룸.
   - **조사 결과**: TS `runSetup()`은 `@inquirer/prompts` 기반 인터랙티브 터미널 위저드(토큰/ClientID 입력 → `config.json` 저장)인데, Swift 포팅본엔 이에 대응하는 게 애초에 존재하지 않는다(전수 grep 0건) — 실제 Swift 배포 흐름은 `swift/scripts/install.sh:143`처럼 `.env` 파일에 `DISCORD_BOT_TOKEN`을 직접 채우는 방식이라 아키텍처 자체가 다르다. `discord.clientId`는 TS에서도 위저드 초대링크 생성 + `DiscordClient` 생성자(`app.ts:378`)에만 쓰이는데, Swift는 gateway `READY` 페이로드의 `payload.application.id`(`DabMain.swift` `registerAgentCommand(appId:...)`)로 앱 ID를 직접 받아 써서 운영상 clientId 자체가 불필요 — 그대로 죽은 채 둠(문서화된 의도적 결정).
@@ -222,6 +229,6 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 15 | WO-P15: 프리셋 초안 디스크 영속화 [완료] | C16 | `ChannelWizard.swift` (`PresetDraftRegistry`) | `SessionStore.swift` 패턴 미러링, 독립 |
 | 16 | WO-P16: `/config` 패널 TS 원복 (Q2) [구현됨: `ConfigPanel.swift:24-105,342-436,755-761,906-940`] | Q2 | `ConfigPanel.swift` | `dmPolicy` 행 제거, `locale` 원위치, `renderDecline`이 `render.enabled` 끄지 않게 |
 | 17 | WO-P17: 권한 타임아웃 제거 + Codex 자동승인 분리 (Q4) [완료: 1장 H3/H25 참고] | H3, H25 | `PermissionGate.swift`, `CodexSessionBridge.swift` | 독립 |
-| 18 | WO-P18: 로거 포팅 (`src/core/logger.ts`) | C11 | 전역(모든 `print`/`fputs` 호출부) | **가장 넓게 퍼짐 — 마지막에 진행**(다른 WO들이 먼저 끝나 print 호출부가 안정된 뒤 일괄 교체) |
+| 18 | WO-P18: 로거 포팅 (`src/core/logger.ts`) [완료: 1장 C11 참고] | C11 | `Session/Log.swift`(신규), 전역(모든 `print`/`fputs` 호출부) | **가장 넓게 퍼짐 — 마지막에 진행**(다른 WO들이 먼저 끝나 print 호출부가 안정된 뒤 일괄 교체) |
 
 완료 판정은 매 WO 공통: `swift build --package-path swift` 성공 + 해당 영역 유닛 테스트 신규 작성·필터 통과 + 문서(`docs/swift-port-parity-gaps.md`) 해당 C#/H# 옆에 `[구현됨: file:line]` 표기.

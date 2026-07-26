@@ -2,6 +2,8 @@ import DiscordAgentBridge
 import DiscordBM
 import Foundation
 
+private let log = Logger(name: "guild-provision")
+
 /// DiscordBM adapter for `GuildChannelProvisioner` (TS `GuildProvisionerAdapter` in client.ts).
 /// Best-effort: missing channel / permission errors on rename/delete are swallowed so a single
 /// flaky op never aborts the rest of provisioning.
@@ -148,7 +150,11 @@ func runAutoProvisionGuild(
         provisioner: provisioner,
         configStore: ConfigStore.shared,
         log: { level, msg in
-            print("dab: [\(level)] \(msg)")
+            switch level {
+            case "warn": log.warn(msg)
+            case "error": log.error(msg)
+            default: log.info(msg)
+            }
         }
     )
 }

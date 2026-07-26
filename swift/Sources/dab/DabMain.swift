@@ -3,6 +3,10 @@ import DiscordBM
 import Foundation
 import NIOCore
 
+// C11: name mirrors TS's sole production `createLogger('app', ...)` call (`src/app.ts:124`) —
+// DabMain.swift is Swift's rough equivalent of app.ts's boot sequence + event handlers.
+private let log = Logger(name: "app")
+
 @main
 struct DabMain {
     static func main() async {
@@ -54,12 +58,17 @@ struct DabMain {
             intents: [.guilds, .guildMessages, .messageContent]
         )
 
-        print("dab: connecting to Discord gateway…")
-        print("dab: !claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
+        log.info("connecting to Discord gateway…")
+        log.info("!claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
         // G-P1-08: process-wide UI language from config.locale (default ko).
+        // C11: process-wide log level from config.logLevel, read once at boot (TS reads
+        // config once before creating its single `app` logger; no hot-reload — matches).
         if let cfg = try? await ConfigStore.shared.load() {
             I18n.applyFromConfigLocale(cfg.locale)
+            if let level = LogLevel(rawValue: cfg.logLevel) {
+                currentLogLevel.withLock { $0 = level }
+            }
         }
 
         // Wire the permission-button presenter once: the gate (library) posts Allow / Always-Allow /
@@ -145,11 +154,11 @@ struct EventHandler: GatewayEventHandler {
 
     func onReady(_ payload: Gateway.Ready) async throws {
         let user = payload.user
-        print("ready: username=\(user.username) id=\(user.id) app=\(payload.application.id)")
+        log.info("ready: username=\(user.username) id=\(user.id) app=\(payload.application.id)")
         // G-P1-07: remember bot user id for Manage Channels checks on subsequent GuildCreate.
         // READY only carries UnavailableGuild stubs; full guilds arrive as GuildCreate (boot + join).
         await BotGatewayIdentity.shared.setUserId(user.id.rawValue)
-        print("dab: auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
+        log.info("auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()
         // C10: eagerly reconnect every restored channel now, instead of waiting for its next
@@ -157,8 +166,8 @@ struct EventHandler: GatewayEventHandler {
         let resumeSummary = await SessionLifecycle.shared.resumeAll(channelGone: { channelId in
             await self.channelConfirmedGone(channelId: channelId)
         })
-        print(
-            "dab: resume-on-boot complete resumed=\(resumeSummary.resumed) "
+        log.info(
+            "resume-on-boot complete resumed=\(resumeSummary.resumed) "
                 + "cleaned=\(resumeSummary.cleaned) total=\(resumeSummary.total)"
         )
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
@@ -210,7 +219,7 @@ struct EventHandler: GatewayEventHandler {
     private func restoreSessionBindings() async {
         let imported = await LegacyStateImport.runIfNeeded()
         if imported > 0 {
-            print("dab: imported \(imported) channel binding(s) from legacy state.json")
+            log.info("imported \(imported) channel binding(s) from legacy state.json")
         }
         await SessionStore.shared.load()
         let active = await SessionStore.shared.active()
@@ -220,7 +229,7 @@ struct EventHandler: GatewayEventHandler {
                 SessionConfig(backend: ps.backend, model: ps.model, effort: ps.effort, permMode: ps.permMode)
             )
         }
-        print("dab: restored \(active.count) session binding(s) from store")
+        log.info("restored \(active.count) session binding(s) from store")
     }
 
     /// C10: TS `wiring.ts`'s `resolveChannelResult` — true only when Discord confirms the channel is
@@ -240,13 +249,13 @@ struct EventHandler: GatewayEventHandler {
         do {
             if let g = devGuildId {
                 _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(g), payload: cmds)
-                print("dab: registered \(cmds.map(\.name).joined(separator: ", ")) to guild \(g)")
+                log.info("registered \(cmds.map(\.name).joined(separator: ", ")) to guild \(g)")
             } else {
                 _ = try await client.bulkSetApplicationCommands(appId: appId, payload: cmds)
-                print("dab: registered \(cmds.map(\.name).joined(separator: ", ")) globally (propagation ~1h)")
+                log.info("registered \(cmds.map(\.name).joined(separator: ", ")) globally (propagation ~1h)")
             }
         } catch {
-            print("dab: slash register failed: \(error)")
+            log.error("slash register failed: \(error)")
         }
         // (OK-2 leftover) Q2: sweep guild-scoped commands left by a predecessor that registered
         // per-guild (e.g. the old TS bridge) — every boot, global-registration mode only.
@@ -254,7 +263,7 @@ struct EventHandler: GatewayEventHandler {
             do {
                 _ = try await client.bulkSetGuildApplicationCommands(appId: appId, guildId: GuildSnowflake(guildId), payload: [])
             } catch {
-                print("dab: guild command cleanup failed for \(guildId): \(error)")
+                log.warn("guild command cleanup failed for \(guildId): \(error)")
             }
         }
     }
@@ -710,7 +719,7 @@ struct EventHandler: GatewayEventHandler {
                     I18n.t("cmd.setup.done", ["control": "<#\(channels.controlChannelId)>"])
                 )
             } catch {
-                print("dab: /setup failed guild=\(realGuildId): \(error)")
+                log.error("/setup failed guild=\(realGuildId): \(error)")
                 try await respondEphemeral(payload, I18n.t("cmd.setup.unavailable"))
             }
 
@@ -821,7 +830,7 @@ struct EventHandler: GatewayEventHandler {
                 let res = try await postDocumentShare(client: client, channelId: channelId, path: docPath)
                 try await respondEphemeral(payload, formatDocShareReply(path: docPath, result: res))
             } catch {
-                print("dab: /doc failed channel=\(channelId): \(error)")
+                log.error("/doc failed channel=\(channelId): \(error)")
                 try await respondEphemeral(payload, "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
             }
 
@@ -862,7 +871,7 @@ struct EventHandler: GatewayEventHandler {
         do {
             try await ConfigStore.shared.addServerAdminUserId(guildId: guildId, userId: userId)
         } catch {
-            print("dab: setup bootstrap admin registration failed guild=\(guildId) user=\(userId): \(error)")
+            log.warn("setup bootstrap admin registration failed guild=\(guildId) user=\(userId): \(error)")
         }
     }
 
@@ -939,7 +948,7 @@ struct EventHandler: GatewayEventHandler {
             guildId: guildId.rawValue,
             roleTier: "execute"
         )
-        print("dab: channelDelete → stop channel=\(channelId) guild=\(guildId.rawValue)")
+        log.info("channelDelete → stop channel=\(channelId) guild=\(guildId.rawValue)")
     }
 
     private func respondEphemeral(
@@ -1912,7 +1921,7 @@ struct EventHandler: GatewayEventHandler {
             do {
                 turnFiles = try await downloadAttachments(cwd: cwd, attachments: incoming)
             } catch {
-                print("dab: attachment download failed channel=\(channelId) err=\(error)")
+                log.error("attachment download failed channel=\(channelId) err=\(error)")
                 _ = await createMessageWithRetry(
                     client: client,
                     channelId: payload.channel_id,
@@ -1927,7 +1936,7 @@ struct EventHandler: GatewayEventHandler {
             }
         }
 
-        print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80)) files=\(turnFiles.count)")
+        log.info("\(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80)) files=\(turnFiles.count)")
         // G-P0-02: ⏳ working indicator on the user message as soon as the turn is accepted
         // (before runTurn / control message). Best-effort — missing Add Reactions never blocks.
         await addTurnReaction(
@@ -2148,7 +2157,7 @@ struct EventHandler: GatewayEventHandler {
             )
             // Same chunking on error path so huge error text is not truncated.
             let msg = "⚠️ \(error.localizedDescription)"
-            print("dab: \(backend.rawValue) turn failed: \(error)")
+            log.error("\(backend.rawValue) turn failed: \(error)")
             for chunk in DiscordText.chunkMessage(msg) {
                 _ = await createMessageWithRetry(
                     client: client,
@@ -2579,7 +2588,7 @@ func persistAlwaysAllow(tool: String, actorId: String, guildId: String, channelI
     do {
         _ = try await ConfigStore.shared.addAutoAllowClaudeTool(tool)
     } catch {
-        fputs("dab: failed to persist always-allow tool \(tool): \(error)\n", stderr)
+        log.warn("failed to persist always-allow tool \(tool): \(error)")
     }
 }
 

@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "codex")
+
 /// `attach_file` dynamic tool spec registered on `thread/start` (TS appSession.ts
 /// ATTACH_FILE_DYNAMIC_TOOL, :62-75).
 private let codexAttachFileDynamicTool: JSONValue = .object([
@@ -70,7 +72,7 @@ public actor CodexSessionBridge {
     init(
         makeClient: @escaping @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient = { onApproval in
             let spawn = resolveCodexSpawn()
-            print("dab: spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            log.info("spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
             return try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000, onApproval: onApproval)
         },
         turnTimeoutOverrideNs: UInt64? = nil,
@@ -332,11 +334,11 @@ public actor CodexSessionBridge {
                 do {
                     _ = try await client.threadResume(params: .object(["threadId": .string(resumeId)]))
                     threadId = resumeId
-                    print("dab: codex thread/resume channel=\(channelId) thread=\(resumeId)")
+                    log.info("thread/resume channel=\(channelId) thread=\(resumeId)")
                 } catch {
                     fallbackNotice[channelId] = sessionFallbackNotice
                     threadId = try await client.threadStart(params: .object(startParams))
-                    print("dab: codex resume failed (\(error)) → thread/start channel=\(channelId)")
+                    log.warn("resume failed (\(error)) → thread/start channel=\(channelId)")
                 }
             } else {
                 threadId = try await client.threadStart(params: .object(startParams))
@@ -384,7 +386,7 @@ public actor CodexSessionBridge {
             await client.close()
             throw AppServerError("session stopped")
         }
-        print("dab: codex thread channel=\(channelId) thread=\(threadId)")
+        log.info("thread channel=\(channelId) thread=\(threadId)")
         return channel
     }
 
@@ -669,7 +671,7 @@ public actor CodexSessionBridge {
             )
             return true
         } catch {
-            print("dab: codex softEnsure failed channel=\(channelId) error=\(error)")
+            log.warn("softEnsure failed channel=\(channelId) error=\(error)")
             return false
         }
     }

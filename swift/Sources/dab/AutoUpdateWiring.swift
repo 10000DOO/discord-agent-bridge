@@ -2,6 +2,8 @@ import DiscordAgentBridge
 import DiscordBM
 import Foundation
 
+private let log = Logger(name: "auto-update")
+
 /// Process-wide AutoUpdater handle (created after gateway ready so postPrompt can use the client).
 actor AutoUpdaterRegistry {
     static let shared = AutoUpdaterRegistry()
@@ -73,7 +75,7 @@ func startAutoUpdater(client: any DiscordClient) async {
             await installLatestSelfUpdate(
                 dryRun: dryRun,
                 onLog: { msg in
-                    print("dab: \(msg)")
+                    log.info(msg)
                     Task {
                         await AuditLog.shared.record(AuditEntry(
                             actorId: "system",
@@ -90,7 +92,7 @@ func startAutoUpdater(client: any DiscordClient) async {
         },
         restart: {
             if dryRun {
-                print("dab: auto-update dry-run — skip restart")
+                log.info("auto-update dry-run — skip restart")
                 return
             }
             let strategy = detectRestartStrategy(RestartDetectDeps())
@@ -101,15 +103,15 @@ func startAutoUpdater(client: any DiscordClient) async {
                     spawnDetached: { path, args in spawnDetachedDab(path: path, args: args) },
                     exitProcess: { code in Foundation.exit(code) }
                 ),
-                onLog: { print("dab: \($0)") }
+                onLog: { log.info($0) }
             )
         },
         messages: .korean,
-        onLog: { msg in print("dab: \(msg)") }
+        onLog: { msg in log.info(msg) }
     ))
     await AutoUpdaterRegistry.shared.set(updater)
     await updater.start()
-    print("dab: auto-updater started (version \(version)\(dryRun ? ", DAB_UPDATE_DRY_RUN" : ""))")
+    log.info("auto-updater started (version \(version)\(dryRun ? ", DAB_UPDATE_DRY_RUN" : ""))")
 }
 
 func postUpdatePromptToControlChannels(client: any DiscordClient, latest: String) async {

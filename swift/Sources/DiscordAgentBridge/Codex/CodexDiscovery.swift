@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "codex-discovery")
+
 // ~/.codex session discovery for the resume UX. 1:1 port of src/modes/codex/discovery.ts.
 // Reads session_index.jsonl (fast path for id/name/updatedAt) and each rollout's first-line
 // session_meta (for the cwd hint), then enriches/filters against thread state read via
@@ -25,8 +27,8 @@ public enum CodexDiscovery {
         do {
             states = try CodexSqliteReader.readThreadStates(codexHome)
         } catch {
-            print(
-                "dab: Codex state db unreadable; falling back to session_index.jsonl "
+            log.warn(
+                "Codex state db unreadable; falling back to session_index.jsonl "
                     + "(no archived/sub-agent filtering): \(error)"
             )
             states = nil

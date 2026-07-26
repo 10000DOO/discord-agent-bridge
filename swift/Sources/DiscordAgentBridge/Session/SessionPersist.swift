@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "session-persist")
+
 /// F2: persisting a session must NEVER kill a turn. Build the record, upsert, and swallow+log any
 /// write failure. Shared by the three bridges' turn-time capture (F7).
 ///
@@ -36,7 +38,7 @@ func persistSession(
     do {
         try await store.upsert(channelId: channelId, record)
     } catch {
-        print("dab: session persist failed (channel=\(channelId)): \(error)")
+        log.warn("session persist failed (channel=\(channelId)): \(error)")
     }
 }
 

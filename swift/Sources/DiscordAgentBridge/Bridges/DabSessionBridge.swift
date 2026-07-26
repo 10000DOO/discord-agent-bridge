@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "claude")
+
 /// Shared Claude sidecar + per-channel session map for the minimal `!claude` path (W9b).
 public actor DabSessionBridge {
     public static let shared = DabSessionBridge()
@@ -20,7 +22,7 @@ public actor DabSessionBridge {
     init(
         makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
             let spawn = resolveClaudeSidecarSpawn()
-            print("dab: spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            log.info("spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
             return try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
         },
         turnTimeoutOverrideNs: UInt64? = nil,
@@ -121,7 +123,7 @@ public actor DabSessionBridge {
             await c.close()
             throw error
         }
-        print("dab: sidecar ready (cwd=\(cwd) permMode=\(permMode))")
+        log.info("sidecar ready (cwd=\(cwd) permMode=\(permMode))")
         self.client = c
         return c
     }
@@ -146,7 +148,7 @@ public actor DabSessionBridge {
             let result = try await c.sessionsList(cwd: cwd, limit: limit)
             return result.sessions
         } catch {
-            print("dab: sessions.list failed (\(error))")
+            log.warn("sessions.list failed (\(error))")
             return []
         }
     }
@@ -285,8 +287,8 @@ public actor DabSessionBridge {
         if backend == .custom {
             let resolved = resolveCustomEnvFn()
             if resolved.hasDangerousFlag, perm != "bypassPermissions" {
-                print(
-                    "dab: custom backend alias contains --dangerously-skip-permissions but permMode is not bypassPermissions source=\(resolved.source ?? "?")"
+                log.warn(
+                    "custom backend alias contains --dangerously-skip-permissions but permMode is not bypassPermissions source=\(resolved.source ?? "?")"
                 )
             }
             var merged = ProcessInfo.processInfo.environment
@@ -295,8 +297,8 @@ public actor DabSessionBridge {
             if let m = resolved.env["ANTHROPIC_MODEL"], !m.isEmpty {
                 model = m
             }
-            print(
-                "dab: custom backend env resolved source=\(resolved.source ?? "nil") keys=\(resolved.env.keys.sorted())"
+            log.info(
+                "custom backend env resolved source=\(resolved.source ?? "nil") keys=\(resolved.env.keys.sorted())"
             )
         }
 
@@ -339,11 +341,11 @@ public actor DabSessionBridge {
         if let resumeId = persisted?.backendSessionId {
             do {
                 started = try await client.sessionResume(params, backendSessionId: resumeId)
-                print("dab: session.resume channel=\(channelId) backend=\(resumeId)")
+                log.info("session.resume channel=\(channelId) backend=\(resumeId)")
             } catch {
                 fallbackNotice[channelId] = sessionFallbackNotice
                 started = try await client.sessionStart(params)
-                print("dab: session.resume failed (\(error)) → start channel=\(channelId)")
+                log.warn("session.resume failed (\(error)) → start channel=\(channelId)")
             }
         } else {
             started = try await client.sessionStart(params)
@@ -414,7 +416,7 @@ public actor DabSessionBridge {
             try? await client.sessionStop(session: handle)
             throw SidecarRpcError(code: "interrupted", message: "session stopped")
         }
-        print("dab: session.start channel=\(channelId) handle=\(handle)")
+        log.info("session.start channel=\(channelId) handle=\(handle)")
         return handle
     }
 
@@ -662,7 +664,7 @@ public actor DabSessionBridge {
             )
             return true
         } catch {
-            print("dab: softEnsure failed channel=\(channelId) error=\(error)")
+            log.warn("softEnsure failed channel=\(channelId) error=\(error)")
             return false
         }
     }

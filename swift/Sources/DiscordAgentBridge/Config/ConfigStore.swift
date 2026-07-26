@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "config")
+
 // Load/save GLOBAL config.json and per-server servers/<guildId>.json (§8).
 // baseDir: ctor > DAB_HOME > ~/.discord-agent-bridge/. Atomic write + 0600.
 // Mirrors src/core/config.ts. Authorizer uses loadAuth() fail-secure (never throws).
@@ -131,8 +133,7 @@ public actor ConfigStore {
             }
             return out
         } catch {
-            // Loud warning like TS console.warn — use fputs so tests stay quiet-friendly.
-            fputs("[config] ignoring corrupt server config \(path.path); falling back to global: \(error)\n", stderr)
+            log.warn("ignoring corrupt server config \(path.path); falling back to global: \(error)")
             return nil
         }
     }

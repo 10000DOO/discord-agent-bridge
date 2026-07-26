@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "grok")
+
 /// Sibling of `CodexSessionBridge` for the minimal `!grok` path (W10-c3). One `grok agent stdio`
 /// child per channel; per-channel turn serialization.
 ///
@@ -47,7 +49,7 @@ public actor GrokSessionBridge {
                 bypassPermissions: bypass,
                 isGrokModel: { $0.lowercased().contains("grok") }
             )
-            print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            log.info("spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
             // Control-request timeout only (60s). Turn budget is bridge-owned (sessionPrompt has none).
             return try GrokAcpClient(spawn: spawn, requestTimeoutMs: 60_000, mcpServers: mcpServers, onPermission: onPermission)
         },
@@ -315,11 +317,11 @@ public actor GrokSessionBridge {
             if let resumeId = persisted?.backendSessionId {
                 do {
                     try await client.sessionLoad(sessionId: resumeId, cwd: cwd)
-                    print("dab: grok session/load channel=\(channelId) sid=\(resumeId)")
+                    log.info("session/load channel=\(channelId) sid=\(resumeId)")
                 } catch {
                     fallbackNotice[channelId] = sessionFallbackNotice
                     _ = try await client.sessionNew(cwd: cwd)
-                    print("dab: grok load failed (\(error)) → session/new channel=\(channelId)")
+                    log.warn("load failed (\(error)) → session/new channel=\(channelId)")
                 }
             } else {
                 _ = try await client.sessionNew(cwd: cwd)
@@ -344,7 +346,7 @@ public actor GrokSessionBridge {
             await client.close()
             throw AcpClientError("session stopped")
         }
-        print("dab: grok session channel=\(channelId) sid=\(client.sessionId ?? "?")")
+        log.info("session channel=\(channelId) sid=\(client.sessionId ?? "?")")
         return channel
     }
 
@@ -432,7 +434,7 @@ public actor GrokSessionBridge {
             )
             return true
         } catch {
-            print("dab: grok softEnsure failed channel=\(channelId) error=\(error)")
+            log.warn("softEnsure failed channel=\(channelId) error=\(error)")
             return false
         }
     }
