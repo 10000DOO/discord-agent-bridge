@@ -21,7 +21,7 @@
 | **Swift 봇** | `bash swift/scripts/install.sh` 또는 `swift run --package-path swift dab` · 슬래시+`!claude`/`!codex`/`!grok`/`!custom` |
 | **설정/상태** | `DAB_HOME` 또는 `~/.discord-agent-bridge/` (`config.json`, `servers/`, `swift-state.json`) · 배포 바이너리/시크릿은 `~/.dab/` |
 | **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` (수백 테스트; 일부 병렬 플래키 이슈 잔존 §14.4). ⚠️ 그냥 `swift test`는 인덱서 락 hang — **§14.2 필독** |
-| **패리티** | 제품 ~99%. **미구현 갭 백로그:** [`SWIFT_TS_PARITY_GAPS.md`](./SWIFT_TS_PARITY_GAPS.md) (고도화 OK-DIFF 제외). W13-b 제품 보류 · S3=headless Chrome CLI · README 호환 매트릭스 |
+| **패리티** | 제품 ~99%. **P0–P2 갭 백로그 완료** — [`SWIFT_TS_PARITY_GAPS.md`](./SWIFT_TS_PARITY_GAPS.md) (남은 것은 OK-DIFF / W13-b DEFER만). S3=headless Chrome CLI · README 호환 매트릭스 |
 
 ### 완료 (W1–W12 · W13a/c/d · W14–W15 · **W16 전부** · **S3** · W11 전부)
 

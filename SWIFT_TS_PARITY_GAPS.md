@@ -35,11 +35,12 @@
 
 | 상태 | 개수 (대략) |
 |------|-------------|
-| `todo` | P0 나머지 + P1/P2 |
+| `todo` | **0** (구현 대상 갭 없음) |
 | `doing` | 0 |
-| `done` | P0 전부 + G-P1-01…11 (P2 남음) |
+| `done` | **P0 + P1 + P2 전부** |
+| 잔여 | **OK-DIFF** · **DEFER (W13-b Q5=B)** 만 — 구현 강제 아님 |
 
-**권장 작업 순서:** P0 → P1 → P2. 한 항목(또는 밀접한 묶음) = 1 커밋.
+**권장 작업 순서:** 백로그 종료. 새 갭이 생기면 이 문서에 추가.
 
 ---
 
@@ -77,10 +78,10 @@
 
 | ID | 상태 | 기능 | 비고 |
 |----|------|------|------|
-| **G-P2-01** | `todo` | FileDownload **UI** | TS도 UI 미배선 · 라이브러리 패리티만 필요 시 |
-| **G-P2-02** | `todo` | CLI `--setup` / npm `service *` 동등 | install 스크립트로 대체됨 · 문서 동등성만 가능 |
-| **G-P2-03** | `todo` | swift/README stale 문구 정리 | Codex “Not wired” 등 |
-| **G-P2-04** | `todo` | stats queue depth / running | TS listActive 상세 |
+| **G-P2-01** | `done` | FileDownload **라이브러리** | pure `FileDownload` browse+download confine · temp-dir 테스트 · UI 없음(TS와 동일) |
+| **G-P2-02** | `done` | CLI `--setup` / npm `service *` 동등 | swift/README + root README 동등 표 · install 스크립트 경로 |
+| **G-P2-03** | `done` | swift/README stale 문구 정리 | Codex Discord-wired · 레이아웃/포트 스냅샷 갱신 |
+| **G-P2-04** | `done` | stats queue depth / running | bridge `turnDepth` · `formatStatsLines` queue/running · listActiveBindings |
 
 ---
 
@@ -104,13 +105,15 @@
 | 2026-07-26 | G-P1-10 | `feat(swift-port): G-P1-10 usage HUD extras` | AgentEvent.contextUsage 4 extras · ContextUsageInfo/TurnResult latch · buildUsageEmbed clearHint+세션구성 · bridge/embed 단위테스트 |
 | 2026-07-26 | G-P1-09 | `feat(swift-port): G-P1-09 Codex usage 패널` | `CodexUsageService` app-server `account/rateLimits/read` · getUsageForBackend/stats/turn panel · soft-fail no-credentials · mock tests |
 | 2026-07-26 | G-P1-11 | `feat(swift-port): G-P1-11 Grok ACP 세부` | AcpSessionMeta·mcpServers wire · prompt blocks/동시성/lastPromptResult · isGrokModel spawn 가드 · 단위 테스트 · AsyncIterator stream·stderr 분류는 ponytail 천장 |
-
 | 2026-07-26 | G-P1-08 | `feat(swift-port): G-P1-08 i18n en` | pure `I18n` (ko/en catalog · `t` · ConfigStore.locale) · stream/status/interrupt/update/doc/slash major paths · IdleWatchdog · 단위 테스트 |
+| 2026-07-26 | G-P2-01 | `feat(swift-port): G-P2-01 FileDownload 라이브러리` | pure FileDownload browse/download confine · OutgoingFile · temp-dir 테스트 |
+| 2026-07-26 | G-P2-02·03 | `docs(swift-port): G-P2-02·03 CLI·README 패리티` | TS CLI↔install 동등 표 · Codex “Not wired” 제거 · 레이아웃 갱신 |
+| 2026-07-26 | G-P2-04 | `feat(swift-port): G-P2-04 stats queue·running` | bridge turnDepth · isTurnRunning/turnQueueDepth · formatStatsLines · listActiveBindings |
+| 2026-07-26 | — | `docs(swift-port): 패리티 갭 백로그 완료` | P0+P1+P2 done · PLAN §0 · README 링크 |
 
 ---
 
 ## 6. 다음 착수
 
-1. **G-P2** 보조 항목
-
-완료 후 PLAN §0 / README 호환 매트릭스에 “패리티 갭 문서” 링크를 건다.
+**없음.** 구현 대상 GAP(P0–P2) 종료. 잔여는 §0 OK-DIFF / DEFER만.  
+PLAN §0 · root README · `swift/README`에 이 문서 링크 반영됨.
