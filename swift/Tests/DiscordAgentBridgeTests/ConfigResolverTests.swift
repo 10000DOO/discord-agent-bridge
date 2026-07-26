@@ -88,6 +88,52 @@ struct ConfigResolverTests {
         #expect(r.permissionProfile == "proj-prof")
     }
 
+    // H19: server-level `permissionProfile` must distinguish "key absent" (inherit global) from
+    // explicit JSON `null` (clear the override) — Optional<String> alone can't tell those apart,
+    // so these write raw JSON to disk and decode through ConfigStore rather than constructing
+    // ServerDefaultsPartial via its Swift initializer (which can't reproduce the bug).
+    @Test func serverPermissionProfileKeyAbsentInheritsGlobal() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        var global = makeConfig()
+        global.defaults.permissionProfile = "global-prof"
+        try await store.save(global)
+        let path = await store.serverConfigPath(guildId: "g1")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"version":1,"guildId":"g1","defaults":{"mode":"codex"}}"#.utf8).write(to: path)
+        let resolver = ConfigResolver(configStore: store, bindingSource: MapBindingSource())
+        let r = try await resolver.resolve(guildId: "g1", channelId: "c1")
+        #expect(r.permissionProfile == "global-prof")
+    }
+
+    @Test func serverPermissionProfileExplicitNullClearsGlobal() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        var global = makeConfig()
+        global.defaults.permissionProfile = "global-prof"
+        try await store.save(global)
+        let path = await store.serverConfigPath(guildId: "g1")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"version":1,"guildId":"g1","defaults":{"mode":"codex","permissionProfile":null}}"#.utf8).write(to: path)
+        let resolver = ConfigResolver(configStore: store, bindingSource: MapBindingSource())
+        let r = try await resolver.resolve(guildId: "g1", channelId: "c1")
+        #expect(r.permissionProfile == nil)
+    }
+
+    @Test func serverPermissionProfileStringOverridesGlobal() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        var global = makeConfig()
+        global.defaults.permissionProfile = "global-prof"
+        try await store.save(global)
+        let path = await store.serverConfigPath(guildId: "g1")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"version":1,"guildId":"g1","defaults":{"mode":"codex","permissionProfile":"server-prof"}}"#.utf8).write(to: path)
+        let resolver = ConfigResolver(configStore: store, bindingSource: MapBindingSource())
+        let r = try await resolver.resolve(guildId: "g1", channelId: "c1")
+        #expect(r.permissionProfile == "server-prof")
+    }
+
     @Test func deepMergesNestedLimits() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)

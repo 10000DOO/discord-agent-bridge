@@ -61,7 +61,7 @@
 | H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ⏳ 대기 (WO-P27) |
 | H17 | 부팅 안전망 + PID 파일 없음 | ⏳ 대기 (WO-P30) |
 | H18 | config.json 엄격 검증 부족 | ⏳ 대기 (WO-P24) |
-| H19 | permissionProfile null vs 필드없음 구분 안됨 | ⏳ 대기 (WO-P23) |
+| H19 | permissionProfile null vs 필드없음 구분 안됨 | ✅ 완료 (빌드+테스트 확인) |
 | H20 | [배포] resolveCli PATH 폴백 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H21 | ModeRegistry 개방형 vs 고정 enum | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H22 | eventBus 범용 vs 전용 액터 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
@@ -75,6 +75,7 @@
 | 내용 | 상태 |
 |---|---|
 | `GrokSessionBridgeTests.swift:202` `nonBypassPermModeHandlerAllowMapsToAllow()` — `makeGrokBridge`가 `ConfigStore.shared`(실제 로컬 config.json)를 그대로 써서, 이 머신의 `autoAllowClaudeTools`에 "Bash"가 있으면 프레젠터가 호출 안 되고 폴링 루프가 무한대기하던 격리 누락 버그 | ✅ 완료 (커밋 `63def8e`, 빌드+테스트 확인) |
+| **전체 스위트(`swift test`, 필터 없이) 간헐적 실패**: `StatusEmbedAndNotifierTests.swift`의 `resumeStatusTitleOverride()`/`rendersModePermCwdSession()`가 가끔 영어 문구("Session resumed"/"Session status")를 받아 실패함(기대값은 한국어). 원인: `I18n`의 활성 로케일이 프로세스 전역 `LockedBox`인데, `I18nTests`/`ConfigPanelTests`가 테스트 중 로케일을 `.en`으로 바꿨다가 되돌리는 동안 swift-testing이 서로 다른 스위트를 병렬 실행하면 `StatusEmbedTests`가 그 순간을 가로챌 수 있음 — `.serialized`는 같은 스위트 안에서만 순서를 보장하고 다른 스위트와의 동시 실행은 막지 않음. 재현: 같은 커맨드를 연속 2회 실행해서 1회 실패·1회 통과 확인(H19 WO-P23 검증 중 발견, H19 자체와는 무관 — 필터 테스트 `ConfigResolverTests`는 격리 상태로 14/14 항상 통과). **아직 미해결** — 로케일 의존 테스트 전체를 조사해 전역 뮤터블 상태를 명시적 `locale:` 파라미터 전달로 바꾸거나, 전역 락으로 스위트 간 상호배제를 거는 별도 작업 필요. 우선순위: 낮음(실제 프로덕션 동작에는 영향 없음, 테스트 실행 신뢰성 문제). | ⏳ 미해결 (별도 조사 필요) |
 
 ---
 
@@ -197,7 +198,11 @@
 - **H14.** 프리셋 삭제 시 TS는 `onDeletePreset`의 반환값(설정 파일 기준 최신 목록)으로 화면을 갱신하는데, Swift는 로컬에서 먼저 낙관적으로 지우고 저장은 `try?`로 fire-and-forget(`ChannelWizard.swift:508-513`) — 디스크 저장이 실패해도 화면엔 이미 사라진 것처럼 보임.
 - **H17.** 부팅 시 stray `Task{}` 예외를 잡아주는 앱 레벨 안전망(`installGlobalSafetyNet`)과 PID 파일 기록/삭제가 없음.
 - **H18.** `config.json` 전체를 TS의 zod처럼 엄격 검증하지 않고 일부 enum 필드만 스팟체크(`ConfigSchema.swift:485-507`) — `profiles` 안의 이상한 값이 Codable 디코딩만 통과하면 걸러지지 않을 수 있음.
-- **H19.** 서버 레벨에서 `permissionProfile: null`로 명시적으로 지워도 "필드 없음"과 구분이 안 돼(`String?`) 무시됨(코드 자체 주석이 인정, `ConfigResolver.swift:202-208`).
+- **H19. [구현됨: `Config/ConfigSchema.swift` `ServerDefaultsPartial`(신규 `permissionProfileExplicitlyNull` 필드 + 커스텀 `init(from:)`), `Config/ConfigResolver.swift` `merge`]** 서버 레벨에서 `permissionProfile: null`로 명시적으로 지워도 "필드 없음"과 구분이 안 돼(`String?`) 무시됨(코드 자체 주석이 인정, `ConfigResolver.swift:202-208`, 수정 전).
+  - **범위**: 쓰기(write) 경로는 손대지 않음 — Swift엔 서버 레벨 `permissionProfile`을 실제로 쓰는 코드가 아직 없어서(전체 grep 0건), 이번 수정은 사람이 JSON을 직접 편집하거나 향후 쓰기 기능이 생겼을 때를 위한 읽기(디코딩) 쪽만 고침(YAGNI — 없는 쓰기 UI를 새로 만들지 않음).
+  - **구현**: `ServerDefaultsPartial`에 `permissionProfileExplicitlyNull: Bool = false`(디폴트값이라 기존 호출부 15곳 이상 무변경) 추가, 명시적 `CodingKeys`(원래 8개 필드만 나열, 새 플래그는 영속화 대상에서 제외)와 커스텀 `init(from:)`으로 "키 없음/명시적 null/문자열" 3단계를 구분해서 디코딩. `ConfigResolver.merge`의 overlay 구성부에서 이 플래그가 서면 `overlay["permissionProfile"] = NSNull()`을 채우도록 확장 — 이미 있던 `applyOverlay`의 NSNull 처리 로직(`ConfigResolver.swift:246`)은 손대지 않고 그대로 재사용.
+  - 유닛 테스트 3건 신규(`ConfigResolverTests.swift`): `serverPermissionProfileKeyAbsentInheritsGlobal`(키 없으면 global 값 유지), `serverPermissionProfileExplicitNullClearsGlobal`(명시적 null이면 지워짐 — 이번에 고친 버그), `serverPermissionProfileStringOverridesGlobal`(문자열 값이면 오버라이드) — 전부 raw JSON 문자열을 `JSONDecoder`로 디코딩하는 경로로 작성해 실제 버그가 재현되는 경로를 검증. 최종 확인: `swift build --package-path swift` 성공, `swift test --filter ConfigResolverTests` 14건 전부 통과.
+  **[구현됨(초안): `Config/ConfigSchema.swift`(`ServerDefaultsPartial`에 `permissionProfileExplicitlyNull: Bool` 신규 필드 + 명시적 `CodingKeys`(8개 필드만, 신규 필드는 비영속) + 커스텀 `init(from:)`으로 키 부재/명시적 null/문자열 3단계 분기), `Config/ConfigResolver.swift`(`merge` 함수의 overlay 구성부, 신규 플래그가 서 있으면 `overlay["permissionProfile"] = NSNull()`로 채워 기존 `applyOverlay`의 NSNull 처리 로직에 그대로 위임 — `applyOverlay` 자체는 무변경), `Tests/DiscordAgentBridgeTests/ConfigResolverTests.swift`(신규 3건: 키 부재→global 상속 유지 확인, 명시적 null→global 값 해제 확인, 문자열 값→오버라이드 유지 확인; 셋 다 raw JSON 문자열을 `JSONDecoder`로 디코딩하는 경로로 작성해 버그 자체가 재현되는 경로를 검증)]** 서버 레벨 `permissionProfile`을 실제로 쓰는(write) 코드가 없어 쓰기 쪽은 범위 밖(읽기/디코딩만 수정). 최종 확인: `swift build --package-path swift` 성공, `swift test --package-path swift --filter ConfigResolverTests` 14건 전부 통과, 전체 스위트 `swift test --package-path swift` 1045건 전부 통과.
 - **H20. [배포 환경] `resolveCli`에 PATH 외 well-known 경로 폴백이 없음.** **직접 재확인**: `Transport.swift:93-105`의 `resolveExecutable`은 `PATH`만 순회하고 끝난다. TS `resolveCli.ts:95-134`는 launchd/systemd처럼 PATH가 최소화된 환경을 대비해 `~/.local/bin`, `~/.grok/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin` 등을 추가로 뒤졌는데 이게 없다 — **정확히 launchd 백그라운드 서비스로 돌릴 때 codex/grok CLI를 못 찾을 수 있는 지점**.
   **[구현됨: `Sidecar/Transport.swift`(`ProcessSidecarTransport.resolveExecutable` PATH+well-known 병합 검색, `wellKnownUserBinDirs(homeDir:)` 신규), `Tests/DiscordAgentBridgeTests/TransportResolveExecutableTests.swift`(신규, 6건)]** — `env`/`homeDir`/`isExecutable` 주입 파라미터 추가(전부 default=실제값이라 기존 호출부인 `Transport.swift:38`·`CliHelp.swift:92,97` 무변경, Claude/Codex/Grok 세 백엔드 스폰 경로 + CLI 헬프/버전 조회가 한 곳 수정으로 함께 해소됨). `#if os(macOS)`/`#elseif os(Linux)`로 플랫폼별 디렉터리 분기(Windows는 Q1 결정에 따라 미포팅). 최종 확인: `swift build --package-path swift` 성공, `swift test --filter TransportResolveExecutableTests` 6건 전부 통과(0.105초).
 - **H21.** TS `ModeRegistry`는 "등록만 하면 끝"인 개방형 구조인데 Swift는 고정 `Backend` enum + 5곳(ProviderCatalog/SessionLifecycle/UsageService/Capabilities 등) 분산 switch. 지금 4개 백엔드엔 기능적으로 문제없으나 확장성이 떨어짐.
@@ -282,7 +287,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 20 | WO-P20: DM 구조적 차단 가드 [완료: 2장 H15 참고] | H15 | `Session/SessionRegistry.swift`, `dab/DabMain.swift`(메시지 라우팅) | 독립 |
 | 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 [완료: 1장 H1/H2 참고] | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift`, `PermissionGate.swift` | 같은 권한 UI 묶음 |
 | 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] [완료: 2장 H20 참고] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
-| 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 | H19 | `ConfigResolver.swift` | 독립 |
+| 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 [완료: 2장 H19 참고] | H19 | `ConfigResolver.swift` | 독립 |
 | 24 | WO-P24: `config.json` 엄격 검증 | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
 | 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |
 | 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |

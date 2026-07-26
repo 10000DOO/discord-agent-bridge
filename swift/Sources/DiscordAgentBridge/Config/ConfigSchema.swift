@@ -327,6 +327,17 @@ public struct ServerDefaultsPartial: Codable, Sendable, Equatable {
     public var codexHome: String?
     public var claudeEffort: String?
     public var codexEffort: String?
+    /// True when the JSON had an explicit `"permissionProfile": null` (vs the key being absent
+    /// entirely) — Optional<String> alone can't tell those two apart on decode, but TS's schema
+    /// (`configSchema.ts:158`, `z.string().nullable()`) treats them differently: null clears a
+    /// server-level override, absent leaves it untouched (H19). Not user-constructible — only set
+    /// by `init(from:)` during decode.
+    public var permissionProfileExplicitlyNull: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, claudeModel, codexModel, permissionMode, permissionProfile, codexHome, claudeEffort, codexEffort
+    }
+
     public init(
         mode: String? = nil,
         claudeModel: String? = nil,
@@ -335,7 +346,8 @@ public struct ServerDefaultsPartial: Codable, Sendable, Equatable {
         permissionProfile: String? = nil,
         codexHome: String? = nil,
         claudeEffort: String? = nil,
-        codexEffort: String? = nil
+        codexEffort: String? = nil,
+        permissionProfileExplicitlyNull: Bool = false
     ) {
         self.mode = mode
         self.claudeModel = claudeModel
@@ -345,6 +357,28 @@ public struct ServerDefaultsPartial: Codable, Sendable, Equatable {
         self.codexHome = codexHome
         self.claudeEffort = claudeEffort
         self.codexEffort = codexEffort
+        self.permissionProfileExplicitlyNull = permissionProfileExplicitlyNull
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode)
+        claudeModel = try container.decodeIfPresent(String.self, forKey: .claudeModel)
+        codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel)
+        permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
+        codexHome = try container.decodeIfPresent(String.self, forKey: .codexHome)
+        claudeEffort = try container.decodeIfPresent(String.self, forKey: .claudeEffort)
+        codexEffort = try container.decodeIfPresent(String.self, forKey: .codexEffort)
+        if !container.contains(.permissionProfile) {
+            permissionProfile = nil
+            permissionProfileExplicitlyNull = false
+        } else if try container.decodeNil(forKey: .permissionProfile) {
+            permissionProfile = nil
+            permissionProfileExplicitlyNull = true
+        } else {
+            permissionProfile = try container.decode(String.self, forKey: .permissionProfile)
+            permissionProfileExplicitlyNull = false
+        }
     }
 }
 

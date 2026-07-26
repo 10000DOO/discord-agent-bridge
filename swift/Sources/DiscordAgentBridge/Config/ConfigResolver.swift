@@ -199,13 +199,14 @@ public struct ConfigResolver: Sendable {
                 if let v = d.claudeModel { overlay["claudeModel"] = v }
                 if let v = d.codexModel { overlay["codexModel"] = v }
                 if let v = d.permissionMode { overlay["permissionMode"] = v }
-                // permissionProfile: present including explicit null needs encode — use Optional via key.
-                // Codable ServerDefaultsPartial can't distinguish absent vs null; if defaults
-                // object exists and we want null override, callers set permissionProfile via a
-                // dedicated path. For string values:
-                if let v = d.permissionProfile { overlay["permissionProfile"] = v }
-                // Note: explicit null on permissionProfile is lost by Optional String Codable;
-                // global default is already null so tests using string profiles are covered.
+                // permissionProfile: string value overrides; explicit JSON `null` (tracked via
+                // permissionProfileExplicitlyNull, set only by ServerDefaultsPartial's custom
+                // decoder) clears the global value instead of being ignored (H19).
+                if let v = d.permissionProfile {
+                    overlay["permissionProfile"] = v
+                } else if d.permissionProfileExplicitlyNull {
+                    overlay["permissionProfile"] = NSNull()
+                }
                 if let v = d.codexHome { overlay["codexHome"] = v }
                 if let v = d.claudeEffort { overlay["claudeEffort"] = v }
                 if let v = d.codexEffort { overlay["codexEffort"] = v }
