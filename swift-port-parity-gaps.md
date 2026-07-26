@@ -1,0 +1,202 @@
+# TS→Swift 포팅 패리티 감사 — 발견된 누락/차이 전수 목록
+
+> 상태: `구현중` · 갱신: 2026-07-26 · 브랜치: `plan/swift-port` · 다음 액션: Critical(1장) 항목을 우선순위 순으로 WO 단위 실행 — 6장 참고.
+> ⚠️ 본문의 file:line은 드리프트할 수 있음 — 실행 전 반드시 심볼명으로 재확인할 것
+> ⚠️ 기존 docs/*-parity.md 문서들은 이번 조사에서 **참고하지 않았음** — 전부 `src/`(TypeScript 원본)와 `swift/Sources/`(Swift 포팅본)를 직접 열어 대조한 결과만 기록함.
+
+---
+
+## 진행 상황 요약 (한눈에 보기 — 이 표만 최신 상태로 계속 갱신함)
+
+### Critical (16건)
+
+| # | 내용 | 상태 |
+|---|---|---|
+| C1 | Codex 생각중(thinking) 스트림 | ✅ 완료 (빌드+테스트 확인) |
+| C2 | Codex 사용량 패널 | 🔧 [진행중] |
+| C3 | Codex 동적 도구(파일첨부/문서공유) | ⏳ 대기 |
+| C4 | Codex 재개목록 SQLite 읽기 | ✅ 완료 (빌드+테스트 확인) |
+| C5 | Grok MCP 파일첨부/문서공유 루프백 | ✅ 완료 (빌드+테스트 확인) |
+| C6 | 첨부 이미지 실제 이미지로 전달 | ✅ 완료 (빌드+테스트 확인) |
+| C7 | Grok 사용량 패널 | ⏳ 대기 |
+| C8 | Grok 재개목록 SQLite 읽기 | ⏳ 대기 |
+| C9 | Claude 권한 프로필(allowedTools) 배선 | ✅ 완료 (빌드+테스트 확인) |
+| C10 | 부팅 시 세션 즉시 재연결 + 채널삭제 감지 | ⏳ 대기 |
+| C11 | 로거 포팅 | ⏳ 대기 (제일 마지막 예정) |
+| C12 | CLI 진입점(`--version`/`--setup`) | ⏳ 대기 |
+| C13 | `dab service status/restart` | ⏳ 대기 |
+| C14 | 메시지 전송 재시도 엔진 | ⏳ 대기 |
+| C15 | "도구 사용 알림" 배선 | ⏳ 대기 |
+| C16 | 프리셋 초안 디스크 저장 | ✅ 완료 (빌드+테스트 확인) |
+
+### 사용자 결정 사항 (5건, 전부 결정 완료)
+
+| # | 내용 | 상태 |
+|---|---|---|
+| Q1 | Linux/Windows 지원 범위 | ✅ 결정 완료 (덤 취급, 작업 안 함) |
+| Q2 | 설정화면(`/config`) TS 원복 | ✅ 완료 (빌드+테스트 확인) |
+| Q3 | Codex 모델 저장 키 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
+| Q4 | 권한 타임아웃/Codex 자동승인 제거 | ⏳ 대기 |
+| Q5 | 채널 삭제 가드 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
+
+### High (26건)
+
+전부 ⏳ 대기 — Critical 먼저 끝내고 순서대로 진행 예정.
+
+### 이번 감사와 무관하게 작업 중 발견한 기존 버그 (참고, 이 문서의 C/H 목록에는 없음)
+
+| 내용 | 상태 |
+|---|---|
+| `GrokSessionBridgeTests.swift:202` `nonBypassPermModeHandlerAllowMapsToAllow()` — busy-poll(`while ... Task.yield()`)이 실제로 무한 대기하는 기존 버그(오늘 변경분과 무관, git 대조로 확인) | 🔧 작업중 (원인 진단 + 수정 진행중) |
+
+---
+
+## 0. 조사 방법
+
+- `src/` 전체(테스트 파일 포함, 약 140개 TS 파일 · 3만5천 줄)를 6개 영역으로 나눠 각 영역을 담당하는 조사 에이전트가 대응하는 `swift/Sources/` 파일을 1:1로 열어서 비교했다.
+  - 영역: ① core(설정/인증/세션 오케스트레이션) ② Discord 인프라(게이트웨이/라우팅) ③ Discord 패널·위저드·인터랙션 ④ Discord 렌더러·이미지 렌더링 ⑤ Claude/Codex 백엔드 ⑥ Grok/Custom 백엔드·서비스·업데이트
+  - 각 에이전트는 파일 단위로 `FULLY PORTED / PARTIALLY PORTED / NOT PORTED / N/A`를 판정하고 근거를 `file:line`으로 남겼다.
+- 그 중 임팩트가 크고 **한 에이전트에서만** 나온(교차검증 안 된) 주장 6건은 내가 직접 grep/코드 읽기로 재확인했다(아래 "직접 검증"으로 표시된 항목). 2개 이상 영역에서 독립적으로 동일하게 발견된 항목은 그 자체로 교차검증된 것으로 간주했다.
+- 문서 신뢰 금지 지침에 따라 `docs/cli-slash-command-parity.md`, `docs/grok-mode-parity.md` 등 기존 패리티 문서는 참고하지 않고 코드만 근거로 삼았다.
+
+---
+
+## 1. Critical — 기능이 조용히 사라진 것 (설정해도 동작 안 함 / 데이터 유실)
+
+### Codex 백엔드
+
+- **C1. [구현됨: `CodexTurnAccumulator.swift:82-86`, `CodexSessionBridge.swift:349-357`]** "생각 중"(thinking) 스트림 미표시. TS `eventMapper.ts:171-184`는 `item/reasoning/delta`(+3개 별칭)를 `kind:'thinking'`으로 매핑한다. Swift `CodexTurnAccumulator.swift`엔 reasoning 계열 케이스가 전혀 없었다 — **코드 자체 주석(`:132`)이 이 누락을 인정**했다. → `codexProgressEvents`에 4개 메서드명(원본+별칭 3개) 케이스를 추가해 `.thinking(text:delta:)`로 매핑(Grok `grokProgressEvents` 패턴과 동일 구조), `CodexSessionBridge.onNotification`의 progress 루프를 switch로 확장해 `StreamStatusHost.noteThinking`으로 배선. 테스트: `CodexTurnAccumulatorTests.swift`의 `progressEventsReasoningDeltaMapsToThinking`(4개 별칭 전부), `progressEventsReasoningDeltaEmptyIgnored`.
+- **C2. 턴 진행 중 사용량(토큰 %) 패널 미표시.** TS `eventMapper.ts:186-208` + `appSession.ts:211-219`는 `thread/tokenUsage/updated`마다 `context_usage` 이벤트를 쏜다. Swift `CodexSessionBridge.onNotification`(`:339-402`)엔 이 메서드 처리가 없다 — Codex 세션은 사용량 패널이 절대 안 뜬다.
+- **C3. 동적 도구(파일첨부/문서공유) 전체 미구현.** TS는 `thread/start`에 `DynamicToolSpec`을 등록하고 `item/tool/call`에 응답한다(`appSession.ts:353-414`, `appServerClient.ts:335,345-376`). **직접 재확인**: `grep -rn "attach_file\|share_document\|item/tool/call\|dynamicTool" swift/Sources/DiscordAgentBridge/Codex swift/Sources/DiscordAgentBridge/Bridges/CodexSessionBridge.swift` → 0건. Codex `AppServerClient.handleServerRequest`(`:316-339`)는 승인 메서드 외엔 전부 `-32601 Method not found`로 응답 — Codex 세션은 Discord로 파일을 절대 못 보낸다(Claude는 됨).
+- **C4. [구현됨: `Codex/CodexSqliteReader.swift`, `Codex/CodexDiscovery.swift`, `DabMain.swift` `listResumableForBackend` `.codex` 케이스]** `discovery.ts`/`sqliteReader.ts` 완전 미포팅. `~/.codex/session_index.jsonl` + rollout sqlite(`threads`/`thread_spawn_edges`)를 읽어 아카이브/서브에이전트 세션까지 재개 목록에 올리는 기능이 없다. Swift의 Codex "재개" 목록(`ResumeWizard.swift:253-276` → `listResumableFromStore`)은 **이 봇 프로세스가 직접 시작해 저장소에 남긴 세션만** 보여준다 — 터미널에서 직접 실행한 `codex` 세션이나, 봇 재시작 이전 세션은 안 보인다.
+
+### Grok 백엔드
+
+- **C5. [구현됨: `Grok/AttachGateway.swift`(신규, `GrokAttachGateway`/`GrokAttachGatewayProviding`), `GrokSessionBridge.swift:29,54`(buildMcpServers/unregisterAttach), `DabMain.swift`(`attach-mcp` 서브커맨드)]** Discord 파일첨부/문서공유 MCP 루프백 전체 미구현. TS는 `attachGateway.ts`(로컬 HTTP 서버)를 통해 Grok의 별도 프로세스가 `attach_file`/`share_document`를 콜백할 수 있게 한다(`acpSession.ts:205-235`, `agent/index.ts:23-32,79-88`). **직접 재확인**: `swift/Sources/.../attachGateway` 류 서버 자체가 없고(`grep -r "createServer\|HTTPServer\|127.0.0.1"` 0건), `GrokSessionBridge.swift:44`가 `GrokAcpClient(...)`를 생성할 때 `mcpServers` 파라미터를 아예 안 넘겨서(디폴트 `[]`) 항상 빈 배열로 시작한다. Grok 세션은 파일 첨부·문서 공유가 완전히 불가능하다.
+- **C6. [구현됨: `AttachmentDownload.swift`(classifyTurnFiles/readImageBase64), `GrokSessionBridge.swift`(buildGrokPromptBlocks), `CodexSessionBridge.swift`(buildCodexTurnItems)]** 이미지 첨부가 실제 이미지로 전달 안 됨. TS `buildGrokPromptBlocks`(`acpSession.ts:430-441`)는 이미지 파일을 base64 ACP `image` 블록으로 보낸다. Swift는 `appendAttachedFileHints`(`AttachmentDownload.swift:120-126`)로 모든 파일(이미지 포함)을 그냥 `"Attached file: <path>"` 텍스트 한 줄로 다운그레이드한다. Codex도 동일 문제.
+- **C7. 컨텍스트 사용량(토큰 %) 패널 미표시.** `GrokConfigSource.contextWindow(_:)`(`GrokCatalog.swift:258-261`)는 있는데 `GrokSessionBridge`에서 아무도 호출하지 않아 `TurnResult.contextUsage`가 항상 `nil`.
+- **C8. 세션 재개 목록이 진짜 Grok 세션 검색이 아님.** TS `GrokDiscovery`는 `~/.grok/sessions/session_search.sqlite`를 sql.js로 읽어 cwd/심링크 정규화까지 하며 어떤 grok 세션이든 찾아낸다. **직접 재확인**: Swift 전체에 SQLite를 읽는 코드가 없다. C4와 동일한 구조적 문제.
+
+### Claude 백엔드 / 공통 세션
+
+- **C9. [구현됨: `DabSessionBridge.swift:307-335`]** 권한 프로필(허용 도구 목록)이 실제로 적용 안 됨. `config.profiles[x].allowedTools`(`ConfigSchema.swift:62-71`)는 디코딩만 되고, `DabSessionBridge.swift:307-315`(수정 전)가 사이드카에 `config.allowedTools`/`permissionTimeoutSec`을 전달하지 않았다(오직 `autoAllowClaudeTools`만 전달). **core 에이전트와 claude/codex 에이전트가 각자 독립적으로 동일 지점을 발견 — 교차검증됨.** 결과적으로 `/mode perm readonly` 같은 프로필을 걸어도 "이 프로필에서 자동 허용할 도구 목록"은 전혀 반영되지 않고 permMode(허용 모드)만 바뀌었다.
+  - **조사 결과 정정**: `policyTier`는 TS 원본(`permissionResolver.ts`)에서도 계산만 되고 사이드카 프로토콜(`src/sidecar/claude/protocol.ts`)이나 그 어떤 다운스트림 소비처도 없는 죽은 값(전수 grep 확인) — 진짜 패리티는 `policyTier`를 사이드카로 보내지 않는 것이며, 프로토콜에 새 필드도 필요 없다. Swift `Protocol.swift`의 `SessionStartParams.SessionConfig`는 `allowedTools`/`autoAllowClaudeTools`/`permissionTimeoutSec`를 이미 갖고 있었고(사이드카도 이미 지원) 배선만 빠져 있었다.
+  - **구현**: 기존에 있었지만 어떤 프로덕션 브릿지도 쓰지 않던 `ConfigResolver`(global→server→binding 레이어드 리졸버, 이미 테스트됨)를 `DabSessionBridge.sessionHandle()`에서 재사용해 프로필(있으면 `profile.allowedTools`로 전역 `autoAllowClaudeTools`를 대체, TS와 동일) + 레이어드 `permissionTimeoutSec`를 계산, `SessionStartParams.SessionConfig.allowedTools`/`autoAllowClaudeTools`(동일 값)/`permissionTimeoutSec`로 사이드카에 전달. 삭제된 프로필 참조·config.json 자체가 없는 경우 모두 TS처럼 throw하지 않고 fail-secure 폴백(전역 autoAllowClaudeTools, 0 timeout — 기존 `ConfigStore.autoAllowClaudeTools()` 컨벤션과 동일).
+  - 유닛 테스트 3건 추가(`DabSessionBridgeTests.swift`): `profileAllowedToolsReachSessionStartConfig`, `noProfileFallsBackToGlobalAutoAllow`, `deletedProfileReferenceFallsBackSilently` — `swift test --filter DabSessionBridgeTests` 28건 전부 통과(0.107s).
+
+### 부팅/인프라
+
+- **C10. 재시작 시 살아있던 세션을 즉시 재연결하지 않음.** **직접 재확인**: `DabMain.swift:151-165`의 `restoreSessionBindings()`는 `SessionStore`에서 읽은 바인딩을 `SessionRegistry.shared.bind(...)`로 **메모리에만** 복원할 뿐, 어떤 브릿지의 resume/connect도 호출하지 않는다(`softEnsureLive`는 메시지/슬래시커맨드 처리 시점에만 호출됨, 부팅 경로엔 없음). TS `sessionOrchestrator.ts:590-664`의 `resumeAll()`, `app.ts:361-402`의 "10003(채널이 진짜 삭제됨) 감지 + 정리", `Promise.allSettled` 병렬 재부착이 전부 없다. 이 경로만 커버하는 TS 테스트가 6개(`app.test.ts`) 있는데 Swift엔 대응 테스트가 없다.
+- **C11. 로거(`src/core/logger.ts`) 전체 미포팅.** 레벨 게이팅 없는 `print`/`fputs`가 산재(`DabMain.swift`에만 `print` 15곳 + `fputs` 21곳). `config.logLevel`은 스키마 검증만 되고 **어디서도 읽히지 않음**(전체 grep 6건 전부 `ConfigSchema.swift` 내부 선언). 일반 로그는 `redact()` 처리도 안 됨(`AuditLog.swift`만 문자열 패턴 스크러빙 적용).
+- **C12. CLI 진입점(`src/cli.ts`) 전체 미포팅.** `--version`/`--setup`/`service <sub>` argv 분기, `needsSetup()` 게이트가 없다. `DabMain.swift:8-26`은 곧바로 `DiscordToken.resolve()`(env var 또는 argv[1])로 토큰을 읽어 `config.json`의 `discord.token`/`discord.clientId` 필드를 완전히 우회한다 — 두 필드는 스키마엔 남아있지만 읽는 곳이 전무한 죽은 필드.
+- **C13. `dab service install/uninstall/status/restart` 전체 없음.** `DabMain.main()`은 `sidecar-smoke`/`codex-smoke`/`grok-smoke`만 인식하고 `"service"` 분기가 없다. install/uninstall은 셸 스크립트(`swift/scripts/install*.sh`, `install-windows.ps1`)로 대체됐지만, **status/restart는 어떤 플랫폼에도 스크립트조차 없다** — launchd `status()`(`launchctl list` 파싱) 자체가 어디에도 없음(직접 재확인: 코드 전체에서 `launchctl list` 언급은 주석 1곳뿐).
+- **C14. 채널 전송 재시도 엔진 전체 없음.** **직접 재확인**: `grep -rn "10003\|exponential\|backoff\|retryAttach\|ensureAttached"`가 `UsageService.swift`(사용량 폴링용, 무관)만 걸리고 메시지 전송 경로엔 0건. TS `wiring.ts`의 5회 지수 백오프(300/600/1200/2400ms) + "채널이 진짜 삭제됨(10003) vs 일시적 오류" 구분이 없다 — Swift는 `try? client.createMessage(...)`로 실패 시 그냥 조용히 드롭한다(전용 TS 테스트 18개, `wiring.test.ts:538-755`).
+- **C15. "도구 사용 알림" 설정이 죽은 값.** `notifications.events.toolUse`를 켜도 `postStatusNotification`이 `.toolUse` 케이스로 호출되는 곳이 코드 전체에 없다(`.result`/`.rateLimit`/`.error`만 호출됨). `SessionNotifier.formatNotification`엔 `toolUse` 케이스가 있어서 "구현했는데 안 불림" 형태의 죽은 코드.
+- **C16. [구현됨: `SessionStore.swift:113-117,176,200-202,219-260,264-280` (StoreFile.presetDrafts + presetDraft/setPresetDraft/removePresetDraft), `ChannelWizard.swift:835-857` (PresetDraftRegistry → SessionStore 위임), `ConfigSchema.swift:273` (PresetDraft: Codable)]** "프리셋으로 저장" 임시 데이터가 재시작하면 사라짐. **직접 재확인**: `PresetDraftRegistry`(`ChannelWizard.swift:836-850`)는 순수 인메모리 `actor` 딕셔너리 — 디스크 읽기/쓰기 코드가 없다. TS `state/store.ts:116-136`은 정확히 "재시작하면 초안이 날아가는 문제"를 고치려고 `state.json`에 영속화했는데, 그 이유 자체가 재발한 상태. → TS와 동일하게 같은 파일(`swift-state.json`)에 `presetDrafts` 최상위 필드를 `autoUpdate` 추가 선례 그대로 미러링해 추가(버전업/마이그레이션 불필요), `mutate()`/`setUpdateMeta()`도 디스크의 `presetDrafts`를 이어받도록 보강해 서로 클로버하지 않게 함. `PresetDraftRegistry`는 공개 API(`set/get/remove`, `key(...)`) 그대로 두고 내부만 `SessionStore.shared` 위임으로 교체 — `DabMain.swift` 호출부 5곳 무변경. 테스트 5개 신규(`SessionStoreTests.swift` "MARK: - C16"): 재시작 후 초안 유지, 채널간 미혼합, 삭제, 채널바인딩/autoUpdate 변경이 presetDrafts를 안 날리는지 상호 확인.
+
+---
+
+## 2. High — 부분 포팅 (동작이 다르거나 정보가 손실됨)
+
+### 권한/보안
+
+- **H1.** 권한 요청 임베드가 도구의 전체 JSON 입력(Edit의 old/new 문자열, WebFetch URL, 커스텀 MCP 도구 인자 등)을 안 보여주고 `command`/`file_path`만 뽑아 보여줌(`DabSessionBridge.swift:652-656` vs `permissionButtons.ts:97-104`) — 그 외 도구는 승인자가 아무 상세정보 없이 승인/거부해야 함.
+- **H2.** 결정 후 재렌더링이 "색상+제목+본문 임베드"에서 평문 한 줄(`"🔐 ALLOW — @user"`)로 다운그레이드(`DabMain.swift:220-223`). `perm.request.body`/`perm.decided.*` i18n 키가 `I18n.swift`에 아예 없음.
+- **H3.** (Swift만 있는 추가 동작, 참고용) 권한 게이트에 TS엔 없는 "미응답 시 자동 거부 타임아웃"이 있음(`PermissionGate.swift:72-89`) — 의도된 안전장치인지 확인 필요(9장 Q4).
+- **H4. [보안] 이미지 렌더링용 headless 브라우저에 네트워크 차단이 빠짐.** TS는 표/mermaid 스크린샷을 찍는 브라우저에서 아웃바운드 네트워크를 통째로 막는다(`setRequestInterception`+`setOfflineMode(true)`, `browserRenderer.ts:143-148`). Swift `BrowserImageRenderer.swift`는 `chrome --headless=new --screenshot=...`를 프로세스로 실행할 뿐 네트워크 차단 플래그가 전혀 없다(`:216-227`) — 신뢰할 수 없는 표/mermaid 콘텐츠(사용자가 입력한 텍스트에서 파싱됨)가 외부로 네트워크 요청을 보낼 수 있다.
+- **H25.** (Swift만 있는 동작) Codex 승인 요청도 도구 이름이 전역 `autoAllowClaudeTools`에 있으면 Discord에 묻지도 않고 자동 승인(`CodexSessionBridge.swift:255-260`). TS의 Codex 승인은 `approvalPolicy`/샌드박스로만 결정되고 클로드 전용 허용목록과 무관 — 의도한 동작인지 확인 필요(9장 Q4).
+
+### Chromium 이미지 렌더링
+
+- **H5.** Chromium 자동 설치가 런타임에 Node.js/npx를 요구하게 됨. TS는 `@puppeteer/browsers` 라이브러리를 인프로세스로 호출해서 빌드 타임 외엔 Node 불필요(`chromiumProvisioner.ts:95-147`). Swift는 `npx @puppeteer/browsers install chrome@stable`을 셸아웃(`ChromiumProvisioner.swift:145-191`)해서 Node/npx가 PATH에 없으면 `.nodeUnavailable`로 실패 — Swift 포팅이 없애려던 바로 그 런타임 의존성이 재도입됨.
+- **H6.** 신규 서버 초대/최초 `/setup` 성공 후 "Chromium 설치할까요?" 선제 안내 프롬프트 미포팅(`client.ts:601,724`, `router.ts:266-276` `maybePromptRenderSetup`) — **discord 렌더러/패널/인프라 3개 에이전트가 독립적으로 동일 항목을 발견**(교차검증 강함). Swift는 `/config` 패널을 수동으로 열어야만 설치 가능.
+- **H7.** 설치 진행률(%) 표시 없음 — `ChromiumProvisioner.install(onProgress:)` 콜백을 지원하는데 호출부(`DabMain.swift:992-1017`)가 `onProgress`를 안 씀. 성공/실패 메시지도 i18n 아닌 하드코딩 영어.
+
+### 스트리밍/렌더링 세부
+
+- **H8.** 스트림 임베드 푸터에서 경과시간+델타개수가 빠지고 도구 개수만 표시(`StreamEmbed.swift:47-84` vs `streamEmbed.ts:219-222`). "Thought for Ns" 생각-완료 제목도 `stream.thought` i18n 키만 존재하고 실제로 참조하는 코드가 없음(죽은 키).
+- **H9.** 텍스트 1초/생각 2초로 다른 디바운스 간격이 Swift에서 둘 다 1초로 통일(`StreamStatusHost.swift:22`).
+- **H10.** 턴 진행 중 여러 번 오는 사용량/레이트리밋 이벤트를 실시간으로 안 올리고 턴 종료 후 마지막 값 1번만 게시 — 중간 발생분이 소실됨(`DabMain.swift:1874-1922` vs `index.ts:323-365`).
+- **H11.** `Capabilities`가 TS 8개 플래그(thinking/permissionPrompts/progress/transcript/sessionResume/fileAttach/permissionModes 등) → Swift 4개(streaming/toolThreads/fileDiff/usagePanel)로 축소. 지금은 4개 백엔드가 전부 true라 무해하지만, 백엔드별 세분화된 기능 게이팅을 표현할 수 없음.
+
+### i18n / UI 텍스트
+
+- **H12. 번역 키가 240개 중 102개만 포팅됨, 그마저 방향이 반대로 깨져있음.** 위저드(`ChannelWizard.swift:610-723`)·폴더브라우저(`DirectoryBrowser.swift:156-200`)·재개화면(`ResumeWizard.swift:166-224`)·폴더패널(`FolderPanel.swift:16`)은 한국어 하드코딩 — 로케일을 영어로 바꿔도 이 화면들은 그대로 한국어. 반대로 `ConfigPanel.swift:311-399`는 영어 하드코딩 — 한국어로 바꿔도 그대로 영어. `I18n.swift`엔 대응되는 `wizard.*`/`resume.*` 키가 이미 존재하는데(`:166-175`, `:304-307`) 그냥 안 불림. `cmd.mode.unavailable` 키도 없어서 알 수 없는 backend 응답이 `"알 수 없는 backend"` 하드코딩.
+
+### 동시성/일관성
+
+- **H13.** 같은 채널에서 버튼 연타(동시 컴포넌트 상호작용) 시 상태머신을 보호하는 직렬화 큐(`enqueueWizard`)가 없음 — `ChannelWizard`가 락 없는 `@unchecked Sendable` 클래스라 두 인터랙션이 동시에 상태를 레이스할 수 있음.
+- **H14.** 프리셋 삭제 시 TS는 `onDeletePreset`의 반환값(설정 파일 기준 최신 목록)으로 화면을 갱신하는데, Swift는 로컬에서 먼저 낙관적으로 지우고 저장은 `try?`로 fire-and-forget(`ChannelWizard.swift:508-513`) — 디스크 저장이 실패해도 화면엔 이미 사라진 것처럼 보임.
+- **H17.** 부팅 시 stray `Task{}` 예외를 잡아주는 앱 레벨 안전망(`installGlobalSafetyNet`)과 PID 파일 기록/삭제가 없음.
+- **H18.** `config.json` 전체를 TS의 zod처럼 엄격 검증하지 않고 일부 enum 필드만 스팟체크(`ConfigSchema.swift:485-507`) — `profiles` 안의 이상한 값이 Codable 디코딩만 통과하면 걸러지지 않을 수 있음.
+- **H19.** 서버 레벨에서 `permissionProfile: null`로 명시적으로 지워도 "필드 없음"과 구분이 안 돼(`String?`) 무시됨(코드 자체 주석이 인정, `ConfigResolver.swift:202-208`).
+- **H20. [배포 환경] `resolveCli`에 PATH 외 well-known 경로 폴백이 없음.** **직접 재확인**: `Transport.swift:93-105`의 `resolveExecutable`은 `PATH`만 순회하고 끝난다. TS `resolveCli.ts:95-134`는 launchd/systemd처럼 PATH가 최소화된 환경을 대비해 `~/.local/bin`, `~/.grok/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin` 등을 추가로 뒤졌는데 이게 없다 — **정확히 launchd 백그라운드 서비스로 돌릴 때 codex/grok CLI를 못 찾을 수 있는 지점**.
+- **H21.** TS `ModeRegistry`는 "등록만 하면 끝"인 개방형 구조인데 Swift는 고정 `Backend` enum + 5곳(ProviderCatalog/SessionLifecycle/UsageService/Capabilities 등) 분산 switch. 지금 4개 백엔드엔 기능적으로 문제없으나 확장성이 떨어짐.
+- **H22.** `eventBus.ts`(범용 pub/sub)가 관심사별 전용 액터(`ToolActivityHost`/`StreamStatusHost`/`IdleWatchdog`/`ImageRenderHost` 등)로 대체됨. 지금 쓰는 렌더러엔 충분하나 새 이벤트 소비자를 추가하려면 매번 새 Host 타입을 만들어야 함.
+- **H24.** Codex 앱서버 프로세스 실패 원인 분류(ENOENT→"찾을 수 없음", 인증실패→로그인 안내, 그 외→종료코드+stderr) 없이 뭉뚱그려 일반 에러 메시지만 표시(`AppServerClient.swift`).
+- **H26.** Discord 전송 실패 시 재시도가 없어(H4/C14와 연결) 일시적 API 오류에도 조용히 드롭됨.
+
+### DM/커맨드 라우팅
+
+- **H15.** TS는 DM을 구조적으로 완전 차단(`messageRouter.ts:144`)하는데 Swift엔 그 가드가 없어서, `dmPolicy=allow`로 설정하면 `!claude/!codex/!grok/!custom <prompt>` 접두사로 DM에서도 턴을 실행할 수 있음(TS는 어떤 설정으로도 구조적으로 불가능). 기본값은 deny라 기본 설정에선 문제없음.
+- **H16.** 슬래시 커맨드 등록이 서버별 즉시 등록(TS)에서 전역 등록(Swift, 최대 1시간 전파 지연)으로 바뀌고, 신규 서버 가입 시 재등록도 안 함.
+
+---
+
+## 3. 사용자 판단 필요 (임의로 결정하지 않음 — 확인 후 진행)
+
+| # | 질문 | 결정 (2026-07-26) |
+|---|---|---|
+| Q1 | `systemd`(Linux)/`schtasks`(Windows) 지원을 정식 스코프로 볼 것인가? | **덤 취급 — 이번 작업 대상 아님.** macOS만 정식 보장, Linux/Windows 스크립트는 "있으면 좋은 것" 수준으로 남긴다. |
+| Q2 | `ConfigPanel`의 `dmPolicy` 행 추가, `locale` 이동, `renderDecline`이 `render.enabled`까지 끄는 것 — 유지 vs TS로 복귀? | **TS와 완전히 동일하게 되돌린다.** |
+| Q3 | Codex 모델을 `codexModel` 키에 저장(Swift) vs 항상 `claudeModel`에 저장(TS) — 유지 vs 복귀? | **Swift 현재 동작 유지 — `codexModel` 키가 맞다.** 되돌리지 않는다. (참고: 이 항목은 "모델 목록을 실시간으로 가져오는지"와는 무관 — 그건 이미 별도로 확인 완료, 전부 정상 동작 중.) |
+| Q4 | H3(미응답 시 자동 거부 타임아웃), H25(Codex가 Claude 전용 자동허용 목록을 곁눈질해 세션 권한과 무관하게 자동승인) — 유지 vs 제거? | **둘 다 제거하고 TS 동작으로 되돌린다.** H3: 응답 없으면 무한 대기(타임아웃 로직 삭제). H25: Codex 자동승인은 그 세션 생성 시 정한 권한/샌드박스 설정으로만 결정 — `autoAllowClaudeTools` 참조를 끊는다. |
+| Q5 | `/agent close` 채널 삭제 가드를 Swift가 더 엄격하게(제어채널+카테고리+세션카테고리+상태채널 보호) 만든 것(TS는 제어채널만 보호) — 유지 vs 복귀? | **지금처럼(Swift 쪽 더 엄격한 버전) 유지한다.** |
+
+---
+
+## 4. 정상 포팅 확인 (샘플 — 전체 부정 방지용)
+
+아래는 이번 조사에서 **줄 단위로 대조해 완전히 일치함을 확인한** 굵직한 시스템들이다. 포팅 전체가 부실한 게 아니라, 위 40여 개 항목이 상대적으로 좁은 구멍이라는 걸 보여주기 위해 남긴다.
+
+- `Session/Authorizer.swift` ↔ `src/core/auth.ts` — 티어 판정/관리자 우회/프로젝트 ACL 전부 1:1, 유저 단위 권한 부여는 Swift가 추가.
+- `UsageService.swift`(Claude/Codex/Grok 전부) ↔ 각 `usageService.ts` — OAuth 갱신, 429 백오프, 캐시 폴백까지 정확히 일치.
+- `Render/BlockParser.swift`, `Render/HtmlTemplates.swift`, `Render/DiffView.swift` ↔ 대응 TS — FSM/이스케이프/파싱 로직 전부 일치.
+- `Session/ChannelWizard.swift` 상태머신 ↔ `channelWizard.test.ts`의 모든 전환 케이스 — i18n/동시성 이슈(H12/H13) 제외하면 완전 일치.
+- `Codex/CodexPolicy.swift`, `Provider/CodexCatalog.swift`, `Provider/GrokCatalog.swift` — 자체 주석으로 TS 줄 번호를 인용하며 1:1 포팅.
+- `Sidecar/ClaudeSidecarClient.swift` ↔ `sidecarClient.ts` — Claude 백엔드는 실제로 **동일한 Node 사이드카 프로세스(`src/sidecar/claude/*`)를 그대로 spawn**해서 재사용하는 구조라, 프로토콜/세션 로직 자체는 TS와 완전히 같은 코드가 실행됨(C9의 "허용 도구 미전달"만 호스트 쪽 배선 문제).
+
+---
+
+## 5. 조사 커버리지
+
+TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 병렬 조사로 읽었다. 담당 매핑과 세부 file:line 근거는 각 항목 본문 참조. 이 문서 이후 신규 커밋으로 코드가 바뀌면 file:line은 드리프트할 수 있으니 재작업 전 심볼명으로 재확인할 것.
+
+---
+
+## 6. 작업 지시서 (Critical + Q2/Q4 확정 반영 — 우선순위 순)
+
+> 사용자 지시(2026-07-26): "우선순위 높은 것부터 낮은 것까지 전부 루프 돌면서 계속 이어서 진행." 각 WO는 1장의 해당 C#/H# 항목 본문(재현·근거)을 그대로 스펙으로 삼는다 — 여기서 코드를 다시 베끼지 않는다. 구현 중 재량이 필요하면 담당 DEV가 옵션을 제시하고 오케스트레이터가 그 자리에서 결정한다(사용자에게 재질문하지 않음 — 이미 포괄 승인됨). 같은 파일을 건드리는 WO는 순차 진행, 겹치지 않는 파일은 병렬 진행.
+
+| 순서 | WO | 충족 | 대상 파일(주 파일) | 비고 |
+|---|---|---|---|---|
+| 1 | WO-P1: Codex 생각 중(thinking) 스트림 | C1 | `CodexTurnAccumulator.swift` | 독립 |
+| 2 | WO-P2: Codex 사용량 패널 | C2 | `CodexSessionBridge.swift` | WO-P3와 순차 |
+| 3 | WO-P3: Codex 동적 도구(파일첨부/문서공유) | C3 | `AppServerClient.swift`, `CodexSessionBridge.swift` | WO-P2 이후 |
+| 4 | WO-P4: Codex discovery/sqlite 재개 목록 | C4 | 신규 파일 + `ResumeWizard.swift` 연동 | WO-P7과 SQLite 유틸 공유 가능성 — 먼저 진행 |
+| 5 | WO-P5: Grok MCP 루프백(파일첨부/문서공유) | C5 | `GrokSessionBridge.swift` + 신규 로컬 서버 | WO-P6과 순차 |
+| 6 | WO-P6: Grok 사용량 패널 | C7 | `GrokSessionBridge.swift` | WO-P5 이후 |
+| 7 | WO-P7: Grok sqlite 재개 목록 | C8 | 신규 파일 + `ResumeWizard.swift` 연동 | WO-P4 완료 후(공유 유틸 재사용 검토) |
+| 8 | WO-P8: 첨부 이미지 실제 이미지로 전달 | C6 | `AttachmentDownload.swift` | Codex/Grok 공통, 독립 |
+| 9 | WO-P9: Claude 권한 프로필(allowedTools) 배선 | C9 | `DabSessionBridge.swift` | 독립 |
+| 10 | WO-P10: 부팅 시 즉시 재연결 + 채널 삭제(10003) 감지 | C10 | `DabMain.swift`, `SessionLifecycle.swift` | DabMain 계열 — 이하 순차 |
+| 11 | WO-P11: CLI 진입점(`--version`/`--setup`, config token 배선) | C12 | `DabMain.swift` | WO-P10 이후 |
+| 12 | WO-P12: `dab service status/restart` | C13 | `DabMain.swift` + 플랫폼 스크립트 | WO-P11 이후 |
+| 13 | WO-P13: 메시지 전송 재시도 엔진 | C14 | 전송 호출부(여러 렌더/알림 파일) | WO-P10 이후 |
+| 14 | WO-P14: "도구 사용 알림" 배선 | C15 | `SessionNotifier`/`DabMain.swift` | 소규모, 독립 |
+| 15 | WO-P15: 프리셋 초안 디스크 영속화 [완료] | C16 | `ChannelWizard.swift` (`PresetDraftRegistry`) | `SessionStore.swift` 패턴 미러링, 독립 |
+| 16 | WO-P16: `/config` 패널 TS 원복 (Q2) [구현됨: `ConfigPanel.swift:24-105,342-436,755-761,906-940`] | Q2 | `ConfigPanel.swift` | `dmPolicy` 행 제거, `locale` 원위치, `renderDecline`이 `render.enabled` 끄지 않게 |
+| 17 | WO-P17: 권한 타임아웃 제거 + Codex 자동승인 분리 (Q4) | H3, H25 | `PermissionGate.swift`, `CodexSessionBridge.swift` | 독립 |
+| 18 | WO-P18: 로거 포팅 (`src/core/logger.ts`) | C11 | 전역(모든 `print`/`fputs` 호출부) | **가장 넓게 퍼짐 — 마지막에 진행**(다른 WO들이 먼저 끝나 print 호출부가 안정된 뒤 일괄 교체) |
+
+완료 판정은 매 WO 공통: `swift build --package-path swift` 성공 + 해당 영역 유닛 테스트 신규 작성·필터 통과 + 문서(`docs/swift-port-parity-gaps.md`) 해당 C#/H# 옆에 `[구현됨: file:line]` 표기.
