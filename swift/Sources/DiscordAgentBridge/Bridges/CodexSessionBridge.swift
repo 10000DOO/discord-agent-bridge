@@ -62,6 +62,8 @@ public actor CodexSessionBridge {
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent turn/start on the same thread).
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    /// Per-channel count of `runTurn` callers (in-flight + waiting). G-P2-04 stats.
+    private var turnDepth: [String: Int] = [:]
     /// childThreadId → spawn tool_use id (TS CodexAppSession.parentByThread). Session-scoped
     /// so collab child-thread tools keep routing after spawn across the client lifetime.
     private var parentByThread: [String: [String: String]] = [:]
@@ -116,17 +118,32 @@ public actor CodexSessionBridge {
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
+        turnDepth[channelId, default: 0] += 1
         let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
             return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config, files: files)
         }
         channelGates[channelId] = task
-        defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
+        defer {
+            turnDepth[channelId, default: 1] -= 1
+            if turnDepth[channelId] == 0 { turnDepth[channelId] = nil }
+            if channelGates[channelId] == task { channelGates[channelId] = nil }
+        }
         var result = try await task.value
         if let notice = fallbackNotice.removeValue(forKey: channelId) {
             result.text = notice + "\n\n" + result.text
         }
         return result
+    }
+
+    /// G-P2-04: any turn in-flight or waiting on this channel's gate chain.
+    public func isTurnRunning(channelId: String) -> Bool {
+        (turnDepth[channelId] ?? 0) > 0
+    }
+
+    /// G-P2-04: turns waiting behind the running one (TS `queueDepth`).
+    public func turnQueueDepth(channelId: String) -> Int {
+        max(0, (turnDepth[channelId] ?? 0) - 1)
     }
 
     private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?, files: [TurnFile]) async throws -> TurnResult {
@@ -433,6 +450,7 @@ public actor CodexSessionBridge {
         turnGens[channelId, default: 0] += 1
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
+        turnDepth[channelId] = nil
         if let box = turns[channelId], !box.done {
             finishTurnUnlocked(
                 channelId: channelId,

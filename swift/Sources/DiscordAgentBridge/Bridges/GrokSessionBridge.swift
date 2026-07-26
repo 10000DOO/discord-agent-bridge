@@ -66,6 +66,8 @@ public actor GrokSessionBridge {
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent sessionPrompt on the same session).
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    /// Per-channel count of `runTurn` callers (in-flight + waiting). G-P2-04 stats.
+    private var turnDepth: [String: Int] = [:]
 
     // env rules copied from CodexSessionBridge (B/"sibling bridge": no forced sharing).
     private var cwd: String {
@@ -90,17 +92,32 @@ public actor GrokSessionBridge {
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
         let prev = channelGates[channelId]
+        turnDepth[channelId, default: 0] += 1
         let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
             return try await self.executeTurn(channelId: channelId, ownerId: ownerId, guildId: guildId, text: text, config: config, files: files)
         }
         channelGates[channelId] = task
-        defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
+        defer {
+            turnDepth[channelId, default: 1] -= 1
+            if turnDepth[channelId] == 0 { turnDepth[channelId] = nil }
+            if channelGates[channelId] == task { channelGates[channelId] = nil }
+        }
         var result = try await task.value
         if let notice = fallbackNotice.removeValue(forKey: channelId) {
             result.text = notice + "\n\n" + result.text
         }
         return result
+    }
+
+    /// G-P2-04: any turn in-flight or waiting on this channel's gate chain.
+    public func isTurnRunning(channelId: String) -> Bool {
+        (turnDepth[channelId] ?? 0) > 0
+    }
+
+    /// G-P2-04: turns waiting behind the running one (TS `queueDepth`).
+    public func turnQueueDepth(channelId: String) -> Int {
+        max(0, (turnDepth[channelId] ?? 0) - 1)
     }
 
     private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?, files: [TurnFile]) async throws -> TurnResult {
@@ -264,6 +281,7 @@ public actor GrokSessionBridge {
         stopEpoch[channelId, default: 0] += 1
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
+        turnDepth[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()

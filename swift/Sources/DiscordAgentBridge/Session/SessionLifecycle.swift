@@ -361,7 +361,8 @@ public struct SessionLifecycle: Sendable {
     }
 
     /// Active bindings for `/agent stats` (registry ∪ non-archived store; registry wins on model/effort).
-    public func listActiveBindings() async -> [(channelId: String, backend: Backend, model: String?, effort: String?)] {
+    /// G-P2-04: attaches per-channel `running` / `queueDepth` from bridge gate chains (TS listActive).
+    public func listActiveBindings() async -> [StatsBindingLine] {
         var out: [String: (Backend, String?, String?)] = [:]
         for (id, ps) in await store.active() {
             out[id] = (ps.backend, ps.model, ps.effort)
@@ -369,10 +370,34 @@ public struct SessionLifecycle: Sendable {
         for (id, cfg) in await registry.list() {
             out[id] = (cfg.backend, cfg.model, cfg.effort)
         }
-        return out.keys.sorted().map { id in
+        var lines: [StatsBindingLine] = []
+        for id in out.keys.sorted() {
             let v = out[id]!
-            return (channelId: id, backend: v.0, model: v.1, effort: v.2)
+            let status = await turnStatus(channelId: id)
+            lines.append(StatsBindingLine(
+                channelId: id,
+                backend: v.0,
+                model: v.1,
+                effort: v.2,
+                queueDepth: status.queueDepth,
+                running: status.running
+            ))
         }
+        return lines
+    }
+
+    /// Soft turn status across all three bridges (any in-flight/waiting counts as running).
+    private func turnStatus(channelId: String) async -> (running: Bool, queueDepth: Int) {
+        let claudeDepth = await DabSessionBridge.shared.turnQueueDepth(channelId: channelId)
+        let codexDepth = await CodexSessionBridge.shared.turnQueueDepth(channelId: channelId)
+        let grokDepth = await GrokSessionBridge.shared.turnQueueDepth(channelId: channelId)
+        let claudeRun = await DabSessionBridge.shared.isTurnRunning(channelId: channelId)
+        let codexRun = await CodexSessionBridge.shared.isTurnRunning(channelId: channelId)
+        let grokRun = await GrokSessionBridge.shared.isTurnRunning(channelId: channelId)
+        return (
+            running: claudeRun || codexRun || grokRun,
+            queueDepth: max(claudeDepth, codexDepth, grokDepth)
+        )
     }
 
     // MARK: - private

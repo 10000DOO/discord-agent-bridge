@@ -51,6 +51,9 @@ public actor DabSessionBridge {
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent send on same session).
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    /// Per-channel count of `runTurn` callers (in-flight + waiting on the gate chain).
+    /// G-P2-04: `running` = depth > 0; queueDepth = max(0, depth − 1).
+    private var turnDepth: [String: Int] = [:]
     /// Per-handle FIFO chain so text → result events cannot reorder across the
     /// sync-handler → actor hop (`Task { await onEvent }`). Under parallel load a bare Task
     /// hop can finish the turn before appendText, yielding "(empty result)".
@@ -168,6 +171,7 @@ public actor DabSessionBridge {
         // rival task against the same session. The previous turn is awaited INSIDE the task — that
         // is where serialization happens.
         let prev = channelGates[channelId]
+        turnDepth[channelId, default: 0] += 1
         let task = Task { () -> TurnResult in
             if let prev { _ = try? await prev.value }
             return try await self.executeTurn(
@@ -180,13 +184,27 @@ public actor DabSessionBridge {
             )
         }
         channelGates[channelId] = task
-        defer { if channelGates[channelId] == task { channelGates[channelId] = nil } }
+        defer {
+            turnDepth[channelId, default: 1] -= 1
+            if turnDepth[channelId] == 0 { turnDepth[channelId] = nil }
+            if channelGates[channelId] == task { channelGates[channelId] = nil }
+        }
         var result = try await task.value
         // F5: prepend the resume-failure notice once, if this turn fell back to a fresh session.
         if let notice = fallbackNotice.removeValue(forKey: channelId) {
             result.text = notice + "\n\n" + result.text
         }
         return result
+    }
+
+    /// G-P2-04: any turn in-flight or waiting on this channel's gate chain.
+    public func isTurnRunning(channelId: String) -> Bool {
+        (turnDepth[channelId] ?? 0) > 0
+    }
+
+    /// G-P2-04: turns waiting behind the running one (TS `queueDepth`).
+    public func turnQueueDepth(channelId: String) -> Int {
+        max(0, (turnDepth[channelId] ?? 0) - 1)
     }
 
     private func executeTurn(
@@ -542,6 +560,7 @@ public actor DabSessionBridge {
         stopEpoch[channelId, default: 0] += 1
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
+        turnDepth[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
         guard let handle = sessions.removeValue(forKey: channelId) else { return }

@@ -116,16 +116,58 @@ public func sessionConfig(from session: PersistedSession) -> SessionConfig {
     )
 }
 
+/// One active-channel row for `/agent stats` (pure; no Discord).
+/// `queueDepth` = waiting turns (not including the running one); mirrors TS
+/// `ActiveChannelInfo.queueDepth` / `running`.
+public struct StatsBindingLine: Sendable, Equatable {
+    public var channelId: String
+    public var backend: Backend
+    public var model: String?
+    public var effort: String?
+    public var queueDepth: Int
+    public var running: Bool
+
+    public init(
+        channelId: String,
+        backend: Backend,
+        model: String? = nil,
+        effort: String? = nil,
+        queueDepth: Int = 0,
+        running: Bool = false
+    ) {
+        self.channelId = channelId
+        self.backend = backend
+        self.model = model
+        self.effort = effort
+        self.queueDepth = queueDepth
+        self.running = running
+    }
+}
+
 /// Ephemeral `/agent stats` lines from active bindings (pure formatter).
-/// Includes model and effort when set (W11-g slice1).
-public func formatStatsLines(
-    bindings: [(channelId: String, backend: Backend, model: String?, effort: String?)]
-) -> [String] {
+/// Includes model/effort when set (W11-g) and queue/running (G-P2-04 / TS listActive).
+public func formatStatsLines(bindings: [StatsBindingLine]) -> [String] {
     if bindings.isEmpty { return ["(none)"] }
     return bindings.map { b in
         var line = "<#\(b.channelId)> · \(b.backend.rawValue)"
         if let m = b.model { line += " · `\(m)`" }
         if let e = b.effort { line += " · effort=\(e)" }
+        line += " · queue \(b.queueDepth)"
+        if b.running { line += " · running" }
         return line
     }
+}
+
+/// Backward-compatible overload (model/effort only; queue 0, not running).
+public func formatStatsLines(
+    bindings: [(channelId: String, backend: Backend, model: String?, effort: String?)]
+) -> [String] {
+    formatStatsLines(bindings: bindings.map {
+        StatsBindingLine(
+            channelId: $0.channelId,
+            backend: $0.backend,
+            model: $0.model,
+            effort: $0.effort
+        )
+    })
 }
