@@ -304,6 +304,74 @@ struct SessionLifecycleTests {
         #expect(await reg.binding(channelId: "c1")?.backend == .codex)
     }
 
+    @Test func reconfigureBindingStopsAndAppliesWizardChoices() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "live", cwd: "/proj", guildId: "g",
+                ownerId: "owner-1", model: "sonnet", effort: "high", permMode: "plan", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude, model: "sonnet", effort: "high", permMode: "plan"))
+        let stopped = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { $0.append("claude:\(ch)") } },
+            stopCodex: { ch in stopped.withLock { $0.append("codex:\(ch)") } },
+            stopGrok: { ch in stopped.withLock { $0.append("grok:\(ch)") } },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-recfg" }
+        )
+        #expect(await life.reconfigureBinding(
+            channelId: "c1",
+            backend: .codex,
+            model: "gpt-5.4",
+            effort: "high",
+            permMode: "workspace-write",
+            actorId: "u",
+            guildId: "g"
+        ) == true)
+        // All bridges stopped (fresh context).
+        #expect(stopped.withLock { $0 }.contains("claude:c1"))
+        #expect(stopped.withLock { $0 }.contains("codex:c1"))
+        #expect(stopped.withLock { $0 }.contains("grok:c1"))
+        let s = await store.binding(channelId: "c1")
+        #expect(s?.backend == .codex)
+        #expect(s?.backendSessionId == nil)
+        #expect(s?.model == "gpt-5.4")
+        #expect(s?.effort == "high")
+        #expect(s?.permMode == "workspace-write")
+        #expect(s?.cwd == "/proj")
+        #expect(s?.ownerId == "owner-1")
+        #expect(s?.updatedAt == "T-recfg")
+        let cfg = await reg.binding(channelId: "c1")
+        #expect(cfg?.backend == .codex)
+        #expect(cfg?.model == "gpt-5.4")
+        #expect(cfg?.effort == "high")
+        #expect(cfg?.permMode == "workspace-write")
+    }
+
+    @Test func reconfigureBindingNoSessionReturnsFalse() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        #expect(await life.reconfigureBinding(
+            channelId: "missing",
+            backend: .codex,
+            model: "gpt-5.4",
+            effort: "high",
+            permMode: "read-only",
+            actorId: "u",
+            guildId: "g"
+        ) == false)
+    }
+
     @Test func resumeBindingFromStore() async throws {
         let reg = SessionRegistry()
         let store = freshTempStore()

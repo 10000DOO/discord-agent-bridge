@@ -1,9 +1,11 @@
 import Foundation
 
-// MARK: - W11-b2: `/agent start` select wizard
+// MARK: - W11-b2: `/agent start` + `/mode backend` reconfigure select wizard
 //
 // Pure state machine — no Discord types. Steps:
-//   folder → backend → model → [effort if any] → perm → done | cancelled
+//   start:       folder → backend → model → [effort if any] → perm → done | cancelled
+//   reconfigure: model → [effort if any] → perm → done | cancelled
+//                (folder/backend skipped; opened when /mode backend targets a different backend)
 //
 // Folder: dir:into / dir:up navigate immediately; dir:here commits cwd → backend.
 // dir:create / dir:manual / dir:panel are handled outside the SM (modals / native panel
@@ -13,7 +15,7 @@ import Foundation
 // Option lists are injected at open from live `providerCatalog(for:)` — never hardcoded
 // model/effort/perm vocabularies (Backend.allCases is the only fixed list).
 //
-// ponytail: preset · reconfigure · A4D channel create → residual.
+// ponytail: preset · A4D channel create → residual.
 // dir:resume → separate ResumeWizard (W11-b2 residual, wired).
 
 // MARK: Types
@@ -252,15 +254,45 @@ public struct WizardSelection: Sendable, Equatable {
     public var permMode: String
 }
 
-/// Pure `/agent start` wizard (slice2: folder → backend → model → effort → perm).
+/// Seed for `/mode backend` reconfigure popup: skip folder/backend, open at model.
+/// `model`/`effort` omitted → seeded from the NEW backend's catalog defaults.
+public struct WizardEntry: Sendable, Equatable {
+    public var backend: Backend
+    public var cwd: String
+    public var permMode: String
+    public var model: String?
+    public var effort: String?
+
+    public init(
+        backend: Backend,
+        cwd: String,
+        permMode: String,
+        model: String? = nil,
+        effort: String? = nil
+    ) {
+        self.backend = backend
+        self.cwd = cwd
+        self.permMode = permMode
+        self.model = model
+        self.effort = effort
+    }
+}
+
+public enum WizardKind: String, Sendable, Equatable {
+    case start
+    case reconfigure
+}
+
+/// Pure `/agent start` + reconfigure wizard (folder → backend → model → effort → perm).
 public final class ChannelWizard: @unchecked Sendable {
     public let guildId: String
     public let channelId: String
     public let ownerId: String
     private let options: WizardOptionSource
     private let browser: DirectoryBrowser
-    private let firstStep: WizardStep = .folder
-    private var step: WizardStep = .folder
+    private let kind: WizardKind
+    private let firstStep: WizardStep
+    private var step: WizardStep
     private var selection: WizardSelection
     private var pending: Pending = Pending()
     /// Set when step becomes `.done` (perm.start committed).
@@ -278,21 +310,41 @@ public final class ChannelWizard: @unchecked Sendable {
         channelId: String,
         ownerId: String,
         browser: DirectoryBrowser,
-        options: WizardOptionSource
+        options: WizardOptionSource,
+        entry: WizardEntry? = nil
     ) {
         self.guildId = guildId
         self.channelId = channelId
         self.ownerId = ownerId
         self.browser = browser
         self.options = options
-        let d = options.defaults
-        self.selection = WizardSelection(
-            cwd: browser.cwd(),
-            backend: d.backend,
-            model: d.model,
-            effort: d.effort,
-            permMode: d.permMode
-        )
+        if let entry {
+            // Reconfigure (backend switch): skip folder/backend, start at model.
+            // backend/cwd/permMode carry over; model/effort seed from caller or new-backend defaults.
+            self.kind = .reconfigure
+            self.firstStep = .model
+            self.step = .model
+            let models = options.models(for: entry.backend)
+            self.selection = WizardSelection(
+                cwd: entry.cwd,
+                backend: entry.backend,
+                model: entry.model ?? models.first?.value ?? options.defaults.model,
+                effort: entry.effort ?? options.defaultEffort(for: entry.backend),
+                permMode: entry.permMode
+            )
+        } else {
+            self.kind = .start
+            self.firstStep = .folder
+            self.step = .folder
+            let d = options.defaults
+            self.selection = WizardSelection(
+                cwd: browser.cwd(),
+                backend: d.backend,
+                model: d.model,
+                effort: d.effort,
+                permMode: d.permMode
+            )
+        }
     }
 
     /// Convenience: start browser at `cwd` (unbounded unless roots provided).
@@ -302,20 +354,25 @@ public final class ChannelWizard: @unchecked Sendable {
         ownerId: String,
         cwd: String,
         options: WizardOptionSource,
-        allowedRoots: [String] = []
+        allowedRoots: [String] = [],
+        entry: WizardEntry? = nil
     ) {
         self.init(
             guildId: guildId,
             channelId: channelId,
             ownerId: ownerId,
             browser: DirectoryBrowser(allowedRoots: allowedRoots, startPath: cwd),
-            options: options
+            options: options,
+            entry: entry
         )
     }
 
     public func currentStep() -> WizardStep { step }
 
     public func current() -> WizardSelection { selection }
+
+    /// True when opened as the `/mode backend` cross-backend popup (same-channel restart on done).
+    public func isReconfigure() -> Bool { kind == .reconfigure }
 
     /// Folder currently in the browser (manual/create/panel/resume).
     public func browserCwd() -> String { browser.cwd() }
@@ -352,7 +409,11 @@ public final class ChannelWizard: @unchecked Sendable {
     }
 
     private func stepBack() {
-        if step == firstStep { return }
+        // First step: start is a no-op; reconfigure cancels the backend-switch popup.
+        if step == firstStep {
+            if kind == .reconfigure { step = .cancelled }
+            return
+        }
         pending = Pending()
         switch step {
         case .backend:
@@ -449,8 +510,38 @@ public final class ChannelWizard: @unchecked Sendable {
 
     // MARK: Render
 
+    private func titleText() -> String {
+        kind == .reconfigure
+            ? "에이전트 전환 — \(selection.backend.rawValue)"
+            : "에이전트 세션 시작"
+    }
+
+    private func stepDescription(_ step: WizardStep) -> String {
+        switch step {
+        case .model:
+            return kind == .reconfigure
+                ? "1/3단계 · 모델을 선택하고 \"다음\"을 누르세요."
+                : "모델을 선택하세요 (\(selection.backend.rawValue))"
+        case .effort:
+            return kind == .reconfigure
+                ? "2/3단계 · 추론 수준을 선택하고 \"다음\"을 누르세요."
+                : "추론 강도를 선택하세요"
+        case .perm:
+            return kind == .reconfigure
+                ? "3/3단계 · 권한을 선택하고 \"✅ 전환\"을 누르세요."
+                : "권한 모드를 선택하고 시작하세요"
+        default:
+            return ""
+        }
+    }
+
+    /// Start: hide back on first (folder) step. Reconfigure: always show (first-step back cancels).
+    private func showBackButton() -> Bool {
+        !(step == firstStep && kind == .start)
+    }
+
     public func render() -> WizardView {
-        let title = "에이전트 세션 시작"
+        let title = titleText()
         switch step {
         case .folder:
             return browser.render()
@@ -469,33 +560,33 @@ public final class ChannelWizard: @unchecked Sendable {
                 },
                 confirmId: "backend.next",
                 confirmLabel: "다음",
-                showBack: true
+                showBack: showBackButton()
             )
         case .model:
             let selected = pending.model ?? selection.model
             return choiceStep(
                 title: title,
-                description: "모델을 선택하세요 (\(selection.backend.rawValue))",
+                description: stepDescription(.model),
                 selectId: "model",
                 options: options.models(for: selection.backend).map { m in
                     WizardSelectOption(label: m.label, value: m.value, isDefault: m.value == selected)
                 },
                 confirmId: "model.next",
                 confirmLabel: "다음",
-                showBack: true
+                showBack: showBackButton()
             )
         case .effort:
             let selected = pending.effort ?? selection.effort
             return choiceStep(
                 title: title,
-                description: "추론 강도를 선택하세요",
+                description: stepDescription(.effort),
                 selectId: "effort",
                 options: options.efforts(for: selection.backend, model: selection.model).map { e in
                     WizardSelectOption(label: e.label, value: e.value, isDefault: e.value == selected)
                 },
                 confirmId: "effort.next",
                 confirmLabel: "다음",
-                showBack: true
+                showBack: showBackButton()
             )
         case .perm:
             let selected = pending.permMode ?? selection.permMode
@@ -510,13 +601,16 @@ public final class ChannelWizard: @unchecked Sendable {
                     .select(customId: "perm.mode", placeholder: "권한 모드", options: modeOpts),
                 ]))
             }
-            let buttons: [WizardComponent] = [
-                .button(customId: "perm.start", label: "시작", style: .success, disabled: false),
-                .button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false),
-                .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
+            let startLabel = kind == .reconfigure ? "✅ 전환" : "시작"
+            var buttons: [WizardComponent] = [
+                .button(customId: "perm.start", label: startLabel, style: .success, disabled: false),
             ]
+            if showBackButton() {
+                buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false))
+            }
+            buttons.append(.button(customId: "cancel", label: "취소", style: .secondary, disabled: false))
             rows.append(WizardRow(components: buttons))
-            return WizardView(title: title, description: "권한 모드를 선택하고 시작하세요", rows: rows)
+            return WizardView(title: title, description: stepDescription(.perm), rows: rows)
         case .done:
             return WizardView(
                 title: title,
@@ -524,7 +618,10 @@ public final class ChannelWizard: @unchecked Sendable {
                 rows: []
             )
         case .cancelled:
-            return WizardView(title: title, description: "취소되었습니다.", rows: [])
+            let cancelled = kind == .reconfigure
+                ? "에이전트 전환을 취소했어요."
+                : "취소되었습니다."
+            return WizardView(title: title, description: cancelled, rows: [])
         }
     }
 

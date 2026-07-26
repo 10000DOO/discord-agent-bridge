@@ -168,8 +168,10 @@ public struct SessionLifecycle: Sendable {
         return true
     }
 
-    /// `/mode backend`: stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.
+    /// `/mode backend` same-backend: stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.
     /// Cross-backend drops model/effort (backend-specific); same-backend keeps them.
+    /// Different-backend path from the slash command opens the reconfigure wizard instead (see
+    /// `reconfigureBinding` for confirm).
     @discardableResult
     public func rebindBackend(
         channelId: String,
@@ -202,6 +204,48 @@ public struct SessionLifecycle: Sendable {
             channelId: channelId,
             action: "mode.backend",
             mode: backend.rawValue,
+            status: "ok"
+        ))
+        return true
+    }
+
+    /// Reconfigure confirm (TS `switchSession`): stop live bridges, rebind **same channel** with
+    /// the wizard-chosen backend/model/effort/perm. Keeps cwd/ownerId; clears backendSessionId
+    /// (fresh context). Does not create a new channel.
+    @discardableResult
+    public func reconfigureBinding(
+        channelId: String,
+        backend: Backend,
+        model: String?,
+        effort: String?,
+        permMode: String?,
+        actorId: String,
+        guildId: String,
+        roleTier: String = "execute",
+        defaultCwd: String = NSHomeDirectory()
+    ) async -> Bool {
+        guard var session = await resolveSession(
+            channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
+        ) else { return false }
+
+        await stopAllBridges(channelId: channelId)
+
+        session.backend = backend
+        session.backendSessionId = nil
+        session.model = model
+        session.effort = effort
+        if let permMode { session.permMode = permMode }
+        session.updatedAt = now()
+        try? await store.upsert(channelId: channelId, session)
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+        await audit.record(AuditEntry(
+            actorId: actorId,
+            roleTier: roleTier,
+            guildId: guildId,
+            channelId: channelId,
+            action: "mode.backend",
+            mode: backend.rawValue,
+            permMode: session.permMode,
             status: "ok"
         ))
         return true

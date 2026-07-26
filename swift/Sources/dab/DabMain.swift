@@ -282,14 +282,65 @@ struct EventHandler: GatewayEventHandler {
                     try await respondEphemeral(payload, "알 수 없는 backend")
                     return
                 }
-                let ok = await life.rebindBackend(
-                    channelId: channelId, backend: backend,
-                    actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
+                // Require an existing binding (no cwd/owner to carry over otherwise).
+                let storeRow = await SessionStore.shared.binding(channelId: channelId)
+                let regRow = await SessionRegistry.shared.binding(channelId: channelId)
+                guard storeRow != nil || regRow != nil else {
+                    try await respondEphemeral(
+                        payload,
+                        "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                    )
+                    return
+                }
+                let currentBackend = storeRow?.backend ?? regRow!.backend
+                // Same backend: immediate rebind (fresh context) — R6.
+                if currentBackend == backend {
+                    let ok = await life.rebindBackend(
+                        channelId: channelId, backend: backend,
+                        actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
+                    )
+                    try await respondEphemeral(
+                        payload,
+                        ok
+                            ? "백엔드를 \(backend.rawValue) 로 바꿨어요."
+                            : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                    )
+                    if ok, let ch = payload.channel_id {
+                        _ = try? await client.createMessage(
+                            channelId: ch,
+                            payload: .init(content:
+                                "⚠️ \(backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
+                            )
+                        )
+                    }
+                    return
+                }
+                // Different backend: DO NOT stop the running session (R1/R4). Open reconfigure
+                // popup (model → effort → perm); stop+rebind only on perm.start confirm.
+                let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+                let cwd = storeRow?.cwd ?? stubCwd
+                let permMode = storeRow?.permMode ?? regRow?.permMode ?? "default"
+                let optionSource = await loadWizardOptionSource()
+                let browser = DirectoryBrowser(startPath: cwd, nativePanel: false)
+                let wizard = ChannelWizard(
+                    guildId: guildId,
+                    channelId: channelId,
+                    ownerId: ownerId,
+                    browser: browser,
+                    options: optionSource,
+                    // Omit model/effort → seed NEW backend defaults; carry cwd/perm from binding.
+                    entry: WizardEntry(backend: backend, cwd: cwd, permMode: permMode)
                 )
-                try await respondEphemeral(
-                    payload,
-                    ok ? "백엔드를 \(backend.rawValue)(으)로 전환했습니다. (컨텍스트 초기화)"
-                       : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                await WizardRegistry.shared.put(wizard, channelId: channelId)
+                let (embeds, components) = discordPayload(from: wizard.render())
+                _ = try await client.createInteractionResponse(
+                    id: payload.id,
+                    token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        embeds: embeds,
+                        flags: [.ephemeral],
+                        components: components
+                    ))
                 )
             case "perm":
                 guard let value = try? sub.requireOption(named: "value").requireString(), !value.isEmpty else {
@@ -905,7 +956,44 @@ struct EventHandler: GatewayEventHandler {
         switch step {
         case .done:
             await WizardRegistry.shared.remove(channelId: channelId)
-            if let p = wizard.startParams {
+            if wizard.isReconfigure() {
+                // Backend-switch confirm: stop live session then rebind same channel (TS switchSession).
+                if let p = wizard.startParams {
+                    let model = p.model.isEmpty ? nil : p.model
+                    let effort = p.effort.isEmpty ? nil : p.effort
+                    let perm = p.permMode.isEmpty ? nil : p.permMode
+                    let ok = await SessionLifecycle.shared.reconfigureBinding(
+                        channelId: p.channelId,
+                        backend: p.backend,
+                        model: model,
+                        effort: effort,
+                        permMode: perm,
+                        actorId: clicker,
+                        guildId: p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId,
+                        defaultCwd: p.cwd
+                    )
+                    let text = ok
+                        ? "백엔드를 \(p.backend.rawValue) 로 바꿨어요."
+                        : "전환 실패: 이 채널에 바인딩된 세션이 없습니다."
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .updateMessage(.init(content: text, embeds: [], components: []))
+                    )
+                    if ok, let ch = payload.channel_id {
+                        _ = try? await client.createMessage(
+                            channelId: ch,
+                            payload: .init(content:
+                                "⚠️ \(p.backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
+                            )
+                        )
+                    }
+                } else {
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .updateMessage(.init(content: "전환 실패 (선택 없음).", embeds: [], components: []))
+                    )
+                }
+            } else if let p = wizard.startParams {
                 await bindFromWizard(p)
                 let extra = [
                     p.model.isEmpty ? nil : "model=\(p.model)",

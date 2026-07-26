@@ -326,6 +326,113 @@ struct ChannelWizardTests {
         #expect(!isWizardCustomId("perm:abc:allow"))
     }
 
+    // MARK: - Reconfigure (backend-switch popup)
+
+    private func makeReconfigureWizard(
+        entry: WizardEntry,
+        options: WizardOptionSource = fakeOptions()
+    ) throws -> (ChannelWizard, URL) {
+        let root = try makeFolderRoot()
+        let browser = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        let w = ChannelWizard(
+            guildId: "g1",
+            channelId: "c1",
+            ownerId: "u1",
+            browser: browser,
+            options: options,
+            entry: entry
+        )
+        return (w, root)
+    }
+
+    @Test func reconfigureOpensAtModelSkipsFolderBackend() throws {
+        let entry = WizardEntry(
+            backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write"
+        )
+        let (w, root) = try makeReconfigureWizard(entry: entry)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.currentStep() == .model)
+        #expect(w.isReconfigure())
+        let ids = componentIds(w)
+        #expect(ids.contains("model"))
+        #expect(ids.contains("model.next"))
+        #expect(ids.contains("wizard.back"))
+        #expect(!ids.contains("backend"))
+        #expect(!ids.contains("dir:into"))
+        #expect(w.render().title.contains("codex"))
+        #expect(w.render().description.contains("1/3"))
+    }
+
+    @Test func reconfigureBackOnFirstStepCancels() throws {
+        let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
+        let (w, root) = try makeReconfigureWizard(entry: entry)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.handle(WizardInput(id: "wizard.back")) == .cancelled)
+        #expect(w.startParams == nil)
+        #expect(w.render().description.contains("취소"))
+    }
+
+    @Test func reconfigureWalksModelEffortPermThenDone() throws {
+        let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
+        let (w, root) = try makeReconfigureWizard(entry: entry)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Seeds: new-backend model/effort defaults; perm carried from entry.
+        #expect(w.current().model == "gpt-5.5")
+        #expect(w.current().effort == "medium")
+        #expect(w.current().permMode == "workspace-write")
+        #expect(w.current().cwd == "/tmp/proj")
+        #expect(w.current().backend == .codex)
+
+        #expect(w.handle(WizardInput(id: "model.next")) == .effort)
+        #expect(componentIds(w).contains("wizard.back"))
+        #expect(w.handle(WizardInput(id: "wizard.back")) == .model)
+        #expect(w.handle(WizardInput(id: "wizard.back")) == .cancelled)
+    }
+
+    @Test func reconfigureConfirmSetsStartParams() throws {
+        let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
+        let (w, root) = try makeReconfigureWizard(entry: entry)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.handle(WizardInput(id: "model", value: "gpt-5.4")) == .model)
+        #expect(w.handle(WizardInput(id: "model.next")) == .effort)
+        #expect(w.handle(WizardInput(id: "effort", value: "high")) == .effort)
+        #expect(w.handle(WizardInput(id: "effort.next")) == .perm)
+        // Start button label is reconfigure "전환"
+        let permView = w.render()
+        let startLabels = permView.rows.flatMap(\.components).compactMap { c -> String? in
+            if case .button(let id, let label, _, _) = c, id == "perm.start" { return label }
+            return nil
+        }
+        #expect(startLabels.contains("✅ 전환"))
+        #expect(w.handle(WizardInput(id: "perm.start")) == .done)
+        let p = w.startParams
+        #expect(p?.backend == .codex)
+        #expect(p?.model == "gpt-5.4")
+        #expect(p?.effort == "high")
+        #expect(p?.permMode == "workspace-write")
+        #expect(p?.cwd == "/tmp/proj")
+        #expect(p?.channelId == "c1")
+    }
+
+    @Test func reconfigureHonorsEntryModelEffortOverride() throws {
+        let entry = WizardEntry(
+            backend: .codex, cwd: "/tmp/proj", permMode: "read-only",
+            model: "gpt-5.4", effort: "high"
+        )
+        let (w, root) = try makeReconfigureWizard(entry: entry)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.current().model == "gpt-5.4")
+        #expect(w.current().effort == "high")
+        #expect(w.current().permMode == "read-only")
+    }
+
+    @Test func startWizardIsNotReconfigure() throws {
+        let (w, root) = try makeWizard()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(!w.isReconfigure())
+        #expect(w.currentStep() == .folder)
+    }
+
     @Test func browserGoToUpdatesFolderView() throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
