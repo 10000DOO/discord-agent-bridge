@@ -717,6 +717,95 @@ struct WizardRegistryTests {
         await reg.remove(channelId: "c1")
         #expect(await reg.get(channelId: "c1") == nil)
     }
+
+    // H13 (WO-P26): `enqueue` must serialize concurrent component clicks on the same channel
+    // (TS `enqueueWizard`, router.ts:378-390) so the wizard state machine never races.
+
+    @Test func enqueueSerializesJobsOnSameChannel() async throws {
+        let reg = WizardRegistry()
+        let recorder = WizardQueueOrderRecorder()
+        let gate = WizardQueueGate()
+
+        let firstJob = Task {
+            await reg.enqueue(channelId: "c1") {
+                await recorder.log("start:1")
+                await gate.wait()
+                await recorder.log("end:1")
+            }
+        }
+        // Wait for job 1's closure to actually start (i.e. be registered on the queue)
+        // before enqueueing job 2, so submission order is unambiguous.
+        while await recorder.events.isEmpty {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        let secondJob = Task {
+            await reg.enqueue(channelId: "c1") {
+                await recorder.log("start:2")
+                await recorder.log("end:2")
+            }
+        }
+        // Job 1 is parked behind the gate; give job 2 a chance to run and confirm it
+        // does NOT start until job 1 finishes (queue, not concurrent execution).
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        #expect(await recorder.events == ["start:1"])
+
+        await gate.open()
+        _ = await (firstJob.value, secondJob.value)
+
+        #expect(await recorder.events == ["start:1", "end:1", "start:2", "end:2"])
+    }
+
+    @Test func enqueueDoesNotBlockAcrossDifferentChannels() async throws {
+        let reg = WizardRegistry()
+        let recorder = WizardQueueOrderRecorder()
+        let gate = WizardQueueGate()
+
+        let blockedJob = Task {
+            await reg.enqueue(channelId: "c1") {
+                await recorder.log("start:c1")
+                await gate.wait()
+                await recorder.log("end:c1")
+            }
+        }
+        while await recorder.events.isEmpty {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        // A different channel key must run to completion even while "c1" is parked behind the gate.
+        await reg.enqueue(channelId: "c2") {
+            await recorder.log("c2-done")
+        }
+        #expect(await recorder.events == ["start:c1", "c2-done"])
+
+        await gate.open()
+        await blockedJob.value
+        #expect(await recorder.events.last == "end:c1")
+    }
+}
+
+/// Records the order wizard-queue jobs actually ran in (test-only, not timing-based).
+private actor WizardQueueOrderRecorder {
+    private(set) var events: [String] = []
+    func log(_ event: String) { events.append(event) }
+}
+
+/// Manually-released gate so a test can hold a job "in flight" and prove a later job
+/// on the same channel key hasn't started, without depending on sleep-based timing luck.
+private actor WizardQueueGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
 }
 
 @Suite("PresetDraftRegistry")

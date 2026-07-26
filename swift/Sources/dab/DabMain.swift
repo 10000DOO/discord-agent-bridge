@@ -1380,157 +1380,159 @@ struct EventHandler: GatewayEventHandler {
             break
         }
 
-        let value = comp.values?.first
-        let step = await wizard.handle(WizardInput(id: comp.custom_id, value: value))
+        await WizardRegistry.shared.enqueue(channelId: channelId) {
+            let value = comp.values?.first
+            let step = await wizard.handle(WizardInput(id: comp.custom_id, value: value))
 
-        switch step {
-        case .done:
-            await WizardRegistry.shared.remove(channelId: channelId)
-            if wizard.isReconfigure() {
-                // Backend-switch confirm: stop live session then rebind same channel (TS switchSession).
-                if let p = wizard.startParams {
-                    let model = p.model.isEmpty ? nil : p.model
-                    let effort = p.effort.isEmpty ? nil : p.effort
-                    let perm = p.permMode.isEmpty ? nil : p.permMode
-                    let ok = await SessionLifecycle.shared.reconfigureBinding(
-                        channelId: p.channelId,
-                        backend: p.backend,
-                        model: model,
-                        effort: effort,
-                        permMode: perm,
-                        actorId: clicker,
-                        guildId: p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId,
-                        defaultCwd: p.cwd
-                    )
-                    let text = ok
-                        ? "백엔드를 \(p.backend.rawValue) 로 바꿨어요."
-                        : "전환 실패: 이 채널에 바인딩된 세션이 없습니다."
-                    _ = try? await client.createInteractionResponse(
-                        id: payload.id, token: payload.token,
-                        payload: .updateMessage(.init(content: text, embeds: [], components: []))
-                    )
-                    if ok, let ch = payload.channel_id {
-                        let gid = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
-                        _ = await createMessageWithRetry(
-                            client: client,
-                            channelId: ch,
-                            payload: .init(content:
-                                "⚠️ \(p.backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
-                            ),
-                            onGone: {
-                                await SessionLifecycle.shared.stopChannel(
-                                    channelId: p.channelId, actorId: "system", guildId: gid, roleTier: "execute"
-                                )
-                            }
+            switch step {
+            case .done:
+                await WizardRegistry.shared.remove(channelId: channelId)
+                if wizard.isReconfigure() {
+                    // Backend-switch confirm: stop live session then rebind same channel (TS switchSession).
+                    if let p = wizard.startParams {
+                        let model = p.model.isEmpty ? nil : p.model
+                        let effort = p.effort.isEmpty ? nil : p.effort
+                        let perm = p.permMode.isEmpty ? nil : p.permMode
+                        let ok = await SessionLifecycle.shared.reconfigureBinding(
+                            channelId: p.channelId,
+                            backend: p.backend,
+                            model: model,
+                            effort: effort,
+                            permMode: perm,
+                            actorId: clicker,
+                            guildId: p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId,
+                            defaultCwd: p.cwd
+                        )
+                        let text = ok
+                            ? "백엔드를 \(p.backend.rawValue) 로 바꿨어요."
+                            : "전환 실패: 이 채널에 바인딩된 세션이 없습니다."
+                        _ = try? await client.createInteractionResponse(
+                            id: payload.id, token: payload.token,
+                            payload: .updateMessage(.init(content: text, embeds: [], components: []))
+                        )
+                        if ok, let ch = payload.channel_id {
+                            let gid = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
+                            _ = await createMessageWithRetry(
+                                client: client,
+                                channelId: ch,
+                                payload: .init(content:
+                                    "⚠️ \(p.backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
+                                ),
+                                onGone: {
+                                    await SessionLifecycle.shared.stopChannel(
+                                        channelId: p.channelId, actorId: "system", guildId: gid, roleTier: "execute"
+                                    )
+                                }
+                            )
+                        }
+                    } else {
+                        _ = try? await client.createInteractionResponse(
+                            id: payload.id, token: payload.token,
+                            payload: .updateMessage(.init(content: "전환 실패 (선택 없음).", embeds: [], components: []))
                         )
                     }
+                } else if let p = wizard.startParams {
+                    // W11-b2 A4D: create proj-<folder> under sessions category when /setup ran;
+                    // bind registry+store to the new channel id (fallback: wizard channel).
+                    let guildId = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
+                    let sessionsCategoryId = await ConfigStore.shared
+                        .loadServerConfig(guildId: guildId)?.channels?.sessionsCategoryId
+                    let provisioner: (any GuildChannelProvisioner)? = guildId.isEmpty
+                        ? nil
+                        : resolveGuildProvisioner(client: client, guildId: guildId)
+                    let bindChannelId = await resolveSessionChannelId(
+                        provisioner: provisioner,
+                        folderPath: p.cwd,
+                        sessionsCategoryId: sessionsCategoryId,
+                        fallbackChannelId: p.channelId
+                    )
+                    await bindFromWizard(p, channelId: bindChannelId)
+
+                    let sessionCaps = await resolveSessionCapabilities(
+                        backend: p.backend, guildId: guildId
+                    )
+                    let status = SessionStatus(
+                        mode: p.backend.rawValue,
+                        cwd: p.cwd,
+                        sessionId: nil,
+                        permMode: p.permMode.isEmpty ? "default" : p.permMode,
+                        usagePanel: sessionCaps.usagePanel
+                    )
+                    let statusEmbed = discordEmbed(from: buildStatusEmbed(status))
+
+                    // Save-as-preset only for a NORMAL launch (not fromPreset; reconfigure already returned).
+                    let fromPreset = wizard.launchedFromPreset()
+                    var saveRows: [Interaction.ActionRow] = []
+                    if !fromPreset {
+                        let draft = PresetDraft(
+                            backend: p.backend.rawValue,
+                            model: p.model.isEmpty ? nil : p.model,
+                            effort: p.effort.isEmpty ? nil : p.effort,
+                            permMode: p.permMode.isEmpty ? nil : p.permMode
+                        )
+                        let draftKey = PresetDraftRegistry.key(guildId: guildId, channelId: channelId)
+                        await PresetDraftRegistry.shared.set(draft, key: draftKey)
+                        saveRows = [
+                            Interaction.ActionRow(components: [
+                                .button(Interaction.ActionRow.Button(
+                                    style: .secondary,
+                                    label: "💾 프리셋으로 저장",
+                                    custom_id: "preset.save"
+                                )),
+                            ]),
+                        ]
+                    }
+
+                    // Ephemeral wizard reply: link to session channel (TS cmd.start.channelCreated).
+                    let replyText: String
+                    if bindChannelId != p.channelId {
+                        replyText = "세션 채널 생성됨: <#\(bindChannelId)>"
+                    } else {
+                        let extra = [
+                            p.model.isEmpty ? nil : "model=\(p.model)",
+                            p.effort.isEmpty ? nil : "effort=\(p.effort)",
+                            p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
+                        ].compactMap { $0 }.joined(separator: " ")
+                        replyText = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
+                            + (extra.isEmpty ? "" : " (\(extra))")
+                            + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
+                    }
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .updateMessage(.init(
+                            content: replyText,
+                            embeds: [],
+                            components: saveRows.isEmpty ? [] : saveRows
+                        ))
+                    )
+                    // Intro + status embed on the bound session channel (TS postSessionIntro).
+                    // W16-g residual: best-effort pin so status stays at the top of the channel.
+                    _ = await postSessionStatusIntro(
+                        client: client,
+                        channelId: ChannelSnowflake(bindChannelId),
+                        content: sessionStatusIntroContent,
+                        embed: statusEmbed
+                    )
                 } else {
                     _ = try? await client.createInteractionResponse(
                         id: payload.id, token: payload.token,
-                        payload: .updateMessage(.init(content: "전환 실패 (선택 없음).", embeds: [], components: []))
+                        payload: .updateMessage(.init(content: "시작 실패 (선택 없음).", embeds: [], components: []))
                     )
                 }
-            } else if let p = wizard.startParams {
-                // W11-b2 A4D: create proj-<folder> under sessions category when /setup ran;
-                // bind registry+store to the new channel id (fallback: wizard channel).
-                let guildId = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
-                let sessionsCategoryId = await ConfigStore.shared
-                    .loadServerConfig(guildId: guildId)?.channels?.sessionsCategoryId
-                let provisioner: (any GuildChannelProvisioner)? = guildId.isEmpty
-                    ? nil
-                    : resolveGuildProvisioner(client: client, guildId: guildId)
-                let bindChannelId = await resolveSessionChannelId(
-                    provisioner: provisioner,
-                    folderPath: p.cwd,
-                    sessionsCategoryId: sessionsCategoryId,
-                    fallbackChannelId: p.channelId
-                )
-                await bindFromWizard(p, channelId: bindChannelId)
-
-                let sessionCaps = await resolveSessionCapabilities(
-                    backend: p.backend, guildId: guildId
-                )
-                let status = SessionStatus(
-                    mode: p.backend.rawValue,
-                    cwd: p.cwd,
-                    sessionId: nil,
-                    permMode: p.permMode.isEmpty ? "default" : p.permMode,
-                    usagePanel: sessionCaps.usagePanel
-                )
-                let statusEmbed = discordEmbed(from: buildStatusEmbed(status))
-
-                // Save-as-preset only for a NORMAL launch (not fromPreset; reconfigure already returned).
-                let fromPreset = wizard.launchedFromPreset()
-                var saveRows: [Interaction.ActionRow] = []
-                if !fromPreset {
-                    let draft = PresetDraft(
-                        backend: p.backend.rawValue,
-                        model: p.model.isEmpty ? nil : p.model,
-                        effort: p.effort.isEmpty ? nil : p.effort,
-                        permMode: p.permMode.isEmpty ? nil : p.permMode
-                    )
-                    let draftKey = PresetDraftRegistry.key(guildId: guildId, channelId: channelId)
-                    await PresetDraftRegistry.shared.set(draft, key: draftKey)
-                    saveRows = [
-                        Interaction.ActionRow(components: [
-                            .button(Interaction.ActionRow.Button(
-                                style: .secondary,
-                                label: "💾 프리셋으로 저장",
-                                custom_id: "preset.save"
-                            )),
-                        ]),
-                    ]
-                }
-
-                // Ephemeral wizard reply: link to session channel (TS cmd.start.channelCreated).
-                let replyText: String
-                if bindChannelId != p.channelId {
-                    replyText = "세션 채널 생성됨: <#\(bindChannelId)>"
-                } else {
-                    let extra = [
-                        p.model.isEmpty ? nil : "model=\(p.model)",
-                        p.effort.isEmpty ? nil : "effort=\(p.effort)",
-                        p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
-                    ].compactMap { $0 }.joined(separator: " ")
-                    replyText = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
-                        + (extra.isEmpty ? "" : " (\(extra))")
-                        + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
-                }
+            case .cancelled:
+                await WizardRegistry.shared.remove(channelId: channelId)
+                let (embeds, _) = discordPayload(from: wizard.render())
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(
-                        content: replyText,
-                        embeds: [],
-                        components: saveRows.isEmpty ? [] : saveRows
-                    ))
+                    payload: .updateMessage(.init(embeds: embeds, components: []))
                 )
-                // Intro + status embed on the bound session channel (TS postSessionIntro).
-                // W16-g residual: best-effort pin so status stays at the top of the channel.
-                _ = await postSessionStatusIntro(
-                    client: client,
-                    channelId: ChannelSnowflake(bindChannelId),
-                    content: sessionStatusIntroContent,
-                    embed: statusEmbed
-                )
-            } else {
+            default:
+                let (embeds, components) = discordPayload(from: wizard.render())
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(content: "시작 실패 (선택 없음).", embeds: [], components: []))
+                    payload: .updateMessage(.init(embeds: embeds, components: components))
                 )
             }
-        case .cancelled:
-            await WizardRegistry.shared.remove(channelId: channelId)
-            let (embeds, _) = discordPayload(from: wizard.render())
-            _ = try? await client.createInteractionResponse(
-                id: payload.id, token: payload.token,
-                payload: .updateMessage(.init(embeds: embeds, components: []))
-            )
-        default:
-            let (embeds, components) = discordPayload(from: wizard.render())
-            _ = try? await client.createInteractionResponse(
-                id: payload.id, token: payload.token,
-                payload: .updateMessage(.init(embeds: embeds, components: components))
-            )
         }
     }
 

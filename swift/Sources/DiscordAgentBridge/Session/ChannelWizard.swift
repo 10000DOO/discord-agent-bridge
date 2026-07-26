@@ -834,6 +834,22 @@ public actor WizardRegistry {
     public func remove(channelId: String) {
         wizards[channelId] = nil
     }
+
+    private var queues: [String: Task<Void, Never>] = [:]
+
+    /// Chain a wizard-handling job onto the per-channel queue so concurrent component
+    /// interactions on the same channel never interleave (TS `enqueueWizard`, `router.ts:378-390`).
+    /// Mirrors the existing `eventChains`/`notifyChains` per-key Task-chaining pattern
+    /// (`DabSessionBridge.swift`/`CodexSessionBridge.swift`) — no drained-entry cleanup, same as those.
+    public func enqueue(channelId: String, _ job: @escaping @Sendable () async -> Void) async {
+        let prev = queues[channelId]
+        let next = Task {
+            _ = await prev?.value
+            await job()
+        }
+        queues[channelId] = next
+        await next.value
+    }
 }
 
 /// `"guildId:channelId"` → draft for "💾 프리셋으로 저장" after a normal (non-preset) start.

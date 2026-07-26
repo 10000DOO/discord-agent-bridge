@@ -55,7 +55,7 @@
 | H10 | 턴 중간 사용량/레이트리밋 이벤트 소실 | ⏳ 대기 (WO-P29) |
 | H11 | Capabilities 8→4 축소 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H12 | i18n 240개 중 102개만 포팅, 방향 깨짐 | ⏳ 대기 (WO-P32, 마지막) |
-| H13 | ChannelWizard 동시 상호작용 직렬화 큐 없음 | ⏳ 대기 (WO-P26) |
+| H13 | ChannelWizard 동시 상호작용 직렬화 큐 없음 | ✅ 완료 (빌드+전체테스트 확인) |
 | H14 | 프리셋 삭제 optimistic 저장 정합성 | ✅ 완료 (빌드+전체테스트 확인) |
 | H15 | DM 구조적 차단 가드 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H16 | 슬래시커맨드 서버별 즉시등록→전역등록 | ⏳ 대기 (WO-P27) |
@@ -194,7 +194,10 @@
 
 ### 동시성/일관성
 
-- **H13.** 같은 채널에서 버튼 연타(동시 컴포넌트 상호작용) 시 상태머신을 보호하는 직렬화 큐(`enqueueWizard`)가 없음 — `ChannelWizard`가 락 없는 `@unchecked Sendable` 클래스라 두 인터랙션이 동시에 상태를 레이스할 수 있음.
+- **H13. [구현됨: `Session/ChannelWizard.swift`, `dab/DabMain.swift`, `Tests/DiscordAgentBridgeTests/ChannelWizardTests.swift`]** 같은 채널에서 버튼 연타(동시 컴포넌트 상호작용) 시 상태머신을 보호하는 직렬화 큐(`enqueueWizard`)가 없음 — `ChannelWizard`가 락 없는 `@unchecked Sendable` 클래스라 두 인터랙션이 동시에 상태를 레이스할 수 있음.
+  - **구현**: `WizardRegistry`(`ChannelWizard.swift:820` 근처)에 채널별 큐(`queues: [String: Task<Void, Never>]`)와 `enqueue(channelId:_:)`를 추가 — 기존 `eventChains`/`notifyChains`(`DabSessionBridge.swift:62`, `CodexSessionBridge.swift:121`)의 per-key Task 체이닝 패턴을 그대로 재사용(드레인된 항목 정리 로직 없음 — TS `finally` 정리와 다르지만, 기존 두 사례도 정리를 안 하고 있어 패리티 맞출 필요 없다고 판단). `dab/DabMain.swift`의 `handleWizardComponent`에서 모달 오프너(`dir:create`/`dir:manual`/`dir:panel`, TS도 큐 밖에서 먼저 처리) 이후 `let value = comp.values?.first`부터 함수 끝까지를 `WizardRegistry.shared.enqueue(channelId:)` 클로저로 감싸 TS `enqueueWizard`(`router.ts:378-390`)가 감싸는 범위와 맞춤 — 로직은 한 글자도 안 바꾸고 들여쓰기 + 클로저 래핑만 함.
+  - `ChannelWizardTests.swift`의 `WizardRegistryTests`에 `enqueueSerializesJobsOnSameChannel`(같은 채널 키 작업이 겹치지 않고 제출 순서대로 실행되는지, 수동 게이트로 확인 — sleep 레이스에 의존하지 않음)과 `enqueueDoesNotBlockAcrossDifferentChannels`(다른 채널 키는 서로 안 막는지) 2건 추가. 최종 확인: `swift build --package-path swift` 성공(`dab` 타겟 포함), `swift test --filter ChannelWizardTests` 42건 전부 통과, 전체 스위트 1052개 전부 통과.
+  - **확인**: `swiftc -frontend -parse`로 세 파일 구문(브레이스/클로저 래핑 정합성) 확인만 완료. `swift build`/`swift test`는 오케스트레이터 확인 필요.
 - **H14. [구현됨: `Session/ChannelWizard.swift`, `dab/DabMain.swift`]** 프리셋 삭제 시 TS는 `onDeletePreset`의 반환값(설정 파일 기준 최신 목록)으로 화면을 갱신하는데, Swift는 로컬에서 먼저 낙관적으로 지우고 저장은 `try?`로 fire-and-forget(`ChannelWizard.swift:508-513`) — 디스크 저장이 실패해도 화면엔 이미 사라진 것처럼 보임.
   - **구현**: `onDeletePreset` 타입을 `((String) -> Void)?`에서 `((String) async -> [Preset])?`로 변경. `ChannelWizard.handle`/`handlePreset`을 `async`로 전환해 delete 분기에서 `presets = await onDeletePreset(name)`(nil이면 기존처럼 로컬 필터 폴백)로 반환값을 화면 진실로 채택 — TS `channelWizard.ts:344`의 `?? 로컬 필터` 폴백과 동일 구조. `dab/DabMain.swift`의 `onDeletePreset` 클로저는 fire-and-forget `Task{}` 제거, `removeServerPreset` 시도 후 무조건 `loadServerConfig(...)?.presets`로 재조회해 반환(TS `slashCommands.ts:127-130`과 동일). 호출부 `wizard.handle(...)`(`DabMain.swift:1387` 근처, 이미 async 컨텍스트)에 `await` 추가.
   - `swift/Tests/DiscordAgentBridgeTests/ChannelWizardTests.swift`: `handle`이 async가 되면서 호출부 전부(28개 테스트 함수, 89곳) `await` 추가 + 함수 시그니처 `async` 추가. `makeWizardWithPresets`의 `onDelete` 파라미터 타입도 동일하게 변경. 이번 버그의 핵심 회귀 테스트인 `deleteModeRemovesPresetAndStaysOnStep`은 `onDelete` 클로저가 실제 필터된 목록을 반환하도록 갱신(부수효과 `deleted` 기록 + 반환값 화면 갱신 양쪽 검증 유지). `onDeletePreset`이 nil일 때 로컬 필터 폴백 경로는 기존 `deletingLastPresetLeavesButtonsWithoutDropdown` 테스트가 이미 커버 중이라 별도 테스트 미추가.
@@ -298,7 +301,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 [완료: 2장 H19 참고] | H19 | `ConfigResolver.swift` | 독립 |
 | 24 | WO-P24: `config.json` 엄격 검증 [완료: 2장 H18 참고] | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
 | 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 [완료: 2장 H14 참고] | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |
-| 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |
+| 26 | WO-P26: 채널별 동시 상호작용 직렬화 큐 [완료: 2장 H13 참고] | H13 | `Session/ChannelWizard.swift` | WO-P25 이후 |
 | 27 | WO-P27: 슬래시 커맨드 서버별 즉시 등록 + 신규 서버 재등록 | H16 | `dab/DabMain.swift` | 독립 |
 | 28 | WO-P28: Chromium 설치 인프로세스화 + 사전 안내 + 진행률 표시 | H5, H6, H7 | `ChromiumProvisioner.swift`, `dab/DabMain.swift` | 크로미움 설치 3건 묶음 |
 | 29 | WO-P29: 스트림 임베드 정보 손실 + 디바운스 간격 + 중간 사용량 이벤트 | H8, H9, H10 | `Render/StreamEmbed.swift`, `Render/StreamStatusHost.swift`, `dab/DabMain.swift` | 스트리밍 세부 3건 묶음 |
