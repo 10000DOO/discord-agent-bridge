@@ -14,8 +14,20 @@ public struct SlashCommandSpec: Sendable, Equatable {
         public var description: String
         public var required: Bool
         public var choices: [Choice]
-        public init(name: String, description: String, required: Bool, choices: [Choice]) {
-            self.name = name; self.description = description; self.required = required; self.choices = choices
+        /// When true, Discord asks the bot for suggestions (G-P1-03). Mutually exclusive with non-empty `choices`.
+        public var autocomplete: Bool
+        public init(
+            name: String,
+            description: String,
+            required: Bool,
+            choices: [Choice],
+            autocomplete: Bool = false
+        ) {
+            self.name = name
+            self.description = description
+            self.required = required
+            self.choices = choices
+            self.autocomplete = autocomplete
         }
     }
     public struct Subcommand: Sendable, Equatable {
@@ -63,8 +75,8 @@ public func agentCommandSpec() -> SlashCommandSpec {
             ),
             // W14: close is a real stop (backend + unbind), not unbind-only.
             .init(name: "close", description: "Stop and unbind this channel's session", options: []),
-            // W11-d: minimal re-bind from store (full resume wizard later).
-            .init(name: "resume", description: "Re-bind this channel's stored session", options: []),
+            // G-P1-05: re-bind + status intro + soft ensure (lazy turn still works if soft fails).
+            .init(name: "resume", description: "Re-bind stored session, post status, soft-reconnect", options: []),
             .init(name: "stats", description: "List active session bindings", options: []),
         ]
     )
@@ -104,23 +116,37 @@ public func modeCommandSpec() -> SlashCommandSpec {
 }
 
 /// `/model value:<id>` — update binding model (next turn / next ensure uses it).
+/// `value` is autocomplete-driven (provider catalog for the channel backend; G-P1-03).
 public func modelCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "model",
         description: "Switch the model for this session",
         options: [
-            .init(name: "value", description: "Model to switch to", required: true, choices: []),
+            .init(
+                name: "value",
+                description: "Model to switch to",
+                required: true,
+                choices: [],
+                autocomplete: true
+            ),
         ]
     )
 }
 
 /// `/effort value:<level>` — update binding effort.
+/// `value` is autocomplete-driven (runtime effort for channel backend/model; G-P1-03).
 public func effortCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "effort",
         description: "Switch the reasoning effort for this session",
         options: [
-            .init(name: "value", description: "Reasoning effort to switch to", required: true, choices: []),
+            .init(
+                name: "value",
+                description: "Reasoning effort to switch to",
+                required: true,
+                choices: [],
+                autocomplete: true
+            ),
         ]
     )
 }

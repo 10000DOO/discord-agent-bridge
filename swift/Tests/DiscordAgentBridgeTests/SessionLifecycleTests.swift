@@ -555,10 +555,14 @@ struct LiveSlashSpecTests {
         #expect(model.options.map(\.name) == ["value"])
         #expect(model.options[0].required == true)
         #expect(model.options[0].choices.isEmpty)
+        // G-P1-03: Discord autocomplete (not static choices).
+        #expect(model.options[0].autocomplete == true)
 
         let effort = effortCommandSpec()
         #expect(effort.name == "effort")
         #expect(effort.options.map(\.name) == ["value"])
+        #expect(effort.options[0].autocomplete == true)
+        #expect(effort.options[0].choices.isEmpty)
     }
 
     @Test func modeHasBackendAndPermSubcommands() {

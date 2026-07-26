@@ -52,6 +52,43 @@ func choices(_ values: [String]) -> [ModelChoice] {
     values.map { ModelChoice(value: $0, label: $0, supportedEffortLevels: nil) }
 }
 
+// MARK: - Discord autocomplete (G-P1-03)
+
+/// One Discord autocomplete suggestion (`name` is shown, `value` is submitted).
+/// Mirrors the TS `{ name, value }` shape from `getModelAutocomplete` / `getEffortAutocomplete`.
+public struct AutocompleteChoice: Sendable, Equatable {
+    public var name: String
+    public var value: String
+    public init(name: String, value: String) {
+        self.name = name
+        self.value = value
+    }
+}
+
+/// Discord's hard cap on application-command autocomplete results.
+public let discordAutocompleteChoiceLimit = 25
+
+/// Filter catalog choices by a partial query (case-insensitive match on `value` **or** `label`),
+/// then cap at `limit` (default Discord max 25). Empty/whitespace query → unfiltered list.
+/// Pure helper: no I/O, no DiscordBM — wired by dab on `applicationCommandAutocomplete`.
+public func filterAutocompleteChoices(
+    _ items: [ModelChoice],
+    query: String,
+    limit: Int = discordAutocompleteChoiceLimit
+) -> [AutocompleteChoice] {
+    let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let matches: [ModelChoice]
+    if q.isEmpty {
+        matches = items
+    } else {
+        matches = items.filter {
+            $0.value.lowercased().contains(q) || $0.label.lowercased().contains(q)
+        }
+    }
+    let capped = limit < 0 ? 0 : limit
+    return matches.prefix(capped).map { AutocompleteChoice(name: $0.label, value: $0.value) }
+}
+
 // MARK: - Factory
 
 /// The ONE place a backend id maps to its catalog implementation (R1). Callers pick a catalog

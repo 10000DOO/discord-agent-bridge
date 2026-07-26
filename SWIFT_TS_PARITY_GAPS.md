@@ -61,9 +61,9 @@
 |----|------|------|---------|------------|-----------|
 | **G-P1-01** | `done` | **IdleWatchdog** | `idleWatchdog.ts` 3분 무활동 공지 | 없음 | 턴 arm · 이벤트 note · result/error stop · 1회 공지 |
 | **G-P1-02** | `done` | **TranscriptFeed (progress 한 줄)** | `transcriptFeed.ts` progress 메시지 편집 | StreamStatusHost 임베드 위주 | caps.progress 경로에서 TS와 같이 상태 라인 또는 동등 가시성 (Codex progress) |
-| **G-P1-03** | `todo` | **/model · /effort autocomplete** | client autocomplete + catalog | free-text only | Discord autocomplete → provider catalog 목록 |
+| **G-P1-03** | `done` | **/model · /effort autocomplete** | client autocomplete + catalog | free-text only | Discord autocomplete → provider catalog 목록 |
 | **G-P1-04** | `done` | **/mode perm 프로필 해석** | `switchPerm` config.profiles 이름 → profile | raw string 위주 | 프로필 이름이면 profile, 아니면 permMode · 테스트 |
-| **G-P1-05** | `todo` | **`/agent resume` 깊이** | re-attach + intro | store→registry 최소 re-bind | TS에 가깝게: intro/status · 라이브 세션 재연결 시도 |
+| **G-P1-05** | `done` | **`/agent resume` 깊이** | re-attach + intro | store→registry 최소 re-bind | TS에 가깝게: intro/status · 라이브 세션 재연결 시도 |
 | **G-P1-06** | `done` | **favorites → browseRoots** | `app.ts` browseRoots: config.favorites | schema 보존만 · 위자드 unbounded | DirectoryBrowser/ChannelWizard에 favorites allowedRoots 주입 |
 | **G-P1-07** | `done` | **autoProvisionGuild** | Ready/GuildCreate 자동 채널 구조 | 수동 `/setup`만 | ready 또는 guild create 시 ensure (권한 있을 때) |
 | **G-P1-08** | `todo` | **i18n en** | `i18n.ts` ko/en + locale | 한국어 하드코딩 위주 | locale=en 시 주요 슬래시/에러 문자열 en |
@@ -97,12 +97,17 @@
 | 2026-07-26 | G-P1-06 | `feat(swift-port): G-P1-06 favorites browseRoots` | `browseRoots(fromFavorites:)` · `/agent start`·reconfigure에 ConfigStore.favorites → allowedRoots · empty=unbounded · 단위 테스트 |
 | 2026-07-26 | G-P1-01 | `feat(swift-port): G-P1-01 IdleWatchdog` | `IdleWatchdog` actor (injectable timer) · DabMain arm/stop · StreamStatusHost noteActivity · KO 공지 · 단위 테스트 |
 | 2026-07-26 | G-P1-07 | `feat(swift-port): G-P1-07 autoProvisionGuild` | Ready→bot id · GuildCreate→`autoProvisionGuild` (Manage Channels) · best-effort log |
+| 2026-07-26 | G-P1-05 | `feat(swift-port): G-P1-05 agent resume 깊이` | resumeBinding→PersistedSession · status intro(세션 재개됨) · softEnsure 3 bridges · resume wizard done intro |
 | 2026-07-26 | G-P1-02 | `feat(swift-port): G-P1-02 Codex progress 가시성` | `codexProgressEvents` (item/started·turn/started) · CodexSessionBridge→StreamStatusHost.noteProgress · 단위 테스트 |
+| 2026-07-26 | G-P1-04 | `feat(swift-port): G-P1-04 mode perm 프로필 해석` | perm 이름→profile, 아니면 raw permMode |
+| 2026-07-26 | G-P1-03 | `feat(swift-port): G-P1-03 model·effort autocomplete` | DiscordBM `applicationCommandAutocomplete` · `filterAutocompleteChoices` (cap 25) · catalog=binding backend else claude · 60s models cache · `/model`·`/effort` option.autocomplete |
 
 ---
 
 ## 6. 다음 착수
 
-1. **G-P1-03** /model · /effort autocomplete
+1. **G-P1-08** i18n en
+2. **G-P1-09** Codex usage 패널
+3. **G-P1-10** usage HUD extras
 
 완료 후 PLAN §0 / README 호환 매트릭스에 “패리티 갭 문서” 링크를 건다.

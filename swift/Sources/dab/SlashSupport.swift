@@ -43,13 +43,18 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
 }
 
 private func stringOption(_ opt: SlashCommandSpec.Option) -> ApplicationCommand.Option {
-    ApplicationCommand.Option(
+    // Discord: autocomplete and static choices are mutually exclusive; empty choices → omit.
+    let staticChoices: [ApplicationCommand.Option.Choice]? =
+        opt.autocomplete || opt.choices.isEmpty
+        ? nil
+        : opt.choices.map { .init(name: $0.name, value: .string($0.value)) }
+    return ApplicationCommand.Option(
         type: .string,
         name: opt.name,
         description: opt.description,
         required: opt.required,
-        // Empty → nil: a free-text option must omit `choices` (Discord rejects []).
-        choices: opt.choices.isEmpty ? nil : opt.choices.map { .init(name: $0.name, value: .string($0.value)) }
+        choices: staticChoices,
+        autocomplete: opt.autocomplete ? true : nil
     )
 }
 

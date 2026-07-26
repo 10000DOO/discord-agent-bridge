@@ -146,6 +146,12 @@ struct EventHandler: GatewayEventHandler {
     }
 
     func onInteractionCreate(_ payload: Interaction) async throws {
+        // (A-ac) Application-command autocomplete (G-P1-03). Must answer with type 8 within ~3s;
+        // never auth-deny text / never treat as a slash invoke (DiscordBM shares the data shape).
+        if payload.type == .applicationCommandAutocomplete {
+            await handleAutocomplete(payload)
+            return
+        }
         // (A0) Modal submits (dir:create / dir:manual) — owner-gated, re-renders folder step.
         if let modal = try? payload.data?.requireModalSubmit() {
             try await handleWizardModal(payload, modal: modal)
@@ -790,6 +796,50 @@ struct EventHandler: GatewayEventHandler {
             id: payload.id,
             token: payload.token,
             payload: .channelMessageWithSource(.init(content: text, embeds: embeds, flags: [.ephemeral]))
+        )
+    }
+
+    /// G-P1-03: `/model` · `/effort` autocomplete from providerCatalog (channel binding backend,
+    /// else claude). Best-effort respond — Discord's ~3s window has no defer.
+    private func handleAutocomplete(_ payload: Interaction) async {
+        let empty: Payloads.InteractionResponse = .autocompleteResult(.init(choices: []))
+        guard let cmd = try? payload.data?.requireApplicationCommand() else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token, payload: empty
+            )
+            return
+        }
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let query = focusedAutocompleteQuery(cmd)
+        let binding = await SessionRegistry.shared.binding(channelId: channelId)
+        // Channel binding backend wins; unbound → claude (TS-ish default vocabulary).
+        let backend = binding?.backend ?? .claude
+        let catalog = providerCatalog(for: backend)
+
+        let suggestions: [AutocompleteChoice]
+        switch cmd.name {
+        case "model":
+            let models = await autocompleteModels(backend: backend, catalog: catalog)
+            suggestions = filterAutocompleteChoices(models, query: query)
+        case "effort":
+            let models = await autocompleteModels(backend: backend, catalog: catalog)
+            let modelId = binding?.model ?? models.first?.value
+            let levels = modelId.flatMap { id in
+                models.first(where: { $0.value == id })?.supportedEffortLevels
+            }
+            let efforts = catalog.runtimeEffortChoices(modelLevels: levels)
+            suggestions = filterAutocompleteChoices(efforts, query: query)
+        default:
+            suggestions = []
+        }
+
+        let choices = suggestions.map {
+            ApplicationCommand.Option.Choice(name: $0.name, value: .string($0.value))
+        }
+        _ = try? await client.createInteractionResponse(
+            id: payload.id,
+            token: payload.token,
+            payload: .autocompleteResult(.init(choices: choices))
         )
     }
 
@@ -1964,6 +2014,43 @@ func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
     )
     try await SessionStore.shared.upsert(channelId: params.channelId, record)
     return ResumeResult(channelId: params.channelId)
+}
+
+// MARK: - Autocomplete helpers (G-P1-03)
+
+/// Focused option's partial string (empty when missing / not string). Discord autocomplete payload.
+func focusedAutocompleteQuery(_ cmd: Interaction.ApplicationCommand) -> String {
+    guard let focused = cmd.options?.first(where: { $0.focused == true }) else { return "" }
+    return (try? focused.requireString()) ?? ""
+}
+
+/// 60s models cache so a typing burst does not re-probe the Claude sidecar (TS modelAutocompleteCacheMs).
+/// Codex/Grok are cheap local reads but share the same path for simplicity.
+private enum AutocompleteModelsCache {
+    private struct Entry {
+        var backend: Backend
+        var choices: [ModelChoice]
+        var fetchedAt: Date
+    }
+    private static let box = LockedBox<Entry?>(nil)
+    static let ttl: TimeInterval = 60
+
+    static func models(backend: Backend, catalog: any ProviderCatalog) async -> [ModelChoice] {
+        let now = Date()
+        if let hit = box.withLock({ $0 }),
+           hit.backend == backend,
+           now.timeIntervalSince(hit.fetchedAt) < ttl
+        {
+            return hit.choices
+        }
+        let choices = await catalog.models(configured: nil)
+        box.withLock { $0 = Entry(backend: backend, choices: choices, fetchedAt: now) }
+        return choices
+    }
+}
+
+func autocompleteModels(backend: Backend, catalog: any ProviderCatalog) async -> [ModelChoice] {
+    await AutocompleteModelsCache.models(backend: backend, catalog: catalog)
 }
 
 // MARK: - Capabilities (render gating)
