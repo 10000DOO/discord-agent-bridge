@@ -1,16 +1,16 @@
 import Foundation
 
-// `/config` settings panel (W16-b minimal).
+// `/config` settings panel (W16-b residual polish).
 // Pure SM + ConfigStore persistence — no DiscordBM. dab maps ConfigPanelView → components.
 //
-// Mirrors TS `src/discord/configPanel.ts` at reduced surface:
+// Mirrors TS `src/discord/configPanel.ts` (reduced: no image/chromium sub-panel — S3 defer):
 //   - Role tiers (3 role-selects) batch into pending → Save writes servers/<guildId>.json auth
-//   - defaults.mode / defaults.permissionMode AUTO-SAVE to server on each select change
+//   - defaults.mode / model / effort / permissionMode AUTO-SAVE to server on each select change
 //   - auth.dmPolicy AUTO-SAVE to GLOBAL config.json (server has no dmPolicy field)
+//   - Notifications sub-panel: enable toggle + status channel select → server.notifications
 //   - Embed shows effective global+server auth / defaults / limits
 //
-// ponytail: model/effort/locale selects · notifications sub-panel · image/chromium sub-panel
-// → reopen scope when needed (TS full A4D parity).
+// ponytail residual: locale select (row budget used by dmPolicy) · image/chromium (S3).
 
 // MARK: - Ids
 
@@ -21,9 +21,14 @@ public enum ConfigPanelIds {
     public static let roleExecute = "config.role.execute"
     public static let roleReadOnly = "config.role.readOnly"
     public static let backend = "config.default.backend"
+    public static let model = "config.default.model"
+    public static let effort = "config.default.effort"
     public static let permMode = "config.default.permMode"
     public static let dmPolicy = "config.dmPolicy"
     public static let save = "config.save"
+    public static let notifOpen = "config.notif.open"
+    public static let notifToggle = "config.notif.toggle"
+    public static let notifChannel = "config.notif.channel"
 }
 
 /// True when a component id belongs to a `/config` panel (router routing predicate).
@@ -42,10 +47,12 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
     public var dmPolicy: String
     /// Display-only (resolved global→server limits).
     public var limits: LimitsSection
-    /// Display-only locale (server override else global).
+    /// Display-only locale (server override else global). Not editable in this residual.
     public var locale: String
-    /// Display-only model (resolved, no edit in minimal panel).
+    /// Default model (resolved; panel edits server claudeModel / codexModel by backend).
     public var model: String
+    /// Default reasoning effort (resolved; panel edits claudeEffort / codexEffort by backend).
+    public var effort: String
 
     public init(
         adminRoleIds: [String],
@@ -56,7 +63,8 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
         dmPolicy: String,
         limits: LimitsSection = LimitsSection(),
         locale: String = "ko",
-        model: String = ""
+        model: String = "",
+        effort: String = ""
     ) {
         self.adminRoleIds = adminRoleIds
         self.executeRoleIds = executeRoleIds
@@ -67,6 +75,7 @@ public struct ConfigPanelDefaults: Sendable, Equatable {
         self.limits = limits
         self.locale = locale
         self.model = model
+        self.effort = effort
     }
 }
 
@@ -77,6 +86,8 @@ public struct ConfigPanelOptions: Sendable {
     public var defaults: ConfigPanelDefaults
     public var backends: [String]
     public var isKnownBackend: @Sendable (String) -> Bool
+    public var models: [ModelChoice]
+    public var efforts: [ModelChoice]
     public var permModes: [ModelChoice]
 
     public init(
@@ -86,6 +97,8 @@ public struct ConfigPanelOptions: Sendable {
         defaults: ConfigPanelDefaults,
         backends: [String],
         isKnownBackend: @escaping @Sendable (String) -> Bool,
+        models: [ModelChoice] = [],
+        efforts: [ModelChoice] = [],
         permModes: [ModelChoice]
     ) {
         self.guildId = guildId
@@ -94,6 +107,8 @@ public struct ConfigPanelOptions: Sendable {
         self.defaults = defaults
         self.backends = backends
         self.isKnownBackend = isKnownBackend
+        self.models = models
+        self.efforts = efforts
         self.permModes = permModes
     }
 }
@@ -110,10 +125,27 @@ public struct ConfigPanelInput: Sendable, Equatable {
     }
 }
 
+/// Ephemeral sub-panel payload (notifications).
+public struct ConfigPanelSubView: Sendable, Equatable {
+    public var title: String
+    public var description: String
+    public var rows: [ConfigPanelRow]
+
+    public init(title: String, description: String, rows: [ConfigPanelRow]) {
+        self.title = title
+        self.description = description
+        self.rows = rows
+    }
+}
+
 public enum ConfigPanelResult: Sendable, Equatable {
     case pending
     case saved(summary: String)
     case autosaved(notice: String)
+    /// 🔔 opened notifications sub-panel (fresh ephemeral message).
+    case notifPanel(ConfigPanelSubView)
+    /// Toggle/channel change persisted; re-render sub-panel in place.
+    case notifUpdated(ConfigPanelSubView)
     case ignored
 }
 
@@ -124,6 +156,13 @@ public enum ConfigPanelComponent: Sendable, Equatable {
         customId: String,
         placeholder: String,
         defaultRoleIds: [String],
+        minValues: Int,
+        maxValues: Int
+    )
+    case channelSelect(
+        customId: String,
+        placeholder: String,
+        defaultChannelIds: [String],
         minValues: Int,
         maxValues: Int
     )
@@ -139,9 +178,9 @@ public struct ConfigPanelRow: Sendable, Equatable {
 public struct ConfigPanelView: Sendable, Equatable {
     public var title: String
     public var description: String
-    /// Primary message: role tiers + Save (≤4 rows).
+    /// Primary message: role tiers + Save (+ notif) (≤4 rows).
     public var roleRows: [ConfigPanelRow]
-    /// Follow-up: defaults + dmPolicy selects (≤5 rows).
+    /// Follow-up: backend / model / effort / permMode / dmPolicy (≤5 rows).
     public var defaultRows: [ConfigPanelRow]
 
     public init(
@@ -180,6 +219,8 @@ public final class ConfigPanel: @unchecked Sendable {
     private var defaults: ConfigPanelDefaults
     private let backends: [String]
     private let isKnownBackend: @Sendable (String) -> Bool
+    private let models: [ModelChoice]
+    private let efforts: [ModelChoice]
     private let permModes: [ModelChoice]
     private var pending = PendingRoles()
 
@@ -190,6 +231,8 @@ public final class ConfigPanel: @unchecked Sendable {
         self.defaults = options.defaults
         self.backends = options.backends
         self.isKnownBackend = options.isKnownBackend
+        self.models = options.models
+        self.efforts = options.efforts
         self.permModes = options.permModes
     }
 
@@ -206,12 +249,26 @@ public final class ConfigPanel: @unchecked Sendable {
         case ConfigPanelIds.backend:
             guard let value = input.value, !value.isEmpty else { return .pending }
             return await autosaveBackend(value)
+        case ConfigPanelIds.model:
+            guard let value = input.value, !value.isEmpty else { return .pending }
+            return await autosaveModel(value)
+        case ConfigPanelIds.effort:
+            guard let value = input.value, !value.isEmpty else { return .pending }
+            return await autosaveEffort(value)
         case ConfigPanelIds.permMode:
             guard let value = input.value, !value.isEmpty else { return .pending }
             return await autosavePermMode(value)
         case ConfigPanelIds.dmPolicy:
             guard let value = input.value, !value.isEmpty else { return .pending }
             return await autosaveDmPolicy(value)
+        case ConfigPanelIds.notifOpen:
+            return await .notifPanel(renderNotifications())
+        case ConfigPanelIds.notifToggle:
+            return await toggleNotifications()
+        case ConfigPanelIds.notifChannel:
+            // Empty pick clears the override (falls back to /setup status channel).
+            let channelId = input.values?.first.flatMap { $0.isEmpty ? nil : $0 }
+            return await setNotificationChannel(channelId)
         case ConfigPanelIds.save:
             return await saveRoles()
         default:
@@ -243,6 +300,11 @@ public final class ConfigPanel: @unchecked Sendable {
             label: "Save roles",
             style: .success
         )
+        let notif = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.notifOpen,
+            label: "🔔 Notifications",
+            style: .secondary
+        )
 
         let backendSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.backend,
@@ -250,6 +312,18 @@ public final class ConfigPanel: @unchecked Sendable {
             options: backends.map {
                 WizardSelectOption(label: $0, value: $0, isDefault: $0 == d.backend)
             }
+        )
+        let modelOptions = selectOptions(from: models, selected: d.model, fallbackLabel: "model")
+        let modelSelect = ConfigPanelComponent.select(
+            customId: ConfigPanelIds.model,
+            placeholder: "Default model",
+            options: modelOptions
+        )
+        let effortOptions = selectOptions(from: efforts, selected: d.effort, fallbackLabel: "effort")
+        let effortSelect = ConfigPanelComponent.select(
+            customId: ConfigPanelIds.effort,
+            placeholder: "Default effort",
+            options: effortOptions
         )
         let permSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.permMode,
@@ -273,10 +347,12 @@ public final class ConfigPanel: @unchecked Sendable {
                 ConfigPanelRow(components: [admin]),
                 ConfigPanelRow(components: [exec]),
                 ConfigPanelRow(components: [read]),
-                ConfigPanelRow(components: [save]),
+                ConfigPanelRow(components: [save, notif]),
             ],
             defaultRows: [
                 ConfigPanelRow(components: [backendSelect]),
+                ConfigPanelRow(components: [modelSelect]),
+                ConfigPanelRow(components: [effortSelect]),
                 ConfigPanelRow(components: [permSelect]),
                 ConfigPanelRow(components: [dmSelect]),
             ]
@@ -339,7 +415,7 @@ public final class ConfigPanel: @unchecked Sendable {
         admin: \(formatRoleList(adminRoleIds))
         execute: \(formatRoleList(executeRoleIds))
         read-only: \(formatRoleList(readOnlyRoleIds))
-        backend=\(d.backend) perm=\(d.permMode) dmPolicy=\(d.dmPolicy)
+        backend=\(d.backend) model=\(d.model) effort=\(d.effort) perm=\(d.permMode) dmPolicy=\(d.dmPolicy)
         """
         return .saved(summary: summary)
     }
@@ -354,6 +430,42 @@ public final class ConfigPanel: @unchecked Sendable {
             }
         }
         return .autosaved(notice: "기본 backend → `\(backend)`")
+    }
+
+    private func autosaveModel(_ model: String) async -> ConfigPanelResult {
+        // TS writes claudeModel only; for codex we also write codexModel so the
+        // resolver's per-backend field is correct without a second UI.
+        let backend = await currentBackendId()
+        do {
+            try await patchServerDefaults { partial in
+                if backend == "codex" {
+                    partial.codexModel = model
+                } else {
+                    partial.claudeModel = model
+                }
+            }
+            defaults.model = model
+        } catch {
+            return .autosaved(notice: "model 저장 실패: \(error)")
+        }
+        return .autosaved(notice: "기본 model → `\(model)`")
+    }
+
+    private func autosaveEffort(_ effort: String) async -> ConfigPanelResult {
+        let backend = await currentBackendId()
+        do {
+            try await patchServerDefaults { partial in
+                if backend == "codex" {
+                    partial.codexEffort = effort
+                } else {
+                    partial.claudeEffort = effort
+                }
+            }
+            defaults.effort = effort
+        } catch {
+            return .autosaved(notice: "effort 저장 실패: \(error)")
+        }
+        return .autosaved(notice: "기본 effort → `\(effort)`")
     }
 
     private func autosavePermMode(_ permMode: String) async -> ConfigPanelResult {
@@ -379,6 +491,85 @@ public final class ConfigPanel: @unchecked Sendable {
             return .autosaved(notice: "dmPolicy 저장 실패: \(error)")
         }
         return .autosaved(notice: "DM policy (global) → `\(policy)`")
+    }
+
+    // MARK: Notifications
+
+    private func toggleNotifications() async -> ConfigPanelResult {
+        let current = await currentNotifications()
+        do {
+            try await patchNotifications { $0.enabled = !current.enabled }
+        } catch {
+            return .autosaved(notice: "알림 저장 실패: \(error)")
+        }
+        return await .notifUpdated(renderNotifications())
+    }
+
+    private func setNotificationChannel(_ channelId: String?) async -> ConfigPanelResult {
+        do {
+            try await patchNotifications { $0.channelId = channelId }
+        } catch {
+            return .autosaved(notice: "상태 채널 저장 실패: \(error)")
+        }
+        return await .notifUpdated(renderNotifications())
+    }
+
+    private func patchNotifications(_ mut: (inout NotificationsSection) -> Void) async throws {
+        let existing = await store.loadServerConfig(guildId: guildId)
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        var section = next.notifications ?? NotificationsSection()
+        mut(&section)
+        next.notifications = section
+        try await store.saveServerConfig(next)
+    }
+
+    private func currentNotifications() async -> ResolvedNotifications {
+        let server = await store.loadServerConfig(guildId: guildId)
+        return resolveNotifications(server)
+    }
+
+    private func renderNotifications() async -> ConfigPanelSubView {
+        let n = await currentNotifications()
+        let state = n.enabled ? "on" : "off"
+        let channelLine: String = {
+            if let id = n.channelId, !id.isEmpty { return "<#\(id)>" }
+            return "— (setup status channel when present)"
+        }()
+        let toggle = ConfigPanelComponent.button(
+            customId: ConfigPanelIds.notifToggle,
+            label: n.enabled ? "Disable notifications" : "Enable notifications",
+            style: n.enabled ? .danger : .success
+        )
+        let channel = ConfigPanelComponent.channelSelect(
+            customId: ConfigPanelIds.notifChannel,
+            placeholder: "Status channel (empty → setup default)",
+            defaultChannelIds: n.channelId.map { [$0] } ?? [],
+            minValues: 0,
+            maxValues: 1
+        )
+        return ConfigPanelSubView(
+            title: "Event notifications",
+            description: """
+            Forward session result/error summaries to a status channel.
+            State: **\(state)** · channel: \(channelLine)
+            Clear the channel pick to fall back to `/setup` status channel.
+            """,
+            rows: [
+                ConfigPanelRow(components: [channel]),
+                ConfigPanelRow(components: [toggle]),
+            ]
+        )
+    }
+
+    private func currentBackendId() async -> String {
+        let server = await store.loadServerConfig(guildId: guildId)
+        if let mode = server?.defaults?.mode {
+            let n = normalizeModeId(mode)
+            return n == "grok-build" ? "grok" : n
+        }
+        return defaults.backend
     }
 
     private func patchServerDefaults(_ mut: (inout ServerDefaultsPartial) -> Void) async throws {
@@ -415,10 +606,10 @@ public final class ConfigPanel: @unchecked Sendable {
         roles execute: \(formatRoleList(d.executeRoleIds))
         roles read-only: \(formatRoleList(d.readOnlyRoleIds))
         dmPolicy: `\(d.dmPolicy)` (global)
-        defaults: mode=`\(d.backend)` model=`\(d.model)` perm=`\(d.permMode)` locale=`\(d.locale)`
+        defaults: mode=`\(d.backend)` model=`\(d.model)` effort=`\(d.effort)` perm=`\(d.permMode)` locale=`\(d.locale)`
         limits: maxSessions/user=\(lim.maxSessionsPerUser) permTimeout=\(lim.permissionTimeoutSec)s codexTimeoutMs=\(lim.codexTimeoutMs)
 
-        Role picks batch until **Save roles**. Backend / perm / DM policy auto-save on change.
+        Role picks batch until **Save roles**. Backend / model / effort / perm / DM policy auto-save on change. 🔔 opens notifications.
         """
     }
 }
@@ -430,6 +621,26 @@ private func formatRoleList(_ roleIds: [String]) -> String {
     return roleIds.map { "<@&\($0)>" }.joined(separator: ", ")
 }
 
+/// Build string-select options (≤25). Ensures the current value is present and marked default.
+private func selectOptions(
+    from choices: [ModelChoice],
+    selected: String,
+    fallbackLabel: String
+) -> [WizardSelectOption] {
+    var list = Array(choices.prefix(25))
+    if !selected.isEmpty, !list.contains(where: { $0.value == selected }) {
+        list.insert(ModelChoice(value: selected, label: selected), at: 0)
+        if list.count > 25 { list = Array(list.prefix(25)) }
+    }
+    if list.isEmpty {
+        let v = selected.isEmpty ? fallbackLabel : selected
+        list = [ModelChoice(value: v, label: v)]
+    }
+    return list.map {
+        WizardSelectOption(label: $0.label, value: $0.value, isDefault: $0.value == selected)
+    }
+}
+
 /// Build panel defaults from global + optional server (no binding layer for /config).
 public func configPanelDefaults(
     global: AppConfig,
@@ -439,17 +650,29 @@ public func configPanelDefaults(
     let resolved = ConfigResolver.merge(global: global, server: server, binding: nil)
     // permMode for the defaults select: server override else global — NOT channel binding.
     let perm = server?.defaults?.permissionMode ?? global.defaults.permissionMode
-    let backend = server?.defaults?.mode.map(normalizeModeId) ?? normalizeModeId(global.defaults.mode)
+    let backendRaw = server?.defaults?.mode.map(normalizeModeId) ?? normalizeModeId(global.defaults.mode)
+    // File id → runtime Backend raw for the select.
+    let backend = backendRaw == "grok-build" ? "grok" : backendRaw
+    let model = backend == "codex"
+        ? (resolved.codexModel.isEmpty ? resolved.claudeModel : resolved.codexModel)
+        : resolved.claudeModel
+    let effort: String = {
+        if backend == "codex" {
+            return resolved.codexEffort ?? ""
+        }
+        return resolved.claudeEffort ?? ""
+    }()
     return ConfigPanelDefaults(
         adminRoleIds: effective.adminRoleIds,
         executeRoleIds: effective.executeRoleIds,
         readOnlyRoleIds: effective.readOnlyRoleIds,
-        backend: backend == "grok-build" ? "grok" : backend, // file id → runtime Backend raw when needed
+        backend: backend,
         permMode: perm,
         dmPolicy: global.auth.dmPolicy,
         limits: resolved.limits,
         locale: server?.locale ?? global.locale,
-        model: resolved.claudeModel
+        model: model,
+        effort: effort
     )
 }
 

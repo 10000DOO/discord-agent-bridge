@@ -44,7 +44,7 @@
 |----|------|---------|
 | **W11-b2** | `done` | folder 클러스터 ✅ · dir:resume ✅ · reconfigure ✅ · A4D ✅ · **preset pick/save ✅** (`addServerPreset`/`removeServerPreset` · folder→preset when non-empty · pick launch · direct · delete · done→💾 저장 모달) |
 | **W11-g** | `done` | slice1–4 ✅ + **라이브 스트림 임베드** ✅ (`formatStreamEmbed`·`StreamStatusHost` rate-limit 1s + tool force · DabMain yellow "응답 중…" embed+interrupt · Claude mid-turn text/tool/progress). **setModel displayName** ✅ |
-| **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · pin status · **바이너리 self-replace** · W16-g Codex/Grok mid-turn tool ✅ |
+| **W16-b/g/h** | ship + residual | `/config` model/effort·notif ✅ · locale·render(S3) 잔여 · pin status · **바이너리 self-replace** · W16-g Codex/Grok mid-turn tool ✅ |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
 | **W11 / W16** | overall | host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 · W11-g HUD 잔여 |
 
@@ -311,7 +311,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W15-b** | K | `done` | SessionStore ordered migrations(STATE_VERSION=2) + `archived`/`markArchived` + load `normalizeModeId` aliases + optional profile/projectAuth/createdAt; stop hard-remove 유지; restore/stopAll skip archived | version 마이그레이션 |
 | **W16** | L | `todo` | 기능 완전누락(전수조사 A/B/D) | UI/명령 파리티 |
 | **W16-a** | L | `done` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`→`DiscordText.chunkMessage`, 코드펜스 인지) + `DabMain` 성공/에러 순차 `createMessage`. `clip` 유지(단일 메시지 호출처용) | 2000자 초과 무손실 |
-| **W16-b** | L | `done` | `/config` 설정 패널 **minimal ship**: admin 슬래시·역할 티어 RoleSelect 배치+Save(server auth)·defaults mode/permMode autosave(server)·dmPolicy autosave(global)·effective embed. **ponytail 잔여**: model/effort/locale selects · 알림/이미지(chromium) 서브패널 | 패널 동작 |
+| **W16-b** | L | `done` | `/config` 설정 패널: admin 슬래시·역할 티어 RoleSelect+Save · defaults mode/**model**/**effort**/permMode autosave(server)·dmPolicy autosave(global)·**알림 서브패널**(enable+status channelSelect→`server.notifications`)·effective embed. **잔여**: locale select(행 예산) · **이미지/chromium 서브패널 = S3 defer** | 패널 동작 |
 | **W16-c** | L | `done` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
 | **W16-d** | L | `done` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
@@ -386,6 +386,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W16-f | **custom 백엔드** TS 파리티: `Backend.custom` + `routeDecision` `!custom` + `ShellEnv`(`shellEnv.ts` 1:1 regex allow-list) + `DabSessionBridge` prepareSession env-overlay(`ANTHROPIC_MODEL` 우선·dangerous flag 경고) + SessionStore persist `.custom` + wizard/slash `Backend.allCases`·`customBackendLabel`. catalog=Claude. swift test **480** PASS. |
 | 2026-07-26 | W16-d | `/doc path:` 문서 공유. lib `DocumentShare`(5종 ShareErrorCode·load/validate·bodyMode·sink) + `DocumentShareHost` + slash `doc` + dab `postDocumentShare`(createThread+attach+chunk body) + `ClaudeSidecarClient` `host.file.share`/`host.file.attach` 역RPC + DabSessionBridge onFileShare 배선. 워크스페이스 밖 경로 허용(TS 1:1; `escape` 잔존·미생산). 단위테스트 load/error/sink/host/spec + reverse RPC. |
 | 2026-07-26 | W16-b | `/config` **minimal** 설정 패널. lib pure `ConfigPanel` SM(역할 pending→Save server auth · backend/permMode server autosave · dmPolicy global autosave · effective embed) + `ConfigPanelRegistry` + RoleSelect/StringSelect DiscordBM 매핑 + admin slash. **스킵(ponytail)**: model/effort/locale · notif/render 서브패널. 단위테스트 +12. |
+| 2026-07-26 | W16-b residual | model/effort string-select autosave(server claudeModel|codexModel · claudeEffort|codexEffort) · 🔔 notif 서브패널(enable toggle + ChannelSelect→`server.notifications`) · DiscordBM channelSelect 매핑. **스킵**: locale(행 예산=dmPolicy) · **이미지/chromium=S3 defer**. |
 | 2026-07-26 | **W12** | **문서 전용.** 루트 `README.md`/`README.ko.md`를 **Swift-first** 제품 경로로 개편: `swift/scripts/install.sh` · `dab` · 하이브리드 Claude 사이드카 · `~/.dab`(배포) vs `~/.discord-agent-bridge`(config/state) · npm TS→Swift 마이그레이션(env·state 분리·`DAB_CLAUDE_SIDECAR` 의미) · **호환 매트릭스**(100% 미주장·잔여 명시). §0 스냅샷·W12=`done`·다음 잔여 큐 갱신. 코드 변경 없음. |
 | 2026-07-26 | interrupt UI | pure `InterruptButton`(`buildInterruptId`/`parseInterruptId`/`buildInterruptButton`) + 단위테스트. `DabMain` 턴 중 "응답 중…"+⏹️ 중단 컨트롤 메시지(종료 시 disabled) · components `interrupt:<g>:<c>` → drive auth → `SessionLifecycle.interruptChannel`(unbind 없음) · ephemeral followUp. 풀 스트림 임베드는 W11-g 잔여. |
 | 2026-07-26 | W11-b2 reconfigure | `/mode backend` **다른 백엔드** → reconfigure 팝업(TS R1/R4). `ChannelWizard` `entry`/`kind`/`isReconfigure` · firstStep=model · back 첫 단계=cancel · 제목/1–3/3·"✅ 전환". 동일 백엔드=기존 `rebindBackend`. confirm=`SessionLifecycle.reconfigureBinding`(stop 3브리지+same channel model/effort/perm) + ephemeral switched + public freshContext. 단위테스트 SM reconfigure + lifecycle. 잔여: A4D·preset. |

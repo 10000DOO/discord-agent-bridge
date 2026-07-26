@@ -139,7 +139,7 @@ Codex / Grok                 ──stdio (native clients)──►  their CLIs
 Typical flow: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel.
 
 1. **`/setup`** (admin) — control channel, sessions category, status channel (reuses existing).
-2. **`/config`** (admin) — role tiers + defaults (Swift panel is **minimal**: roles, mode/perm defaults, dmPolicy; model/effort/locale and notif/render subpanels still catching up).
+2. **`/config`** (admin) — role tiers + defaults (mode/model/effort/perm, dmPolicy) + notifications sub-panel (enable + status channel). Residual: locale select · image/chromium render sub-panel (S3 defer).
 3. **`/agent start`** — wizard: **folder → backend → model → effort → permission**. Folder browser supports navigate / create / native pick. On confirm, the channel is bound (dedicated A4D session-channel creation is still residual on the Swift path).
 4. In a bound channel, **send normal messages**. Prefix shortcuts still work: `!claude` / `!codex` / `!grok` / `!custom`.
 
@@ -209,7 +209,7 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 | Live slash model/effort/mode/clear/stop | ✅ binding + Claude live `setModel`/`setEffort` RPC + displayName re-resolve | ✅ |
 | Usage / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD + live stream status embed | ✅ richer panels |
 | Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path; **residual:** pin embed | ✅ |
-| `/config` panel | ✅ **minimal**; residual model/effort/locale · notif/render | ✅ fuller UI |
+| `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif; residual locale · render(S3) | ✅ fuller UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ registry check + Yes/No UI; **no binary self-replace yet** | ✅ npm reinstall path |
 | Chromium table/mermaid render | ❌ deferred | ✅ optional |

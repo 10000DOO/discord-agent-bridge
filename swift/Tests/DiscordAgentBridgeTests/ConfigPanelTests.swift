@@ -16,7 +16,12 @@ private func seedGlobal(_ store: ConfigStore, dmPolicy: String = "deny") async t
             readOnlyRoleIds: ["role-read-g"],
             dmPolicy: dmPolicy
         ),
-        defaults: DefaultsSection(mode: "claude", permissionMode: "default"),
+        defaults: DefaultsSection(
+            mode: "claude",
+            claudeModel: "opus",
+            permissionMode: "default",
+            claudeEffort: "high"
+        ),
         limits: LimitsSection(maxSessionsPerUser: 2, permissionTimeoutSec: 30, codexTimeoutMs: 1_800_000),
         locale: "ko"
     )
@@ -25,7 +30,9 @@ private func seedGlobal(_ store: ConfigStore, dmPolicy: String = "deny") async t
 
 private func makePanel(
     store: ConfigStore,
-    defaults: ConfigPanelDefaults? = nil
+    defaults: ConfigPanelDefaults? = nil,
+    models: [ModelChoice]? = nil,
+    efforts: [ModelChoice]? = nil
 ) async throws -> ConfigPanel {
     let global = try await store.load()
     let server = await store.loadServerConfig(guildId: "g1")
@@ -37,6 +44,15 @@ private func makePanel(
         defaults: d,
         backends: Backend.allCases.map(\.rawValue),
         isKnownBackend: { Backend(rawValue: $0) != nil },
+        models: models ?? [
+            .init(value: "opus", label: "opus"),
+            .init(value: "sonnet", label: "sonnet"),
+        ],
+        efforts: efforts ?? [
+            .init(value: "low", label: "low"),
+            .init(value: "medium", label: "medium"),
+            .init(value: "high", label: "high"),
+        ],
         permModes: [
             .init(value: "default", label: "default"),
             .init(value: "acceptEdits", label: "acceptEdits"),
@@ -45,19 +61,39 @@ private func makePanel(
     ))
 }
 
+private func selectById(_ rows: [ConfigPanelRow], _ id: String) -> [WizardSelectOption]? {
+    for row in rows {
+        for c in row.components {
+            if case .select(let customId, _, let options) = c, customId == id {
+                return options
+            }
+        }
+    }
+    return nil
+}
+
+private func defaultSelected(_ options: [WizardSelectOption]?) -> String? {
+    options?.first(where: \.isDefault)?.value
+}
+
 @Suite("ConfigPanel")
 struct ConfigPanelTests {
     @Test func isConfigPanelIdRecognizesPrefix() {
         #expect(isConfigPanelId("config.role.admin"))
         #expect(isConfigPanelId("config.save"))
         #expect(isConfigPanelId("config.default.backend"))
+        #expect(isConfigPanelId("config.default.model"))
+        #expect(isConfigPanelId("config.default.effort"))
         #expect(isConfigPanelId("config.dmPolicy"))
+        #expect(isConfigPanelId("config.notif.open"))
+        #expect(isConfigPanelId("config.notif.toggle"))
+        #expect(isConfigPanelId("config.notif.channel"))
         #expect(!isConfigPanelId("backend"))
         #expect(!isConfigPanelId("perm:req-1:allow"))
         #expect(!isConfigPanelId("wizard.back"))
     }
 
-    @Test func renderHasThreeRoleSelectsSaveAndDefaultSelects() async throws {
+    @Test func renderHasRolesSaveNotifAndDefaultSelects() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
         try await seedGlobal(store)
@@ -66,9 +102,9 @@ struct ConfigPanelTests {
 
         #expect(view.title == "Bot config")
         #expect(view.description.contains("dmPolicy"))
-        #expect(view.description.contains("limits:"))
+        #expect(view.description.contains("effort="))
         #expect(view.roleRows.count == 4)
-        #expect(view.defaultRows.count == 3)
+        #expect(view.defaultRows.count == 5)
 
         let roleComps = view.roleRows.flatMap(\.components)
         let roleIds = roleComps.compactMap { c -> String? in
@@ -84,6 +120,10 @@ struct ConfigPanelTests {
             if case .button(let id, _, _) = $0 { return id == ConfigPanelIds.save }
             return false
         })
+        #expect(roleComps.contains {
+            if case .button(let id, _, _) = $0 { return id == ConfigPanelIds.notifOpen }
+            return false
+        })
 
         let defaultIds = view.defaultRows.flatMap(\.components).compactMap { c -> String? in
             if case .select(let id, _, _) = c { return id }
@@ -91,9 +131,13 @@ struct ConfigPanelTests {
         }
         #expect(defaultIds == [
             ConfigPanelIds.backend,
+            ConfigPanelIds.model,
+            ConfigPanelIds.effort,
             ConfigPanelIds.permMode,
             ConfigPanelIds.dmPolicy,
         ])
+        #expect(defaultSelected(selectById(view.defaultRows, ConfigPanelIds.model)) == "opus")
+        #expect(defaultSelected(selectById(view.defaultRows, ConfigPanelIds.effort)) == "high")
     }
 
     @Test func roleSelectPendingThenSaveWritesServerAuth() async throws {
@@ -150,6 +194,65 @@ struct ConfigPanelTests {
         #expect(server?.defaults?.mode == "codex")
     }
 
+    @Test func autosaveModelWritesClaudeModel() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.model, value: "sonnet"))
+        guard case .autosaved(let notice) = r else {
+            Issue.record("expected autosaved, got \(r)")
+            return
+        }
+        #expect(notice.contains("sonnet"))
+        let server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.defaults?.claudeModel == "sonnet")
+        #expect(server?.defaults?.codexModel == nil)
+    }
+
+    @Test func autosaveModelWritesCodexModelWhenBackendIsCodex() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+        _ = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.backend, value: "codex"))
+        _ = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.model, value: "gpt-5.5"))
+        let server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.defaults?.mode == "codex")
+        #expect(server?.defaults?.codexModel == "gpt-5.5")
+        #expect(server?.defaults?.claudeModel == nil)
+    }
+
+    @Test func autosaveEffortWritesClaudeEffort() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.effort, value: "medium"))
+        guard case .autosaved = r else {
+            Issue.record("expected autosaved, got \(r)")
+            return
+        }
+        let server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.defaults?.claudeEffort == "medium")
+        #expect(server?.defaults?.codexEffort == nil)
+    }
+
+    @Test func autosaveEffortWritesCodexEffortAfterBackendSwitch() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+        _ = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.backend, value: "codex"))
+        _ = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.effort, value: "xhigh"))
+        let server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.defaults?.mode == "codex")
+        #expect(server?.defaults?.codexEffort == "xhigh")
+        #expect(server?.defaults?.claudeEffort == nil)
+    }
+
     @Test func autosavePermModeWritesServerDefaults() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
@@ -202,7 +305,12 @@ struct ConfigPanelTests {
         try await store.saveServerConfig(ServerConfig(
             guildId: "g1",
             auth: ServerAuthPartial(adminRoleIds: ["srv-admin"]),
-            defaults: ServerDefaultsPartial(mode: "codex", permissionMode: "plan"),
+            defaults: ServerDefaultsPartial(
+                mode: "codex",
+                codexModel: "gpt-5.5",
+                permissionMode: "plan",
+                codexEffort: "high"
+            ),
             locale: "en"
         ))
         let global = try await store.load()
@@ -214,6 +322,8 @@ struct ConfigPanelTests {
         #expect(d.permMode == "plan")
         #expect(d.locale == "en")
         #expect(d.dmPolicy == "deny")
+        #expect(d.model == "gpt-5.5")
+        #expect(d.effort == "high")
         #expect(d.limits.maxSessionsPerUser == 2)
     }
 
@@ -232,6 +342,84 @@ struct ConfigPanelTests {
         #expect(server?.defaults?.mode == "codex")
         #expect(server?.defaults?.permissionMode == "plan")
         #expect(server?.auth?.adminRoleIds == ["only-admin"])
+    }
+
+    @Test func notifOpenReturnsSubPanel() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.notifOpen))
+        guard case .notifPanel(let sub) = r else {
+            Issue.record("expected notifPanel, got \(r)")
+            return
+        }
+        #expect(sub.title.contains("notification") || sub.title.contains("Event"))
+        #expect(sub.description.contains("on") || sub.description.contains("off"))
+        let comps = sub.rows.flatMap(\.components)
+        #expect(comps.contains {
+            if case .channelSelect(let id, _, _, _, _) = $0 { return id == ConfigPanelIds.notifChannel }
+            return false
+        })
+        #expect(comps.contains {
+            if case .button(let id, _, _) = $0 { return id == ConfigPanelIds.notifToggle }
+            return false
+        })
+    }
+
+    @Test func notifTogglePersistsEnabledFalse() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+        // Default enabled=true → toggle off.
+        let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.notifToggle))
+        guard case .notifUpdated(let sub) = r else {
+            Issue.record("expected notifUpdated, got \(r)")
+            return
+        }
+        #expect(sub.description.contains("off"))
+        let server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.notifications?.enabled == false)
+        #expect(resolveNotifications(server).enabled == false)
+    }
+
+    @Test func notifChannelPersistsAndClear() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        try await store.saveServerConfig(ServerConfig(
+            guildId: "g1",
+            channels: ServerChannels(
+                categoryId: "cat",
+                controlChannelId: "ctrl",
+                sessionsCategoryId: "sess",
+                statusChannelId: "status-fallback"
+            )
+        ))
+        let panel = try await makePanel(store: store)
+
+        let set = await panel.handle(ConfigPanelInput(
+            id: ConfigPanelIds.notifChannel,
+            values: ["status-override"]
+        ))
+        guard case .notifUpdated = set else {
+            Issue.record("expected notifUpdated on set, got \(set)")
+            return
+        }
+        var server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.notifications?.channelId == "status-override")
+        #expect(resolveNotifications(server).channelId == "status-override")
+
+        // Empty pick clears override → falls back to setup status channel.
+        let clear = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.notifChannel, values: []))
+        guard case .notifUpdated = clear else {
+            Issue.record("expected notifUpdated on clear, got \(clear)")
+            return
+        }
+        server = await store.loadServerConfig(guildId: "g1")
+        #expect(server?.notifications?.channelId == nil)
+        #expect(resolveNotifications(server).channelId == "status-fallback")
     }
 
     @Test func configCommandSpecRequiresAdministrator() {

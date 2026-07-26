@@ -139,7 +139,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 기본 흐름: **`/setup` → `/config` → `/agent start`**, 이후 세션 채널에서 일반 메시지.
 
 1. **`/setup`** (관리자) — 컨트롤 채널 · 세션 카테고리 · 상태 채널 (기존 재사용).
-2. **`/config`** (관리자) — 역할 티어 + 기본값 (Swift 패널은 **minimal**: 역할, mode/perm 기본, dmPolicy; model/effort/locale·알림/렌더 서브패널은 잔여).
+2. **`/config`** (관리자) — 역할 티어 + 기본값(mode/model/effort/perm, dmPolicy) + 알림 서브패널(켜기 + 상태 채널). 잔여: locale select · 이미지/chromium 렌더 서브패널(S3 defer).
 3. **`/agent start`** — 마법사: **폴더 → 백엔드 → 모델 → 추론 → 권한**. 폴더 브라우저는 이동/생성/네이티브 선택 지원. 확인 시 채널 바인딩(전용 A4D 세션 채널 생성은 Swift 경로 잔여).
 4. 바인딩된 채널에서 **일반 메시지**로 대화. 접두사 단축키: `!claude` / `!codex` / `!grok` / `!custom`.
 
@@ -209,7 +209,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 | 라이브 슬래시 model/effort/mode/clear/stop | ✅ 바인딩 + Claude 라이브 `setModel`/`setEffort` RPC + displayName 재해석 | ✅ |
 | 사용량 / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD; **잔여:** 라이브 스트림 임베드 | ✅ 더 풍부한 패널 |
 | 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude/Codex/Grok mid-turn tool; **잔여:** pin 임베드 | ✅ |
-| `/config` 패널 | ✅ **minimal**; 잔여 model/effort/locale · notif/render | ✅ 더 넓은 UI |
+| `/config` 패널 | ✅ 역할·mode/model/effort/perm·dm·알림; 잔여 locale · render(S3) | ✅ 더 넓은 UI |
 | `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
 | Auto-update | ✅ 레지스트리 체크 + Yes/No UI; **바이너리 자가 교체 미구현** | ✅ npm 재설치 경로 |
 | Chromium 표/mermaid 렌더 | ❌ defer | ✅ 선택 |

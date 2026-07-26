@@ -517,15 +517,32 @@ struct EventHandler: GatewayEventHandler {
             }
             let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
             let backends = Backend.allCases.map(\.rawValue)
-            // Minimal perm list (Claude vocabulary). Full catalog probing is deferred.
-            let permModes: [ModelChoice] = [
-                .init(value: "default", label: "default"),
-                .init(value: "acceptEdits", label: "acceptEdits"),
-                .init(value: "plan", label: "plan"),
-                .init(value: "bypassPermissions", label: "bypassPermissions"),
-                .init(value: "dontAsk", label: "dontAsk"),
-                .init(value: "auto", label: "auto"),
-            ]
+            // Catalog snapshot for model/effort/perm selects (fallback-safe; no live probe required).
+            let backendEnum = Backend(rawValue: panelDefaults.backend) ?? .claude
+            let catalog = providerCatalog(for: backendEnum)
+            let configuredModel = backendEnum == .codex
+                ? global.defaults.codexModel
+                : global.defaults.claudeModel
+            var models = await catalog.models(configured: configuredModel.isEmpty ? nil : configuredModel)
+            if !panelDefaults.model.isEmpty,
+               !models.contains(where: { $0.value == panelDefaults.model }) {
+                models.insert(ModelChoice(value: panelDefaults.model, label: panelDefaults.model), at: 0)
+            }
+            if models.isEmpty {
+                let v = panelDefaults.model.isEmpty ? "opus" : panelDefaults.model
+                models = [ModelChoice(value: v, label: v)]
+            }
+            let modelLevels = models.first(where: { $0.value == panelDefaults.model })?.supportedEffortLevels
+            var efforts = catalog.effortChoices(modelLevels: modelLevels)
+            if !panelDefaults.effort.isEmpty,
+               !efforts.contains(where: { $0.value == panelDefaults.effort }) {
+                efforts.insert(ModelChoice(value: panelDefaults.effort, label: panelDefaults.effort), at: 0)
+            }
+            if efforts.isEmpty {
+                let e = panelDefaults.effort.isEmpty ? "high" : panelDefaults.effort
+                efforts = [ModelChoice(value: e, label: e)]
+            }
+            let permModes = await catalog.permissionChoices()
             let panel = ConfigPanel(options: ConfigPanelOptions(
                 guildId: realGuildId,
                 ownerId: ownerId,
@@ -533,7 +550,15 @@ struct EventHandler: GatewayEventHandler {
                 defaults: panelDefaults,
                 backends: backends,
                 isKnownBackend: { Backend(rawValue: $0) != nil },
-                permModes: permModes
+                models: models,
+                efforts: efforts,
+                permModes: permModes.isEmpty
+                    ? [
+                        .init(value: "default", label: "default"),
+                        .init(value: "acceptEdits", label: "acceptEdits"),
+                        .init(value: "plan", label: "plan"),
+                    ]
+                    : permModes
             ))
             await ConfigPanelRegistry.shared.put(panel, guildId: realGuildId, channelId: channelId)
             let view = panel.render()
@@ -542,7 +567,7 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id,
                 token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "설정 패널을 열었습니다. 역할은 Save로 저장, 기본값/DM은 선택 즉시 저장됩니다.",
+                    content: "설정 패널을 열었습니다. 역할은 Save, 기본값/DM은 즉시 저장, 🔔은 알림 서브패널입니다.",
                     embeds: embeds,
                     flags: [.ephemeral],
                     components: roleRows
@@ -705,7 +730,7 @@ struct EventHandler: GatewayEventHandler {
     }
 
     /// W16-b: drive the open `/config` panel. Owner-gated. Roles batch until Save;
-    /// backend/permMode/dmPolicy auto-save. Ack: deferUpdate on pending, ephemeral reply on save.
+    /// backend/model/effort/permMode/dmPolicy auto-save; 🔔 notifications sub-panel.
     private func handleConfigComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue
@@ -765,6 +790,22 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(content: notice, flags: [.ephemeral]))
+            )
+        case .notifPanel(let sub):
+            let (embeds, rows) = discordPayload(from: sub)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    embeds: embeds,
+                    flags: [.ephemeral],
+                    components: rows
+                ))
+            )
+        case .notifUpdated(let sub):
+            let (embeds, rows) = discordPayload(from: sub)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: rows))
             )
         case .pending, .ignored:
             _ = try? await client.createInteractionResponse(
@@ -1038,12 +1079,15 @@ struct EventHandler: GatewayEventHandler {
                 )
                 await bindFromWizard(p, channelId: bindChannelId)
 
+                let sessionCaps = await resolveSessionCapabilities(
+                    backend: p.backend, guildId: guildId
+                )
                 let status = SessionStatus(
                     mode: p.backend.rawValue,
                     cwd: p.cwd,
                     sessionId: nil,
                     permMode: p.permMode.isEmpty ? "default" : p.permMode,
-                    usagePanel: backendSupportsUsagePanel(p.backend)
+                    usagePanel: sessionCaps.usagePanel
                 )
                 let statusEmbed = discordEmbed(from: buildStatusEmbed(status))
 
@@ -1472,12 +1516,16 @@ struct EventHandler: GatewayEventHandler {
         }
 
         print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80))")
+        // Capabilities gate (TS RendererDispatcher): toolThreads/fileDiff/streaming/usagePanel.
+        let caps = await resolveSessionCapabilities(backend: backend, guildId: guildId)
+        await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)
         // Live stream status embed: yellow "응답 중…" + Stop button (W11-g residual).
         // Mid-turn text/tool/progress edits via StreamStatusHost; finalize collapses to done.
+        // streaming=false → skip begin (notes no-op); interrupt control message still posts.
         let controlMsgId = await postInterruptControlMessage(
             client: client, channelId: payload.channel_id, guildId: guildId
         )
-        if let controlMsgId {
+        if caps.streaming, let controlMsgId {
             await StreamStatusHost.shared.begin(
                 channelId: channelId,
                 guildId: guildId,
@@ -1517,45 +1565,48 @@ struct EventHandler: GatewayEventHandler {
             if let usage = turn.usage, let line = buildResultLine(usage) {
                 _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: line))
             }
-            // W11-g slice2/4: usage embed (limits + context + tools/subagent HUD) when anything present.
-            let usageSnap: UsageResult?
-            switch backend {
-            case .claude, .custom:
-                usageSnap = await ClaudeUsageService.shared.getUsage()
-            case .grok:
-                usageSnap = await GrokUsageService.shared.getUsage()
-            case .codex:
-                usageSnap = nil
-            }
-            let usageTitle: String
-            switch backend {
-            case .claude, .custom: usageTitle = "Claude 사용량"
-            case .grok: usageTitle = "Grok 사용량"
-            case .codex: usageTitle = "Codex 사용량"
-            }
-            let embedExtras = UsageEmbedExtras(
-                meta: UsageSessionMeta(permMode: binding?.permMode),
-                title: usageTitle,
-                tools: turn.tools,
-                agents: turn.agents
-            )
-            if let spec = buildUsageEmbed(
-                usage: usageSnap,
-                ctxUsage: turn.contextUsage,
-                extras: embedExtras
-            ) {
-                _ = try? await client.createMessage(
-                    channelId: payload.channel_id,
-                    payload: .init(embeds: [discordEmbed(from: spec)])
+            // W11-g slice2/4: usage embed — caps.usagePanel only (TS RendererDispatcher).
+            var usageSnap: UsageResult? = nil
+            if caps.usagePanel {
+                switch backend {
+                case .claude, .custom:
+                    usageSnap = await ClaudeUsageService.shared.getUsage()
+                case .grok:
+                    usageSnap = await GrokUsageService.shared.getUsage()
+                case .codex:
+                    usageSnap = nil
+                }
+                let usageTitle: String
+                switch backend {
+                case .claude, .custom: usageTitle = "Claude 사용량"
+                case .grok: usageTitle = "Grok 사용량"
+                case .codex: usageTitle = "Codex 사용량"
+                }
+                let embedExtras = UsageEmbedExtras(
+                    meta: UsageSessionMeta(permMode: binding?.permMode),
+                    title: usageTitle,
+                    tools: turn.tools,
+                    agents: turn.agents
                 )
-            } else if let ctx = turn.contextUsage {
-                // Fallback: plain context line when no panel fields (no OAuth / tools).
-                _ = try? await client.createMessage(
-                    channelId: payload.channel_id,
-                    payload: .init(content: formatContextUsageLine(ctx))
-                )
+                if let spec = buildUsageEmbed(
+                    usage: usageSnap,
+                    ctxUsage: turn.contextUsage,
+                    extras: embedExtras
+                ) {
+                    _ = try? await client.createMessage(
+                        channelId: payload.channel_id,
+                        payload: .init(embeds: [discordEmbed(from: spec)])
+                    )
+                } else if let ctx = turn.contextUsage {
+                    // Fallback: plain context line when no panel fields (no OAuth / tools).
+                    _ = try? await client.createMessage(
+                        channelId: payload.channel_id,
+                        payload: .init(content: formatContextUsageLine(ctx))
+                    )
+                }
             }
             // W11-g slice2: rate_limit notice (event fields; enrich with usage snapshot if any).
+            // Always (not usagePanel-gated) — matches TS RendererDispatcher.rateLimit.
             if let rl = turn.rateLimit {
                 let line = formatRateLimitLine(rl, usage: usageSnap)
                 _ = try? await client.createMessage(
@@ -1693,6 +1744,27 @@ func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
     )
     try await SessionStore.shared.upsert(channelId: params.channelId, record)
     return ResumeResult(channelId: params.channelId)
+}
+
+// MARK: - Capabilities (render gating)
+
+/// Resolve render caps for a guild turn: backend defaults ← global config ← server ← DAB_CAPS.
+func resolveSessionCapabilities(backend: Backend, guildId: String) async -> Capabilities {
+    let globalCaps: CapabilitiesPartial?
+    if let cfg = try? await ConfigStore.shared.load() {
+        globalCaps = cfg.capabilities
+    } else {
+        globalCaps = nil
+    }
+    let serverCaps = guildId.isEmpty || guildId == "dm"
+        ? nil
+        : await ConfigStore.shared.loadServerConfig(guildId: guildId)?.capabilities
+    return resolveCapabilities(
+        backend: backend,
+        global: globalCaps,
+        server: serverCaps,
+        env: ProcessInfo.processInfo.environment
+    )
 }
 
 // MARK: - interrupt / stream control message (W11-g residual)

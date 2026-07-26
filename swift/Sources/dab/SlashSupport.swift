@@ -288,7 +288,7 @@ func discordPayload(from view: WizardView) -> (embeds: [Embed], components: [Int
 
 // MARK: - Config panel → DiscordBM (W16-b)
 
-/// Map pure `ConfigPanelView` rows to Discord embeds + action rows (role/string selects + buttons).
+/// Map pure `ConfigPanelView` rows to Discord embeds + action rows (role/string/channel selects + buttons).
 func discordPayload(from view: ConfigPanelView) -> (
     embeds: [Embed],
     roleRows: [Interaction.ActionRow],
@@ -302,6 +302,17 @@ func discordPayload(from view: ConfigPanelView) -> (
     )
 }
 
+/// Notifications (or other) sub-panel → embed + action rows.
+func discordPayload(from sub: ConfigPanelSubView) -> (
+    embeds: [Embed],
+    rows: [Interaction.ActionRow]
+) {
+    (
+        [Embed(title: sub.title, description: sub.description)],
+        sub.rows.map(configPanelActionRow)
+    )
+}
+
 private func configPanelActionRow(_ row: ConfigPanelRow) -> Interaction.ActionRow {
     let comps: [Interaction.ActionRow.Component] = row.components.map { c in
         switch c {
@@ -311,6 +322,18 @@ private func configPanelActionRow(_ row: ConfigPanelRow) -> Interaction.ActionRo
                 : defaultRoleIds.map { Interaction.ActionRow.DefaultValue(id: RoleSnowflake($0)) }
             return .roleSelect(Interaction.ActionRow.SelectMenu(
                 custom_id: customId,
+                placeholder: placeholder,
+                default_values: defaults,
+                min_values: minValues,
+                max_values: maxValues
+            ))
+        case .channelSelect(let customId, let placeholder, let defaultChannelIds, let minValues, let maxValues):
+            let defaults: [Interaction.ActionRow.DefaultValue]? = defaultChannelIds.isEmpty
+                ? nil
+                : defaultChannelIds.map { Interaction.ActionRow.DefaultValue(id: ChannelSnowflake($0)) }
+            return .channelSelect(Interaction.ActionRow.ChannelSelectMenu(
+                custom_id: customId,
+                channel_types: [.guildText, .guildAnnouncement],
                 placeholder: placeholder,
                 default_values: defaults,
                 min_values: minValues,
