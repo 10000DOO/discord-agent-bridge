@@ -1590,6 +1590,14 @@ struct EventHandler: GatewayEventHandler {
         }
 
         print("dab: \(backend.rawValue) channel=\(channelId) prompt=\(text.prefix(80)) files=\(turnFiles.count)")
+        // G-P0-02: ⏳ working indicator on the user message as soon as the turn is accepted
+        // (before runTurn / control message). Best-effort — missing Add Reactions never blocks.
+        await addTurnReaction(
+            client: client,
+            channelId: payload.channel_id,
+            messageId: payload.id,
+            emoji: TurnReactions.working
+        )
         // Capabilities gate (TS RendererDispatcher): toolThreads/fileDiff/streaming/usagePanel.
         let caps = await resolveSessionCapabilities(backend: backend, guildId: guildId)
         await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)
@@ -1639,6 +1647,13 @@ struct EventHandler: GatewayEventHandler {
                     files: turnFiles
                 )
             }
+            // G-P0-02: ⏳ → ✅ on successful turn.
+            await completeTurnReaction(
+                client: client,
+                channelId: payload.channel_id,
+                messageId: payload.id,
+                terminal: TurnReactions.done
+            )
             await StreamStatusHost.shared.end(channelId: channelId)
             let toolCount = turn.tools.reduce(0) { $0 + $1.count }
             await finalizeInterruptControlMessage(
@@ -1740,6 +1755,13 @@ struct EventHandler: GatewayEventHandler {
             }
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
+            // G-P0-02: ⏳ → ❌ on turn failure.
+            await completeTurnReaction(
+                client: client,
+                channelId: payload.channel_id,
+                messageId: payload.id,
+                terminal: TurnReactions.error
+            )
             await StreamStatusHost.shared.end(channelId: channelId)
             await finalizeInterruptControlMessage(
                 client: client, channelId: payload.channel_id, messageId: controlMsgId,
@@ -1875,6 +1897,66 @@ func resolveSessionCapabilities(backend: Backend, guildId: String) async -> Capa
         global: globalCaps,
         server: serverCaps,
         env: ProcessInfo.processInfo.environment
+    )
+}
+
+// MARK: - turn reactions (G-P0-02 / TS messageRouter REACT_WORKING/DONE/ERROR)
+
+/// Lifecycle emoji on the user's message: ⏳ while the AI works, then ✅/❌ on terminal.
+enum TurnReactions {
+    static let working = "⏳"
+    static let done = "✅"
+    static let error = "❌"
+}
+
+/// Best-effort add of a unicode reaction. Permission / network failures are swallowed.
+func addTurnReaction(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    messageId: MessageSnowflake,
+    emoji: String
+) async {
+    guard let reaction = try? Reaction.unicodeEmoji(emoji) else { return }
+    _ = try? await client.addMessageReaction(
+        channelId: channelId,
+        messageId: messageId,
+        emoji: reaction
+    )
+}
+
+/// Best-effort remove of the bot's own reaction (clear ⏳ on completion).
+func removeOwnTurnReaction(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    messageId: MessageSnowflake,
+    emoji: String
+) async {
+    guard let reaction = try? Reaction.unicodeEmoji(emoji) else { return }
+    _ = try? await client.deleteOwnMessageReaction(
+        channelId: channelId,
+        messageId: messageId,
+        emoji: reaction
+    )
+}
+
+/// Clear ⏳ and add the terminal reaction (✅ success / ❌ error). Best-effort.
+func completeTurnReaction(
+    client: any DiscordClient,
+    channelId: ChannelSnowflake,
+    messageId: MessageSnowflake,
+    terminal: String
+) async {
+    await removeOwnTurnReaction(
+        client: client,
+        channelId: channelId,
+        messageId: messageId,
+        emoji: TurnReactions.working
+    )
+    await addTurnReaction(
+        client: client,
+        channelId: channelId,
+        messageId: messageId,
+        emoji: terminal
     )
 }
 
