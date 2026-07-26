@@ -14,14 +14,16 @@
 
 | 항목 | 상태 |
 |------|------|
-| **전체 단계** | Phase A~F **MVP 완료**(3백엔드 `!claude`/`!codex`/`!grok` 텍스트 경로), Phase G~H 대기 |
+| **전체 단계** | Phase A~F **MVP 완료**, Phase G **부분**, Phase H **W12 문서 완료**. **제품 경로 = Swift `dab`** (TS 메인 = 레거시/참고 + Claude 사이드카) |
 | **브랜치** | `plan/swift-port` |
-| **TS 기본 경로** | 기존 in-process Claude (변경 없음) |
-| **TS 사이드카** | `DAB_CLAUDE_SIDECAR=1` opt-in |
-| **Swift 봇** | `swift run --package-path swift dab` + `!claude` / `!codex` / `!grok <prompt>` |
-| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` → **370** PASS. ⚠️ 그냥 `swift test`는 인덱서 락으로 hang — **§14.2 필독** |
+| **TS 기본 경로** | 레거시 in-process Claude (변경 없음). **권장 설치 아님** — README는 Swift-first |
+| **TS 사이드카** | 메인 opt-in `DAB_CLAUDE_SIDECAR=1` · **Swift Claude는 항상 사이드카** |
+| **Swift 봇** | `bash swift/scripts/install.sh` 또는 `swift run --package-path swift dab` · 슬래시+`!claude`/`!codex`/`!grok`/`!custom` |
+| **설정/상태** | `DAB_HOME` 또는 `~/.discord-agent-bridge/` (`config.json`, `servers/`, `swift-state.json`) · 배포 바이너리/시크릿은 `~/.dab/` |
+| **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` (수백 테스트; 일부 병렬 플래키 이슈 잔존 §14.4). ⚠️ 그냥 `swift test`는 인덱서 락 hang — **§14.2 필독** |
+| **패리티** | **100% 아님** — 잔여 목록 아래. 루트 README 호환 매트릭스 기준 |
 
-### 완료 (W1–W10)
+### 완료 (W1–W10 · W12 · 주요 W11/W13–W16)
 
 | ID | 요약 |
 |----|------|
@@ -30,41 +32,47 @@
 | W7 | Node Claude 사이드카 + Host 클라이언트 + host.file 역RPC + opt-in 배선 |
 | W8 | SwiftPM + DiscordBM + gateway ready |
 | W9 | Swift 사이드카 클라이언트 + Discord `!claude` → Claude 답글 (MVP) |
-| W10b | Grok ACP stdio 클라이언트 골격 |
-| W10-c1 | Codex `!codex` Discord 배선 (텍스트 답글, 형제 브리지) |
-| W10-c2 | Grok prompt stream: `GrokAcpClient.sessionPrompt` + 순수 `grokUpdateStep` (텍스트) |
-| W10-c3 | Grok `!grok` Discord 배선 (`GrokSessionBridge`, 형제). 3백엔드 텍스트 경로 완성 |
+| W10 | Codex/Grok 텍스트 경로 (`!codex`/`!grok`) 3백엔드 완성 |
+| W11-a·b1·c·d·e·f1·f2·h | 슬래시 인프라·model/effort·권한 게이트·배포·재연결·라이브 슬래시·카탈로그 |
+| W13·W14·W15 | 보안(a/c/d)·라이프사이클·3계층 config |
+| W16-a~h (ship slice) | chunk·/config minimal·/setup·/doc·Always-Allow·custom·toolThread/diff/status/notifier·auto-update 체크 UI |
+| **W12** | **레거시 정책·호환 매트릭스·루트 README/README.ko 마이그레이션 가이드** |
 
-### 진행 중 / 부분 완료
+### 진행 중 / 부분 완료 (잔여)
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W11** | `doing` | **a·b1·c·d·e·f1·f2·h 완료**. 남은: 마법사(b2)·HUD(g). **→ §14 핸드오프 필독** |
-| **W12** | `todo` | 레거시 TS 정책, 버전 호환, 루트 README 마이그레이션 가이드 |
+| **W11-b2** | `partial` | folder 클러스터 ✅. **잔여:** dir:resume UI · A4D 세션 채널 생성 · preset · reconfigure 팝업 |
+| **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 · 사이드카 setModel displayName 재해석 |
+| **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · Codex/Grok mid-turn tool · pin status · **바이너리 self-replace** |
+| **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
+| **W11 / W16** | overall | Claude 라이브 `session.setModel`/`setEffort` RPC · interrupt **버튼 UI** · host.file Discord 업로드 완전 배선 · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
 - 풀 SessionOrchestrator / ChannelRegistry 동등 레이어 (얇은 SessionLifecycle·Registry로 대체 중)
 - Claude 라이브 `session.setModel`/`setEffort` RPC 배선 (W11-d는 바인딩 레이어만; 옵션 B 후속)
-- `/mode backend` reconfigure 마법사 팝업 (W11-b2) · HUD(W11-g)
+- `/mode backend` reconfigure 마법사 팝업 (W11-b2) · HUD 잔여(W11-g)
 - interrupt **버튼 UI**(lib interrupt API는 W14 완료)
-- host.file.* 실제 Discord 업로드 (Swift; TS 사이드카 경로는 구현됨)
-- 렌더/도구스레드 · `/config` full A4D(model/effort/locale·notif/render) 등 (W16 잔여; `/config` minimal·custom 완료)
-- 기존 npm 봇 기능 100% 패리티 (목표 지향, 진행 중)
+- host.file.* 실제 Discord 업로드 완전 패리티 (Swift; TS 사이드카 경로는 구현됨)
+- `/config` full A4D(model/effort/locale·notif/render) · auto-update 바이너리 교체
+- 기존 npm 봇 기능 **100% 패리티 미달** (목표 지향, 진행 중 — README 매트릭스에 명시)
 
 ### 빠른 실행
 
 ```bash
-# TS 봇 — Claude 사이드카 opt-in
-DAB_CLAUDE_SIDECAR=1 npm run dev
-
-# Swift — Discord + !claude (repo root에서)
+# 권장: Swift 제품
+bash swift/scripts/install.sh          # 또는 일회:
 export DISCORD_BOT_TOKEN=...
-swift run --package-path swift dab
-# 채널: !claude hello
+swift run --package-path swift dab     # repo root
+
+# 레거시 TS 메인 — Claude 사이드카 opt-in (참고용)
+DAB_CLAUDE_SIDECAR=1 npm run dev
 
 # 전체 검증 (Swift 전용)
 bash verify.sh
+# hang 시:
+swift test --package-path swift --scratch-path /tmp/dab-ci
 
 # 스모크
 swift run --package-path swift dab sidecar-smoke
@@ -72,19 +80,16 @@ swift run --package-path swift dab codex-smoke
 swift run --package-path swift dab grok-smoke
 ```
 
-### 다음에 할 일 (우선순위) — 2026-07-25 전수조사 반영
+### 다음에 할 일 (우선순위) — W12 이후 잔여
 
-**전수조사(TS 4영역 A/B/C/D) 결론**: 텍스트 대화 3백엔드는 되나 **보안·정책·렌더·운영 계층이 대거 미포팅**이고 상당수가 문서에도 없던 완전누락. 상세 §15. 사용자 결정(2026-07-25): **TS 파리티 100% 지향** — ①보안 최우선 ②custom 포함 ③3-계층 config TS동일 ④folder 클러스터 전부.
+**제품 문서(W12) 완료.** 기능 패리티 잔여만 남음. 전수조사 결정(2026-07-25) 유지: **TS 파리티 100% 지향**.
 
-0. ~~**W11-h** provider 카탈로그~~ ✅ 완료(WO-1~7 + §7-1 검증 통과, 커밋 `03d390e`)
-1. ~~**W13 보안 하드닝(P0)**~~ ✅ 완료(a·c·d, b=Q5=B 보류, 커밋 `a004311`)
-2. ~~**W16-a 답변 청킹**~~ ✅ 완료(`DiscordText.chunkMessage` + 성공/에러 다중 `createMessage`)
-3. ~~**W14 라이프사이클**(stop/interrupt/channelDelete)~~ ✅ 완료(a·b: bridges stop/interrupt + SessionLifecycle + `/stop`·`/stop-all`·`/agent close` + channelDelete)
-4. ~~**W15** 3-계층 config + state migration/archived~~ ✅ 완료(a+b)
-5. ~~**W11-d** 라이브 슬래시~~ ✅ 완료(`/model`·`/effort`·`/mode`·`/clear`·`/agent resume·stats`; reconfigure 팝업은 b2)
-6. **W11-b2** 마법사(folder 클러스터 전부 포함)·**W11-g** 패널
-7. **W16** 기능 완전누락(/config·도구스레드/diff·상태임베드·auto-update) — `/setup`·`/doc`·custom·Always-Allow·chunk 완료
-8. **W12** — 레거시/문서/호환 매트릭스
+0. ~~**W12** 레거시 정책·호환 매트릭스·README~~ ✅
+1. **W11-g slice4+** — tools/subagent HUD · 라이브 스트림 임베드 · setModel displayName
+2. **W11-b2 잔여** — resume UI · A4D channel · preset · reconfigure
+3. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 설치 포트
+4. **W13-b** (선택) — 기본 permMode/`allowlist` when product default moves off bypass
+5. 부수: `verify.sh`에 `--scratch-path` 반영 · 플래키 테스트 근본 판정(§14.4)
 
 ---
 
@@ -235,7 +240,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **E** | Swift Core + Claude E2E (W9) | Swift + 사이드카로 Claude 세션 |
 | **F** | Codex / Grok (W10) | 백엔드 3종 |
 | **G** | UX·운영 패리티 (W11) | 위저드·서비스·배포 |
-| **H** | 정리 (W12) | TS 메인 deprecate, 호환 매트릭스 |
+| **H** | 정리 (W12) | ✅ 문서: TS 메인 레거시 정책, 호환 매트릭스, README 마이그레이션 (코드 deprecate는 패리티 이후) |
 
 기본 제품 가정 (변경 시 이 절 수정):
 
@@ -285,7 +290,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-d** | G | `done` | 라이브 슬래시 `/mode`·`/model`·`/effort`·`/mode perm`·`/stop`·`/clear`·`/agent resume·stats`. 바인딩 레이어(registry+store)·`clearChannel`(§14.6). reconfigure 팝업은 **W11-b2**. Claude 라이브 setModel RPC 미포함 | 세션 조작 슬래시 |
 | **W11-e** | G | `done` | 배포: `install/uninstall.sh`(release 빌드+plist+run.sh 생성+launchctl) + `env.example`. PATH·cwd 함정 run.sh에서 해소, 토큰 0600 env | `bash scripts/install.sh` |
 | **W11-g** | G | `partial` | **사용량/HUD 패널 Swift 포팅**(3백엔드). **slice1 ✅**: 순수 포맷터 + TurnResult usage + 완료 라인 + stats model·effort. **slice2 ✅**: `mentionOnComplete`·`formatRateLimitLine`/`formatUsageWindows`·`ClaudeUsageService`(OAuth file+keychain·mock HTTP)·`buildUsageEmbed`·Claude `context_usage`/`rate_limit` 캡처→TurnResult→DabMain 라인·`/agent stats` Claude usage 임베드. **slice3 ✅**: `GrokUsageService`(auth.json·billing mock HTTP·sevenDay only)·`getUsageForBackend`·`/agent stats` Grok 임베드·notifier grok getUsage. **잔여(slice4+)**: tools/subagent 집계·라이브 HUD 스트림 임베드·사이드카 setModel displayName 재해석. 상세 §14.9 | 패널 모든 정보 최신 표시 |
-| **W12** | H | `todo` | 레거시 TS 정책, 버전 호환 매트릭스, README | 마이그레이션 가이드 |
+| **W12** | H | `done` | 레거시 TS 정책, 버전 호환 매트릭스, 루트 README/README.ko 마이그레이션 가이드 | Swift-first 설치·env·경로·호환표·잔여 명시 (100% 미주장) |
 
 ### 신규 WO — 2026-07-25 전수조사 반영 (Phase I~L, 상세 §15)
 
@@ -381,6 +386,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | W16-f | **custom 백엔드** TS 파리티: `Backend.custom` + `routeDecision` `!custom` + `ShellEnv`(`shellEnv.ts` 1:1 regex allow-list) + `DabSessionBridge` prepareSession env-overlay(`ANTHROPIC_MODEL` 우선·dangerous flag 경고) + SessionStore persist `.custom` + wizard/slash `Backend.allCases`·`customBackendLabel`. catalog=Claude. swift test **480** PASS. |
 | 2026-07-26 | W16-d | `/doc path:` 문서 공유. lib `DocumentShare`(5종 ShareErrorCode·load/validate·bodyMode·sink) + `DocumentShareHost` + slash `doc` + dab `postDocumentShare`(createThread+attach+chunk body) + `ClaudeSidecarClient` `host.file.share`/`host.file.attach` 역RPC + DabSessionBridge onFileShare 배선. 워크스페이스 밖 경로 허용(TS 1:1; `escape` 잔존·미생산). 단위테스트 load/error/sink/host/spec + reverse RPC. |
 | 2026-07-26 | W16-b | `/config` **minimal** 설정 패널. lib pure `ConfigPanel` SM(역할 pending→Save server auth · backend/permMode server autosave · dmPolicy global autosave · effective embed) + `ConfigPanelRegistry` + RoleSelect/StringSelect DiscordBM 매핑 + admin slash. **스킵(ponytail)**: model/effort/locale · notif/render 서브패널. 단위테스트 +12. |
+| 2026-07-26 | **W12** | **문서 전용.** 루트 `README.md`/`README.ko.md`를 **Swift-first** 제품 경로로 개편: `swift/scripts/install.sh` · `dab` · 하이브리드 Claude 사이드카 · `~/.dab`(배포) vs `~/.discord-agent-bridge`(config/state) · npm TS→Swift 마이그레이션(env·state 분리·`DAB_CLAUDE_SIDECAR` 의미) · **호환 매트릭스**(100% 미주장·잔여 명시). §0 스냅샷·W12=`done`·다음 잔여 큐 갱신. 코드 변경 없음. |
 
 ---
 
@@ -441,7 +447,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** W11-f (세션 재연결, 최우선) → W11-b2 (마법사)·W11-d (라이브 슬래시) → W12 (레거시·문서).
+**큐 헤드:** W11-g slice4+ (HUD) · W11-b2 잔여 (resume/A4D/preset/reconfigure) · W16 폴리시. **W12 문서 완료** (README Swift-first + 호환 매트릭스).
 
 ---
 
@@ -468,8 +474,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` **W11-g slice3 완료**(Grok weekly usage poller + stats/notifier 배선). slice2(mention·rateLimit·Claude usage·usageEmbed·context_usage) 포함. W10 + W11-a/b1/c/d/e/f1/f2/h + W11-b2 folder slice1–3 + W13/W14/W15/W16-a/e 완료. **W11-g 잔여** = tools/subagent HUD·라이브 스트림 임베드·setModel displayName. **W11-b2 잔여** = resume·A4D channel·preset·reconfigure. **다음 = W11-g slice4 또는 b2 잔여 → W16 잔여 → W12.**
-
+`plan/swift-port` **W12 문서 완료**(루트 README/README.ko Swift-first · npm→dab 마이그레이션 · 호환 매트릭스 · 잔여 명시). W16-a~h ship slices + W11-g slice1–3 + W11-b2 folder slice1–3 + W10–W15 주요 완료. **다음 기능 잔여** = W11-g slice4+ · W11-b2 resume/A4D/preset/reconfigure · W16 폴리시 · W13-b(보류). **100% 패리티 아님.**
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
 **해결: 격리 빌드 경로로 실행하라.**
@@ -506,11 +511,12 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1**~~ ✅ · ~~**W11-g slice2**~~ ✅ · ~~**W11-g slice3**~~ ✅ (Grok weekly usage)
+1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1–3**~~ ✅ · ~~**W12**~~ ✅ (README·호환 매트릭스)
 2. **W11-g slice4+** — tools/subagent 집계·라이브 HUD 임베드·setModel displayName (상세 §14.9).
 3. **W11-b2 잔여** — dir:resume·A4D 채널 생성·preset·reconfigure (folder 클러스터 외).
-4. **W12** — 레거시 TS 정리·호환·README.
-- 부수 TODO: `verify.sh`에 `--scratch-path` 반영.
+4. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 바이너리 교체.
+5. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
+- 부수 TODO: `verify.sh`에 `--scratch-path` 반영 · §14.4 플래키 근본 판정.
 
 ### 14.8 병렬 작업 교훈
 신규파일/디스조인트 슬라이스(테스트 하드닝·배포·권한 lib)는 병렬로 잘 됐음. **단 여러 에이전트가 동시에 `swift build/test`를 돌리면 `.build` 락 경합**(+인덱서까지)으로 hang·지연 → 병렬 빌드는 **각자 `--scratch-path` 분리** 필수. 핫파일(브리지/DabMain) 배선은 직렬.
