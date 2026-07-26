@@ -46,7 +46,7 @@ struct ClaudeClientHardeningTests {
     @Test func requestTimeoutRetryable() async throws {
         let pair = InMemorySidecarTransport.makePair()
         await emitReady(pair.sidecar) // ready, but nobody answers requests
-        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 100)
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 250)
         try await client.connect()
 
         do {
@@ -66,9 +66,19 @@ struct ClaudeClientHardeningTests {
         let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
         try await client.connect()
 
+        // Wait until *this* request is on the wire (connect may have written earlier lines).
+        let sawReq = LockedBox(false)
+        let watch = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    if line.contains("session.stop") { sawReq.withLock { $0 = true }; break }
+                }
+            } catch {}
+        }
         let task = Task { try await client.request(method: "session.stop", params: ["session": .string("x")], session: "x") }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await waitUntil { sawReq.withLock { $0 } })
         await pair.host.close() // finishes host.lines → read loop ends → failAll
+        watch.cancel()
 
         do {
             _ = try await task.value
@@ -116,7 +126,7 @@ struct ClaudeClientHardeningTests {
             "session": .string("sess-1"),
             "params": .object(["backendSessionId": .string("backend-xyz")]),
         ])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await waitUntil { got.withLock { $0 } == "backend-xyz" })
         #expect(got.withLock { $0 } == "backend-xyz")
 
         await client.close()
@@ -128,7 +138,7 @@ struct ClaudeClientHardeningTests {
 struct CodexClientHardeningTests {
     @Test func requestTimeout() async throws {
         let pair = InMemorySidecarTransport.makePair() // no responder
-        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 100)
+        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 250)
         do {
             _ = try await client.request(method: "ping")
             Issue.record("expected timeout")
@@ -142,9 +152,14 @@ struct CodexClientHardeningTests {
     @Test func inFlightRejectedOnTransportClose() async throws {
         let pair = InMemorySidecarTransport.makePair()
         let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let sawReq = LockedBox(false)
+        let watch = Task {
+            do { for try await _ in pair.sidecar.lines { sawReq.withLock { $0 = true }; break } } catch {}
+        }
         let task = Task { try await client.request(method: "ping") }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await waitUntil { sawReq.withLock { $0 } })
         await pair.host.close()
+        watch.cancel()
         do {
             _ = try await task.value
             Issue.record("expected in-flight rejection")
@@ -217,7 +232,12 @@ struct CodexClientHardeningTests {
             "method": .string("tools/list"), // non-approval server → host request
             "params": .object([:]),
         ])
-        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { m in
+                guard case .object(let o) = m else { return false }
+                return o["id"]?.numberValue == 11 && o["error"] != nil
+            }
+        })
         let resp = recorded.withLock { $0 }.first { m in
             guard case .object(let o) = m else { return false }
             return o["id"]?.numberValue == 11 && o["error"] != nil
@@ -234,7 +254,8 @@ struct CodexClientHardeningTests {
 struct GrokClientHardeningTests {
     @Test func requestTimeout() async throws {
         let pair = InMemorySidecarTransport.makePair()
-        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 100)
+        // 250ms: still a unit-test timeout, less flaky than 100ms under parallel scheduler load.
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 250)
         do {
             _ = try await client.request(method: "ping")
             Issue.record("expected timeout")
@@ -248,9 +269,14 @@ struct GrokClientHardeningTests {
     @Test func inFlightRejectedOnTransportClose() async throws {
         let pair = InMemorySidecarTransport.makePair()
         let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let sawReq = LockedBox(false)
+        let watch = Task {
+            do { for try await _ in pair.sidecar.lines { sawReq.withLock { $0 = true }; break } } catch {}
+        }
         let task = Task { try await client.request(method: "ping") }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await waitUntil { sawReq.withLock { $0 } })
         await pair.host.close()
+        watch.cancel()
         do {
             _ = try await task.value
             Issue.record("expected in-flight rejection")
@@ -309,7 +335,12 @@ struct GrokClientHardeningTests {
             "method": .string("fs/read_text_file"), // non-permission server → host request
             "params": .object([:]),
         ])
-        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { m in
+                guard case .object(let o) = m else { return false }
+                return o["id"]?.numberValue == 21 && o["error"] != nil
+            }
+        })
         let resp = recorded.withLock { $0 }.first { m in
             guard case .object(let o) = m else { return false }
             return o["id"]?.numberValue == 21 && o["error"] != nil

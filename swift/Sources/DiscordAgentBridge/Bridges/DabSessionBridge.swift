@@ -51,6 +51,10 @@ public actor DabSessionBridge {
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent send on same session).
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    /// Per-handle FIFO chain so text → result events cannot reorder across the
+    /// sync-handler → actor hop (`Task { await onEvent }`). Under parallel load a bare Task
+    /// hop can finish the turn before appendText, yielding "(empty result)".
+    private let eventChains = LockedBox<[String: Task<Void, Never>]>([:])
 
     private struct TurnBox {
         var text = ""
@@ -280,10 +284,22 @@ public actor DabSessionBridge {
         let persistModel = model
         // W16-d: host.file.share reverse RPC → DocumentShareHost (Discord sink wired in dab).
         let shareChannelId = channelId
+        // Extend the chain *synchronously* in the event callback so arrival order is kept
+        // even when work hops onto this actor.
         client.registerSessionHandlers(
             handle: handle,
             handlers: SidecarSessionHandlers(
-                onEvent: { [weak self] ev in Task { await self?.onEvent(handle: handle, event: ev) } },
+                onEvent: { [weak self] ev in
+                    guard let self else { return }
+                    self.eventChains.withLock { chains in
+                        let prev = chains[handle]
+                        let next = Task {
+                            _ = await prev?.value
+                            await self.onEvent(handle: handle, event: ev)
+                        }
+                        chains[handle] = next
+                    }
+                },
                 // F7 / T3: Claude's backend id may arrive only after init — persist it when it lands.
                 onBackendId: { backendId in
                     Task {

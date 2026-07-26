@@ -63,3 +63,25 @@ final class MadeClients<C>: @unchecked Sendable {
     var count: Int { box.withLock { $0.count } }
     func last() -> C? { box.withLock { $0.last } }
 }
+
+/// Poll until `predicate` is true. Prefer this over fixed `Task.sleep` under parallel
+/// `swift test` — short sleeps flake when the suite is CPU-saturated (client reverse-RPC /
+/// notification delivery often takes >80ms under load).
+/// Returns whether the predicate became true within `timeoutNs` (default 2s).
+///
+/// Single signature (sync predicate) — an async overload with a same-name sync overload was
+/// infinite-recursing because `{ predicate() }` still type-checked as the sync form.
+@discardableResult
+func waitUntil(
+    timeoutNs: UInt64 = 2_000_000_000,
+    pollNs: UInt64 = 5_000_000,
+    _ predicate: @Sendable () -> Bool
+) async -> Bool {
+    var waited: UInt64 = 0
+    while waited < timeoutNs {
+        if predicate() { return true }
+        try? await Task.sleep(nanoseconds: pollNs)
+        waited += pollNs
+    }
+    return predicate()
+}

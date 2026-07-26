@@ -58,7 +58,8 @@ struct PermissionGateTests {
 
     @Test func timeoutDeniesByDefault() async {
         let gate = PermissionGate()
-        let decision = await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 50_000_000) // 50ms
+        // 200ms: still fast, but less sensitive to scheduler delay under parallel load than 50ms.
+        let decision = await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 200_000_000)
         #expect(decision == .deny)
     }
 
@@ -92,7 +93,8 @@ struct PermissionGateTests {
     // it stays pending and deny-by-defaults at timeout (never auto-allow via a stray click).
     @Test func nilApproverCannotBeResolved() async {
         let gate = PermissionGate()
-        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 60_000_000) } // 60ms
+        // 250ms budget: resolve attempts must still see pending=1 before timeout settles deny.
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash"), timeoutNs: 250_000_000) }
         await waitRegistered(gate)
         #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "anyone") == false)
         #expect(await gate.resolve(reqKey: "k", action: .allow) == false)   // byUserId nil too

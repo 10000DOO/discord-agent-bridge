@@ -210,8 +210,7 @@ struct AppServerClientTests {
                 "delta": .string("Hello"),
             ])
         )
-        // Allow delivery
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await waitUntil { seen.withLock { $0.count } >= 1 })
 
         let got = seen.withLock { $0 }
         #expect(got.count == 1)
@@ -250,7 +249,12 @@ struct AppServerClientTests {
         if let s = String(data: approvalLine, encoding: .utf8) {
             try await pair.sidecar.writeLine(s + "\n")
         }
-        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 99 && o["result"] != nil
+            }
+        })
 
         let msgs = recorded.withLock { $0 }
         let resp = msgs.first { msg in
@@ -295,7 +299,12 @@ struct AppServerClientTests {
         if let s = String(data: approvalLine, encoding: .utf8) {
             try await pair.sidecar.writeLine(s + "\n")
         }
-        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(await waitUntil {
+            recorded.withLock { $0 }.contains { msg in
+                guard case .object(let o) = msg else { return false }
+                return o["id"]?.numberValue == 7 && o["result"] != nil
+            }
+        })
 
         let msgs = recorded.withLock { $0 }
         let resp = msgs.first { msg in

@@ -87,7 +87,7 @@ struct CodexTurnAccumulationTests {
         await fake.pushNotification(method: "item/agentMessage/delta", params: .object(["delta": .string("Hello")]))
         await fake.pushNotification(method: "item/agentMessage/delta", params: .object(["delta": .string(", world")]))
         await fake.pushNotification(method: "turn/completed", params: .object([:]))
-        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await waitUntil { acc.withLock { $0.done } != nil })
 
         let got = acc.withLock { $0 }
         #expect(got.done == "Hello, world")
@@ -111,7 +111,7 @@ struct CodexTurnAccumulationTests {
 
         await fake.pushNotification(method: "item/agentMessage/delta", params: .object(["delta": .string("partial")]))
         await fake.pushNotification(method: "turn/failed", params: .object(["error": .object(["message": .string("kaboom")])]))
-        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await waitUntil { acc.withLock { $0.failed } != nil })
 
         let got = acc.withLock { $0 }
         #expect(got.failed == "kaboom")

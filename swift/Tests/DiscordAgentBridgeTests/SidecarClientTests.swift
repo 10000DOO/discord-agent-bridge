@@ -209,8 +209,12 @@ struct SidecarClientTests {
         }
 
         try await client.sessionSend(session: started.session, text: "hi")
-        // Allow event delivery
-        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(await waitUntil {
+            received.withLock { $0 }.contains(where: {
+                if case .text(let t, _) = $0 { return t == "ack" }
+                return false
+            })
+        })
         collectTask.cancel()
 
         let got = received.withLock { $0 }
@@ -256,7 +260,8 @@ struct SidecarClientTests {
         // We observe by reading pair.sidecar's peer responses via a second reader isn't easy.
         // Instead: send reverse and ensure client doesn't crash; wait briefly.
         await fake.sendReverseAttach(id: "s-rev-1", session: started.session, path: "/tmp/x")
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Reverse RPC is fire-and-forget; yield so the read loop can answer before teardown.
+        for _ in 0..<32 { await Task.yield() }
 
         await client.close()
         await pair.sidecar.close()

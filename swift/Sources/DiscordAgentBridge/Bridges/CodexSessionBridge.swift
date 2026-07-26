@@ -62,6 +62,10 @@ public actor CodexSessionBridge {
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent turn/start on the same thread).
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    /// Per-channel FIFO chain so delta → completed notifications cannot reorder across the
+    /// sync-handler → actor hop (`Task { await onNotification }`). Under parallel load a
+    /// bare Task hop can finish the turn before appendText, yielding "(empty result)".
+    private let notifyChains = LockedBox<[String: Task<Void, Never>]>([:])
 
     private struct TurnBox {
         var text = ""
@@ -266,8 +270,18 @@ public actor CodexSessionBridge {
             throw AppServerError("session stopped")
         }
 
+        // Extend the chain *synchronously* in the read-loop callback so arrival order is kept
+        // even when work hops onto this actor.
         client.onNotification { [weak self] method, params in
-            Task { await self?.onNotification(channelId: channelId, method: method, params: params) }
+            guard let self else { return }
+            self.notifyChains.withLock { chains in
+                let prev = chains[channelId]
+                let next = Task {
+                    _ = await prev?.value
+                    await self.onNotification(channelId: channelId, method: method, params: params)
+                }
+                chains[channelId] = next
+            }
         }
         let channel = Channel(client: client, threadId: threadId)
         channels[channelId] = channel
