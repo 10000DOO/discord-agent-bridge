@@ -304,11 +304,35 @@ public actor DabSessionBridge {
             )
         }
 
-        // Thread global autoAllowClaudeTools into the sidecar so makeCanUseTool skips known-safe tools
-        // without a Discord prompt (TS session.start config.autoAllowClaudeTools).
-        let autoAllow = await configStore.autoAllowClaudeTools()
-        let sessionCfg: SessionStartParams.SessionConfig? =
-            autoAllow.isEmpty ? nil : .init(autoAllowClaudeTools: autoAllow)
+        // Thread the layered permission profile's allowedTools (+ global autoAllowClaudeTools
+        // fallback) and permissionTimeoutSec into the sidecar (TS PermissionResolver.resolve() +
+        // sessionOrchestrator.buildContext: modeConfig.allowedTools = modeConfig.autoAllowClaudeTools
+        // = perm.allowedTools). Profiles are looked up from the top-level config only (never
+        // server-layered, matching TS); permissionTimeoutSec IS server-layered via ConfigResolver.
+        // A profile name that no longer exists in config.profiles (e.g. deleted after a channel
+        // bound to it) falls back to the global auto-allow list rather than failing the turn —
+        // TS throws here, but Swift prefers the fail-secure default already used elsewhere
+        // (ConfigStore.autoAllowClaudeTools()) over killing a turn on a stale config reference.
+        // Same fail-secure treatment when config.json itself is missing/unreadable: empty
+        // allowedTools + 0 timeout (matches ConfigStore.autoAllowClaudeTools()'s own "or empty
+        // when config is missing/unreadable" contract) instead of throwing the turn.
+        var effectiveAllowedTools: [String] = []
+        var effectivePermissionTimeoutSec = 0
+        if let globalConfig = try? await configStore.load() {
+            let resolvedConfig = try? await ConfigResolver(
+                configStore: configStore,
+                bindingSource: SessionStoreBindingSource(store: store)
+            ).resolve(guildId: guildId, channelId: channelId)
+            effectiveAllowedTools = resolvedConfig?.permissionProfile
+                .flatMap { globalConfig.profiles[$0]?.allowedTools }
+                ?? globalConfig.autoAllowClaudeTools
+            effectivePermissionTimeoutSec = resolvedConfig?.limits.permissionTimeoutSec ?? 0
+        }
+        let sessionCfg = SessionStartParams.SessionConfig(
+            allowedTools: effectiveAllowedTools.isEmpty ? nil : effectiveAllowedTools,
+            autoAllowClaudeTools: effectiveAllowedTools.isEmpty ? nil : effectiveAllowedTools,
+            permissionTimeoutSec: effectivePermissionTimeoutSec
+        )
         let params = SessionStartParams(
             cwd: cwdValue, guildId: guildId, channelId: channelId, ownerId: ownerId,
             model: model, effort: effort, permMode: perm, config: sessionCfg, env: sessionEnv

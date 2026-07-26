@@ -51,6 +51,18 @@ private actor GateableSidecar {
             counter += 1
             if let m = env.params?["model"]?.stringValue { capture?.withLock { $0["model"] = m } }
             if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
+            // C9: session.start/resume config.{allowedTools,autoAllowClaudeTools,permissionTimeoutSec}
+            if let cfg = env.params?["config"]?.objectValue {
+                if let allowed = cfg["allowedTools"]?.arrayValue {
+                    capture?.withLock { $0["config.allowedTools"] = allowed.compactMap { $0.stringValue }.joined(separator: ",") }
+                }
+                if let autoAllow = cfg["autoAllowClaudeTools"]?.arrayValue {
+                    capture?.withLock { $0["config.autoAllowClaudeTools"] = autoAllow.compactMap { $0.stringValue }.joined(separator: ",") }
+                }
+                if let timeout = cfg["permissionTimeoutSec"]?.numberValue {
+                    capture?.withLock { $0["config.permissionTimeoutSec"] = String(Int(timeout)) }
+                }
+            }
             // W16-f: custom overlay keys appear under params.env
             if let envObj = env.params?["env"]?.objectValue {
                 if let base = envObj["ANTHROPIC_BASE_URL"]?.stringValue {
@@ -464,6 +476,63 @@ struct DabSessionBridgeTests {
         #expect(reply.text == "ok:hi")
         #expect(prompts.withLock { $0.isEmpty })                    // no button prompt
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")
+    }
+
+    // C9: an active permission profile's allowedTools reach session.start config, replacing
+    // (not merging with) the global autoAllowClaudeTools list; permissionTimeoutSec is threaded too.
+    @Test func profileAllowedToolsReachSessionStartConfig() async throws {
+        let cfg = ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-cfg-\(UUID().uuidString)", isDirectory: true))
+        try await cfg.save(AppConfig(
+            discord: DiscordSecrets(token: "t", clientId: "c"),
+            limits: LimitsSection(permissionTimeoutSec: 42),
+            autoAllowClaudeTools: ["Bash"],
+            profiles: ["readonly": Profile(permissionMode: "plan", allowedTools: ["Read", "Glob"], policyTier: "read-only")]
+        ))
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .claude, cwd: "/x", guildId: "g", permissionProfile: "readonly", updatedAt: "t"
+        ))
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture, store: store, configStore: cfg)
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
+        #expect(reply.text == "ok:hi")
+        let got = capture.withLock { $0 }
+        #expect(got["config.allowedTools"] == "Read,Glob")
+        #expect(got["config.autoAllowClaudeTools"] == "Read,Glob")   // profile replaces global autoAllow, not merged
+        #expect(got["config.permissionTimeoutSec"] == "42")
+    }
+
+    // C9: no bound profile → falls back to the global autoAllowClaudeTools list.
+    @Test func noProfileFallsBackToGlobalAutoAllow() async throws {
+        let cfg = try await freshTempConfigStore(autoAllow: ["Read", "Glob", "Grep"])
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture, configStore: cfg)
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
+        #expect(reply.text == "ok:hi")
+        #expect(capture.withLock { $0["config.allowedTools"] } == "Read,Glob,Grep")
+        #expect(capture.withLock { $0["config.autoAllowClaudeTools"] } == "Read,Glob,Grep")
+    }
+
+    // C9: a persisted binding references a profile no longer in config.profiles (deleted after the
+    // channel bound to it) — falls back to the global auto-allow list; the turn must NOT fail.
+    @Test func deletedProfileReferenceFallsBackSilently() async throws {
+        let cfg = ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-cfg-\(UUID().uuidString)", isDirectory: true))
+        try await cfg.save(AppConfig(
+            discord: DiscordSecrets(token: "t", clientId: "c"),
+            autoAllowClaudeTools: ["Read"]
+            // profiles intentionally empty — "ghost" below no longer exists.
+        ))
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .claude, cwd: "/x", guildId: "g", permissionProfile: "ghost", updatedAt: "t"
+        ))
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture, store: store, configStore: cfg)
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
+        #expect(reply.text == "ok:hi")
+        #expect(capture.withLock { $0["config.allowedTools"] } == "Read")
     }
 
     // T1 (core): backend id captured on notify → persisted → a fresh bridge sharing the store RESUMES
