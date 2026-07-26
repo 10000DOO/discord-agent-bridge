@@ -994,16 +994,22 @@ struct EventHandler: GatewayEventHandler {
                     )
                 }
             } else if let p = wizard.startParams {
-                await bindFromWizard(p)
-                let extra = [
-                    p.model.isEmpty ? nil : "model=\(p.model)",
-                    p.effort.isEmpty ? nil : "effort=\(p.effort)",
-                    p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
-                ].compactMap { $0 }.joined(separator: " ")
-                let text = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
-                    + (extra.isEmpty ? "" : " (\(extra))")
-                    + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
-                // W16-g: optional session status embed on bind (TS buildStatusEmbed after start).
+                // W11-b2 A4D: create proj-<folder> under sessions category when /setup ran;
+                // bind registry+store to the new channel id (fallback: wizard channel).
+                let guildId = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
+                let sessionsCategoryId = await ConfigStore.shared
+                    .loadServerConfig(guildId: guildId)?.channels?.sessionsCategoryId
+                let provisioner: (any GuildChannelProvisioner)? = guildId.isEmpty
+                    ? nil
+                    : resolveGuildProvisioner(client: client, guildId: guildId)
+                let bindChannelId = await resolveSessionChannelId(
+                    provisioner: provisioner,
+                    folderPath: p.cwd,
+                    sessionsCategoryId: sessionsCategoryId,
+                    fallbackChannelId: p.channelId
+                )
+                await bindFromWizard(p, channelId: bindChannelId)
+
                 let status = SessionStatus(
                     mode: p.backend.rawValue,
                     cwd: p.cwd,
@@ -1012,9 +1018,32 @@ struct EventHandler: GatewayEventHandler {
                     usagePanel: backendSupportsUsagePanel(p.backend)
                 )
                 let statusEmbed = discordEmbed(from: buildStatusEmbed(status))
+
+                // Ephemeral wizard reply: link to session channel (TS cmd.start.channelCreated).
+                let replyText: String
+                if bindChannelId != p.channelId {
+                    replyText = "세션 채널 생성됨: <#\(bindChannelId)>"
+                } else {
+                    let extra = [
+                        p.model.isEmpty ? nil : "model=\(p.model)",
+                        p.effort.isEmpty ? nil : "effort=\(p.effort)",
+                        p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
+                    ].compactMap { $0 }.joined(separator: " ")
+                    replyText = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
+                        + (extra.isEmpty ? "" : " (\(extra))")
+                        + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
+                }
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(content: text, embeds: [statusEmbed], components: []))
+                    payload: .updateMessage(.init(content: replyText, embeds: [], components: []))
+                )
+                // Intro + status embed on the bound session channel (TS postSessionIntro).
+                _ = try? await client.createMessage(
+                    channelId: ChannelSnowflake(bindChannelId),
+                    payload: .init(
+                        content: "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
+                        embeds: [statusEmbed]
+                    )
                 )
             } else {
                 _ = try? await client.createInteractionResponse(
@@ -1215,13 +1244,15 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
-    /// Registry bind + store upsert (same shape as the pre-wizard `/agent start` path).
-    private func bindFromWizard(_ p: WizardStartParams) async {
+    /// Registry bind + store upsert. `channelId` defaults to wizard params (same channel);
+    /// A4D start path passes the newly created session channel id when available.
+    private func bindFromWizard(_ p: WizardStartParams, channelId: String? = nil) async {
         let model = p.model.isEmpty ? nil : p.model
         let effort = p.effort.isEmpty ? nil : p.effort
         let perm = p.permMode.isEmpty ? nil : p.permMode
+        let bindId = channelId ?? p.channelId
         await SessionRegistry.shared.bind(
-            channelId: p.channelId,
+            channelId: bindId,
             SessionConfig(backend: p.backend, model: model, effort: effort, permMode: perm)
         )
         let record = PersistedSession(
@@ -1235,7 +1266,7 @@ struct EventHandler: GatewayEventHandler {
             permMode: perm,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        try? await SessionStore.shared.upsert(channelId: p.channelId, record)
+        try? await SessionStore.shared.upsert(channelId: bindId, record)
     }
 
     func onMessageCreate(_ payload: Gateway.MessageCreate) async throws {

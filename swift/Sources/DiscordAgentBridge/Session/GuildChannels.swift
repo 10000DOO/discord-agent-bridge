@@ -153,6 +153,33 @@ public func createSessionChannel(
     return try await provisioner.createTextChannel(name: name, parentId: sessionsCategoryId)
 }
 
+/// Resolve the channel id to bind after `/agent start` wizard done (W11-b2 A4D).
+///
+/// When a provisioner and non-empty `sessionsCategoryId` are available, creates a fresh
+/// `proj-<folder>` text channel under that category. On missing setup or create failure,
+/// returns `fallbackChannelId` (the wizard's original channel) so start still succeeds.
+public func resolveSessionChannelId(
+    provisioner: (any GuildChannelProvisioner)?,
+    folderPath: String,
+    sessionsCategoryId: String?,
+    fallbackChannelId: String
+) async -> String {
+    guard let provisioner else { return fallbackChannelId }
+    guard let sessionsCategoryId, !sessionsCategoryId.isEmpty else {
+        return fallbackChannelId
+    }
+    do {
+        let created = try await createSessionChannel(
+            provisioner: provisioner,
+            folderPath: folderPath,
+            sessionsCategoryId: sessionsCategoryId
+        )
+        return created.id
+    } catch {
+        return fallbackChannelId
+    }
+}
+
 /// `proj-<basename>` slug, lowercased, non-alnum → `-`, capped at 100 chars.
 public func sessionChannelName(_ folderPath: String) -> String {
     var path = folderPath

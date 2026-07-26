@@ -15,7 +15,8 @@ import Foundation
 // Option lists are injected at open from live `providerCatalog(for:)` — never hardcoded
 // model/effort/perm vocabularies (Backend.allCases is the only fixed list).
 //
-// ponytail: preset · A4D channel create → residual.
+// ponytail: preset → residual. A4D session-channel create is wired in DabMain done path
+// via `resolveSessionChannelId` + `createSessionChannel` (not inside this pure SM).
 // dir:resume → separate ResumeWizard (W11-b2 residual, wired).
 
 // MARK: Types

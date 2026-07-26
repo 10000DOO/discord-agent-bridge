@@ -42,7 +42,7 @@
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W11-b2** | `partial` | folder 클러스터 ✅ · **dir:resume + ResumeWizard ✅** · **reconfigure 팝업 ✅** (`/mode backend` 다른 백엔드 → model→effort→perm · 확인 시에만 stop+rebind). **잔여:** A4D 세션 채널 생성 · preset |
+| **W11-b2** | `partial` | folder 클러스터 ✅ · **dir:resume + ResumeWizard ✅** · **reconfigure 팝업 ✅** · **A4D 세션 채널 생성 ✅** (start done → `resolveSessionChannelId`/`createSessionChannel` · 바인드 새 채널 · intro+statusEmbed · 실패 시 원 채널). **잔여:** preset |
 | **W11-g** | `partial` | slice1–3 ✅ (포맷·Claude/Grok usage·stats). **잔여(slice4+):** tools/subagent HUD · 라이브 스트림 임베드 · 사이드카 setModel displayName 재해석 |
 | **W16-b/g/h** | ship + residual | `/config` model/effort/locale·notif/render · Codex/Grok mid-turn tool · pin status · **바이너리 self-replace** |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
@@ -86,7 +86,7 @@ swift run --package-path swift dab grok-smoke
 
 0. ~~**W12** 레거시 정책·호환 매트릭스·README~~ ✅
 1. **W11-g slice4+** — tools/subagent HUD · 라이브 스트림 임베드 · setModel displayName
-2. **W11-b2 잔여** — A4D channel · preset (resume · reconfigure ✅)
+2. **W11-b2 잔여** — preset (resume · reconfigure · A4D ✅)
 3. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 설치 포트
 4. **W13-b** (선택) — 기본 permMode/`allowlist` when product default moves off bypass
 5. 부수: `verify.sh`에 `--scratch-path` 반영 · 플래키 테스트 근본 판정(§14.4)
@@ -282,7 +282,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W11-a** | G | `done` | 슬래시 인프라(DiscordBM) + `SessionRegistry` + 순수 `routeDecision` + `/agent start·close` + config seam | `/agent start`로 채널 바인딩 → 접두사 없이 대화 |
 | **W11-b1** | G | `done` | 브리지 model·effort 실소비(config→client params) + `/agent start model·effort` 옵션 | model/effort 세션 반영, fake 검증 |
 | **W11-h** | G | `done` | **provider 카탈로그 Swift 포팅** (W11-b2 선행). 3백엔드 모델/추론/권한을 **전부 라이브** 조회(하드코딩 고정 금지 — 백엔드만 고정). Claude=사이드카 **`claude.catalog` RPC**, Codex/Grok=`models_cache.json` 읽기, 추론=모델별 `supportedEffortLevels` 좁힘, 권한=백엔드별(Codex 샌드박스는 `codex --help` 동적). 상세 §14.10 | 카탈로그 라이브 조회 |
-| **W11-b2** | G | `partial` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그 주입**). **slice1–3 folder 클러스터 ✅**: pure SM+카탈로그 + `DirectoryBrowser` + `FolderPanel` + dir:manual/create/panel. **dir:resume UI ✅**: pure `ResumeWizard` + Claude `sessions.list` · Codex/Grok store best-effort · current channel bind. **reconfigure 팝업 ✅**: `ChannelWizard` entry/kind=reconfigure firstStep=model · `/mode backend` 동일→rebindBackend / 다른→팝업(세션 유지) · confirm 시 `reconfigureBinding` stop+same-channel rebind · freshContext 공개. **잔여**: A4D 채널 생성·preset | 마법사 UI + resume + reconfigure |
+| **W11-b2** | G | `partial` | `/agent start` 셀렉트 마법사(**W11-h 카탈로그 주입**). **slice1–3 folder 클러스터 ✅**: pure SM+카탈로그 + `DirectoryBrowser` + `FolderPanel` + dir:manual/create/panel. **dir:resume UI ✅**: pure `ResumeWizard` + Claude `sessions.list` · Codex/Grok store best-effort · current channel bind. **reconfigure 팝업 ✅**: `ChannelWizard` entry/kind=reconfigure firstStep=model · `/mode backend` 동일→rebindBackend / 다른→팝업(세션 유지) · confirm 시 `reconfigureBinding` stop+same-channel rebind · freshContext 공개. **A4D 세션 채널 ✅**: start done(not reconfigure) → `resolveSessionChannelId`(+`createSessionChannel` under `sessionsCategoryId`) · registry+store bind 새 id · ephemeral channelCreated 링크 · 새 채널 intro+statusEmbed · create 실패/미셋업 시 원 채널 fallback. **잔여**: preset | 마법사 UI + resume + reconfigure + A4D |
 | **W11-c1** | G | `done` | 권한 lib 토대: `PermissionGate`(deny-by-default·approver 확인) + custom_id + `resolveThreadPolicy` 포팅 + `ClaudeSidecarClient.sessionPermission` | 게이트·정책·custom_id (단위테스트) |
 | **W11-c2** | G | `done` | 배선: 브리지 seam→게이트, DabMain 버튼/인터랙션, `/agent start` permMode, ownerId 통과. 보안 RV 통과 | 인터랙티브 승인 실동작 |
 | **W11-f1** | G | `done` | 영속 저장 계층 `SessionStore`(actor, 원자 tmp+rename·0600·load-merge-save·손상→빈로드) + `PersistedSession`. 신규·고립·단위테스트(T8) | 저장/복원 원시계층 |
@@ -389,6 +389,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | **W12** | **문서 전용.** 루트 `README.md`/`README.ko.md`를 **Swift-first** 제품 경로로 개편: `swift/scripts/install.sh` · `dab` · 하이브리드 Claude 사이드카 · `~/.dab`(배포) vs `~/.discord-agent-bridge`(config/state) · npm TS→Swift 마이그레이션(env·state 분리·`DAB_CLAUDE_SIDECAR` 의미) · **호환 매트릭스**(100% 미주장·잔여 명시). §0 스냅샷·W12=`done`·다음 잔여 큐 갱신. 코드 변경 없음. |
 | 2026-07-26 | interrupt UI | pure `InterruptButton`(`buildInterruptId`/`parseInterruptId`/`buildInterruptButton`) + 단위테스트. `DabMain` 턴 중 "응답 중…"+⏹️ 중단 컨트롤 메시지(종료 시 disabled) · components `interrupt:<g>:<c>` → drive auth → `SessionLifecycle.interruptChannel`(unbind 없음) · ephemeral followUp. 풀 스트림 임베드는 W11-g 잔여. |
 | 2026-07-26 | W11-b2 reconfigure | `/mode backend` **다른 백엔드** → reconfigure 팝업(TS R1/R4). `ChannelWizard` `entry`/`kind`/`isReconfigure` · firstStep=model · back 첫 단계=cancel · 제목/1–3/3·"✅ 전환". 동일 백엔드=기존 `rebindBackend`. confirm=`SessionLifecycle.reconfigureBinding`(stop 3브리지+same channel model/effort/perm) + ephemeral switched + public freshContext. 단위테스트 SM reconfigure + lifecycle. 잔여: A4D·preset. |
+| 2026-07-26 | W11-b2 A4D | `/agent start` 마법사 **done(start path)** → `resolveSessionChannelId`(`createSessionChannel` under server `sessionsCategoryId`) · registry+store bind **새 채널 id** · ephemeral `세션 채널 생성됨: <#id>` · 새 채널 intro+statusEmbed. reconfigure 경로 불변(same channel). provisioner 없음·카테고리 없음·create 실패 → 원 채널 fallback. pure `sessionChannelName`/`createSessionChannel` 기존 + resolve 단위테스트(fake provisioner). **잔여:** preset. |
 
 ---
 
@@ -449,7 +450,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** W11-g slice4+ (HUD) · W11-b2 잔여 (A4D/preset) · W16 폴리시. **W12 문서 완료** (README Swift-first + 호환 매트릭스).
+**큐 헤드:** W11-g slice4+ (HUD) · W11-b2 잔여 (preset) · W16 폴리시. **W12 문서 완료** (README Swift-first + 호환 매트릭스).
 
 ---
 
@@ -476,7 +477,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` **W12 문서 완료**(루트 README/README.ko Swift-first · npm→dab 마이그레이션 · 호환 매트릭스 · 잔여 명시). W16-a~h ship slices + W11-g slice1–3 + W11-b2 folder·resume·reconfigure + W10–W15 주요 완료. **다음 기능 잔여** = W11-g slice4+ · W11-b2 A4D/preset · W16 폴리시 · W13-b(보류). **100% 패리티 아님.**
+`plan/swift-port` **W12 문서 완료**(루트 README/README.ko Swift-first · npm→dab 마이그레이션 · 호환 매트릭스 · 잔여 명시). W16-a~h ship slices + W11-g slice1–3 + W11-b2 folder·resume·reconfigure·A4D + W10–W15 주요 완료. **다음 기능 잔여** = W11-g slice4+ · W11-b2 preset · W16 폴리시 · W13-b(보류). **100% 패리티 아님.**
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
 **해결: 격리 빌드 경로로 실행하라.**
@@ -513,9 +514,9 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1–3**~~ ✅ · ~~**W12**~~ ✅ (README·호환 매트릭스)
+1. ~~**W11-h**~~ ✅ · ~~**W11-d**~~ ✅ · ~~**W11-b2 slice1–3 folder**~~ ✅ · ~~**W11-g slice1–3**~~ ✅ · ~~**W12**~~ ✅ (README·호환 매트릭스) · ~~**W11-b2 A4D**~~ ✅
 2. **W11-g slice4+** — tools/subagent 집계·라이브 HUD 임베드·setModel displayName (상세 §14.9).
-3. **W11-b2 잔여** — A4D 채널 생성·preset (dir:resume · reconfigure ✅).
+3. **W11-b2 잔여** — preset (dir:resume · reconfigure · A4D ✅).
 4. **W16 폴리시** — `/config` 확장 · Codex/Grok mid-turn tool · auto-update 바이너리 교체.
 5. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
 - 부수 TODO: `verify.sh`에 `--scratch-path` 반영 · §14.4 플래키 근본 판정.

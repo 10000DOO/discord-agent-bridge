@@ -299,6 +299,70 @@ struct GuildChannelsSessionTests {
         )
         #expect(prov.channels[created.id]?.parent == nil)
     }
+
+    @Test func resolveSessionChannelIdCreatesWhenCategoryPresent() async {
+        let prov = FakeProvisioner()
+        let id = await resolveSessionChannelId(
+            provisioner: prov,
+            folderPath: "/home/me/MyApp",
+            sessionsCategoryId: "sess-cat",
+            fallbackChannelId: "orig-ch"
+        )
+        #expect(id != "orig-ch")
+        #expect(prov.channels[id]?.name == "proj-myapp")
+        #expect(prov.channels[id]?.parent == "sess-cat")
+    }
+
+    @Test func resolveSessionChannelIdFallsBackWithoutCategory() async {
+        let prov = FakeProvisioner()
+        let id = await resolveSessionChannelId(
+            provisioner: prov,
+            folderPath: "/home/me/MyApp",
+            sessionsCategoryId: nil,
+            fallbackChannelId: "orig-ch"
+        )
+        #expect(id == "orig-ch")
+        #expect(prov.createdNames.isEmpty)
+    }
+
+    @Test func resolveSessionChannelIdFallsBackWithoutProvisioner() async {
+        let id = await resolveSessionChannelId(
+            provisioner: nil,
+            folderPath: "/home/me/MyApp",
+            sessionsCategoryId: "sess-cat",
+            fallbackChannelId: "orig-ch"
+        )
+        #expect(id == "orig-ch")
+    }
+
+    @Test func resolveSessionChannelIdFallsBackOnCreateFailure() async {
+        let prov = ThrowingProvisioner()
+        let id = await resolveSessionChannelId(
+            provisioner: prov,
+            folderPath: "/home/me/MyApp",
+            sessionsCategoryId: "sess-cat",
+            fallbackChannelId: "orig-ch"
+        )
+        #expect(id == "orig-ch")
+    }
+}
+
+/// Fake that always fails create — for resolveSessionChannelId fallback tests.
+private final class ThrowingProvisioner: GuildChannelProvisioner, @unchecked Sendable {
+    let guildId = "g1"
+    func canManageChannels() async -> Bool { true }
+    func channelExists(_ id: String) async -> Bool { false }
+    func ensureCategory(name: String, existingId: String?) async throws -> ProvisionedChannel {
+        throw NSError(domain: "test", code: 1)
+    }
+    func ensureTextChannel(name: String, parentId: String, existingId: String?) async throws -> ProvisionedChannel {
+        throw NSError(domain: "test", code: 1)
+    }
+    func createTextChannel(name: String, parentId: String?) async throws -> ProvisionedChannel {
+        throw NSError(domain: "test", code: 1)
+    }
+    func renameChannel(id: String, name: String) async throws {}
+    func deleteChannel(id: String) async throws {}
 }
 
 // MARK: - alreadyDone async against live fake
