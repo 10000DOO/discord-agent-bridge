@@ -90,10 +90,41 @@ private func makeWizard(
     return (w, folderRoot)
 }
 
-/// Confirm folder (root) and land on backend — shared setup for select-step tests.
+/// Confirm folder (root) and land on backend — no presets (R6).
 @discardableResult
 private func pastFolder(_ w: ChannelWizard) -> WizardStep {
     w.handle(WizardInput(id: "dir:here"))
+}
+
+private let SAMPLE_PRESETS: [Preset] = [
+    Preset(
+        name: "codex-fast",
+        backend: "codex",
+        model: "gpt-5.4",
+        effort: "minimal",
+        permMode: "workspace-write"
+    ),
+    Preset(name: "claude-min", backend: "claude"),
+]
+
+private func makeWizardWithPresets(
+    presets: [Preset] = SAMPLE_PRESETS,
+    onDelete: ((String) -> Void)? = nil,
+    backendAvailable: ((String) -> Bool)? = nil
+) throws -> (ChannelWizard, URL) {
+    let folderRoot = try makeFolderRoot()
+    let browser = DirectoryBrowser(allowedRoots: [folderRoot.path], startPath: folderRoot.path)
+    let w = ChannelWizard(
+        guildId: "g1",
+        channelId: "c1",
+        ownerId: "u1",
+        browser: browser,
+        options: fakeOptions(),
+        presets: presets,
+        onDeletePreset: onDelete,
+        backendAvailable: backendAvailable
+    )
+    return (w, folderRoot)
 }
 
 private func selectOptions(_ wizard: ChannelWizard, customId: String) -> [WizardSelectOption] {
@@ -537,6 +568,141 @@ struct ChannelWizardTests {
     }
 }
 
+// MARK: - Preset step (W11-b2)
+
+@Suite("ChannelWizard presets")
+struct ChannelWizardPresetTests {
+
+    @Test func dirHereGoesToPresetWhenPresetsNonEmpty() throws {
+        let (w, root) = try makeWizardWithPresets()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.handle(WizardInput(id: "dir:here")) == .preset)
+        let ids = componentIds(w)
+        #expect(ids.contains("preset.pick"))
+        #expect(ids.contains("preset.direct"))
+        #expect(ids.contains("preset.delete"))
+        #expect(selectOptions(w, customId: "preset.pick").map(\.value) == ["codex-fast", "claude-min"])
+    }
+
+    @Test func dirHereGoesToBackendWhenNoPresets() throws {
+        let (w, root) = try makeWizard()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(w.handle(WizardInput(id: "dir:here")) == .backend)
+        #expect(!componentIds(w).contains("preset.pick"))
+    }
+
+    @Test func pickingPresetSeedsAndStartsImmediately() throws {
+        let (w, root) = try makeWizardWithPresets()
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:into", value: "project"))
+        w.handle(WizardInput(id: "dir:here"))
+        #expect(w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .done)
+        #expect(w.launchedFromPreset() == true)
+        #expect(w.startParams?.backend == .codex)
+        #expect(w.startParams?.model == "gpt-5.4")
+        #expect(w.startParams?.effort == "minimal")
+        #expect(w.startParams?.permMode == "workspace-write")
+        #expect(w.startParams?.cwd == root.appendingPathComponent("project").path)
+    }
+
+    @Test func minimalPresetSeedsCatalogDefaults() throws {
+        let (w, root) = try makeWizardWithPresets()
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        #expect(w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
+        #expect(w.startParams?.backend == .claude)
+        #expect(w.startParams?.model == "opus")
+        #expect(w.startParams?.effort == "high")
+        #expect(w.startParams?.permMode == "default")
+    }
+
+    @Test func presetDirectAdvancesToBackendWithoutStart() throws {
+        let (w, root) = try makeWizardWithPresets()
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        #expect(w.handle(WizardInput(id: "preset.direct")) == .backend)
+        #expect(w.launchedFromPreset() == false)
+        #expect(w.startParams == nil)
+    }
+
+    @Test func deleteModeRemovesPresetAndStaysOnStep() throws {
+        var deleted: [String] = []
+        let (w, root) = try makeWizardWithPresets(onDelete: { deleted.append($0) })
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        #expect(w.handle(WizardInput(id: "preset.delete")) == .preset)
+        #expect(w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .preset)
+        #expect(deleted == ["codex-fast"])
+        #expect(selectOptions(w, customId: "preset.pick").map(\.value) == ["claude-min"])
+        #expect(w.startParams == nil)
+    }
+
+    @Test func unavailableBackendBlocksStartAndShowsNotice() throws {
+        let (w, root) = try makeWizardWithPresets(backendAvailable: { $0 != "codex" })
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        #expect(w.handle(WizardInput(id: "preset.pick", value: "codex-fast")) == .preset)
+        #expect(w.launchedFromPreset() == false)
+        #expect(w.startParams == nil)
+        #expect(w.render().description.contains("codex"))
+        #expect(w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
+        #expect(w.startParams != nil)
+    }
+
+    @Test func reenterPresetViaFolderClearsStaleUnavailableNotice() throws {
+        let (w, root) = try makeWizardWithPresets(backendAvailable: { $0 != "codex" })
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        w.handle(WizardInput(id: "preset.pick", value: "codex-fast"))
+        #expect(w.render().description.contains("codex"))
+        #expect(w.handle(WizardInput(id: "wizard.back")) == .folder)
+        #expect(w.handle(WizardInput(id: "dir:here")) == .preset)
+        #expect(!w.render().description.contains("codex"))
+    }
+
+    @Test func deletingLastPresetLeavesButtonsWithoutDropdown() throws {
+        let single = [Preset(name: "only", backend: "claude")]
+        let (w, root) = try makeWizardWithPresets(presets: single)
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        w.handle(WizardInput(id: "preset.delete"))
+        #expect(w.handle(WizardInput(id: "preset.pick", value: "only")) == .preset)
+        let ids = componentIds(w)
+        #expect(!ids.contains("preset.pick"))
+        #expect(ids.contains("preset.direct"))
+        #expect(ids.contains("preset.delete"))
+    }
+
+    @Test func wizardBackWalksBackendPresetFolder() throws {
+        let (w, root) = try makeWizardWithPresets()
+        defer { try? FileManager.default.removeItem(at: root) }
+        w.handle(WizardInput(id: "dir:here"))
+        w.handle(WizardInput(id: "preset.direct"))
+        #expect(w.currentStep() == .backend)
+        #expect(w.handle(WizardInput(id: "wizard.back")) == .preset)
+        #expect(w.handle(WizardInput(id: "wizard.back")) == .folder)
+    }
+
+    @Test func isWizardCustomIdRecognizesPresetIds() {
+        #expect(isWizardCustomId("preset.pick"))
+        #expect(isWizardCustomId("preset.direct"))
+        #expect(isWizardCustomId("preset.delete"))
+        #expect(!isWizardCustomId("preset.save")) // save is post-done modal opener
+    }
+
+    @Test func summarizePresetClampsTo100() {
+        let long = Preset(
+            name: "n",
+            backend: String(repeating: "b", count: 40),
+            model: String(repeating: "m", count: 40),
+            effort: String(repeating: "e", count: 40),
+            permMode: String(repeating: "p", count: 40)
+        )
+        let s = summarizePreset(long)
+        #expect(s.count <= 100)
+    }
+}
+
 @Suite("WizardRegistry")
 struct WizardRegistryTests {
     @Test func putGetRemove() async throws {
@@ -547,5 +713,17 @@ struct WizardRegistryTests {
         #expect(await reg.get(channelId: "c1") != nil)
         await reg.remove(channelId: "c1")
         #expect(await reg.get(channelId: "c1") == nil)
+    }
+}
+
+@Suite("PresetDraftRegistry")
+struct PresetDraftRegistryTests {
+    @Test func setGetRemove() async {
+        let reg = PresetDraftRegistry()
+        let key = PresetDraftRegistry.key(guildId: "g1", channelId: "c1")
+        await reg.set(PresetDraft(backend: "claude", model: "opus"), key: key)
+        #expect(await reg.get(key: key)?.backend == "claude")
+        await reg.remove(key: key)
+        #expect(await reg.get(key: key) == nil)
     }
 }

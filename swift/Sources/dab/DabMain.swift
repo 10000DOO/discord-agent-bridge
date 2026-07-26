@@ -157,6 +157,12 @@ struct EventHandler: GatewayEventHandler {
                 try await handleResumeComponent(payload, comp: comp)
                 return
             }
+            // (A2b) "💾 프리셋으로 저장" — wizard already deleted at done; showModal is the ack.
+            // Not owner-bound (ephemeral message is only visible to the driver).
+            if comp.custom_id == "preset.save" {
+                try await handlePresetSaveButton(payload)
+                return
+            }
             // (A2) W11-b2 wizard components (folder browser + select steps; owner-gated).
             if isWizardCustomId(comp.custom_id) {
                 try await handleWizardComponent(payload, comp: comp)
@@ -364,18 +370,29 @@ struct EventHandler: GatewayEventHandler {
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
             case "start":
-                // W11-b2: folder browser → backend→model→effort→perm.
+                // W11-b2: folder → [preset if any] → backend→model→effort→perm.
                 // Browser starts at DAB_CWD else home; unbounded (no allowedRoots) like TS default.
                 // nativePanel: package is macOS-only → always wire host picker (dir:panel).
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
                 let optionSource = await loadWizardOptionSource()
                 let browser = DirectoryBrowser(startPath: stubCwd, nativePanel: true)
+                let serverPresets = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.presets ?? []
+                let guildForPresets = guildId
                 let wizard = ChannelWizard(
                     guildId: guildId,
                     channelId: channelId,
                     ownerId: ownerId,
                     browser: browser,
-                    options: optionSource
+                    options: optionSource,
+                    presets: serverPresets,
+                    onDeletePreset: { name in
+                        Task {
+                            _ = try? await ConfigStore.shared.removeServerPreset(
+                                guildId: guildForPresets, name: name
+                            )
+                        }
+                    },
+                    backendAvailable: { Backend(rawValue: $0) != nil }
                 )
                 await WizardRegistry.shared.put(wizard, channelId: channelId)
                 let (embeds, components) = discordPayload(from: wizard.render())
@@ -1019,6 +1036,29 @@ struct EventHandler: GatewayEventHandler {
                 )
                 let statusEmbed = discordEmbed(from: buildStatusEmbed(status))
 
+                // Save-as-preset only for a NORMAL launch (not fromPreset; reconfigure already returned).
+                let fromPreset = wizard.launchedFromPreset()
+                var saveRows: [Interaction.ActionRow] = []
+                if !fromPreset {
+                    let draft = PresetDraft(
+                        backend: p.backend.rawValue,
+                        model: p.model.isEmpty ? nil : p.model,
+                        effort: p.effort.isEmpty ? nil : p.effort,
+                        permMode: p.permMode.isEmpty ? nil : p.permMode
+                    )
+                    let draftKey = PresetDraftRegistry.key(guildId: guildId, channelId: channelId)
+                    await PresetDraftRegistry.shared.set(draft, key: draftKey)
+                    saveRows = [
+                        Interaction.ActionRow(components: [
+                            .button(Interaction.ActionRow.Button(
+                                style: .secondary,
+                                label: "💾 프리셋으로 저장",
+                                custom_id: "preset.save"
+                            )),
+                        ]),
+                    ]
+                }
+
                 // Ephemeral wizard reply: link to session channel (TS cmd.start.channelCreated).
                 let replyText: String
                 if bindChannelId != p.channelId {
@@ -1035,7 +1075,11 @@ struct EventHandler: GatewayEventHandler {
                 }
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(content: replyText, embeds: [], components: []))
+                    payload: .updateMessage(.init(
+                        content: replyText,
+                        embeds: [],
+                        components: saveRows.isEmpty ? [] : saveRows
+                    ))
                 )
                 // Intro + status embed on the bound session channel (TS postSessionIntro).
                 _ = try? await client.createMessage(
@@ -1153,10 +1197,50 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
-    /// Modal submits for dir:create (mkdir+into) and dir:manual (goTo).
+    /// "💾 프리셋으로 저장" button → name modal (showModal is the ack). Draft keyed by command channel.
+    private func handlePresetSaveButton(_ payload: Interaction) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue ?? ""
+        let key = PresetDraftRegistry.key(guildId: guildId, channelId: channelId)
+        guard await PresetDraftRegistry.shared.get(key: key) != nil else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "저장할 최근 세션 설정이 없어요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .modal(.init(
+                custom_id: "preset.name",
+                title: "프리셋 저장",
+                textInputs: [
+                    .init(
+                        custom_id: "name",
+                        style: .short,
+                        label: "프리셋 이름",
+                        required: true,
+                        placeholder: "예: claude-opus-plan"
+                    ),
+                ]
+            ))
+        )
+    }
+
+    /// Modal submits for dir:create / dir:manual / preset.name.
     private func handleWizardModal(_ payload: Interaction, modal: Interaction.ModalSubmit) async throws {
         let channelId = payload.channel_id?.rawValue ?? ""
         let clicker = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+
+        // preset.name: wizard is already gone; draft lives in PresetDraftRegistry.
+        if modal.custom_id == "preset.name" {
+            try await handlePresetNameModal(payload, modal: modal)
+            return
+        }
+
         guard let wizard = await WizardRegistry.shared.get(channelId: channelId),
               wizard.ownerId == clicker
         else {
@@ -1240,6 +1324,65 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(content: "알 수 없는 모달입니다.", flags: [.ephemeral]))
+            )
+        }
+    }
+
+    /// Persist draft under the typed name via ConfigStore.addServerPreset.
+    private func handlePresetNameModal(_ payload: Interaction, modal: Interaction.ModalSubmit) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue ?? ""
+        let key = PresetDraftRegistry.key(guildId: guildId, channelId: channelId)
+        guard let draft = await PresetDraftRegistry.shared.get(key: key) else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "저장할 최근 세션 설정이 없어요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+        let name = (try? modal.components.requireComponent(customId: "name").requireTextInput().value)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if name.isEmpty || name.count > 100 {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "프리셋 이름은 1~100자여야 해요.",
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+        do {
+            try await ConfigStore.shared.addServerPreset(
+                guildId: guildId,
+                preset: Preset(
+                    name: name,
+                    backend: draft.backend,
+                    model: draft.model,
+                    effort: draft.effort,
+                    permMode: draft.permMode,
+                    profile: draft.profile
+                )
+            )
+            await PresetDraftRegistry.shared.remove(key: key)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "프리셋을 저장했어요: \(name)",
+                    flags: [.ephemeral]
+                ))
+            )
+        } catch {
+            // Keep draft so a retry can still save.
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: "프리셋 저장 실패: \(error)",
+                    flags: [.ephemeral]
+                ))
             )
         }
     }

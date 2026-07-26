@@ -245,6 +245,7 @@ func discordPayload(from view: WizardView) -> (embeds: [Embed], components: [Int
                     Interaction.ActionRow.StringSelectMenu.Option(
                         label: $0.label,
                         value: $0.value,
+                        description: $0.description,
                         default: $0.isDefault
                     )
                 }

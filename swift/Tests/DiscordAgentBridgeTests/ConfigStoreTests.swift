@@ -218,4 +218,91 @@ struct ConfigStoreTests {
         #expect(normalizeModeId("claude") == "claude")
         #expect(normalizeModeId("grok-build") == "grok-build")
     }
+
+    // MARK: - Server presets (W11-b2)
+
+    @Test func addServerPresetAppendsAndPreservesTopLevelFields() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.saveServerConfig(ServerConfig(
+            version: CONFIG_VERSION,
+            guildId: "g1",
+            auth: ServerAuthPartial(adminRoleIds: ["a1"]),
+            defaults: ServerDefaultsPartial(mode: "codex"),
+            locale: "en"
+        ))
+        try await store.addServerPreset(
+            guildId: "g1",
+            preset: Preset(name: "p1", backend: "claude", model: "opus")
+        )
+        let loaded = await store.loadServerConfig(guildId: "g1")
+        #expect(loaded?.presets == [Preset(name: "p1", backend: "claude", model: "opus")])
+        #expect(loaded?.auth?.adminRoleIds == ["a1"])
+        #expect(loaded?.defaults?.mode == "codex")
+        #expect(loaded?.locale == "en")
+    }
+
+    @Test func addServerPresetOverwritesSameName() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.addServerPreset(
+            guildId: "g1",
+            preset: Preset(name: "p1", backend: "claude", model: "opus")
+        )
+        try await store.addServerPreset(
+            guildId: "g1",
+            preset: Preset(name: "p1", backend: "codex", model: "gpt-5.5")
+        )
+        let presets = await store.loadServerConfig(guildId: "g1")?.presets ?? []
+        #expect(presets.count == 1)
+        #expect(presets[0] == Preset(name: "p1", backend: "codex", model: "gpt-5.5"))
+    }
+
+    @Test func addServerPresetCreatesServerConfigWhenMissing() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.addServerPreset(
+            guildId: "gNew",
+            preset: Preset(name: "p1", backend: "claude")
+        )
+        #expect(await store.loadServerConfig(guildId: "gNew")?.presets == [
+            Preset(name: "p1", backend: "claude"),
+        ])
+    }
+
+    @Test func removeServerPresetReturnsBool() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.addServerPreset(guildId: "g1", preset: Preset(name: "p1", backend: "claude"))
+        try await store.addServerPreset(guildId: "g1", preset: Preset(name: "p2", backend: "codex"))
+        #expect(try await store.removeServerPreset(guildId: "g1", name: "p1") == true)
+        let names = (await store.loadServerConfig(guildId: "g1")?.presets ?? []).map(\.name)
+        #expect(names == ["p2"])
+        #expect(try await store.removeServerPreset(guildId: "g1", name: "nope") == false)
+        #expect(try await store.removeServerPreset(guildId: "gMissing", name: "p1") == false)
+    }
+
+    @Test func presetsSurviveUnrelatedSaveServerConfig() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.addServerPreset(
+            guildId: "g1",
+            preset: Preset(
+                name: "p1",
+                backend: "claude",
+                model: "opus",
+                effort: "high",
+                permMode: "plan",
+                profile: nil
+            )
+        )
+        guard var existing = await store.loadServerConfig(guildId: "g1") else {
+            Issue.record("expected server config"); return
+        }
+        existing.locale = "en"
+        try await store.saveServerConfig(existing)
+        #expect(await store.loadServerConfig(guildId: "g1")?.presets == [
+            Preset(name: "p1", backend: "claude", model: "opus", effort: "high", permMode: "plan", profile: nil),
+        ])
+    }
 }

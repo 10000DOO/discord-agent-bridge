@@ -3,11 +3,13 @@ import Foundation
 // MARK: - W11-b2: `/agent start` + `/mode backend` reconfigure select wizard
 //
 // Pure state machine — no Discord types. Steps:
-//   start:       folder → backend → model → [effort if any] → perm → done | cancelled
+//   start:       folder → [preset if any] → backend → model → [effort if any] → perm → done | cancelled
 //   reconfigure: model → [effort if any] → perm → done | cancelled
-//                (folder/backend skipped; opened when /mode backend targets a different backend)
+//                (folder/preset/backend skipped; opened when /mode backend targets a different backend)
 //
-// Folder: dir:into / dir:up navigate immediately; dir:here commits cwd → backend.
+// Folder: dir:into / dir:up navigate immediately; dir:here commits cwd → preset (if guild has
+// saved presets) or backend (R6: no presets → straight to backend).
+// Preset: pick seeds selection + starts immediately; direct → backend; delete toggles remove mode.
 // dir:create / dir:manual / dir:panel are handled outside the SM (modals / native panel
 // in DabMain) via browserGoTo / browserCreate; they do not advance the wizard step.
 // Choice steps: select onChange writes PENDING only; Next/Start commits and advances
@@ -15,14 +17,15 @@ import Foundation
 // Option lists are injected at open from live `providerCatalog(for:)` — never hardcoded
 // model/effort/perm vocabularies (Backend.allCases is the only fixed list).
 //
-// ponytail: preset → residual. A4D session-channel create is wired in DabMain done path
-// via `resolveSessionChannelId` + `createSessionChannel` (not inside this pure SM).
+// A4D session-channel create is wired in DabMain done path via `resolveSessionChannelId`
+// + `createSessionChannel` (not inside this pure SM).
 // dir:resume → separate ResumeWizard (W11-b2 residual, wired).
 
 // MARK: Types
 
 public enum WizardStep: String, Sendable, Equatable {
     case folder
+    case preset
     case backend
     case model
     case effort
@@ -135,10 +138,13 @@ public struct WizardSelectOption: Sendable, Equatable {
     public var label: String
     public var value: String
     public var isDefault: Bool
-    public init(label: String, value: String, isDefault: Bool = false) {
+    /// Discord select option description (≤100 chars). Used by preset summaries.
+    public var description: String?
+    public init(label: String, value: String, isDefault: Bool = false, description: String? = nil) {
         self.label = label
         self.value = value
         self.isDefault = isDefault
+        self.description = description
     }
 }
 
@@ -182,11 +188,19 @@ public func isWizardCustomId(_ customId: String) -> Bool {
          "model", "model.next",
          "effort", "effort.next",
          "perm.mode", "perm.start",
+         "preset.pick", "preset.direct", "preset.delete",
          "wizard.back", "cancel":
         return true
     default:
         return false
     }
+}
+
+/// Discord option description clamp (select description max 100).
+public func summarizePreset(_ p: Preset) -> String {
+    let raw = "\(p.backend) · \(p.model ?? "-") · \(p.effort ?? "-") · \(p.profile ?? p.permMode ?? "-")"
+    if raw.count <= 100 { return raw }
+    return String(raw.prefix(99)) + "…"
 }
 
 // MARK: Load options from live catalogs
@@ -284,7 +298,7 @@ public enum WizardKind: String, Sendable, Equatable {
     case reconfigure
 }
 
-/// Pure `/agent start` + reconfigure wizard (folder → backend → model → effort → perm).
+/// Pure `/agent start` + reconfigure wizard (folder → [preset] → backend → model → effort → perm).
 public final class ChannelWizard: @unchecked Sendable {
     public let guildId: String
     public let channelId: String
@@ -296,7 +310,21 @@ public final class ChannelWizard: @unchecked Sendable {
     private var step: WizardStep
     private var selection: WizardSelection
     private var pending: Pending = Pending()
-    /// Set when step becomes `.done` (perm.start committed).
+    /// Snapshot of saved presets at open; shrinks on delete. Empty → no preset step (R6).
+    private var presets: [Preset]
+    /// Side-effect on delete (router persists to ConfigStore). Pure local filter always runs first.
+    private let onDeletePreset: ((String) -> Void)?
+    /// Optional formatter for select option descriptions. Nil → `summarizePreset`.
+    private let summarizePresetFn: ((Preset) -> String)?
+    /// Whether a preset's backend is still usable. Nil → no availability guard.
+    private let backendAvailable: ((String) -> Bool)?
+    /// Delete mode: a preset pick removes instead of launching. Toggled by 🗑.
+    private var presetDeleteMode = false
+    /// Set when the driver launched from a picked preset (skip "save as preset" on done).
+    private var fromPreset = false
+    /// Backend of a just-blocked unavailable preset pick (rendered as notice; cleared next action).
+    private var presetUnavailable: String?
+    /// Set when step becomes `.done` (perm.start or preset pick committed).
     public private(set) var startParams: WizardStartParams?
 
     private struct Pending {
@@ -312,15 +340,23 @@ public final class ChannelWizard: @unchecked Sendable {
         ownerId: String,
         browser: DirectoryBrowser,
         options: WizardOptionSource,
-        entry: WizardEntry? = nil
+        entry: WizardEntry? = nil,
+        presets: [Preset] = [],
+        onDeletePreset: ((String) -> Void)? = nil,
+        summarizePreset: ((Preset) -> String)? = nil,
+        backendAvailable: ((String) -> Bool)? = nil
     ) {
         self.guildId = guildId
         self.channelId = channelId
         self.ownerId = ownerId
         self.browser = browser
         self.options = options
+        self.presets = presets
+        self.onDeletePreset = onDeletePreset
+        self.summarizePresetFn = summarizePreset
+        self.backendAvailable = backendAvailable
         if let entry {
-            // Reconfigure (backend switch): skip folder/backend, start at model.
+            // Reconfigure (backend switch): skip folder/preset/backend, start at model.
             // backend/cwd/permMode carry over; model/effort seed from caller or new-backend defaults.
             self.kind = .reconfigure
             self.firstStep = .model
@@ -356,7 +392,11 @@ public final class ChannelWizard: @unchecked Sendable {
         cwd: String,
         options: WizardOptionSource,
         allowedRoots: [String] = [],
-        entry: WizardEntry? = nil
+        entry: WizardEntry? = nil,
+        presets: [Preset] = [],
+        onDeletePreset: ((String) -> Void)? = nil,
+        summarizePreset: ((Preset) -> String)? = nil,
+        backendAvailable: ((String) -> Bool)? = nil
     ) {
         self.init(
             guildId: guildId,
@@ -364,7 +404,11 @@ public final class ChannelWizard: @unchecked Sendable {
             ownerId: ownerId,
             browser: DirectoryBrowser(allowedRoots: allowedRoots, startPath: cwd),
             options: options,
-            entry: entry
+            entry: entry,
+            presets: presets,
+            onDeletePreset: onDeletePreset,
+            summarizePreset: summarizePreset,
+            backendAvailable: backendAvailable
         )
     }
 
@@ -374,6 +418,9 @@ public final class ChannelWizard: @unchecked Sendable {
 
     /// True when opened as the `/mode backend` cross-backend popup (same-channel restart on done).
     public func isReconfigure() -> Bool { kind == .reconfigure }
+
+    /// True when the confirmed session was launched from a picked preset (skip save-as-preset).
+    public func launchedFromPreset() -> Bool { fromPreset }
 
     /// Folder currently in the browser (manual/create/panel/resume).
     public func browserCwd() -> String { browser.cwd() }
@@ -400,6 +447,7 @@ public final class ChannelWizard: @unchecked Sendable {
         }
         switch step {
         case .folder: handleFolder(input)
+        case .preset: handlePreset(input)
         case .backend: handleBackend(input)
         case .model: handleModel(input)
         case .effort: handleEffort(input)
@@ -417,8 +465,11 @@ public final class ChannelWizard: @unchecked Sendable {
         }
         pending = Pending()
         switch step {
-        case .backend:
+        case .preset:
             step = .folder
+        case .backend:
+            // Back from backend → preset when the guild still has presets, else folder (R6).
+            step = hasPresetStep() ? .preset : .folder
         case .model:
             step = .backend
         case .effort:
@@ -430,16 +481,71 @@ public final class ChannelWizard: @unchecked Sendable {
         }
     }
 
-    /// Folder nav: into/up re-render only; dir:here commits cwd → backend.
+    private func hasPresetStep() -> Bool { !presets.isEmpty }
+
+    /// Folder nav: into/up re-render only; dir:here commits cwd → preset or backend.
     private func handleFolder(_ input: WizardInput) {
         if input.id == "dir:into", let v = input.value, v != "__none__", !v.isEmpty {
             _ = browser.into(v)
         } else if input.id == "dir:up" {
             _ = browser.up()
         } else if input.id == "dir:here" {
+            // Clear stale unavailable notice when re-entering preset via folder (TS parity).
+            presetUnavailable = nil
             selection.cwd = browser.select()
-            step = .backend
+            step = hasPresetStep() ? .preset : .backend
         }
+    }
+
+    /// Preset step: pick (launch) / direct (manual backend) / delete-mode toggle.
+    private func handlePreset(_ input: WizardInput) {
+        // Recompute unavailable notice per interaction (only re-set when a pick is blocked).
+        presetUnavailable = nil
+        if input.id == "preset.direct" {
+            step = .backend
+        } else if input.id == "preset.delete" {
+            presetDeleteMode.toggle()
+        } else if input.id == "preset.pick", let name = input.value, !name.isEmpty {
+            if presetDeleteMode {
+                presets.removeAll { $0.name == name }
+                onDeletePreset?(name)
+                presetDeleteMode = false
+                return
+            }
+            guard let picked = presets.first(where: { $0.name == name }) else { return }
+            if let backendAvailable, !backendAvailable(picked.backend) {
+                presetUnavailable = picked.backend
+                return
+            }
+            guard let backend = Backend(rawValue: picked.backend) else {
+                // Unparseable backend string — treat as unavailable without a callback.
+                presetUnavailable = picked.backend
+                return
+            }
+            selection.backend = backend
+            selection.model = picked.model
+                ?? options.models(for: backend).first?.value
+                ?? selection.model
+            selection.effort = picked.effort ?? options.defaultEffort(for: backend)
+            selection.permMode = picked.permMode ?? options.defaults.permMode
+            fromPreset = true
+            commitStart()
+        }
+    }
+
+    /// Commit selection into startParams and mark done (perm.start / preset pick).
+    private func commitStart() {
+        startParams = WizardStartParams(
+            guildId: guildId,
+            channelId: channelId,
+            backend: selection.backend,
+            cwd: selection.cwd,
+            ownerId: ownerId,
+            model: selection.model,
+            effort: selection.effort,
+            permMode: selection.permMode
+        )
+        step = .done
     }
 
     private func handleBackend(_ input: WizardInput) {
@@ -481,17 +587,7 @@ public final class ChannelWizard: @unchecked Sendable {
                 selection.permMode = p
                 pending.permMode = nil
             }
-            startParams = WizardStartParams(
-                guildId: guildId,
-                channelId: channelId,
-                backend: selection.backend,
-                cwd: selection.cwd,
-                ownerId: ownerId,
-                model: selection.model,
-                effort: selection.effort,
-                permMode: selection.permMode
-            )
-            step = .done
+            commitStart()
         }
     }
 
@@ -546,6 +642,8 @@ public final class ChannelWizard: @unchecked Sendable {
         switch step {
         case .folder:
             return browser.render()
+        case .preset:
+            return renderPresetStep(title: title)
         case .backend:
             return choiceStep(
                 title: title,
@@ -626,6 +724,40 @@ public final class ChannelWizard: @unchecked Sendable {
         }
     }
 
+    /// Preset step: select of saved presets + 🆕 직접 설정 / 🗑 삭제 / back / cancel.
+    private func renderPresetStep(title: String) -> WizardView {
+        var rows: [WizardRow] = []
+        if !presets.isEmpty {
+            let summarize = summarizePresetFn ?? summarizePreset
+            let opts = presets.prefix(25).map { p in
+                WizardSelectOption(
+                    label: p.name,
+                    value: p.name,
+                    isDefault: false,
+                    description: summarize(p)
+                )
+            }
+            let placeholder = presetDeleteMode ? "삭제할 프리셋을 선택하세요." : "프리셋 선택…"
+            rows.append(WizardRow(components: [
+                .select(customId: "preset.pick", placeholder: placeholder, options: Array(opts)),
+            ]))
+        }
+        var buttons: [WizardComponent] = [
+            .button(customId: "preset.direct", label: "🆕 직접 설정", style: .primary, disabled: false),
+            .button(customId: "preset.delete", label: "🗑 삭제", style: .secondary, disabled: false),
+        ]
+        if showBackButton() {
+            buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false))
+        }
+        buttons.append(.button(customId: "cancel", label: "취소", style: .secondary, disabled: false))
+        rows.append(WizardRow(components: buttons))
+        var base = presetDeleteMode ? "삭제할 프리셋을 선택하세요." : "프리셋을 선택하세요."
+        if let unavailable = presetUnavailable {
+            base += "\n이 프리셋의 백엔드(\(unavailable))를 지금은 쓸 수 없어요."
+        }
+        return WizardView(title: title, description: base, rows: rows)
+    }
+
     private func choiceStep(
         title: String,
         description: String,
@@ -661,7 +793,13 @@ func capSelectOptions(_ options: [WizardSelectOption]) -> [WizardSelectOption] {
         s.count <= n ? s : String(s.prefix(n))
     }
     let trimmed = options.map {
-        WizardSelectOption(label: clamp($0.label, 100), value: clamp($0.value, 100), isDefault: $0.isDefault)
+        let desc = $0.description.map { clamp($0, 100) }
+        return WizardSelectOption(
+            label: clamp($0.label, 100),
+            value: clamp($0.value, 100),
+            isDefault: $0.isDefault,
+            description: desc
+        )
     }
     if trimmed.count <= 25 { return trimmed }
     let selected = trimmed.first(where: \.isDefault)
@@ -691,5 +829,29 @@ public actor WizardRegistry {
 
     public func remove(channelId: String) {
         wizards[channelId] = nil
+    }
+}
+
+/// `"guildId:channelId"` → draft for "💾 프리셋으로 저장" after a normal (non-preset) start.
+public actor PresetDraftRegistry {
+    public static let shared = PresetDraftRegistry()
+    private var drafts: [String: PresetDraft] = [:]
+
+    public init() {}
+
+    public static func key(guildId: String, channelId: String) -> String {
+        "\(guildId):\(channelId)"
+    }
+
+    public func set(_ draft: PresetDraft, key: String) {
+        drafts[key] = draft
+    }
+
+    public func get(key: String) -> PresetDraft? {
+        drafts[key]
+    }
+
+    public func remove(key: String) {
+        drafts[key] = nil
     }
 }

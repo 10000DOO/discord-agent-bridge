@@ -225,14 +225,17 @@ public struct AppConfig: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Preset (schema only; helpers deferred to W16-b)
+// MARK: - Preset (per-guild session preset; ConfigStore add/remove helpers)
 
+/// Named backend/model/effort/permission combo for `/agent start` after a folder pick.
+/// No cwd — folder is chosen fresh each start (folder-independent, reusable).
 public struct Preset: Codable, Sendable, Equatable {
     public var name: String
     public var backend: String
     public var model: String?
     public var effort: String?
     public var permMode: String?
+    /// Named profile, or null for raw mode. Optional on disk (TS: string | null | absent).
     public var profile: String?
     public init(
         name: String,
@@ -243,6 +246,28 @@ public struct Preset: Codable, Sendable, Equatable {
         profile: String? = nil
     ) {
         self.name = name
+        self.backend = backend
+        self.model = model
+        self.effort = effort
+        self.permMode = permMode
+        self.profile = profile
+    }
+}
+
+/// In-memory draft after a normal (non-preset) wizard start — backs the "💾 프리셋으로 저장" modal.
+public struct PresetDraft: Sendable, Equatable {
+    public var backend: String
+    public var model: String?
+    public var effort: String?
+    public var permMode: String?
+    public var profile: String?
+    public init(
+        backend: String,
+        model: String? = nil,
+        effort: String? = nil,
+        permMode: String? = nil,
+        profile: String? = nil
+    ) {
         self.backend = backend
         self.model = model
         self.effort = effort

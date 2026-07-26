@@ -147,7 +147,69 @@ public actor ConfigStore {
         try Self.writeSecureJSON(to: path, value: config)
     }
 
-    // MARK: - Nice-to-have (cheap; presets deferred to W16-b)
+    // MARK: - Server presets (W11-b2)
+
+    /// Append or overwrite a per-guild session preset (`name` is the unique key). Preserves other
+    /// server fields (auth/defaults/locale/…). Write + read-after-write, up to 3 immediate retries.
+    public func addServerPreset(guildId: String, preset: Preset) throws {
+        let existing = loadServerConfig(guildId: guildId)
+        let others = (existing?.presets ?? []).filter { $0.name != preset.name }
+        let next = ServerConfig(
+            version: existing?.version ?? CONFIG_VERSION,
+            guildId: guildId,
+            auth: existing?.auth,
+            defaults: existing?.defaults,
+            limits: existing?.limits,
+            locale: existing?.locale,
+            auditChannelId: existing?.auditChannelId,
+            favorites: existing?.favorites,
+            presets: others + [preset],
+            channels: existing?.channels,
+            notifications: existing?.notifications
+        )
+        var lastErr: Error?
+        for _ in 0..<3 {
+            do {
+                try saveServerConfig(next)
+                let reloaded = loadServerConfig(guildId: guildId)
+                if reloaded?.presets?.contains(where: { $0.name == preset.name }) == true {
+                    return
+                }
+                lastErr = ConfigStoreError.validation(
+                    "preset \"\(preset.name)\" not found after save (read-after-write verification failed)"
+                )
+            } catch {
+                lastErr = error
+            }
+        }
+        throw lastErr
+            ?? ConfigStoreError.validation("preset save verification failed for guild \(guildId)")
+    }
+
+    /// Remove a preset by name. Returns false (no write) when the name or guild config is absent.
+    @discardableResult
+    public func removeServerPreset(guildId: String, name: String) throws -> Bool {
+        let existing = loadServerConfig(guildId: guildId)
+        let presets = existing?.presets ?? []
+        guard presets.contains(where: { $0.name == name }) else { return false }
+        let next = ServerConfig(
+            version: existing?.version ?? CONFIG_VERSION,
+            guildId: guildId,
+            auth: existing?.auth,
+            defaults: existing?.defaults,
+            limits: existing?.limits,
+            locale: existing?.locale,
+            auditChannelId: existing?.auditChannelId,
+            favorites: existing?.favorites,
+            presets: presets.filter { $0.name != name },
+            channels: existing?.channels,
+            notifications: existing?.notifications
+        )
+        try saveServerConfig(next)
+        return true
+    }
+
+    // MARK: - Nice-to-have (cheap)
 
     /// Append tool to global autoAllowClaudeTools (§7A/§8.1 always-allow). Idempotent: a tool
     /// already present is a no-op. Returns whether the config was changed.
