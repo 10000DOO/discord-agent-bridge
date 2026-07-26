@@ -221,6 +221,12 @@ public actor BrowserImageRenderer {
             "--hide-scrollbars",
             "--window-size=1400,900",
             "--default-background-color=1e2124",
+            // Block all outbound network — rendered HTML embeds untrusted user
+            // content (Discord table/mermaid text) and must never be able to
+            // trigger a real request (SSRF/internal-scan vector). TS parity:
+            // `browserRenderer.ts:141-148` (setRequestInterception + offline mode).
+            "--proxy-server=http://127.0.0.1:1",
+            "--host-resolver-rules=MAP * 0.0.0.0",
             "--screenshot=\(pngURL.path)",
         ]
         args.append(contentsOf: extraArgs)

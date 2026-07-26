@@ -46,7 +46,7 @@
 | H1 | 권한 임베드 상세정보 부족 | ⏳ 대기 (WO-P21) |
 | H2 | 결정 후 재렌더링 다운그레이드 + i18n 키 없음 | ⏳ 대기 (WO-P21) |
 | H3 | 미응답 시 자동거부 타임아웃 (Swift만 추가) | ✅ 완료 (Q4, 1장 참고) |
-| H4 | [보안] headless 브라우저 네트워크 차단 없음 | ⏳ 대기 (WO-P19) |
+| H4 | [보안] headless 브라우저 네트워크 차단 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H5 | Chromium 설치가 Node/npx 셸아웃에 의존 | ⏳ 대기 (WO-P28) |
 | H6 | Chromium 설치 사전 안내 프롬프트 없음 | ⏳ 대기 (WO-P28) |
 | H7 | Chromium 설치 진행률 표시 없음 | ⏳ 대기 (WO-P28) |
@@ -162,7 +162,10 @@
 - **H1.** 권한 요청 임베드가 도구의 전체 JSON 입력(Edit의 old/new 문자열, WebFetch URL, 커스텀 MCP 도구 인자 등)을 안 보여주고 `command`/`file_path`만 뽑아 보여줌(`DabSessionBridge.swift:652-656` vs `permissionButtons.ts:97-104`) — 그 외 도구는 승인자가 아무 상세정보 없이 승인/거부해야 함.
 - **H2.** 결정 후 재렌더링이 "색상+제목+본문 임베드"에서 평문 한 줄(`"🔐 ALLOW — @user"`)로 다운그레이드(`DabMain.swift:220-223`). `perm.request.body`/`perm.decided.*` i18n 키가 `I18n.swift`에 아예 없음.
 - **H3. [구현됨: `Session/PermissionGate.swift` `await(prompt:)`]** (Swift만 있는 추가 동작, 참고용) 권한 게이트에 TS엔 없는 "미응답 시 자동 거부 타임아웃"이 있었음(`PermissionGate.swift:72-89`, 수정 전) — 9장 Q4 결정에 따라 제거. `timeoutNs` 파라미터·`Pending.timeoutTask`·타이머 `Task`/`settle` 분기를 전부 삭제해 TS와 동일하게 무한 대기로 전환. `DabSessionBridge`/`CodexSessionBridge`/`GrokSessionBridge` 3곳의 `permGateTimeoutNs` 계산 프로퍼티와 호출부 인자도 함께 제거(공유 액터라 시그니처 변경 시 3곳 다 갱신 필요). 테스트: `PermissionGateTests.swift`의 `timeoutDeniesByDefault` 삭제, `nilApproverCannotBeResolved`는 타임아웃 의존을 걷어내고 "아무도 못 정하지만 계속 pending"만 검증하도록 정리, `unansweredAskStaysPendingIndefinitely` 신규 추가 — `swift test --filter 'PermissionGateTests|DabSessionBridgeTests|CodexSessionBridgeTests|GrokSessionBridgeTests'` 86건 전부 통과(0.235s). 전체 빌드/전체 테스트 최종 확인은 사용자가 별도 진행.
-- **H4. [보안] 이미지 렌더링용 headless 브라우저에 네트워크 차단이 빠짐.** TS는 표/mermaid 스크린샷을 찍는 브라우저에서 아웃바운드 네트워크를 통째로 막는다(`setRequestInterception`+`setOfflineMode(true)`, `browserRenderer.ts:143-148`). Swift `BrowserImageRenderer.swift`는 `chrome --headless=new --screenshot=...`를 프로세스로 실행할 뿐 네트워크 차단 플래그가 전혀 없다(`:216-227`) — 신뢰할 수 없는 표/mermaid 콘텐츠(사용자가 입력한 텍스트에서 파싱됨)가 외부로 네트워크 요청을 보낼 수 있다.
+- **H4. [구현됨: `Render/BrowserImageRenderer.swift` `screenshot(html:name:extraArgs:)` 크롬 인자 배열]** [보안] 이미지 렌더링용 headless 브라우저에 네트워크 차단이 빠짐. TS는 표/mermaid 스크린샷을 찍는 브라우저에서 아웃바운드 네트워크를 통째로 막는다(`setRequestInterception`+`setOfflineMode(true)`, `browserRenderer.ts:143-148`). Swift `BrowserImageRenderer.swift`는 `chrome --headless=new --screenshot=...`를 프로세스로 실행할 뿐 네트워크 차단 플래그가 전혀 없었다(`:216-227`) — 신뢰할 수 없는 표/mermaid 콘텐츠(사용자가 입력한 텍스트에서 파싱됨)가 외부로 네트워크 요청을 보낼 수 있었다.
+  - **구조적 차이**: TS는 Puppeteer로 페이지 이벤트에 후킹해 요청 단위로 허용/차단(`data:`/`blob:`/`about:`만 통과)하지만, Swift는 `chrome` 바이너리를 프로세스로 직접 실행해서 그런 페이지 이벤트 훅 자체가 없다 — 대신 크롬 실행 플래그로 네트워크 자체를 원천 차단하는 방식을 쓴다(3안 중 사용자가 이 옵션을 확정, 옵션2 "이름 붙은 상수로 분리"·옵션3 "on/off 스위치 추가"는 각각 재사용 계획 없음/보안 코드에 불필요한 구멍이라 기각). 메인 HTML을 `file://` 임시파일로 navigate하는 기존 방식은 그대로 둠(로컬 파일 읽기라 SSRF 벡터 아님, TS의 `setContent` 대응 API가 CLI엔 없음). `mermaid.min.js`도 기존처럼 로컬 파일로만 로드되어(`HtmlTemplates.swift:169`) 이번 변경으로 기능 영향 없음.
+  - **구현(3안 중 옵션 1 사용자 확정)**: 기존 크롬 인자 배열(`screenshot()` 216-225줄 부근)에 `--proxy-server=http://127.0.0.1:1`(모든 아웃바운드 트래픽을 존재하지 않는 로컬 포트로 강제 라우팅해 연결 자체를 즉시 실패시킴)과 `--host-resolver-rules=MAP * 0.0.0.0`(다단 방어 — DNS 조회를 전부 0.0.0.0으로 매핑) 두 줄만 추가. `extraArgs` 처리 순서 등 기존 구조는 무변경.
+  - 유닛 테스트 2건 신규(`BrowserImageRendererTests.swift`): `screenshotArgsBlockOutboundNetwork`(표 렌더 시 두 플래그가 `runChrome`에 전달되는 `args`에 포함되는지 확인, 기존 `successfulScreenshotReturnsPng`의 args 캡처 패턴 재사용), `mermaidRendersAlsoBlockOutboundNetwork`(mermaid 렌더 경로도 동일 플래그 포함 확인). 최종 확인: `swift build --package-path swift` 성공(`dab` 타겟도 같은 빌드에서 링크), `swift test --filter BrowserImageRendererTests` 7건 전부 통과(2.42초, 기존 5건 회귀 없음).
 - **H25. [구현됨: `Bridges/CodexSessionBridge.swift` `ensureChannel` `onApproval`]** (Swift만 있는 동작) Codex 승인 요청도 도구 이름이 전역 `autoAllowClaudeTools`에 있으면 Discord에 묻지도 않고 자동 승인했음(`CodexSessionBridge.swift:255-260`, 수정 전) — 9장 Q4 결정에 따라 제거. `onApproval` 핸들러 안의 `isAutoAllowedClaudeTool(...)` 체크를 삭제해 Codex 승인이 그 세션의 `approvalPolicy`/샌드박스(`resolveThreadPolicy`)로만 결정되도록 함(TS 동일). 그 체크에만 쓰이던 `configStore` 프로퍼티/init 파라미터도 완전히 죽은 코드가 되어 함께 제거(다른 참조 없음, 확인 완료). Grok(`GrokSessionBridge.swift`)의 동일한 `isAutoAllowedClaudeTool` 참조는 이번 결정(H25) 대상이 아니라 그대로 둠(문서·사용자 지시 모두 Codex만 지목) — 다만 구조적으로 동일한 패턴이라 필요 시 별도 검토 대상. 전용 테스트는 없었음(기존 `nonAutoPolicyHandlerAllowMapsToAccept` 등은 승인 플로우 자체를 검증할 뿐 auto-allow-list 우회는 다루지 않았음) — 기존 CodexSessionBridge 테스트 전부(`swift test --filter CodexSessionBridgeTests`, H3와 동일 실행에 포함) 통과로 회귀 없음 확인.
 
 ### Chromium 이미지 렌더링
@@ -266,7 +269,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 
 | 순서 | WO | 충족 | 대상 파일(주 파일) | 비고 |
 |---|---|---|---|---|
-| 19 | WO-P19: headless 브라우저 네트워크 차단 [보안] | H4 | `BrowserImageRenderer.swift` | 독립, 보안 최우선 |
+| 19 | WO-P19: headless 브라우저 네트워크 차단 [보안] [완료: 1장 H4 참고] | H4 | `BrowserImageRenderer.swift` | 독립, 보안 최우선 |
 | 20 | WO-P20: DM 구조적 차단 가드 | H15 | `dab/DabMain.swift`(메시지 라우팅) | 독립 |
 | 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift` | 같은 권한 UI 묶음 |
 | 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |

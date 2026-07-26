@@ -57,6 +57,43 @@ struct BrowserImageRendererTests {
         #expect(out?.data.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47]))
     }
 
+    @Test func screenshotArgsBlockOutboundNetwork() async throws {
+        let capturedArgs = LockedBox<[String]?>(nil)
+        let pngMagic = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00])
+        let r = BrowserImageRenderer(deps: BrowserImageRendererDeps(
+            executablePath: "/fake/chrome",
+            runChrome: { _, args, _ in
+                capturedArgs.withLock { $0 = args }
+                guard let shot = args.first(where: { $0.hasPrefix("--screenshot=") }) else {
+                    return false
+                }
+                let path = String(shot.dropFirst("--screenshot=".count))
+                try? pngMagic.write(to: URL(fileURLWithPath: path))
+                return true
+            }
+        ))
+        _ = await r.render(.table(source: "| a |\n|---|\n| 1 |"))
+        let args = try #require(capturedArgs.withLock { $0 })
+        #expect(args.contains("--proxy-server=http://127.0.0.1:1"))
+        #expect(args.contains("--host-resolver-rules=MAP * 0.0.0.0"))
+    }
+
+    @Test func mermaidRendersAlsoBlockOutboundNetwork() async {
+        let capturedArgs = LockedBox<[String]?>(nil)
+        let r = BrowserImageRenderer(deps: BrowserImageRendererDeps(
+            executablePath: "/fake/chrome",
+            mermaidJsPath: { "/fake/mermaid.min.js" },
+            runChrome: { _, args, _ in
+                capturedArgs.withLock { $0 = args }
+                return false
+            }
+        ))
+        _ = await r.render(.mermaid(code: "flowchart LR\n  A --> B"))
+        let args = capturedArgs.withLock { $0 }
+        #expect(args?.contains("--proxy-server=http://127.0.0.1:1") == true)
+        #expect(args?.contains("--host-resolver-rules=MAP * 0.0.0.0") == true)
+    }
+
     @Test func mermaidWithoutBundleReturnsNil() async {
         let launched = LockedBox(false)
         let r = BrowserImageRenderer(deps: BrowserImageRendererDeps(
