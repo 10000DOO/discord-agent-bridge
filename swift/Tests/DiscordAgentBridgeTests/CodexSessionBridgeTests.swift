@@ -385,4 +385,20 @@ struct CodexSessionBridgeTests {
         #expect(await reg.binding(channelId: "c") == nil)
         #expect(await store.binding(channelId: "c") == nil)
     }
+
+    @Test func buildCodexTurnItemsSendsImageAsLocalImagePathAndKeepsNonImageAsHint() {
+        let items = buildCodexTurnItems(
+            text: "hi",
+            files: [TurnFile(path: "/x/pic.png", mime: nil), TurnFile(path: "/x/note.txt", mime: "text/plain")]
+        )
+        #expect(items == [
+            .object(["type": .string("text"), "text": .string("hi\n\nAttached file: /x/note.txt")]),
+            .object(["type": .string("localImage"), "path": .string("/x/pic.png")]),
+        ])
+    }
+
+    @Test func buildCodexTurnItemsNonImageOnlyStaysSingleTextItem() {
+        let items = buildCodexTurnItems(text: "hi", files: [TurnFile(path: "/x/note.txt", mime: "text/plain")])
+        #expect(items == [.object(["type": .string("text"), "text": .string("hi\n\nAttached file: /x/note.txt")])])
+    }
 }

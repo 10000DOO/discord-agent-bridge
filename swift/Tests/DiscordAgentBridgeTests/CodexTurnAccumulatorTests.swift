@@ -262,6 +262,26 @@ struct CodexTurnStepTests {
         #expect(codexProgressEvents(method: "item/agentMessage/delta", params: nil).isEmpty)
     }
 
+    // C1 / eventMapper.ts:171-184 — item/reasoning/delta(+3 aliases) → kind:'thinking'.
+    @Test func progressEventsReasoningDeltaMapsToThinking() {
+        for method in [
+            "item/reasoning/delta",
+            "item/agentReasoning/delta",
+            "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta",
+        ] {
+            #expect(codexProgressEvents(method: method, params: .object(["delta": .string("pondering")])) == [
+                .thinking(text: "pondering", delta: true),
+            ])
+        }
+    }
+
+    @Test func progressEventsReasoningDeltaEmptyIgnored() {
+        // eventMapper.ts:175-178 — empty delta yields no events.
+        #expect(codexProgressEvents(method: "item/reasoning/delta", params: .object(["delta": .string("")])).isEmpty)
+        #expect(codexProgressEvents(method: "item/reasoning/delta", params: nil).isEmpty)
+    }
+
     @Test func toolEventsSpawnAgentRegistersChildThread() {
         var seq = 0
         var parents: [String: String] = [:]

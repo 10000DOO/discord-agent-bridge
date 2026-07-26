@@ -120,6 +120,40 @@ struct AttachmentDownloadTests {
         #expect(DiscordAgentBridge.appendAttachedFileHints(text: "hi", files: f) == "hi\n\nAttached file: /ws/.dab-attachments/a.txt")
         #expect(DiscordAgentBridge.appendAttachedFileHints(text: "  ", files: f) == "Attached file: /ws/.dab-attachments/a.txt")
     }
+
+    @Test func classifyTurnFilesDetectsImageByExtension() {
+        let classified = classifyTurnFiles([TurnFile(path: "/x/photo.PNG", mime: nil)])
+        #expect(classified[0].isImage)
+        #expect(classified[0].mime == "image/png")
+    }
+
+    @Test func classifyTurnFilesDetectsImageByMimeOnly() {
+        // No image extension, but a declared image mime still counts (TS: OR of ext/mime).
+        let classified = classifyTurnFiles([TurnFile(path: "/x/blob", mime: "image/jpeg")])
+        #expect(classified[0].isImage)
+        #expect(classified[0].mime == "image/jpeg")
+    }
+
+    @Test func classifyTurnFilesNonImageKeepsMimeOrFallsBackToOctetStream() {
+        let classified = classifyTurnFiles([
+            TurnFile(path: "/x/note.txt", mime: "text/plain"),
+            TurnFile(path: "/x/data.bin", mime: nil),
+        ])
+        #expect(!classified[0].isImage)
+        #expect(classified[0].mime == "text/plain")
+        #expect(!classified[1].isImage)
+        #expect(classified[1].mime == "application/octet-stream")
+    }
+
+    @Test func readImageBase64EncodesFileBytes() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dab-img-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("a.png")
+        let bytes = Data([1, 2, 3, 4])
+        try bytes.write(to: file)
+        #expect(try readImageBase64(path: file.path) == bytes.base64EncodedString())
+    }
 }
 
 @Suite("routeDecision — attachment-only bound")

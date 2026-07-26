@@ -62,11 +62,13 @@ public enum CodexProgressLabels {
     public static let collabAgentToolCall = "서브에이전트 작업 중"
 }
 
-/// Map codex app-server notifications → `progress` AgentEvents.
+/// Map codex app-server notifications → `progress` / `thinking` AgentEvents.
 /// Pure; never throws. Unknown methods / non-progress items → `[]`.
 ///
-/// TS: `item/started` → progressForItem; `turn/started` → `{kind:'progress', label:'작업 중'}`.
-/// Swift surfaces these via `StreamStatusHost.noteProgress` (embed detail ≈ TranscriptFeed line).
+/// TS: `item/started` → progressForItem; `turn/started` → `{kind:'progress', label:'작업 중'}`;
+/// `item/reasoning/delta`(+3 aliases) → `{kind:'thinking'}` (eventMapper.ts:171-184, C1).
+/// Swift surfaces these via `StreamStatusHost.noteProgress` / `.noteThinking` (mirrors
+/// `grokProgressEvents` mixing progress+thinking in one mapper).
 public func codexProgressEvents(method: String, params: JSONValue?) -> [AgentEvent] {
     switch method {
     case "turn/started":
@@ -79,6 +81,11 @@ public func codexProgressEvents(method: String, params: JSONValue?) -> [AgentEve
             return [ev]
         }
         return []
+    case "item/reasoning/delta", "item/agentReasoning/delta",
+         "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
+        // C1 / eventMapper.ts:171-184 — 4 method names (1 primary + 3 aliases) map identically.
+        let delta = params?["delta"]?.stringValue ?? ""
+        return delta.isEmpty ? [] : [.thinking(text: delta, delta: true)]
     default:
         return []
     }
@@ -129,7 +136,7 @@ private func codexFileChangeProgressDetail(_ item: JSONValue) -> String? {
 /// `threadId` is a child get `parentToolUseId` so TurnThreadRegistry routes into the spawn thread.
 ///
 /// Remaining gaps vs TS `eventMapper.ts`:
-/// - No thinking / mid-turn tokenUsage (progress = G-P1-02 via `codexProgressEvents`).
+/// - No mid-turn tokenUsage (thinking now covered by `codexProgressEvents`, C1).
 /// - Tool events fire on `item/completed` only (TS same for tools) — not on `item/started`.
 public func codexToolEvents(
     method: String,

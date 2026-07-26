@@ -64,6 +64,41 @@ final class MadeClients<C>: @unchecked Sendable {
     func last() -> C? { box.withLock { $0.last } }
 }
 
+/// No-socket stand-in for `GrokAttachGateway` (test seam). Most `GrokSessionBridge` tests never
+/// touch C5's HTTP path and must not pay for a real `NWListener` bind per test — only the tests
+/// that explicitly verify gateway/token behavior inject a real `GrokAttachGateway()` instead.
+actor NoopAttachGateway: GrokAttachGatewayProviding {
+    var baseURL: String { "http://127.0.0.1:0" }
+    func whenReady() async throws {}
+    func register(token: String, channelId: String, workspaceRoot: String) async {}
+    func unregister(token: String) async {}
+}
+
+/// GET a JSON object from a `GrokAttachGateway` endpoint (test-only HTTP round trip — the real
+/// client is `dab attach-mcp`'s `URLSession` POSTs; this exercises the same wire path).
+func getAttachGatewayJSON(_ urlString: String) async throws -> (status: Int, body: [String: JSONValue]) {
+    let (data, response) = try await URLSession.shared.data(from: URL(string: urlString)!)
+    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+    guard case .object(let obj)? = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+        return (status, [:])
+    }
+    return (status, obj)
+}
+
+/// POST a JSON object to a `GrokAttachGateway` endpoint and decode the JSON response.
+func postAttachGatewayJSON(_ urlString: String, body: [String: JSONValue]) async throws -> (status: Int, body: [String: JSONValue]) {
+    var request = URLRequest(url: URL(string: urlString)!)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONEncoder().encode(JSONValue.object(body))
+    let (data, response) = try await URLSession.shared.data(for: request)
+    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+    guard case .object(let obj)? = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+        return (status, [:])
+    }
+    return (status, obj)
+}
+
 /// Poll until `predicate` is true. Prefer this over fixed `Task.sleep` under parallel
 /// `swift test` — short sleeps flake when the suite is CPU-saturated (client reverse-RPC /
 /// notification delivery often takes >80ms under load).

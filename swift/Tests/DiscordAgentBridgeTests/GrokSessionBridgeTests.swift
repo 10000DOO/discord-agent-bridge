@@ -93,18 +93,21 @@ private func makeGrokBridge(
     permGate: PermissionGate = .shared,
     onPermissionSpy: LockedBox<[AcpPermissionHandler?]>? = nil,
     store: SessionStore? = nil,
-    backendIdCapture: LockedBox<[String]>? = nil
+    backendIdCapture: LockedBox<[String]>? = nil,
+    attachGateway: any GrokAttachGatewayProviding = NoopAttachGateway(),
+    mcpServersSpy: LockedBox<[[AcpMcpServerConfig]]>? = nil
 ) -> (GrokSessionBridge, MadeClients<GrokAcpClient>) {
     let made = MadeClients<GrokAcpClient>()
-    let bridge = GrokSessionBridge(makeClient: { cfg, onPermission in
+    let bridge = GrokSessionBridge(makeClient: { cfg, onPermission, mcpServers in
         configSpy?.withLock { $0.append(cfg) }   // Grok bakes model/effort/bypass at spawn from this config
         onPermissionSpy?.withLock { $0.append(onPermission) }
+        mcpServersSpy?.withLock { $0.append(mcpServers) }
         let pair = InMemorySidecarTransport.makePair()
         let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture)
         Task { await server.run() }
         // Control timeout only; turn budget is bridge turnTimeoutOverrideNs / DAB_TURN_TIMEOUT_SEC.
         return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
-    }, turnTimeoutOverrideNs: turnTimeoutOverrideNs, gate: permGate, store: store ?? freshTempStore())
+    }, turnTimeoutOverrideNs: turnTimeoutOverrideNs, gate: permGate, store: store ?? freshTempStore(), attachGateway: attachGateway)
     return (bridge, made)
 }
 
@@ -277,5 +280,95 @@ struct GrokSessionBridgeTests {
     @Test func interruptWhenIdleReturnsFalse() async throws {
         let (bridge, _) = makeGrokBridge()
         #expect(await bridge.interrupt(channelId: "c") == false)
+    }
+
+    // C5: every (re)spawn hands the client a "discord" attach_file/share_document MCP server
+    // (TS acpSession.ts buildMcpServers), and the per-channel token it registers with the gateway
+    // is only valid while that channel stays live.
+    @Test func mcpServersCarryDiscordAttachServer() async throws {
+        let spy = LockedBox<[[AcpMcpServerConfig]]>([])
+        let (bridge, _) = makeGrokBridge(mcpServersSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi")
+
+        let servers = spy.withLock { $0 }.first ?? []
+        #expect(servers.count == 1)
+        #expect(servers.first?.name == "discord")
+        #expect(servers.first?.args == ["attach-mcp"])
+        let envNames = Set(servers.first?.env?.map { $0.name } ?? [])
+        #expect(envNames == ["DAB_ATTACH_URL", "DAB_ATTACH_TOKEN", "DAB_WORKSPACE"])
+    }
+
+    @Test func stopUnregistersAttachTokenFromGateway() async throws {
+        let gateway = GrokAttachGateway()
+        let spy = LockedBox<[[AcpMcpServerConfig]]>([])
+        let (bridge, _) = makeGrokBridge(attachGateway: gateway, mcpServersSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi")
+
+        let servers = spy.withLock { $0 }.first ?? []
+        let token = servers.first?.env?.first(where: { $0.name == "DAB_ATTACH_TOKEN" })?.value
+        #expect(token != nil)
+
+        let base = await gateway.baseURL
+        let (statusBefore, _) = try await postAttachGatewayJSON(
+            base + "/attach", body: ["token": .string(token ?? ""), "path": .string(".")]
+        )
+        #expect(statusBefore != 401)   // token still registered while the channel is live
+
+        await bridge.stop(channelId: "c")
+
+        let (statusAfter, bodyAfter) = try await postAttachGatewayJSON(
+            base + "/attach", body: ["token": .string(token ?? ""), "path": .string(".")]
+        )
+        #expect(statusAfter == 401)
+        #expect(bodyAfter["ok"]?.boolValue == false)
+    }
+
+    @Test func respawnAfterInterruptRotatesAttachToken() async throws {
+        let gateway = GrokAttachGateway()
+        let spy = LockedBox<[[AcpMcpServerConfig]]>([])
+        let store = freshTempStore()
+        let (bridge, _) = makeGrokBridge(store: store, attachGateway: gateway, mcpServersSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok))
+        _ = await bridge.interrupt(channelId: "c")
+        _ = try await bridge.runTurn(channelId: "c", text: "again", config: SessionConfig(backend: .grok))
+
+        let captured = spy.withLock { $0 }
+        #expect(captured.count == 2)
+        let tokenBefore = captured[0].first?.env?.first(where: { $0.name == "DAB_ATTACH_TOKEN" })?.value
+        let tokenAfter = captured[1].first?.env?.first(where: { $0.name == "DAB_ATTACH_TOKEN" })?.value
+        #expect(tokenBefore != nil && tokenAfter != nil)
+        #expect(tokenBefore != tokenAfter)   // fresh token per respawn (TS buildMcpServers)
+
+        // The stale token is dropped once the fresh one is registered (unregisterAttach() runs
+        // at the top of buildMcpServers before the new register()) — only one live per channel.
+        let base = await gateway.baseURL
+        let (statusOld, _) = try await postAttachGatewayJSON(
+            base + "/attach", body: ["token": .string(tokenBefore ?? ""), "path": .string(".")]
+        )
+        #expect(statusOld == 401)
+    }
+
+    @Test func buildGrokPromptBlocksSendsImageAsBase64BlockAndKeepsNonImageAsHint() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dab-grok-blocks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let imgPath = dir.appendingPathComponent("pic.png").path
+        let imgBytes = Data([9, 9, 9])
+        try imgBytes.write(to: URL(fileURLWithPath: imgPath))
+        let docPath = dir.appendingPathComponent("note.txt").path
+
+        let blocks = try buildGrokPromptBlocks(
+            text: "hi",
+            files: [TurnFile(path: imgPath, mime: nil), TurnFile(path: docPath, mime: "text/plain")]
+        )
+        #expect(blocks == [
+            .text("hi\n\nAttached file: \(docPath)"),
+            .image(data: imgBytes.base64EncodedString(), mimeType: "image/png"),
+        ])
+    }
+
+    @Test func buildGrokPromptBlocksNonImageOnlyStaysSingleTextBlock() throws {
+        let blocks = try buildGrokPromptBlocks(text: "hi", files: [TurnFile(path: "/x/note.txt", mime: "text/plain")])
+        #expect(blocks == [.text("hi\n\nAttached file: /x/note.txt")])
     }
 }

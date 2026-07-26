@@ -15,17 +15,22 @@ public actor GrokSessionBridge {
 
     /// Client factory (test seam). Grok's model/effort AND bypass are SPAWN-time flags, so the factory
     /// takes the channel's SessionConfig to build the spawn (TS parity: no live setModel/setEffort).
-    /// The permission handler is also construction-time, so it is passed too. `@testable` in tests.
-    private let makeClient: @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient
+    /// The permission handler is also construction-time, so it is passed too, along with the
+    /// per-spawn `mcpServers` (C5: attach_file/share_document loopback — built fresh per (re)spawn
+    /// by `buildMcpServers`, empty when the attach gateway/hosts are unreachable). `@testable` in tests.
+    private let makeClient: @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?, _ mcpServers: [AcpMcpServerConfig]) throws -> GrokAcpClient
     /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
     private let turnTimeoutOverrideNs: UInt64?
     /// Permission gate (default shared; tests inject a fresh gate for isolation).
     private let gate: PermissionGate
     /// Global config (autoAllowClaudeTools host-side check for Always-Allow).
     private let configStore: ConfigStore
+    /// Loopback attach_file/share_document gateway (default shared; tests inject a no-socket
+    /// fake — see `GrokAttachGatewayProviding`).
+    private let attachGateway: any GrokAttachGatewayProviding
 
     init(
-        makeClient: @escaping @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?) throws -> GrokAcpClient = { config, onPermission in
+        makeClient: @escaping @Sendable (SessionConfig?, _ onPermission: AcpPermissionHandler?, _ mcpServers: [AcpMcpServerConfig]) throws -> GrokAcpClient = { config, onPermission, mcpServers in
             // W11-c: bypass (`--always-approve`) only when the permMode is an auto-approve one; else
             // grok emits permission asks answered via the Discord gate (onPermission). model/effort
             // from the bound config. No permMode bound → bypass (danger default parity).
@@ -41,18 +46,20 @@ public actor GrokSessionBridge {
             )
             print("dab: spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
             // Control-request timeout only (60s). Turn budget is bridge-owned (sessionPrompt has none).
-            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: 60_000, onPermission: onPermission)
+            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: 60_000, mcpServers: mcpServers, onPermission: onPermission)
         },
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
-        configStore: ConfigStore = .shared
+        configStore: ConfigStore = .shared,
+        attachGateway: any GrokAttachGatewayProviding = GrokAttachGateway.shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
         self.gate = gate
         self.store = store
         self.configStore = configStore
+        self.attachGateway = attachGateway
     }
 
     /// Session persistence (default shared; tests inject a temp-file store).
@@ -72,6 +79,10 @@ public actor GrokSessionBridge {
     private var channelGates: [String: Task<TurnResult, Error>] = [:]
     /// Per-channel count of `runTurn` callers (in-flight + waiting). G-P2-04 stats.
     private var turnDepth: [String: Int] = [:]
+    /// channelId → live attach-gateway token (C5). Survives a `Channel` respawn (interrupt /
+    /// dead child) so `buildMcpServers` can drop the stale registration before issuing a fresh
+    /// one — mirrors TS GrokAcpSession's instance-level `this.attachToken`.
+    private var attachTokens: [String: String] = [:]
 
     // env rules copied from CodexSessionBridge (B/"sibling bridge": no forced sharing).
     private var cwd: String {
@@ -92,7 +103,8 @@ public actor GrokSessionBridge {
     /// Send user text for a Discord channel; wait for the prompt turn + accumulated text.
     /// Turns on the same channel are serialized. Cost/tokens from the prompt response are
     /// returned when present (W11-g slice1).
-    /// `files`: G-P0-01 best-effort — paths appended to prompt text (no ACP image blocks yet).
+    /// `files`: images go out as ACP `image` blocks (base64), everything else as a text hint
+    /// (`buildGrokPromptBlocks`, TS `acpSession.ts:431-441` parity).
     public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil, files: [TurnFile] = []) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
@@ -128,11 +140,8 @@ public actor GrokSessionBridge {
 
     private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?, files: [TurnFile]) async throws -> TurnResult {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
-        // Best-effort: mention attachment paths in text so the agent can open them.
-        let promptText = appendAttachedFileHints(text: text, files: files)
-        if !files.isEmpty {
-            print("dab: grok attachments=\(files.count) (paths in text; ACP image blocks not wired)")
-        }
+        // Multimodal: images → ACP `image` blocks (base64); everything else → text hint.
+        let promptBlocks = try buildGrokPromptBlocks(text: text, files: files)
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
         // buffer is complete when the await returns (see type comment). No actor hop for text/stats;
@@ -192,7 +201,7 @@ public actor GrokSessionBridge {
         do {
             promptResult = try await withThrowingTaskGroup(of: JSONValue.self) { group in
                 group.addTask {
-                    try await client.sessionPrompt(prompt: promptText)
+                    try await client.sessionPrompt(blocks: promptBlocks)
                 }
                 group.addTask {
                     try await Task.sleep(nanoseconds: timeoutNs)
@@ -279,7 +288,10 @@ public actor GrokSessionBridge {
                 return decision.isAllowing ? .allow : .deny   // always|allow → allow; deny-by-default
             }
         }
-        let client = try makeClient(config, onPermission)
+        // C5: fresh attach_file/share_document MCP registration for this (re)spawn only —
+        // the early-return-if-live path above never rebuilds it (TS ensureClient parity).
+        let mcpServers = try await buildMcpServers(channelId: channelId)
+        let client = try makeClient(config, onPermission, mcpServers)
         let persisted = await store.binding(channelId: channelId)
 
         do {
@@ -321,6 +333,41 @@ public actor GrokSessionBridge {
         return channel
     }
 
+    // MARK: - Attach gateway (C5)
+
+    /// Registers a fresh loopback token for this channel's next spawn and returns the "discord"
+    /// MCP server config Grok should be told to launch (mirrors TS acpSession.ts buildMcpServers
+    /// 1:1). The subprocess is `dab` itself, re-invoked with the hidden `attach-mcp` subcommand
+    /// (DabMain dispatches it before the bot-boot path) — no second compiled binary, no Node.
+    private func buildMcpServers(channelId: String) async throws -> [AcpMcpServerConfig] {
+        try await attachGateway.whenReady()
+        // Fresh token per spawn so a re-init after interrupt still has a live registration; the
+        // stale one from the previous spawn (if any) is dropped first.
+        if let stale = attachTokens[channelId] {
+            await attachGateway.unregister(token: stale)
+        }
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        await attachGateway.register(token: token, channelId: channelId, workspaceRoot: cwd)
+        attachTokens[channelId] = token
+        return [
+            AcpMcpServerConfig(
+                name: "discord",
+                command: dabSelfExecutablePath(),
+                args: ["attach-mcp"],
+                env: [
+                    AcpMcpEnvVar(name: "DAB_ATTACH_URL", value: await attachGateway.baseURL),
+                    AcpMcpEnvVar(name: "DAB_ATTACH_TOKEN", value: token),
+                    AcpMcpEnvVar(name: "DAB_WORKSPACE", value: cwd),
+                ]
+            )
+        ]
+    }
+
+    private func unregisterAttach(channelId: String) async {
+        guard let token = attachTokens.removeValue(forKey: channelId) else { return }
+        await attachGateway.unregister(token: token)
+    }
+
     // MARK: - Lifecycle (W14)
 
     /// Hard-stop: close the grok child and drop the live channel entry (TS GrokAcpSession.stop).
@@ -331,6 +378,7 @@ public actor GrokSessionBridge {
         channelGates[channelId] = nil
         turnDepth[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
+        await unregisterAttach(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()
     }
@@ -375,9 +423,33 @@ public actor GrokSessionBridge {
     }
 }
 
+/// Multimodal prompt: text + base64 images (ACP `image` block, `grok agent stdio`).
+/// Mirrors TS `buildGrokPromptBlocks` (`acpSession.ts:431-441`).
+func buildGrokPromptBlocks(text: String, files: [TurnFile]) throws -> [AcpPromptBlock] {
+    let classified = classifyTurnFiles(files)
+    let images = classified.filter { $0.isImage }
+    let nonImages = classified.filter { !$0.isImage }
+    let hinted = appendAttachedFileHints(text: text, files: nonImages.map { TurnFile(path: $0.path, mime: $0.mime) })
+    var blocks: [AcpPromptBlock] = [.text(hinted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? " " : hinted)]
+    for img in images {
+        blocks.append(.image(data: try readImageBase64(path: img.path), mimeType: img.mime))
+    }
+    return blocks
+}
+
 /// Whether a permMode auto-approves for Grok (→ `--always-approve`, no permission UI). No bound
 /// permMode → true (danger default parity). Non-bypass modes route asks through the gate.
 func grokBypassPermMode(_ permMode: String?) -> Bool {
     guard let permMode, !permMode.isEmpty else { return true }
     return permMode == "bypassPermissions" || permMode == "danger-full-access"
+}
+
+/// Absolute path to the running `dab` binary itself — reused as the attach_file/share_document
+/// MCP subprocess via `dab attach-mcp` (C5). `grok agent stdio` spawns this as ITS OWN child, so
+/// a relative path would resolve against grok's inherited cwd, not ours — hence the absolute-path
+/// normalization here rather than passing `CommandLine.arguments[0]` straight through.
+func dabSelfExecutablePath() -> String {
+    let arg0 = CommandLine.arguments.first ?? "dab"
+    if arg0.hasPrefix("/") { return arg0 }
+    return FileManager.default.currentDirectoryPath + "/" + arg0
 }

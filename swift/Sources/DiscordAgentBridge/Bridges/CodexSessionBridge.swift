@@ -112,7 +112,8 @@ public actor CodexSessionBridge {
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
     /// Turns on the same channel are serialized. Token usage from `turn/completed` is returned
     /// when present (W11-g slice1).
-    /// `files`: G-P0-01 best-effort — paths appended to prompt text (no native localImage wiring yet).
+    /// `files`: images go out as `localImage` input items (Codex reads the path itself), everything
+    /// else as a text hint (`buildCodexTurnItems`, TS `appSession.ts:486-498` parity).
     public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil, files: [TurnFile] = []) async throws -> TurnResult {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
@@ -148,11 +149,8 @@ public actor CodexSessionBridge {
 
     private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?, files: [TurnFile]) async throws -> TurnResult {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
-        // Best-effort: mention attachment paths in text so the agent can open them (TS non-image hints).
-        let promptText = appendAttachedFileHints(text: text, files: files)
-        if !files.isEmpty {
-            print("dab: codex attachments=\(files.count) (paths in text; native localImage not wired)")
-        }
+        // Multimodal: images → `localImage` input items; everything else → text hint.
+        let inputItems = buildCodexTurnItems(text: text, files: files)
         let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
             let timeoutTask = Task {
@@ -172,7 +170,7 @@ public actor CodexSessionBridge {
             // stays hardcoded (danger) until the permission UI lands (W11-c).
             var input: [String: JSONValue] = [
                 "threadId": .string(channel.threadId),
-                "input": .array([.object(["type": .string("text"), "text": .string(promptText)])]),
+                "input": .array(inputItems),
             ]
             if let effort = config?.effort, !effort.isEmpty { input["effort"] = .string(effort) }
             if let model = config?.model, !model.isEmpty { input["model"] = .string(model) }
@@ -340,16 +338,22 @@ public actor CodexSessionBridge {
         guard var box = turns[channelId], !box.done else { return }
 
         // G-P1-02: item/started + turn/started → stream embed progress (TS transcriptFeed).
+        // C1: item/reasoning/delta(+aliases) → thinking (TS eventMapper.ts:171-184).
         let progressEvs = codexProgressEvents(method: method, params: params)
         if !progressEvs.isEmpty {
             let ch = channelId
             for ev in progressEvs {
-                if case .progress(let label, let detail) = ev {
+                switch ev {
+                case .progress(let label, let detail):
                     Task {
                         await StreamStatusHost.shared.noteProgress(
                             channelId: ch, label: label, detail: detail
                         )
                     }
+                case .thinking(let text, _):
+                    Task { await StreamStatusHost.shared.noteThinking(channelId: ch, delta: text) }
+                default:
+                    break
                 }
             }
         }
@@ -524,6 +528,24 @@ public actor CodexSessionBridge {
     public func turnGeneration(channelId: String) -> UInt64 {
         turnGens[channelId] ?? 0
     }
+}
+
+/// Multimodal turn input: text + `localImage` paths (Codex `UserInput.localImage` reads the file
+/// itself — no base64 needed). Mirrors TS `buildCodexTurnInput` (`appSession.ts:486-498`).
+func buildCodexTurnItems(text: String, files: [TurnFile]) -> [JSONValue] {
+    let classified = classifyTurnFiles(files)
+    let images = classified.filter { $0.isImage }
+    let nonImages = classified.filter { !$0.isImage }
+    let hinted = appendAttachedFileHints(text: text, files: nonImages.map { TurnFile(path: $0.path, mime: $0.mime) })
+    var items: [JSONValue] = []
+    if !hinted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        items.append(.object(["type": .string("text"), "text": .string(hinted)]))
+    }
+    for img in images {
+        items.append(.object(["type": .string("localImage"), "path": .string(img.path)]))
+    }
+    if items.isEmpty { items.append(.object(["type": .string("text"), "text": .string(" ")])) }
+    return items
 }
 
 /// Short tool label for a Codex approval prompt (mirrors TS deriveApprovalToolName, appSession.ts).

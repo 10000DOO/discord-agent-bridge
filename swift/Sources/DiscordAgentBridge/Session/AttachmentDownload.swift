@@ -125,6 +125,54 @@ public func appendAttachedFileHints(text: String, files: [TurnFile]) -> String {
     return base + "\n\n" + lines.joined(separator: "\n")
 }
 
+/// Extension allowlist for "this is an image" (TS `turnFiles.ts` `IMAGE_EXTS`).
+private let imageFileExtensions: Set<String> = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+
+/// A `TurnFile` classified image/non-image with a resolved mime, for multimodal prompt building
+/// (TS `ClassifiedTurnFile`/`classifyTurnFiles`, `modes/shared/turnFiles.ts`).
+public struct ClassifiedTurnFile: Sendable, Equatable {
+    public var path: String
+    public var mime: String
+    public var isImage: Bool
+}
+
+/// Split turn files into image vs non-image, resolving a mime for each. A file is an image when
+/// its declared mime starts with `image/` OR its extension is a known image extension (TS: OR of
+/// both checks).
+public func classifyTurnFiles(_ files: [TurnFile]) -> [ClassifiedTurnFile] {
+    files.map { f in
+        let ext = "." + (f.path as NSString).pathExtension.lowercased()
+        let fromMime = f.mime?.hasPrefix("image/") ?? false
+        let fromExt = imageFileExtensions.contains(ext)
+        let isImage = fromMime || fromExt
+        let mime: String
+        if let m = f.mime, !m.isEmpty {
+            mime = m
+        } else if let m = mimeFromImageExtension(ext) {
+            mime = m
+        } else {
+            mime = isImage ? "image/png" : "application/octet-stream"
+        }
+        return ClassifiedTurnFile(path: f.path, mime: mime, isImage: isImage)
+    }
+}
+
+/// Read an image file's bytes as base64 for a vision/ACP image prompt block (TS `readImageBase64`).
+/// Throws (turn fails) on read failure — no fallback, matching TS's uncaught sync `fs.readFileSync`.
+public func readImageBase64(path: String) throws -> String {
+    try Data(contentsOf: URL(fileURLWithPath: path)).base64EncodedString()
+}
+
+private func mimeFromImageExtension(_ ext: String) -> String? {
+    switch ext {
+    case ".png": return "image/png"
+    case ".jpg", ".jpeg": return "image/jpeg"
+    case ".gif": return "image/gif"
+    case ".webp": return "image/webp"
+    default: return nil
+    }
+}
+
 // MARK: - Private
 
 /// Realpath-confine `candidate` to `root`; throw when it escapes.

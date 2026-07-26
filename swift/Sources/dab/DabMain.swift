@@ -19,6 +19,10 @@ struct DabMain {
             await runGrokSmoke()
             return
         }
+        if args.first == "attach-mcp" {
+            await runAttachMcpStdio()
+            return
+        }
 
         guard let token = DiscordToken.resolve() else {
             fputs(DiscordToken.usage + "\n", stderr)
@@ -641,7 +645,7 @@ struct EventHandler: GatewayEventHandler {
             }
 
         case "config":
-            // W16-b: ephemeral settings panel (role tiers + defaults + dmPolicy). Admin only.
+            // W16-b: ephemeral settings panel (role tiers + defaults). Admin only.
             guard let realGuildId = payload.guild_id?.rawValue else {
                 try await respondEphemeral(payload, I18n.t("auth.denied", ["reason": "DM"]))
                 return
@@ -933,7 +937,7 @@ struct EventHandler: GatewayEventHandler {
     }
 
     /// W16-b: drive the open `/config` panel. Owner-gated. Roles batch until Save;
-    /// backend/model/effort/permMode/dmPolicy auto-save; 🔔 notifications sub-panel.
+    /// backend/model/effort/permMode/locale auto-save; 🔔 notifications sub-panel.
     private func handleConfigComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue
@@ -2089,12 +2093,17 @@ func resolveTurnCwd(channelId: String) async -> String {
 
 // MARK: - Resume list + bind (W11-b2 residual)
 
-/// Claude/custom → sidecar sessions.list; Codex/Grok → store best-effort (or empty).
+/// Claude/custom → sidecar sessions.list; Codex → ~/.codex discovery (session_index.jsonl +
+/// state sqlite, process-wide, not scoped to `cwd` — matches TS codex/index.ts:67-69); Grok →
+/// store best-effort (or empty).
 func listResumableForBackend(_ backend: Backend, cwd: String) async -> [ResumableSession] {
     switch backend {
     case .claude, .custom:
         return await DabSessionBridge.shared.listResumableSessions(cwd: cwd)
-    case .codex, .grok:
+    case .codex:
+        let codexHome = resolveCodexHome((try? await ConfigStore.shared.load())?.defaults.codexHome)
+        return CodexDiscovery.listResumable(codexHome: codexHome)
+    case .grok:
         let all = await SessionStore.shared.all()
         return listResumableFromStore(sessions: all, backend: backend, cwd: cwd)
     }
@@ -2565,6 +2574,171 @@ func runGrokSmoke() async {
         fputs("dab grok-smoke: initialize failed: \(error)\n", stderr)
         await client.close()
         exit(1)
+    }
+}
+
+// MARK: - attach-mcp (C5)
+//
+// Minimal stdio MCP server for attach_file / share_document — the "discord" server that
+// `grok agent stdio` spawns as ITS OWN child per GrokSessionBridge's `mcpServers` config
+// (command = this same `dab` binary, args = ["attach-mcp"]). Talks to GrokAttachGateway over
+// loopback HTTP via DAB_ATTACH_URL/DAB_ATTACH_TOKEN (never logged). Mirrors
+// scripts/dab-discord-attach-mcp.mjs 1:1, native instead of Node — Grok must not gain a hard
+// Node dependency for a mainline (non-opt-in) backend feature (see H5 in the parity audit).
+
+private let attachMcpTools: JSONValue = .array([
+    .object([
+        "name": .string("attach_file"),
+        "description": .string(
+            "Send a file from the workspace to the Discord channel for this session. Path must be inside the workspace. Create the file first if needed."
+        ),
+        "inputSchema": .object([
+            "type": .string("object"),
+            "properties": .object([
+                "path": .object([
+                    "type": .string("string"),
+                    "description": .string("Workspace-relative or absolute path inside workspace"),
+                ]),
+                "filename": .object([
+                    "type": .string("string"),
+                    "description": .string("Optional display name"),
+                ]),
+            ]),
+            "required": .array([.string("path")]),
+        ]),
+    ]),
+    .object([
+        "name": .string("share_document"),
+        "description": .string(
+            "Post a markdown document from the workspace into a Discord thread. Path must be inside the workspace; only a confirmation is returned, never the document body."
+        ),
+        "inputSchema": .object([
+            "type": .string("object"),
+            "properties": .object([
+                "path": .object([
+                    "type": .string("string"),
+                    "description": .string("Path to the markdown file to share (inside the session workspace)"),
+                ]),
+            ]),
+            "required": .array([.string("path")]),
+        ]),
+    ]),
+])
+
+func runAttachMcpStdio() async {
+    let env = ProcessInfo.processInfo.environment
+    let attachURL = env["DAB_ATTACH_URL"] ?? ""
+    let token = env["DAB_ATTACH_TOKEN"] ?? ""
+    while let line = readLine(strippingNewline: true) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(JSONValue.self, from: data),
+              case .object(let msg) = decoded
+        else { continue }
+        await handleAttachMcpMessage(msg, attachURL: attachURL, token: token)
+    }
+}
+
+private func writeAttachMcpLine(_ obj: [String: JSONValue]) {
+    guard let data = try? JSONEncoder().encode(JSONValue.object(obj)), let s = String(data: data, encoding: .utf8) else { return }
+    print(s)
+    fflush(stdout)
+}
+
+private func toolCallResult(id: JSONValue, text: String, isError: Bool) -> [String: JSONValue] {
+    [
+        "jsonrpc": .string("2.0"),
+        "id": id,
+        "result": .object([
+            "content": .array([.object(["type": .string("text"), "text": .string(text)])]),
+            "isError": .bool(isError),
+        ]),
+    ]
+}
+
+private func handleAttachMcpMessage(_ msg: [String: JSONValue], attachURL: String, token: String) async {
+    let id = msg["id"]
+    let method = msg["method"]?.stringValue ?? ""
+    switch method {
+    case "initialize":
+        guard let id else { return }
+        writeAttachMcpLine([
+            "jsonrpc": .string("2.0"),
+            "id": id,
+            "result": .object([
+                "protocolVersion": .string("2024-11-05"),
+                "capabilities": .object(["tools": .object([:])]),
+                "serverInfo": .object(["name": .string("discord"), "version": .string("1.0.0")]),
+            ]),
+        ])
+    case "notifications/initialized", "initialized", "$/cancelRequest":
+        return  // notifications — no response
+    case "ping":
+        guard let id else { return }
+        writeAttachMcpLine(["jsonrpc": .string("2.0"), "id": id, "result": .object([:])])
+    case "tools/list":
+        guard let id else { return }
+        writeAttachMcpLine(["jsonrpc": .string("2.0"), "id": id, "result": .object(["tools": attachMcpTools])])
+    case "tools/call":
+        guard let id else { return }
+        let params = msg["params"]
+        let name = params?["name"]?.stringValue ?? ""
+        guard name == "attach_file" || name == "share_document" else {
+            writeAttachMcpLine(toolCallResult(id: id, text: "Unknown tool: \(name)", isError: true))
+            return
+        }
+        let args = params?["arguments"]?.objectValue ?? [:]
+        let path = args["path"]?.stringValue ?? ""
+        guard !path.isEmpty else {
+            writeAttachMcpLine(toolCallResult(id: id, text: "\(name) requires a path.", isError: true))
+            return
+        }
+        let filename = args["filename"]?.stringValue
+        let result = await postAttachMcp(
+            endpoint: name == "share_document" ? "/share" : "/attach",
+            attachURL: attachURL, token: token, path: path, filename: filename
+        )
+        writeAttachMcpLine(toolCallResult(id: id, text: result.text, isError: !result.ok))
+    default:
+        if let id {
+            writeAttachMcpLine([
+                "jsonrpc": .string("2.0"), "id": id,
+                "error": .object(["code": .number(-32601), "message": .string("Method not found: \(method)")]),
+            ])
+        }
+    }
+}
+
+/// One POST to the attach gateway → {ok, text}. Both attach_file and share_document route
+/// through it (TS dab-discord-attach-mcp.mjs postJson/postAttach/postShare 1:1).
+private func postAttachMcp(endpoint: String, attachURL: String, token: String, path: String, filename: String?) async -> (ok: Bool, text: String) {
+    guard !attachURL.isEmpty, !token.isEmpty else {
+        return (false, "Attach gateway is not configured (missing DAB_ATTACH_URL/TOKEN).")
+    }
+    let base = attachURL.hasSuffix("/") ? String(attachURL.dropLast()) : attachURL
+    guard let url = URL(string: base + endpoint) else {
+        return (false, "Attach gateway URL is invalid.")
+    }
+    var bodyObj: [String: JSONValue] = ["token": .string(token), "path": .string(path)]
+    if endpoint == "/attach", let filename, !filename.isEmpty {
+        bodyObj["filename"] = .string(filename)
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try? JSONEncoder().encode(JSONValue.object(bodyObj))
+    do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpOk = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+        guard let decoded = try? JSONDecoder().decode(JSONValue.self, from: data), case .object(let obj) = decoded else {
+            return (false, "Attach gateway returned non-JSON response (HTTP \(httpOk ? "ok" : "error")).")
+        }
+        let text = obj["text"]?.stringValue ?? (httpOk ? "ok" : "failed")
+        let ok = obj["ok"]?.boolValue ?? httpOk
+        return (ok, text)
+    } catch {
+        return (false, "Failed to reach attach gateway: \(error.localizedDescription)")
     }
 }
 

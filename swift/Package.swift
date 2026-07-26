@@ -22,7 +22,8 @@ let package = Package(
     targets: [
         .target(
             name: "DiscordAgentBridge",
-            dependencies: []
+            dependencies: [],
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .executableTarget(
             name: "dab",
