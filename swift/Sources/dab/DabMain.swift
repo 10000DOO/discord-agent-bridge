@@ -2095,7 +2095,7 @@ func resolveTurnCwd(channelId: String) async -> String {
 
 /// Claude/custom → sidecar sessions.list; Codex → ~/.codex discovery (session_index.jsonl +
 /// state sqlite, process-wide, not scoped to `cwd` — matches TS codex/index.ts:67-69); Grok →
-/// store best-effort (or empty).
+/// ~/.grok discovery (session_search.sqlite, scoped to `cwd` — matches TS grok/agent/index.ts:76).
 func listResumableForBackend(_ backend: Backend, cwd: String) async -> [ResumableSession] {
     switch backend {
     case .claude, .custom:
@@ -2104,8 +2104,7 @@ func listResumableForBackend(_ backend: Backend, cwd: String) async -> [Resumabl
         let codexHome = resolveCodexHome((try? await ConfigStore.shared.load())?.defaults.codexHome)
         return CodexDiscovery.listResumable(codexHome: codexHome)
     case .grok:
-        let all = await SessionStore.shared.all()
-        return listResumableFromStore(sessions: all, backend: backend, cwd: cwd)
+        return GrokDiscovery.listResumable(grokHome: resolveGrokHome(), cwd: cwd)
     }
 }
 
