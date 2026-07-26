@@ -1,8 +1,9 @@
 import Foundation
 
-// Claude usage/limits poller (TS `src/core/usageService.ts`). Polls the Anthropic OAuth
-// usage endpoint for 5-hour + weekly limits. File credentials first, macOS Keychain
-// fallback. NEVER throws into callers. Codex → `codexUsageUnavailable()`.
+// Claude usage/limits poller (TS `src/core/usageService.ts`) + Grok weekly-limit poller
+// (TS `src/modes/grok/usageService.ts`). Claude: Anthropic OAuth (file + Keychain).
+// Grok: `~/.grok/auth.json` bearer → cli-chat-proxy billing (sevenDay only).
+// NEVER throws into callers. Codex → `codexUsageUnavailable()`.
 
 // MARK: - Public snapshot shapes
 
@@ -399,4 +400,167 @@ private func defaultWriteKeychain(_ json: String) {
     try? p.run()
     p.waitUntilExit()
     #endif
+}
+
+// MARK: - Grok billing constants (TS modes/grok/usageService.ts)
+
+private let grokBillingURL = URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!
+
+// MARK: - GrokUsageService
+
+/// Grok Build weekly-limit poller. Same public contract as ClaudeUsageService
+/// (`isAvailable` / `getUsage` → `UsageResult`), never-throw cache style.
+/// Only fills `sevenDay` (no 5-hour / per-model windows). Auth: first account in
+/// `~/.grok/auth.json` with a non-empty `key`. Tokens are never logged.
+public actor GrokUsageService {
+    public static let shared = GrokUsageService()
+
+    private let cacheMs: Double
+    private let http: any UsageHTTPPerforming
+    private let authPath: String
+    private let nowMs: @Sendable () -> Double
+    private let log: @Sendable (String) -> Void
+
+    private var cached: UsageSnapshot?
+
+    public init(
+        cacheSec: Double = 15,
+        http: any UsageHTTPPerforming = URLSessionUsageHTTP(),
+        authPath: String? = nil,
+        nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
+        log: @escaping @Sendable (String) -> Void = { msg in fputs("dab grok usage: \(msg)\n", stderr) }
+    ) {
+        self.cacheMs = max(0, cacheSec) * 1000
+        self.http = http
+        self.authPath = authPath ?? NSHomeDirectory() + "/.grok/auth.json"
+        self.nowMs = nowMs
+        self.log = log
+    }
+
+    /// True when at least one account entry has a non-empty key string.
+    public func isAvailable() -> Bool {
+        readAccessToken() != nil
+    }
+
+    /// Serve cache within TTL; else fetch. NEVER throws.
+    public func getUsage() async -> UsageResult {
+        guard let token = readAccessToken() else {
+            return .unavailable(UsageUnavailable(reason: .noCredentials))
+        }
+        let t = nowMs()
+        if let cached, t - cached.fetchedAt < cacheMs {
+            return .snapshot(cached)
+        }
+        if let snap = await fetchUsage(token: token) {
+            return .snapshot(snap)
+        }
+        if let cached { return .snapshot(cached) }
+        return .unavailable(UsageUnavailable(reason: .noCredentials))
+    }
+
+    // MARK: auth
+
+    /// First account entry with a non-empty `key`. Missing/unreadable/malformed → nil.
+    private func readAccessToken() -> String? {
+        guard let raw = try? String(contentsOfFile: authPath, encoding: .utf8),
+              let data = raw.data(using: .utf8)
+        else { return nil }
+        guard let parsed = try? JSONSerialization.jsonObject(with: data) else {
+            log("grok auth is not valid JSON; treating as unavailable")
+            return nil
+        }
+        guard let map = parsed as? [String: Any] else {
+            log("grok auth has an unexpected shape; treating as unavailable")
+            return nil
+        }
+        for value in map.values {
+            guard let account = value as? [String: Any],
+                  let key = account["key"] as? String,
+                  !key.isEmpty
+            else { continue }
+            return key
+        }
+        return nil
+    }
+
+    // MARK: billing
+
+    private func fetchUsage(token: String) async -> UsageSnapshot? {
+        var req = URLRequest(url: grokBillingURL)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("cli", forHTTPHeaderField: "x-grok-client-mode")
+        do {
+            let (data, httpResp) = try await http.perform(req)
+            if httpResp.statusCode == 401 {
+                log("grok usage endpoint returned 401 (token expired or revoked)")
+                return nil
+            }
+            guard (200..<300).contains(httpResp.statusCode),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                log("grok usage endpoint non-OK or bad JSON")
+                return nil
+            }
+            guard let snap = toSnapshot(config: obj["config"] as? [String: Any]) else {
+                log("grok usage response missing a usable utilization percent")
+                return nil
+            }
+            cached = snap
+            return snap
+        } catch {
+            log("grok usage fetch request failed")
+            return nil
+        }
+    }
+
+    /// Prefer account-total `creditUsagePercent`; fall back to GrokBuild productUsage%.
+    /// Only `sevenDay` is set. resetsAt = currentPeriod.end ?? billingPeriodEnd.
+    private func toSnapshot(config: [String: Any]?) -> UsageSnapshot? {
+        guard let config else { return nil }
+
+        var utilization: Double?
+        if let n = config["creditUsagePercent"] as? Double, n.isFinite {
+            utilization = n
+        } else if let n = config["creditUsagePercent"] as? Int {
+            utilization = Double(n)
+        } else if let products = config["productUsage"] as? [[String: Any]] {
+            if let grokBuild = products.first(where: { ($0["product"] as? String) == "GrokBuild" }) {
+                if let n = grokBuild["usagePercent"] as? Double, n.isFinite {
+                    utilization = n
+                } else if let n = grokBuild["usagePercent"] as? Int {
+                    utilization = Double(n)
+                }
+            }
+        }
+        guard let utilization else { return nil }
+
+        var resetsAt: String?
+        if let period = config["currentPeriod"] as? [String: Any],
+           let end = period["end"] as? String, !end.isEmpty {
+            resetsAt = end
+        } else if let end = config["billingPeriodEnd"] as? String, !end.isEmpty {
+            resetsAt = end
+        }
+
+        return UsageSnapshot(
+            sevenDay: UsageLimit(utilization: utilization, resetsAt: resetsAt),
+            fetchedAt: nowMs()
+        )
+    }
+}
+
+// MARK: - Backend usage routing (W11-g)
+
+/// Fresh usage for a backend. Claude/custom → Claude OAuth; grok → Grok weekly;
+/// codex → structural unavailable.
+public func getUsageForBackend(_ backend: Backend) async -> UsageResult {
+    switch backend {
+    case .claude, .custom:
+        return await ClaudeUsageService.shared.getUsage()
+    case .grok:
+        return await GrokUsageService.shared.getUsage()
+    case .codex:
+        return codexUsageUnavailable()
+    }
 }

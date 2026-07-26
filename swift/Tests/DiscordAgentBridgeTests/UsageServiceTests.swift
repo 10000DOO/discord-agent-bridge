@@ -286,3 +286,277 @@ struct ClaudeUsageServiceTests {
         }
     }
 }
+
+// MARK: - GrokUsageService
+
+private let grokAccessToken = String(repeating: "G", count: 24)
+
+private func writeGrokAuth(path: String, key: String = grokAccessToken) {
+    let obj: [String: Any] = ["account1": ["key": key]]
+    let data = try! JSONSerialization.data(withJSONObject: obj)
+    try! data.write(to: URL(fileURLWithPath: path))
+}
+
+private func billingBody(_ overrides: [String: Any] = [:]) -> [String: Any] {
+    var config: [String: Any] = [
+        "currentPeriod": [
+            "type": "USAGE_PERIOD_TYPE_WEEKLY",
+            "start": "2026-07-14T00:00:00Z",
+            "end": "2026-07-21T00:00:00Z",
+        ],
+        "creditUsagePercent": 6.0,
+        "productUsage": [
+            ["product": "GrokBuild", "usagePercent": 3.0],
+            ["product": "GrokChat", "usagePercent": 3.0],
+        ],
+        "billingPeriodEnd": "2026-08-01T00:00:00Z",
+    ]
+    for (k, v) in overrides { config[k] = v }
+    return ["config": config]
+}
+
+@Suite("GrokUsageService")
+struct GrokUsageServiceTests {
+    @Test func mapsCreditUsagePercentToSevenDay() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+        let clock: Double = 1_000_000
+
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 200, json: billingBody())
+        let svc = GrokUsageService(
+            cacheSec: 15,
+            http: http,
+            authPath: authPath,
+            nowMs: { clock },
+            log: { _ in }
+        )
+
+        let result = await svc.getUsage()
+        guard case .snapshot(let snap) = result else {
+            Issue.record("expected snapshot")
+            return
+        }
+        // Prefer total creditUsagePercent (6) over productUsage GrokBuild (3).
+        #expect(snap.sevenDay == UsageLimit(utilization: 6.0, resetsAt: "2026-07-21T00:00:00Z"))
+        #expect(snap.fiveHour == nil)
+        #expect(snap.sevenDayOpus == nil)
+        #expect(snap.sevenDaySonnet == nil)
+        #expect(snap.fetchedAt == clock)
+        #expect(http.requests.count == 1)
+        let headers = http.requests[0].allHTTPHeaderFields ?? [:]
+        #expect(headers["Authorization"] == "Bearer \(grokAccessToken)")
+        #expect(headers["Accept"] == "application/json")
+        #expect(headers["x-grok-client-mode"] == "cli")
+        #expect(http.requests[0].url?.absoluteString.contains("billing?format=credits") == true)
+    }
+
+    @Test func fallsBackToGrokBuildProductUsage() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 200, json: billingBody([
+            "productUsage": [["product": "GrokBuild", "usagePercent": 12.5]],
+            "creditUsagePercent": NSNull(),
+        ]))
+        let svc = GrokUsageService(
+            http: http,
+            authPath: authPath,
+            nowMs: { 1_000_000 },
+            log: { _ in }
+        )
+        let result = await svc.getUsage()
+        if case .snapshot(let snap) = result {
+            #expect(snap.sevenDay?.utilization == 12.5)
+        } else {
+            Issue.record("expected snapshot from GrokBuild fallback")
+        }
+    }
+
+    @Test func fallsBackToBillingPeriodEnd() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 200, json: billingBody([
+            "currentPeriod": [
+                "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                "start": "2026-07-14T00:00:00Z",
+            ],
+            "billingPeriodEnd": "2026-08-01T00:00:00Z",
+        ]))
+        let svc = GrokUsageService(
+            http: http,
+            authPath: authPath,
+            nowMs: { 1_000_000 },
+            log: { _ in }
+        )
+        let result = await svc.getUsage()
+        if case .snapshot(let snap) = result {
+            #expect(snap.sevenDay?.resetsAt == "2026-08-01T00:00:00Z")
+        } else {
+            Issue.record("expected billingPeriodEnd fallback")
+        }
+    }
+
+    @Test func missingAuthUnavailable() async {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("missing.json").path
+        let http = MockUsageHTTP()
+        let svc = GrokUsageService(
+            http: http,
+            authPath: authPath,
+            nowMs: { 1_000_000 },
+            log: { _ in }
+        )
+        #expect(await svc.isAvailable() == false)
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+        #expect(http.requests.isEmpty)
+    }
+
+    @Test func emptyKeyUnavailable() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath, key: "")
+
+        let svc = GrokUsageService(
+            http: MockUsageHTTP(),
+            authPath: authPath,
+            nowMs: { 1_000_000 },
+            log: { _ in }
+        )
+        #expect(await svc.isAvailable() == false)
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+    }
+
+    @Test func servesCacheWithinTTL() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+        let clock = ClockBox(1_000_000)
+
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 200, json: billingBody(["creditUsagePercent": 1.0]))
+        http.enqueue(urlContains: "billing", status: 200, json: billingBody(["creditUsagePercent": 9.0]))
+        let svc = GrokUsageService(
+            cacheSec: 15,
+            http: http,
+            authPath: authPath,
+            nowMs: { clock.ms },
+            log: { _ in }
+        )
+        let first = await svc.getUsage()
+        if case .snapshot(let s) = first { #expect(s.sevenDay?.utilization == 1.0) }
+        else { Issue.record("first fetch failed") }
+        #expect(http.requests.count == 1)
+
+        clock.ms += 5_000
+        let second = await svc.getUsage()
+        if case .snapshot(let s) = second { #expect(s.sevenDay?.utilization == 1.0) }
+        #expect(http.requests.count == 1)
+
+        clock.ms += 11_000
+        let third = await svc.getUsage()
+        if case .snapshot(let s) = third { #expect(s.sevenDay?.utilization == 9.0) }
+        #expect(http.requests.count == 2)
+    }
+
+    @Test func nonOKReturnsLastCache() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+        let clock = ClockBox(1_000_000)
+
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 200, json: billingBody())
+        http.enqueue(urlContains: "billing", status: 500, json: ["error": "boom"])
+        let svc = GrokUsageService(
+            cacheSec: 0,
+            http: http,
+            authPath: authPath,
+            nowMs: { clock.ms },
+            log: { _ in }
+        )
+        let first = await svc.getUsage()
+        clock.ms += 1
+        let second = await svc.getUsage()
+        #expect(first == second)
+        if case .snapshot(let s) = second {
+            #expect(s.sevenDay?.utilization == 6.0)
+        } else {
+            Issue.record("expected last-good cache")
+        }
+    }
+
+    @Test func status401SoftFailsWithoutCache() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+
+        let logBox = LockedBox<[String]>([])
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 401, json: ["error": "unauthorized"])
+        let svc = GrokUsageService(
+            http: http,
+            authPath: authPath,
+            nowMs: { 1_000_000 },
+            log: { msg in logBox.withLock { $0.append(msg) } }
+        )
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+        let lines = logBox.withLock { $0 }
+        #expect(lines.contains { $0.contains("401") })
+        #expect(!lines.joined(separator: "\n").contains(grokAccessToken))
+    }
+
+    @Test func missingPercentUnavailable() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-grok-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let authPath = dir.appendingPathComponent("auth.json").path
+        writeGrokAuth(path: authPath)
+
+        let http = MockUsageHTTP()
+        http.enqueue(urlContains: "billing", status: 200, json: [
+            "config": [
+                "productUsage": [["product": "GrokChat", "usagePercent": NSNull()]],
+                "creditUsagePercent": NSNull(),
+            ],
+        ] as [String: Any])
+        let svc = GrokUsageService(
+            http: http,
+            authPath: authPath,
+            nowMs: { 1_000_000 },
+            log: { _ in }
+        )
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+    }
+}

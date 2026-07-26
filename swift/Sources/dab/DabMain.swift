@@ -332,12 +332,20 @@ struct EventHandler: GatewayEventHandler {
                 let count = lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count
                 let content =
                     "**활성 세션** (\(count))\n" + lines.joined(separator: "\n")
-                // W11-g slice2: Claude usage embed when OAuth credentials are available.
-                let usage = await ClaudeUsageService.shared.getUsage()
-                if let spec = buildUsageEmbed(usage: usage, ctxUsage: nil) {
-                    try await respondEphemeral(payload, content, embeds: [discordEmbed(from: spec)])
-                } else {
+                // W11-g slice2/3: Claude OAuth + Grok weekly embeds when credentials exist.
+                var embeds: [Embed] = []
+                let claudeUsage = await ClaudeUsageService.shared.getUsage()
+                if let spec = buildUsageEmbed(usage: claudeUsage, ctxUsage: nil) {
+                    embeds.append(discordEmbed(from: spec))
+                }
+                let grokUsage = await GrokUsageService.shared.getUsage()
+                if let spec = buildUsageEmbed(usage: grokUsage, ctxUsage: nil) {
+                    embeds.append(discordEmbed(from: spec))
+                }
+                if embeds.isEmpty {
                     try await respondEphemeral(payload, content)
+                } else {
+                    try await respondEphemeral(payload, content, embeds: embeds)
                 }
             default:
                 try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")

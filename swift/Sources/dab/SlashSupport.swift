@@ -214,10 +214,14 @@ func postStatusNotification(
         )
     }
     let getUsage: (@Sendable () async -> UsageResult?)? = {
-        if backend == .claude || backend == .custom {
+        switch backend {
+        case .claude, .custom:
             return { await ClaudeUsageService.shared.getUsage() }
+        case .grok:
+            return { await GrokUsageService.shared.getUsage() }
+        case .codex:
+            return { codexUsageUnavailable() }
         }
-        return nil
     }()
     let notifier = SessionNotifier(
         statusChannel: sink,
