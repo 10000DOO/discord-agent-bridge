@@ -62,7 +62,7 @@
 | H17 | 부팅 안전망 + PID 파일 없음 | ⏳ 대기 (WO-P30) |
 | H18 | config.json 엄격 검증 부족 | ⏳ 대기 (WO-P24) |
 | H19 | permissionProfile null vs 필드없음 구분 안됨 | ⏳ 대기 (WO-P23) |
-| H20 | [배포] resolveCli PATH 폴백 없음 | ⏳ 대기 (WO-P22) |
+| H20 | [배포] resolveCli PATH 폴백 없음 | ✅ 완료 (빌드+테스트 확인) |
 | H21 | ModeRegistry 개방형 vs 고정 enum | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H22 | eventBus 범용 vs 전용 액터 | ✅ 결정 완료 (현행 유지, 코드 변경 없음) |
 | H23 | (원 조사에서 결번 — 해당 항목 없음) | — |
@@ -199,6 +199,7 @@
 - **H18.** `config.json` 전체를 TS의 zod처럼 엄격 검증하지 않고 일부 enum 필드만 스팟체크(`ConfigSchema.swift:485-507`) — `profiles` 안의 이상한 값이 Codable 디코딩만 통과하면 걸러지지 않을 수 있음.
 - **H19.** 서버 레벨에서 `permissionProfile: null`로 명시적으로 지워도 "필드 없음"과 구분이 안 돼(`String?`) 무시됨(코드 자체 주석이 인정, `ConfigResolver.swift:202-208`).
 - **H20. [배포 환경] `resolveCli`에 PATH 외 well-known 경로 폴백이 없음.** **직접 재확인**: `Transport.swift:93-105`의 `resolveExecutable`은 `PATH`만 순회하고 끝난다. TS `resolveCli.ts:95-134`는 launchd/systemd처럼 PATH가 최소화된 환경을 대비해 `~/.local/bin`, `~/.grok/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin` 등을 추가로 뒤졌는데 이게 없다 — **정확히 launchd 백그라운드 서비스로 돌릴 때 codex/grok CLI를 못 찾을 수 있는 지점**.
+  **[구현됨: `Sidecar/Transport.swift`(`ProcessSidecarTransport.resolveExecutable` PATH+well-known 병합 검색, `wellKnownUserBinDirs(homeDir:)` 신규), `Tests/DiscordAgentBridgeTests/TransportResolveExecutableTests.swift`(신규, 6건)]** — `env`/`homeDir`/`isExecutable` 주입 파라미터 추가(전부 default=실제값이라 기존 호출부인 `Transport.swift:38`·`CliHelp.swift:92,97` 무변경, Claude/Codex/Grok 세 백엔드 스폰 경로 + CLI 헬프/버전 조회가 한 곳 수정으로 함께 해소됨). `#if os(macOS)`/`#elseif os(Linux)`로 플랫폼별 디렉터리 분기(Windows는 Q1 결정에 따라 미포팅). 최종 확인: `swift build --package-path swift` 성공, `swift test --filter TransportResolveExecutableTests` 6건 전부 통과(0.105초).
 - **H21.** TS `ModeRegistry`는 "등록만 하면 끝"인 개방형 구조인데 Swift는 고정 `Backend` enum + 5곳(ProviderCatalog/SessionLifecycle/UsageService/Capabilities 등) 분산 switch. 지금 4개 백엔드엔 기능적으로 문제없으나 확장성이 떨어짐.
 - **H22.** `eventBus.ts`(범용 pub/sub)가 관심사별 전용 액터(`ToolActivityHost`/`StreamStatusHost`/`IdleWatchdog`/`ImageRenderHost` 등)로 대체됨. 지금 쓰는 렌더러엔 충분하나 새 이벤트 소비자를 추가하려면 매번 새 Host 타입을 만들어야 함.
 - **H24.** Codex 앱서버 프로세스 실패 원인 분류(ENOENT→"찾을 수 없음", 인증실패→로그인 안내, 그 외→종료코드+stderr) 없이 뭉뚱그려 일반 에러 메시지만 표시(`AppServerClient.swift`).
@@ -280,7 +281,7 @@ TS 138개 파일(테스트 포함) 전체와 Swift 81개 파일 전체를 6개 �
 | 19 | WO-P19: headless 브라우저 네트워크 차단 [보안] [완료: 1장 H4 참고] | H4 | `BrowserImageRenderer.swift` | 독립, 보안 최우선 |
 | 20 | WO-P20: DM 구조적 차단 가드 [완료: 2장 H15 참고] | H15 | `Session/SessionRegistry.swift`, `dab/DabMain.swift`(메시지 라우팅) | 독립 |
 | 21 | WO-P21: 권한 임베드 상세정보 + 재렌더링 다운그레이드 + i18n 키 [완료: 1장 H1/H2 참고] | H1, H2 | `DabSessionBridge.swift`, `dab/DabMain.swift`, `I18n.swift`, `PermissionGate.swift` | 같은 권한 UI 묶음 |
-| 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
+| 22 | WO-P22: CLI(codex/grok) well-known 경로 폴백 [배포] [완료: 2장 H20 참고] | H20 | `Transport.swift` | 독립, launchd 운영 환경에 실질 영향 |
 | 23 | WO-P23: `permissionProfile: null` 명시적 해제 구분 | H19 | `ConfigResolver.swift` | 독립 |
 | 24 | WO-P24: `config.json` 엄격 검증 | H18 | `ConfigSchema.swift` | WO-P23과 같은 영역, 순차 |
 | 25 | WO-P25: 프리셋 삭제 optimistic 저장 정합성 | H14 | `Session/ChannelWizard.swift` | WO-P26과 같은 파일, 순차 |

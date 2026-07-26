@@ -90,18 +90,42 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         }
     }
 
-    static func resolveExecutable(_ command: String) -> String {
+    /// Resolve a bare CLI name (e.g. `grok`) to an absolute path when possible: `PATH` first,
+    /// then well-known user/system bin dirs (mirrors TS `resolveCliCommand`, `resolveCli.ts:95-134`).
+    /// Needed because launchd/systemd spawn with a minimal `PATH` (no Homebrew/cargo/grok-local
+    /// dirs), so a bare command that works in a login shell can fail to resolve here.
+    /// `env`/`homeDir`/`isExecutable` are injectable for tests; production call sites (all of
+    /// them) pass none and get the real environment.
+    static func resolveExecutable(
+        _ command: String,
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        homeDir: String = NSHomeDirectory(),
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String {
         if command.contains("/") {
             return command
         }
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-        for dir in path.split(separator: ":") {
-            let candidate = URL(fileURLWithPath: String(dir)).appendingPathComponent(command)
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+        let pathDirs = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
+        for dir in pathDirs + wellKnownUserBinDirs(homeDir: homeDir) {
+            let candidate = URL(fileURLWithPath: dir).appendingPathComponent(command)
+            if isExecutable(candidate.path) {
                 return candidate.path
             }
         }
         return command
+    }
+
+    /// Well-known user/system bin dirs searched when `PATH` misses (TS `wellKnownUserBinDirs`
+    /// mirror, `resolveCli.ts:20-46`). Windows dirs are not ported (out of scope for this build).
+    static func wellKnownUserBinDirs(homeDir: String) -> [String] {
+        let common = ["\(homeDir)/.local/bin", "\(homeDir)/.grok/bin", "\(homeDir)/.cargo/bin"]
+        #if os(macOS)
+        return common + ["/opt/homebrew/bin", "/usr/local/bin"]
+        #elseif os(Linux)
+        return common + ["/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"]
+        #else
+        return common
+        #endif
     }
 
     private static func readLines(
