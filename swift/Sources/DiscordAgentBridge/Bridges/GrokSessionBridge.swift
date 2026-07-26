@@ -98,11 +98,33 @@ public actor GrokSessionBridge {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
 
         // Synchronous fold: the read loop runs this handler before resuming sessionPrompt, so the
-        // buffer is complete when the await returns (see type comment). No actor hop / Task here.
+        // buffer is complete when the await returns (see type comment). No actor hop for text/stats;
+        // ToolActivityHost is an actor → fire-and-forget Task for Discord threads (Claude parity).
         let buf = LockedBox("")
+        let statsBox = LockedBox(TurnToolStatsAggregator())
+        let idSeq = LockedBox(0)
         let unsub = channel.client.onNotification { method, params in
             if case .appendText(let delta) = grokUpdateStep(method: method, params: params) {
                 buf.withLock { $0 += delta }
+                // W11-g residual: live stream text.
+                let ch = channelId
+                Task { await StreamStatusHost.shared.noteText(channelId: ch, delta: delta) }
+            }
+            // W16-g residual: tool_call / tool_call_update → stats + Discord work threads.
+            let toolEvs = idSeq.withLock { seq -> [AgentEvent] in
+                grokToolEvents(method: method, params: params, mintId: &seq)
+            }
+            if !toolEvs.isEmpty {
+                statsBox.withLock { s in
+                    for ev in toolEvs { s.note(ev) }
+                }
+                let ch = channelId
+                for ev in toolEvs {
+                    Task { await ToolActivityHost.shared.handle(channelId: ch, event: ev) }
+                    if case .toolUse = ev {
+                        Task { await StreamStatusHost.shared.noteToolUse(channelId: ch) }
+                    }
+                }
             }
         }
         defer { unsub() }
@@ -110,7 +132,15 @@ public actor GrokSessionBridge {
         let promptResult = try await channel.client.sessionPrompt(prompt: text)
         let out = buf.withLock { $0 }
         let textOut = out.isEmpty ? "(no text)" : out
-        return TurnResult(text: textOut, usage: turnUsage(fromGrokPromptResult: promptResult))
+        let (tools, agents) = statsBox.withLock { ($0.toolsSnapshot(), $0.agentsSnapshot()) }
+        // W16-g: turn boundary for tool threads.
+        await ToolActivityHost.shared.resetTurn(channelId: channelId)
+        return TurnResult(
+            text: textOut,
+            usage: turnUsage(fromGrokPromptResult: promptResult),
+            tools: tools,
+            agents: agents
+        )
     }
 
     private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?, guildId: String) async throws -> Channel {
@@ -204,6 +234,7 @@ public actor GrokSessionBridge {
         stopEpoch[channelId, default: 0] += 1
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
+        await ToolActivityHost.shared.dispose(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()
     }

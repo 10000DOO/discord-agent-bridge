@@ -155,11 +155,11 @@ public struct TurnToolStatsAggregator: Sendable {
             var stat = toolCounts[name] ?? (count: 0, failed: 0)
             stat.count += 1
             toolCounts[name] = stat
-            // Claude Task/Agent spawn — pair type/description with later subagent_result.
-            if name == "Task" || name == "Agent" {
+            // Claude Task/Agent + Codex spawnAgent — pair type/description with later subagent_result.
+            if name == "Task" || name == "Agent" || name == "spawnAgent" {
                 taskInputsById[id] = (
-                    type: input["subagent_type"]?.stringValue,
-                    description: input["description"]?.stringValue
+                    type: input["subagent_type"]?.stringValue ?? input["agentRole"]?.stringValue,
+                    description: input["description"]?.stringValue ?? input["agentNickname"]?.stringValue
                 )
             }
         case .toolResult(let id, let ok, _, _):

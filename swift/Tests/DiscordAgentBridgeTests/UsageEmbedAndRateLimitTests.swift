@@ -278,6 +278,30 @@ struct TurnToolStatsAggregatorTests {
         #expect(agg.totalToolCount == 0)
     }
 
+    @Test func spawnAgentPairsWithSubagentResult() {
+        var agg = TurnToolStatsAggregator()
+        agg.note(.toolUse(
+            id: "s1",
+            name: "spawnAgent",
+            input: .object([
+                "subagent_type": .string("explorer"),
+                "agentNickname": .string("Scout"),
+            ]),
+            parentToolUseId: nil
+        ))
+        agg.note(.subagentResult(
+            taskId: "sub",
+            status: .completed,
+            summary: "done",
+            toolUseId: "s1",
+            durationMs: 5_000,
+            toolUses: nil
+        ))
+        #expect(agg.toolsSnapshot().first?.name == "spawnAgent")
+        #expect(agg.agentsSnapshot().first?.type == "explorer")
+        #expect(agg.agentsSnapshot().first?.description == "Scout")
+    }
+
     @Test func subagentRunDurationFormatting() {
         #expect(DiscordAgentBridge.formatSubagentRunDuration(0) == "0초")
         #expect(DiscordAgentBridge.formatSubagentRunDuration(12_000) == "12초")

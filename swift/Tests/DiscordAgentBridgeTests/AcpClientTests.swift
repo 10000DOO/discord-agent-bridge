@@ -397,8 +397,8 @@ struct GrokUpdateStepTests {
         #expect(grokUpdateStep(method: "x.ai/session/update", params: agentChunk("y")) == .appendText("y"))
     }
 
-    @Test func nonTextIgnored() {
-        // agent_thought_chunk / tool_call are out of scope for the text reply path
+    @Test func nonTextIgnoredOnTextPath() {
+        // agent_thought_chunk stays out of the text reply path; tool_call → grokToolEvents
         let thought = JSONValue.object(["update": .object([
             "sessionUpdate": .string("agent_thought_chunk"),
             "content": .object(["text": .string("thinking")]),
@@ -409,6 +409,99 @@ struct GrokUpdateStepTests {
         // empty text, unknown method
         #expect(grokUpdateStep(method: "session/update", params: agentChunk("")) == .ignore)
         #expect(grokUpdateStep(method: "session/cancel", params: nil) == .ignore)
+    }
+
+    @Test func toolCallMapsToToolUse() {
+        var seq = 0
+        let params = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("t1"),
+            "title": .string("Bash"),
+            "kind": .string("execute"),
+            "rawInput": .object(["command": .string("ls")]),
+        ])])
+        let events = grokToolEvents(method: "session/update", params: params, mintId: &seq)
+        #expect(events == [
+            .toolUse(
+                id: "t1",
+                name: "Bash",
+                input: .object(["command": .string("ls")]),
+                parentToolUseId: nil
+            ),
+        ])
+    }
+
+    @Test func toolCallEditNormalizesNameAndInput() {
+        var seq = 0
+        let params = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("e1"),
+            "title": .string("edit file"),
+            "kind": .string("edit"),
+            "rawInput": .object([
+                "path": .string("/ws/a.ts"),
+                "oldText": .string("a"),
+                "newText": .string("b"),
+            ]),
+            "parentToolId": .string("parent-1"),
+        ])])
+        let events = grokToolEvents(method: "session/update", params: params, mintId: &seq)
+        guard case .toolUse(let id, let name, let input, let parent)? = events.first else {
+            Issue.record("expected tool_use"); return
+        }
+        #expect(id == "e1")
+        #expect(name == "Edit")
+        #expect(parent == "parent-1")
+        #expect(input["file_path"]?.stringValue == "/ws/a.ts")
+        #expect(input["old_string"]?.stringValue == "a")
+        #expect(input["new_string"]?.stringValue == "b")
+    }
+
+    @Test func toolCallUpdateTerminalOnly() {
+        var seq = 0
+        let intermediate = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("t1"),
+            // no status — intermediate (diff carrier)
+            "content": .string("diff body"),
+        ])])
+        #expect(grokToolEvents(method: "session/update", params: intermediate, mintId: &seq).isEmpty)
+
+        let done = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("t1"),
+            "status": .string("completed"),
+            "content": .string("ok"),
+        ])])
+        #expect(grokToolEvents(method: "session/update", params: done, mintId: &seq) == [
+            .toolResult(id: "t1", ok: true, content: "ok", parentToolUseId: nil),
+        ])
+
+        let failed = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("t2"),
+            "status": .string("failed"),
+            "rawOutput": .string("boom"),
+        ])])
+        #expect(grokToolEvents(method: "session/update", params: failed, mintId: &seq) == [
+            .toolResult(id: "t2", ok: false, content: "boom", parentToolUseId: nil),
+        ])
+    }
+
+    @Test func toolCallMintsIdWhenMissing() {
+        var seq = 0
+        let params = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "title": .string("Read"),
+        ])])
+        let events = grokToolEvents(method: "session/update", params: params, mintId: &seq)
+        #expect(seq == 1)
+        #expect(events.first == .toolUse(
+            id: "grok-tool-1",
+            name: "Read",
+            input: .object([:]),
+            parentToolUseId: nil
+        ))
     }
 }
 

@@ -70,9 +70,22 @@ public actor CodexSessionBridge {
     private struct TurnBox {
         var text = ""
         var usage: TurnUsage?
+        /// Turn-local tools/subagent HUD + ToolActivityHost feed (W16-g residual).
+        var stats = TurnToolStatsAggregator()
+        /// Mint ids for codex items that lack `id` / `itemId`.
+        var toolIdSeq = 0
         var done = false
         var continuation: CheckedContinuation<TurnResult, Error>?
         var timeoutTask: Task<Void, Never>?
+    }
+
+    private func makeTurnResult(box: TurnBox, text: String) -> TurnResult {
+        TurnResult(
+            text: text,
+            usage: box.usage,
+            tools: box.stats.toolsSnapshot(),
+            agents: box.stats.agentsSnapshot()
+        )
     }
 
     // env rules copied from DabSessionBridge (B/"sibling bridge": no forced sharing).
@@ -299,10 +312,28 @@ public actor CodexSessionBridge {
 
     private func onNotification(channelId: String, method: String, params: JSONValue?) {
         guard var box = turns[channelId], !box.done else { return }
+
+        // W16-g residual: tool_use / tool_result mid-turn → stats + Discord work threads.
+        let toolEvs = codexToolEvents(method: method, params: params, mintId: &box.toolIdSeq)
+        if !toolEvs.isEmpty {
+            for ev in toolEvs {
+                box.stats.note(ev)
+                let ch = channelId
+                Task { await ToolActivityHost.shared.handle(channelId: ch, event: ev) }
+                if case .toolUse = ev {
+                    Task { await StreamStatusHost.shared.noteToolUse(channelId: ch) }
+                }
+            }
+            turns[channelId] = box
+        }
+
         switch codexTurnStep(method: method, params: params) {
         case .appendText(let delta):
             box.text += delta
             turns[channelId] = box
+            // W11-g residual: live stream text (same path as Claude).
+            let ch = channelId
+            Task { await StreamStatusHost.shared.noteText(channelId: ch, delta: delta) }
         case .fullText(let text):
             // Only when no deltas streamed (avoids duplicating the streamed message).
             if box.text.isEmpty {
@@ -310,9 +341,10 @@ public actor CodexSessionBridge {
                 turns[channelId] = box
             }
         case .finished(let usage):
-            if let usage { box.usage = usage; turns[channelId] = box }
+            if let usage { box.usage = usage }
+            turns[channelId] = box
             let text = box.text.isEmpty ? "(empty result)" : box.text
-            finishTurnUnlocked(channelId: channelId, result: TurnResult(text: text, usage: box.usage))
+            finishTurnUnlocked(channelId: channelId, result: makeTurnResult(box: box, text: text))
         case .failed(let message):
             finishTurnUnlocked(channelId: channelId, result: nil, error: AppServerError(message))
         case .ignore:
@@ -336,7 +368,7 @@ public actor CodexSessionBridge {
             } else {
                 finishTurnUnlocked(
                     channelId: channelId,
-                    result: TurnResult(text: box.text + "\n…(timeout)", usage: box.usage)
+                    result: makeTurnResult(box: box, text: box.text + "\n…(timeout)")
                 )
             }
         }
@@ -351,10 +383,12 @@ public actor CodexSessionBridge {
         box.timeoutTask = nil
         turns[channelId] = box
         activeTurnIds[channelId] = nil
+        // W16-g: turn boundary for tool threads.
+        Task { await ToolActivityHost.shared.resetTurn(channelId: channelId) }
         if let error {
             cont?.resume(throwing: error)
         } else {
-            cont?.resume(returning: result ?? TurnResult(text: box.text, usage: box.usage))
+            cont?.resume(returning: result ?? makeTurnResult(box: box, text: box.text))
         }
     }
 
@@ -376,6 +410,7 @@ public actor CodexSessionBridge {
         }
         turns[channelId] = nil
         activeTurnIds[channelId] = nil
+        await ToolActivityHost.shared.dispose(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()
     }
@@ -394,7 +429,7 @@ public actor CodexSessionBridge {
         }
         if let box = turns[channelId], !box.done {
             let partial = box.text.isEmpty ? "(interrupted)" : box.text
-            finishTurnUnlocked(channelId: channelId, result: TurnResult(text: partial, usage: box.usage))
+            finishTurnUnlocked(channelId: channelId, result: makeTurnResult(box: box, text: partial))
         } else {
             activeTurnIds[channelId] = nil
         }
