@@ -14,16 +14,16 @@
 
 | 항목 | 상태 |
 |------|------|
-| **전체 단계** | Phase A~F **MVP 완료**, Phase G **W11 완료**, Phase H **W12 문서 완료**, Phase I~L **W13–W16 ship**(b 보류·폴리시 잔여). **제품 경로 = Swift `dab`** (TS 메인 = 레거시/참고 + Claude 사이드카) |
+| **전체 단계** | Phase A~F **MVP 완료**, Phase G **W11 완료**, Phase H **W12 문서 완료**, Phase I~L **W13–W16 `done`**(W13-b 보류·S3 defer). **제품 경로 = Swift `dab`** (TS 메인 = 레거시/참고 + Claude 사이드카) |
 | **브랜치** | `plan/swift-port` |
 | **TS 기본 경로** | 레거시 in-process Claude (변경 없음). **권장 설치 아님** — README는 Swift-first |
 | **TS 사이드카** | 메인 opt-in `DAB_CLAUDE_SIDECAR=1` · **Swift Claude는 항상 사이드카** |
 | **Swift 봇** | `bash swift/scripts/install.sh` 또는 `swift run --package-path swift dab` · 슬래시+`!claude`/`!codex`/`!grok`/`!custom` |
 | **설정/상태** | `DAB_HOME` 또는 `~/.discord-agent-bridge/` (`config.json`, `servers/`, `swift-state.json`) · 배포 바이너리/시크릿은 `~/.dab/` |
 | **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` (수백 테스트; 일부 병렬 플래키 이슈 잔존 §14.4). ⚠️ 그냥 `swift test`는 인덱서 락 hang — **§14.2 필독** |
-| **패리티** | **100% 아님** — 잔여 목록 아래. 루트 README 호환 매트릭스 기준 |
+| **패리티** | **100% 아님** — S3 Chromium · W13-b 보류 · optional polish만 남음. 루트 README 호환 매트릭스 기준 |
 
-### 완료 (W1–W12 · W13a/c/d · W14–W15 · W16 ship · W11 전부)
+### 완료 (W1–W12 · W13a/c/d · W14–W15 · **W16 전부** · W11 전부)
 
 | ID | 요약 |
 |----|------|
@@ -35,18 +35,16 @@
 | W10 | Codex/Grok 텍스트 경로 (`!codex`/`!grok`) 3백엔드 완성 |
 | **W11** | **전체 `done`**: a·b1·**b2**(folder·resume·reconfigure·A4D·preset)·c·d·e·f1·f2·**g**(HUD·setModel·live stream)·h |
 | W13·W14·W15 | 보안(a/c/d)·라이프사이클·3계층 config (**W13-b 보류**) |
-| W16-a~h (ship) | chunk·`/config` model/effort/notif·`/setup`·`/doc`·Always-Allow·custom·toolThread/diff/status/notifier·Codex/Grok mid-turn tool·**capabilities 게이팅**·auto-update 체크 UI |
+| **W16** | **a~h `done`** (폴리시 잔여 클리어): chunk·`/config` model/effort/notif/**locale**·`/setup`·`/doc`·Always-Allow·custom·toolThread/diff/status/**pin**/notifier·Codex/Grok mid-turn+**parentByThread/collab**+**plan/thought**·capabilities·auto-update 체크+**install+restart** · **host.file.attach** · **Linux/Windows 서비스 스크립트** |
 | **W12** | **레거시 정책·호환 매트릭스·루트 README/README.ko 마이그레이션 가이드** |
 
 ### 진행 중 / 부분 완료 (잔여)
 
 | ID | 상태 | 남은 일 |
 |----|------|---------|
-| **W16-b** | ship + residual | model/effort·notif ✅ · **locale select ✅** (global `config.locale`, roleRows 5th; ko/en) · **이미지/chromium 서브패널 = S3 defer** |
-| **W16-g** | ship + residual | toolThread/diff/status/notifier ✅ · Codex/Grok mid-turn tool ✅ · **capabilities 게이팅 ✅** · **pin status embed ✅** (best-effort) · **Codex parentByThread/collab ✅** · **Grok plan/thought progress ✅** |
-| **W16-h** | ship | 체크·승인 UI ✅ · **install.sh + launchctl 재시작** ✅ (`Installer` plan/DI · `DAB_INSTALL_SKIP_LAUNCHCTL` · dry-run) |
+| **S3** | `defer` | Chromium/이미지 렌더 서브패널 — Swift 1차 제외(의도적) |
 | **W13-b** | `보류(Q5=B)` | 툴 allowlist + 기본 permMode `default` 전환 — 사용자가 기본 변경 원할 때 재개 |
-| **기타** | overall | ~~host.file.attach Discord 업로드~~ ✅ · Chromium 렌더(S3 defer) · Linux/Windows 서비스 |
+| **optional polish** | 선택 | `verify.sh` `--scratch-path` · §14.4 플래키 판정 · 기타 UX 다듬기 |
 
 ### 의도적으로 아직 없는 것 / 부분
 
@@ -57,8 +55,8 @@
 - ~~interrupt **버튼 UI**~~ ✅ (W14 lib + pure `InterruptButton` + DabMain)
 - ~~capabilities 렌더 게이팅~~ ✅ (W16-g 흡수: toolThreads/fileDiff/streaming/usagePanel)
 - ~~host.file.attach 실제 Discord 업로드~~ ✅ (`FileAttach`+`FileAttachHost`+`postFileAttach`+cwd 감금; share는 W16-d)
-- ~~`/config` locale select~~ ✅ · ~~pin status embed~~ ✅ · ~~auto-update install+restart~~ ✅ · **render(S3)**
-- 기존 npm 봇 기능 **100% 패리티 미달** (목표 지향, 진행 중 — README 매트릭스에 명시)
+- ~~`/config` locale select~~ ✅ · ~~pin status embed~~ ✅ · ~~auto-update install+restart~~ ✅ · ~~Codex parentByThread/collab~~ ✅ · ~~Grok plan/thought~~ ✅ · ~~Linux/Windows 서비스~~ ✅ · **render(S3) defer**
+- 기존 npm 봇 기능 **100% 패리티 미달** (S3·W13-b·optional — README 매트릭스에 명시)
 
 ### 빠른 실행
 
@@ -82,16 +80,13 @@ swift run --package-path swift dab codex-smoke
 swift run --package-path swift dab grok-smoke
 ```
 
-### 다음에 할 일 (우선순위) — W11·W12 이후 잔여
+### 다음에 할 일 (우선순위)
 
-**W11 전부·W12 문서 완료.** 기능 패리티 **폴리시 잔여**만 남음. 전수조사 결정(2026-07-25) 유지: **TS 파리티 100% 지향**.
+**W11·W12·W16 전부 완료.** 큐 본선 기능 잔여 없음. 전수조사 결정(2026-07-25) 유지: **TS 파리티 100% 지향** — 남은 것은 defer/보류/polish.
 
-0. ~~**W12**~~ ✅ · ~~**W11-b2**~~ ✅ (folder·resume·reconfigure·A4D·preset) · ~~**W11-g**~~ ✅ (HUD·setModel·live stream)
-1. ~~**W16-b** model/effort·notif~~ ✅ · ~~**W16-g** Codex/Grok mid-turn tool + capabilities~~ ✅
-2. **W16 폴리시 잔여** — (S3) render 서브패널 · W16-g gap(선택)
-3. **W16-g gap** (선택) — Codex parentByThread/collab · Grok plan/thought
-4. **W13-b** (선택) — 기본 permMode/`allowlist` when product default moves off bypass
-5. 부수: ~~host.file.attach Discord 업로드~~ ✅ · Linux/Windows 서비스 · `verify.sh` `--scratch-path` · §14.4 플래키 판정
+1. **S3 Chromium** (`defer`) — 이미지/테이블→PNG 렌더 서브패널 · Chromium 스택 optional
+2. **W13-b** (`보류(Q5=B)`) — 기본 permMode/`allowlist` when product default moves off bypass
+3. **optional polish** — `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정 · UX 다듬기
 
 ---
 
@@ -311,14 +306,14 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | **W15** | K | `done` | 설정/상태 성숙(TS동일) | 3-계층 config |
 | **W15-a** | K | `done` | 3-계층 config 이식(`ConfigStore`/`ConfigResolver`/`ConfigSchema`) — global→server→binding, 검증·0600·원자쓰기·corrupt→null, Authorizer server auth, `normalizeModeId` | 레이어링 config |
 | **W15-b** | K | `done` | SessionStore ordered migrations(STATE_VERSION=2) + `archived`/`markArchived` + load `normalizeModeId` aliases + optional profile/projectAuth/createdAt; stop hard-remove 유지; restore/stopAll skip archived | version 마이그레이션 |
-| **W16** | L | `doing` | 기능 완전누락(전수조사 A/B/D) — a~h **ship** · 폴리시 잔여(S3 render) | UI/명령 파리티 |
+| **W16** | L | `done` | 기능 완전누락(전수조사 A/B/D) — a~h **전부 `done`** · 폴리시 잔여 클리어(S3 Chromium만 defer) | UI/명령 파리티 |
 | **W16-a** | L | `done` | **답변 다중메시지 청킹**(`format.ts:chunkMessage`→`DiscordText.chunkMessage`, 코드펜스 인지) + `DabMain` 성공/에러 순차 `createMessage`. `clip` 유지(단일 메시지 호출처용) | 2000자 초과 무손실 |
-| **W16-b** | L | `done` | `/config` 설정 패널: admin 슬래시·역할 티어 RoleSelect+Save · defaults mode/**model**/**effort**/permMode autosave(server)·dmPolicy autosave(global)·**알림 서브패널**(enable+status channelSelect→`server.notifications`)·effective embed. **잔여**: locale select(행 예산) · **이미지/chromium 서브패널 = S3 defer** | 패널 동작 |
+| **W16-b** | L | `done` | `/config` 설정 패널: admin 슬래시·역할 티어 RoleSelect+Save · defaults mode/**model**/**effort**/permMode autosave(server)·dmPolicy autosave(global)·**locale select**(global `config.locale`, roleRows 5th; ko/en)·**알림 서브패널**(enable+status channelSelect→`server.notifications`)·effective embed. **이미지/chromium 서브패널 = S3 defer**(W16 밖) | 패널 동작 |
 | **W16-c** | L | `done` | `/setup` 길드 채널 프로비저닝(컨트롤 채널+세션 카테고리+상태 채널, alreadyDone 가드) | A4D 셋업 |
 | **W16-d** | L | `done` | `/doc` 문서 공유(사이드카 `host.file.share` 역RPC 배선, 5종 ShareErrorCode) | md 스레드 게시 |
 | **W16-e** | L | `done` | 권한 **Always-Allow** 버튼 + always-allow 영속(`addAutoAllowClaudeTool`) | 3버튼 완성 |
 | **W16-f** | L | `done` | **custom 백엔드**(`Backend.custom`+`!custom` route+persist+`ShellEnv` dotfile env + Claude path env-overlay; wizard/slash 포함) | custom UX |
-| **W16-g** | L | `done` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`) + 상태채널 알림(`notifier`). **shipped**: pure formatters + TurnThreadRegistry/ToolThreadHandler/DiffViewHandler(fakes) + ToolActivityHost→Dab/Codex/Grok mid-turn + DabMain createThread/statusEmbed/SessionNotifier · **capabilities 게이팅**(`resolveCapabilities` backend←global←server←`DAB_CAPS`, toolThreads/fileDiff/streaming/usagePanel) · **Codex parentByThread/collab** (`codexToolEvents` + bridge session map → `parentToolUseId`) · **Grok plan/thought progress**. **잔여**: pin status embed(best-effort 이미 포함). | 도구/상태 가시성 |
+| **W16-g** | L | `done` | 도구 스레드(`toolThread`/`turnThread`) + diff 뷰(`diffView`) + 상태 임베드(`statusEmbed`+**pin** best-effort) + 상태채널 알림(`notifier`). pure formatters + TurnThreadRegistry/ToolThreadHandler/DiffViewHandler + ToolActivityHost→Dab/Codex/Grok mid-turn + DabMain createThread/statusEmbed/SessionNotifier · **capabilities 게이팅** · **Codex parentByThread/collab** · **Grok plan/thought progress** | 도구/상태 가시성 |
 | **W16-h** | L | `done` | auto-update: pure semver + registry 체크 + Yes/No UI + `AutoUpdater` + SessionStore meta + `/update` + 스케줄. **install+restart**: pure `Installer` plan(`git pull`→`install.sh` / release asset) + mock runner 테스트 · `DAB_INSTALL_SKIP_LAUNCHCTL` · `DAB_SUPERVISED` · launchctl kickstart/exit · `DAB_UPDATE_DRY_RUN` · audit log. (in-process binary mmap 교체 없음 — 의도적) | 자동 업데이트 |
 
 ### 후순위 / 병행 가능 (큐 본선 아님)
@@ -402,6 +397,7 @@ test:   Comprehensive Swift tests incl. bridges (2026-07-24 정책; was: don't r
 | 2026-07-26 | docs snapshot | **W11=`done`** · **W11-g=`done`**(live stream 포함) · **W11-b2=`done`**. §0 잔여 = W16 폴리시(S3) · W16-g gap · W13-b 보류 · host.file/S3/Linux·Windows. 코드 변경 없음. |
 | 2026-07-26 | W16-h residual | auto-update **install+restart**: pure `Installer` plan/DI · `install.sh` `DAB_INSTALL_SKIP_LAUNCHCTL` + `DAB_SUPERVISED` · wiring kickstart/exit · `DAB_UPDATE_DRY_RUN` · audit · unit tests. (no in-process mmap self-replace) |
 | 2026-07-26 | host.file.attach | **host.file.attach Discord 업로드**. lib `FileAttach`(`attachFileConfined`/`resolveConfinedAttachPath`·cwd 감금) + `FileAttachHost` + dab `postFileAttach`(createMessage files) + `DabSessionBridge` `onFileAttach` 배선. 단위테스트 path/host + reverse RPC. |
+| 2026-07-26 | docs snapshot | **W16=`done`** 폴리시 잔여 클리어: pin status embed · config locale · host.file.attach · Grok plan/thought · W16-h install+restart · Codex parentByThread/collab · Linux/Windows 서비스 스크립트. §0 잔여 = **S3 Chromium(defer)** · **W13-b(보류 Q5=B)** · optional polish. 코드 변경 없음. |
 
 ---
 
@@ -462,7 +458,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 
 상단 [§0 현재 진행 상황](#0-현재-진행-상황-스냅샷) 이 권위 있는 “지금 어디인지”다.
 
-**큐 헤드:** W16 폴리시 잔여(S3 render) · W16-g gap(선택) · W13-b(보류). **W11=`done`**(b2·g 포함).
+**큐 헤드:** **S3 Chromium(`defer`)** · **W13-b(`보류(Q5=B)`)** · optional polish. **W11·W12·W16=`done`**.
 
 ---
 
@@ -489,7 +485,7 @@ Spike: **버튼 + 스레드 3일 내** 되면 채택.
 ## 14. 핸드오프 (2026-07-24 세션 종료 — 다음 세션은 여기부터)
 
 ### 14.1 현재 상태 (한 줄)
-`plan/swift-port` **W11=`done`** + **W12 문서 완료** + W16-a~h ship(incl. auto-update install+restart). **다음 기능 잔여** = W16 폴리시(S3 render) · W16-g gap(선택) · W13-b(보류). **100% 패리티 아님.**
+`plan/swift-port` **W11=`done`** + **W12 문서 완료** + **W16=`done`**(폴리시 잔여 클리어: pin/locale/attach/thought/install+restart/collab/Linux·Windows 서비스). **다음** = S3 Chromium(`defer`) · W13-b(`보류(Q5=B)`) · optional polish. **100% 패리티 아님.**
 ### 14.2 ⚠️ 반드시 먼저 읽을 것 — 테스트 실행법
 **`swift test`를 그냥 돌리면 hang 한다.** 원인: SourceKit 백그라운드 인덱서가 `swift/.build`에 index-build를 돌리며 SwiftPM 락을 점유 → `swift test`가 락 대기로 무한 hang(코드 문제 아님). 증상: `swift build`는 되는데 `swift test`가 무출력으로 멈춤, `rm -rf .build`가 "Directory not empty"로 실패.
 **해결: 격리 빌드 경로로 실행하라.**
@@ -526,11 +522,10 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 - **f2 이후 직렬**(같은 파일 수렴). `/model`·`/effort`는 별개(라이브 in-place `setModel`/`setEffort`, 세션 유지 — `/clear`와 혼동 금지).
 
 ### 14.7 남은 큐 (순서)
-1. ~~**W11 전부**~~ ✅ · ~~**W12**~~ ✅ · ~~**W16 ship**~~ ✅ (b model/effort/notif · g mid-turn+capabilities · h 체크 UI)
-2. **W16 폴리시 잔여** — (S3) render 서브패널.
-3. ~~**W16-g gap** (선택) — Codex parentByThread/collab · Grok plan/thought.~~ ✅
-4. **W13-b** (보류) — 기본 permMode/`allowlist` when product default moves off bypass.
-- 부수 TODO: host.file Discord 업로드 · Linux/Windows 서비스 · `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정.
+1. ~~**W11 전부**~~ ✅ · ~~**W12**~~ ✅ · ~~**W16 전부**~~ ✅ (폴리시 잔여 클리어 포함)
+2. **S3 Chromium** (`defer`) — 이미지/테이블→PNG 렌더 서브패널.
+3. **W13-b** (`보류(Q5=B)`) — 기본 permMode/`allowlist` when product default moves off bypass.
+4. **optional polish** — `verify.sh` `--scratch-path` · §14.4 플래키 근본 판정 · UX 다듬기.
 
 ### 14.8 병렬 작업 교훈
 신규파일/디스조인트 슬라이스(테스트 하드닝·배포·권한 lib)는 병렬로 잘 됐음. **단 여러 에이전트가 동시에 `swift build/test`를 돌리면 `.build` 락 경합**(+인덱서까지)으로 hang·지연 → 병렬 빌드는 **각자 `--scratch-path` 분리** 필수. 핫파일(브리지/DabMain) 배선은 직렬.
@@ -591,7 +586,7 @@ TS 4영역(A 인터랙션/위저드 · B 렌더러/HUD · C 코어/권한/config
 - per-channel FIFO **큐 상한**(`queue.push`만·무한), 감사 로그 **회전**(append-only 영구), `maxSessionsPerUser`(config 필드만·집행 코드 0). ROADMAP.md의 개선 항목이지 현 TS 동작이 아니므로 파리티 대상 아님.
 
 ### 15.4 범위밖 defer (문서에 이미 명시 — 갭 아님)
-- 테이블/mermaid→PNG 렌더(S3), Chromium 프로비저닝, fileAttach/fileDiff(§0). ~~streaming 실시간 편집~~ → **W11-g live stream embed**로 ship(풀 메시지 스트리밍 편집은 별도·미요구). ~~folder/preset/A4D/resume~~ → **W11-b2 범위로 완료**.
+- 테이블/mermaid→PNG 렌더(S3), Chromium 프로비저닝. ~~fileAttach~~ ✅ · fileDiff는 capabilities/tool path. ~~streaming 실시간 편집~~ → **W11-g live stream embed**로 ship(풀 메시지 스트리밍 편집은 별도·미요구). ~~folder/preset/A4D/resume~~ → **W11-b2 범위로 완료**.
 
 ### 15.5 미확정 (착수 전 재확인) — 대부분 해소
-- ~~preset·A4D·resume 위저드~~ ✅ (W11-b2). **잔여 미확정**: profile(권한 프로파일) UX · pin status embed 동작 세부 · auto-update 설치 포트 플랫폼 범위.
+- ~~preset·A4D·resume 위저드~~ ✅ (W11-b2) · ~~pin status embed~~ ✅ · ~~auto-update install+restart~~ ✅ · ~~Linux/Windows 서비스~~ ✅. **잔여 미확정/선택**: profile(권한 프로파일) UX · W13-b 기본 permMode 전환 시점.
