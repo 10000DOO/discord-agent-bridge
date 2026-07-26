@@ -2,15 +2,14 @@ import Foundation
 
 // Turn-scoped idle watchdog (TS `idleWatchdog.ts`).
 // Arm on turn accept, reset on mid-turn activity, stop on result/error.
-// After ~3 min without activity, post `idleWatchdogMessageKo` once per arm.
+// After ~3 min without activity, post `I18n.t("watchdog.idle")` once per arm.
 // Timer is injectable so unit tests never sleep on the wall clock.
 
 /// Default idle timeout — 3 minutes (TS `IDLE_WATCHDOG_MS`).
 public let idleWatchdogTimeoutMs: Int = 3 * 60 * 1000
 
-/// Korean notice matching TS i18n `watchdog.idle` (ko).
-public let idleWatchdogMessageKo =
-    "약 3분 동안 새 활동이 없습니다. 아직 긴 작업을 하는 중일 수도 있고, 멈췄을 수도 있습니다. 채널 위쪽·스레드를 확인해 보거나, 작업이 끝났는지 에이전트한테 물어보세요."
+/// Idle notice (TS i18n `watchdog.idle`; follows active locale).
+public var idleWatchdogMessageKo: String { I18n.t("watchdog.idle") }
 
 /// Post a plain channel message (dab maps to DiscordBM createMessage).
 public typealias IdleWatchdogPoster = @Sendable (_ channelId: String, _ content: String) async -> Void
@@ -148,6 +147,6 @@ public actor IdleWatchdog {
         }
         channels[channelId] = s
         guard let poster else { return }
-        await poster(channelId, idleWatchdogMessageKo)
+        await poster(channelId, I18n.t("watchdog.idle"))
     }
 }

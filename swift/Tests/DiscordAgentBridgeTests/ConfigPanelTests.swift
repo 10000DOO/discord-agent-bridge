@@ -294,6 +294,8 @@ struct ConfigPanelTests {
     }
 
     @Test func autosaveLocaleWritesGlobalConfig() async throws {
+        let prevLocale = I18n.getLocale()
+        defer { I18n.setLocale(prevLocale) }
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
         try await seedGlobal(store)
@@ -305,6 +307,7 @@ struct ConfigPanelTests {
             return
         }
         #expect(notice.contains("English") || notice.contains("en"))
+        #expect(I18n.getLocale() == .en)
         let global = try await store.load()
         #expect(global.locale == "en")
         // Global-only — server.locale left untouched.

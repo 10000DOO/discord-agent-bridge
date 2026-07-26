@@ -33,6 +33,11 @@ struct DabMain {
         print("dab: connecting to Discord gateway…")
         print("dab: !claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
+        // G-P1-08: process-wide UI language from config.locale (default ko).
+        if let cfg = try? await ConfigStore.shared.load() {
+            I18n.applyFromConfigLocale(cfg.locale)
+        }
+
         // Wire the permission-button presenter once: the gate (library) posts Allow / Always-Allow /
         // Deny to the prompt's channel via the Discord client. Set before events flow.
         let client = bot.client
@@ -268,23 +273,27 @@ struct EventHandler: GatewayEventHandler {
                 outcome: decision.reason,
                 status: "denied"
             ))
-            try await respondEphemeral(payload, "권한이 없습니다: \(decision.reason ?? "unauthorized")")
+            try await respondEphemeral(
+                payload,
+                I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"])
+            )
             return
         }
         let tier = decision.tier?.rawValue ?? "execute"
         let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
         let life = SessionLifecycle.shared
+        let noSession = I18n.t("router.noSession")
 
         switch cmd.name {
         case "stop":
             _ = await life.stopChannel(
                 channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
             )
-            try await respondEphemeral(payload, "세션을 종료했습니다.")
+            try await respondEphemeral(payload, I18n.t("cmd.stop.done"))
 
         case "stop-all":
             let count = await life.stopAll(actorId: actorId, guildId: guildId, roleTier: tier)
-            try await respondEphemeral(payload, "세션 \(count)개를 모두 종료했습니다.")
+            try await respondEphemeral(payload, I18n.t("cmd.stopAll.done", ["count": "\(count)"]))
 
         case "clear":
             // PLAN §14.6: keep config, wipe backendSessionId + live bridges (not full unbind).
@@ -294,8 +303,7 @@ struct EventHandler: GatewayEventHandler {
             )
             try await respondEphemeral(
                 payload,
-                ok ? "대화 컨텍스트를 초기화했습니다. (설정 유지, 다음 메시지부터 새 세션)"
-                   : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                ok ? I18n.t("cmd.clear.done") : noSession
             )
 
         case "model":
@@ -310,8 +318,7 @@ struct EventHandler: GatewayEventHandler {
             // Claude live session: updateBinding also fires session.setModel (W11-g).
             try await respondEphemeral(
                 payload,
-                ok ? "모델을 `\(value)`(으)로 바꿨습니다. (라이브 Claude 세션은 즉시, 그 외는 다음 턴/ensure)"
-                   : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                ok ? I18n.t("cmd.model.switched", ["model": value]) : noSession
             )
 
         case "effort":
@@ -325,8 +332,7 @@ struct EventHandler: GatewayEventHandler {
             )
             try await respondEphemeral(
                 payload,
-                ok ? "추론 강도를 `\(value)`(으)로 바꿨습니다. (라이브 Claude 세션은 즉시, 그 외는 다음 턴/ensure)"
-                   : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                ok ? I18n.t("cmd.effort.switched", ["effort": value]) : noSession
             )
 
         case "mode":
@@ -343,10 +349,7 @@ struct EventHandler: GatewayEventHandler {
                 let storeRow = await SessionStore.shared.binding(channelId: channelId)
                 let regRow = await SessionRegistry.shared.binding(channelId: channelId)
                 guard storeRow != nil || regRow != nil else {
-                    try await respondEphemeral(
-                        payload,
-                        "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
-                    )
+                    try await respondEphemeral(payload, noSession)
                     return
                 }
                 let currentBackend = storeRow?.backend ?? regRow!.backend
@@ -359,14 +362,14 @@ struct EventHandler: GatewayEventHandler {
                     try await respondEphemeral(
                         payload,
                         ok
-                            ? "백엔드를 \(backend.rawValue) 로 바꿨어요."
-                            : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                            ? I18n.t("cmd.mode.switched", ["backend": backend.rawValue])
+                            : noSession
                     )
                     if ok, let ch = payload.channel_id {
                         _ = try? await client.createMessage(
                             channelId: ch,
                             payload: .init(content:
-                                "⚠️ \(backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
+                                I18n.t("cmd.mode.freshContext", ["backend": backend.rawValue])
                             )
                         )
                     }
@@ -420,8 +423,7 @@ struct EventHandler: GatewayEventHandler {
                 )
                 try await respondEphemeral(
                     payload,
-                    ok ? "권한 모드를 `\(resolved.display)`(으)로 바꿨습니다."
-                       : "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+                    ok ? I18n.t("cmd.perm.switched", ["perm": resolved.display]) : noSession
                 )
             default:
                 try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
@@ -479,7 +481,7 @@ struct EventHandler: GatewayEventHandler {
                     channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
                 )
                 // Reply BEFORE delete so the ephemeral ack lands (TS slashCommands.close).
-                try await respondEphemeral(payload, "이 채널의 세션을 종료하고 바인딩을 해제했습니다.")
+                try await respondEphemeral(payload, I18n.t("cmd.close.done"))
                 // G-P0-04: A4D dedicated session channel best-effort delete (never control/status/category).
                 if let realGuildId = payload.guild_id?.rawValue {
                     let serverChannels = await ConfigStore.shared
@@ -502,7 +504,7 @@ struct EventHandler: GatewayEventHandler {
                 // G-P1-05: store→registry re-bind + status intro + soft ensure (no full turn).
                 if let session = await life.resumeBinding(channelId: channelId) {
                     // Ack first (TS cmd.resume.rebound) so soft ensure latency never blocks Discord.
-                    try await respondEphemeral(payload, "이 채널을 다시 연결했어요.")
+                    try await respondEphemeral(payload, I18n.t("cmd.resume.rebound"))
                     await postResumeChannelIntro(
                         client: client,
                         channelId: channelId,
@@ -513,18 +515,16 @@ struct EventHandler: GatewayEventHandler {
                         _ = await life.softEnsureLive(channelId: channelId)
                     }
                 } else {
-                    try await respondEphemeral(
-                        payload,
-                        "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요."
-                    )
+                    try await respondEphemeral(payload, I18n.t("cmd.resume.none"))
                 }
             case "stats":
                 let lines = formatStatsLines(bindings: await life.listActiveBindings())
                 let count = lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count
                 let meta = await SessionStore.shared.getUpdateMeta()
                 let dismissed = meta.dismissedVersion.map { " · 무시 `\($0)`" } ?? ""
+                let activeHeading = I18n.t("stats.active", ["n": "\(count)"])
                 let content =
-                    "**활성 세션** (\(count))\n" + lines.joined(separator: "\n")
+                    "**\(activeHeading)**\n" + lines.joined(separator: "\n")
                     + "\n**버전** `\(readAppVersion())`\(dismissed)"
                 // W11-g + G-P1-09: Claude OAuth + Grok weekly + Codex rate-limit embeds.
                 var embeds: [Embed] = []
@@ -540,7 +540,7 @@ struct EventHandler: GatewayEventHandler {
                 if let spec = buildUsageEmbed(
                     usage: codexUsage,
                     ctxUsage: nil,
-                    extras: UsageEmbedExtras(title: "Codex 사용량")
+                    extras: UsageEmbedExtras(title: I18n.t("usage.title.codex"))
                 ) {
                     embeds.append(discordEmbed(from: spec))
                 }
@@ -557,7 +557,7 @@ struct EventHandler: GatewayEventHandler {
             // W16-c: A4D channel structure (control + status + sessions category). Admin only.
             // alreadyDone: skip create when all four stored ids still exist.
             guard let realGuildId = payload.guild_id?.rawValue else {
-                try await respondEphemeral(payload, "권한이 없습니다: DM")
+                try await respondEphemeral(payload, I18n.t("auth.denied", ["reason": "DM"]))
                 return
             }
             let provisioner = resolveGuildProvisioner(client: client, guildId: realGuildId)
@@ -567,7 +567,7 @@ struct EventHandler: GatewayEventHandler {
                 let control = existing?.controlChannelId ?? ""
                 try await respondEphemeral(
                     payload,
-                    "이미 채널 구성이 모두 되어 있어요. <#\(control)> 에서 `/agent start` 로 세션을 시작하세요."
+                    I18n.t("cmd.setup.alreadyDone", ["control": "<#\(control)>"])
                 )
                 return
             }
@@ -575,20 +575,17 @@ struct EventHandler: GatewayEventHandler {
                 let channels = try await ensureGuildChannels(provisioner: provisioner, configStore: store)
                 try await respondEphemeral(
                     payload,
-                    "채널 구성을 완료했어요. <#\(channels.controlChannelId)> 에서 `/agent start` 로 세션을 시작하세요."
+                    I18n.t("cmd.setup.done", ["control": "<#\(channels.controlChannelId)>"])
                 )
             } catch {
                 print("dab: /setup failed guild=\(realGuildId): \(error)")
-                try await respondEphemeral(
-                    payload,
-                    "채널을 만들 수 없어요. 봇에 \"채널 관리(Manage Channels)\" 권한이 있는지 확인하세요."
-                )
+                try await respondEphemeral(payload, I18n.t("cmd.setup.unavailable"))
             }
 
         case "config":
             // W16-b: ephemeral settings panel (role tiers + defaults + dmPolicy). Admin only.
             guard let realGuildId = payload.guild_id?.rawValue else {
-                try await respondEphemeral(payload, "권한이 없습니다: DM")
+                try await respondEphemeral(payload, I18n.t("auth.denied", ["reason": "DM"]))
                 return
             }
             let store = ConfigStore.shared
@@ -661,7 +658,7 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id,
                 token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "설정 패널을 열었습니다. 역할은 Save, 기본값/DM은 즉시 저장, 🔔은 알림 서브패널입니다.",
+                    content: I18n.t("cmd.config.opened"),
                     embeds: embeds,
                     flags: [.ephemeral],
                     components: roleRows
@@ -685,10 +682,7 @@ struct EventHandler: GatewayEventHandler {
             let storeSession = await SessionStore.shared.binding(channelId: channelId)
             let hasBinding = regBound || (storeSession.map { !$0.archived } ?? false)
             guard hasBinding else {
-                try await respondEphemeral(
-                    payload,
-                    "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
-                )
+                try await respondEphemeral(payload, I18n.t("router.noSession"))
                 return
             }
             do {
@@ -899,7 +893,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "권한이 없습니다: \(decision.reason ?? "unauthorized")",
+                    content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]),
                     flags: [.ephemeral]
                 ))
             )
@@ -1074,7 +1068,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .updateMessage(.init(
-                    content: "세션 재개됨: <#\(bound)>",
+                    content: I18n.t("resume.done", ["channel": "<#\(bound)>"]),
                     embeds: [],
                     components: []
                 ))
@@ -1095,7 +1089,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .updateMessage(.init(
-                    content: "재개할 세션이 없습니다.",
+                    content: I18n.t("resume.none"),
                     embeds: [],
                     components: []
                 ))
@@ -1716,7 +1710,10 @@ struct EventHandler: GatewayEventHandler {
         let tier = decision.tier?.rawValue ?? "none"
         guard decision.allowed else {
             await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "drive", mode: backend.rawValue, outcome: decision.reason, status: "denied"))
-            _ = try? await client.createMessage(channelId: payload.channel_id, payload: .init(content: "권한이 없습니다: \(decision.reason ?? "unauthorized")"))
+            _ = try? await client.createMessage(
+                channelId: payload.channel_id,
+                payload: .init(content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]))
+            )
             return
         }
 
@@ -1847,9 +1844,9 @@ struct EventHandler: GatewayEventHandler {
                 }
                 let usageTitle: String
                 switch backend {
-                case .claude, .custom: usageTitle = "Claude 사용량"
-                case .grok: usageTitle = "Grok 사용량"
-                case .codex: usageTitle = "Codex 사용량"
+                case .claude, .custom: usageTitle = I18n.t("usage.title")
+                case .grok: usageTitle = I18n.t("usage.title.grok")
+                case .codex: usageTitle = I18n.t("usage.title.codex")
                 }
                 let embedExtras = UsageEmbedExtras(
                     meta: UsageSessionMeta(permMode: binding?.permMode),
@@ -2304,18 +2301,24 @@ func emitDeliverPayload(
 func postPermissionButtons(client: any DiscordClient, prompt: PermissionPrompt) async {
     // TS styles: allow=success, always=primary, deny=danger.
     let allow = Interaction.ActionRow.Button(
-        style: .success, label: "Allow", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .allow)
+        style: .success,
+        label: I18n.t("perm.button.allow"),
+        custom_id: buildCustomId(reqKey: prompt.reqKey, action: .allow)
     )
     let always = Interaction.ActionRow.Button(
-        style: .primary, label: "Always-Allow", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .always)
+        style: .primary,
+        label: I18n.t("perm.button.always"),
+        custom_id: buildCustomId(reqKey: prompt.reqKey, action: .always)
     )
     let deny = Interaction.ActionRow.Button(
-        style: .danger, label: "Deny", custom_id: buildCustomId(reqKey: prompt.reqKey, action: .deny)
+        style: .danger,
+        label: I18n.t("perm.button.deny"),
+        custom_id: buildCustomId(reqKey: prompt.reqKey, action: .deny)
     )
     let row: Interaction.ActionRow = [.button(allow), .button(always), .button(deny)]
     let detail = prompt.detail.map { ": `\($0)`" } ?? ""
     let mention = prompt.approverId.map { " <@\($0)>" } ?? ""
-    let content = "🔐 권한 요청\(mention): **\(prompt.toolName)**\(detail)"
+    let content = "🔐 \(I18n.t("perm.request.title"))\(mention): **\(prompt.toolName)**\(detail)"
     _ = try? await client.createMessage(
         channelId: ChannelSnowflake(prompt.channelId),
         payload: .init(content: content, components: [row])

@@ -1,0 +1,341 @@
+import Foundation
+
+// User-facing string catalog (TS `src/discord/i18n.ts`).
+// Flat keys; default locale `ko`. Missing key in active locale → ko → key itself.
+// `{name}` placeholders interpolate from vars (unknown left visible).
+
+public enum AppLocale: String, Sendable, Equatable, CaseIterable {
+    case ko
+    case en
+}
+
+/// Process-wide UI language (TS module-level `activeLocale`).
+public enum I18n {
+    private static let active = LockedBox(AppLocale.ko)
+
+    public static func setLocale(_ locale: AppLocale) {
+        active.withLock { $0 = locale }
+    }
+
+    public static func getLocale() -> AppLocale {
+        active.withLock { $0 }
+    }
+
+    /// Parse config.locale (unknown / empty → ko).
+    public static func resolveLocale(_ raw: String?) -> AppLocale {
+        guard let raw, let loc = AppLocale(rawValue: raw) else { return .ko }
+        return loc
+    }
+
+    /// Apply global config.locale (boot + /config autosave).
+    public static func applyFromConfigLocale(_ raw: String?) {
+        setLocale(resolveLocale(raw))
+    }
+
+    /// Resolve `key` in `locale` (default: active), fall back ko → key, then interpolate.
+    public static func t(
+        _ key: String,
+        _ vars: [String: String] = [:],
+        locale: AppLocale? = nil
+    ) -> String {
+        let loc = locale ?? getLocale()
+        let template = catalogs[loc]?[key] ?? catalogs[.ko]?[key] ?? key
+        return interpolate(template, vars: vars)
+    }
+
+    // MARK: - interpolate
+
+    private static func interpolate(_ template: String, vars: [String: String]) -> String {
+        guard !vars.isEmpty else { return template }
+        var out = template
+        for (name, value) in vars {
+            out = out.replacingOccurrences(of: "{\(name)}", with: value)
+        }
+        return out
+    }
+
+    // MARK: - catalogs
+
+    private static let catalogs: [AppLocale: [String: String]] = [
+        .ko: ko,
+        .en: en,
+    ]
+
+    private static let ko: [String: String] = [
+        // Auth / router
+        "auth.denied": "권한이 없습니다: {reason}",
+        "auth.denied.bare": "권한이 없습니다.",
+        "router.noSession": "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요.",
+        "cmd.error": "명령을 처리하지 못했어요: {error}",
+        "cmd.error.generic": "명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
+
+        // Slash stop / clear / close
+        "cmd.stop.done": "세션을 중지했어요.",
+        "cmd.stopAll.done": "모든 세션을 중지했어요 ({count}개).",
+        "cmd.clear.done": "대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했습니다.",
+        "cmd.clear.public": "🧹 이 채널 대화 컨텍스트를 비웠어요. 이전 맥락은 이어지지 않습니다.",
+        "cmd.close.done": "세션을 종료하고 보관했어요.",
+        "cmd.resume.none": "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.",
+        "cmd.resume.rebound": "이 채널을 다시 연결했어요.",
+        "cmd.start.intro":
+            "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
+        "cmd.start.channelCreated": "세션 채널 생성됨: {channel}",
+        "cmd.setup.done": "채널 구성을 완료했어요. {control} 에서 `/agent start` 로 세션을 시작하세요.",
+        "cmd.setup.alreadyDone": "이미 채널 구성이 모두 되어 있어요. {control} 에서 `/agent start` 로 세션을 시작하세요.",
+        "cmd.setup.unavailable":
+            "채널을 만들 수 없어요. 봇에 \"채널 관리(Manage Channels)\" 권한이 있는지 확인하세요.",
+        "cmd.config.opened":
+            "역할·기본값 설정 패널을 열었어요. ① 역할을 고르고 저장, ② 아래 기본값은 고르면 바로 저장돼요.",
+        "cmd.config.denied": "`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.",
+
+        // Mode / model / effort / perm
+        "cmd.mode.switched": "백엔드를 {backend} 로 바꿨어요.",
+        "cmd.mode.freshContext":
+            "⚠️ {backend} 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다.",
+        "cmd.perm.switched": "권한 설정을 바꿨어요: {perm}",
+        "cmd.model.switched":
+            "이 세션의 모델을 바꿨어요: {model} (다음 응답부터 적용, 대화는 유지)",
+        "cmd.model.unsupported":
+            "이 백엔드는 세션 중 모델 변경을 지원하지 않아요 (Claude만 가능).",
+        "cmd.model.failed": "모델 변경에 실패했어요. 터미널 로그를 확인해 주세요.",
+        "cmd.effort.switched":
+            "이 세션의 추론 강도를 바꿨어요: {effort} (다음 응답부터 적용, 대화는 유지)",
+        "cmd.effort.unsupported": "이 백엔드는 세션 중 추론 강도 변경을 지원하지 않아요.",
+        "cmd.effort.failed": "추론 강도 변경에 실패했어요. 터미널 로그를 확인해 주세요.",
+
+        // Interrupt
+        "cmd.interrupt.button": "⏹️ 중단",
+        "cmd.interrupt.done": "현재 작업을 중단했어요. 이어서 대화할 수 있어요.",
+        "cmd.interrupt.none": "중단할 실행 중인 작업이 없어요.",
+
+        // Stream
+        "stream.responding": "응답 중…",
+        "stream.responded": "응답 완료",
+        "stream.thinking": "생각 중…",
+        "stream.thought": "{sec}초 동안 생각함",
+
+        // Status
+        "status.title": "세션 상태",
+        "status.mode": "모드",
+        "status.cwd": "작업 폴더",
+        "status.session": "세션 ID",
+        "status.permMode": "권한 모드",
+        "status.usage.codex": "사용량/한도 정보 없음 (Codex CLI 제한)",
+        "resume.status.title": "세션 재개됨",
+        "resume.done": "세션 재개됨: {channel}",
+        "resume.none": "재개할 세션이 없습니다.",
+
+        // Permission
+        "perm.request.title": "권한 요청",
+        "perm.button.allow": "허용",
+        "perm.button.always": "항상 허용",
+        "perm.button.deny": "거부",
+        "perm.default": "기본 (매번 확인)",
+        "perm.acceptEdits": "편집 자동 승인",
+        "perm.bypassPermissions": "전체 자동 승인 (⚠️ 위험)",
+        "perm.plan": "플랜 (읽기 전용)",
+        "perm.dontAsk": "사전 승인만 허용 (미승인 거부)",
+        "perm.auto": "자동 판단 (모델이 승인/거부)",
+        "perm.read-only": "읽기 전용 (실행 시 확인)",
+        "perm.workspace-write": "작업 폴더 쓰기 허용",
+        "perm.danger-full-access": "전체 접근 (⚠️ 샌드박스 없음)",
+
+        // Tool thread
+        "thread.work": "작업 내역",
+        "tool.result": "결과",
+        "tool.error": "오류",
+        "transcript.working": "작업 중…",
+
+        // Usage / stats
+        "usage.title": "Claude 사용량",
+        "usage.title.grok": "Grok 사용량",
+        "usage.title.codex": "Codex 사용량",
+        "stats.title": "📊 Agent Stats",
+        "stats.active": "활성 세션 ({n})",
+        "stats.none": "활성 세션이 없어요.",
+
+        // Doc
+        "doc.shared": "문서를 스레드에 공유했어요: `{path}`",
+        "doc.error.notFound": "파일을 찾을 수 없어요: `{path}`",
+        "doc.error.escape": "경로를 공유할 수 없어요.",
+        "doc.error.tooLarge": "파일이 너무 커요 (최대 {max}).",
+        "doc.error.notMarkdown": "마크다운(.md)만 공유할 수 있어요.",
+        "doc.error.notFile": "파일이 아니에요(디렉터리/바이너리): `{path}`",
+
+        // Wizard (common)
+        "wizard.title": "세션 시작",
+        "wizard.started": "세션을 시작했어요. 백엔드 {backend} · 폴더 `{cwd}`",
+        "wizard.cancelled": "세션 시작을 취소했어요.",
+        "wizard.cancel": "취소",
+        "wizard.next": "다음",
+        "wizard.back": "⬅ 이전",
+        "wizard.start": "✅ 시작",
+        "wizard.recfg.title": "에이전트 전환 — {backend}",
+        "wizard.recfg.start": "✅ 전환",
+        "wizard.recfg.cancelled": "에이전트 전환을 취소했어요.",
+
+        // Update
+        "update.title": "🔄 새 버전이 있어요",
+        "update.body":
+            "`discord-agent-bridge` {latest} 버전이 나왔어요 (현재 {current}).\n지금 업데이트할까요? 관리자만 결정할 수 있어요.\n**예**를 누르면 설치 후 새 버전으로 바로 재시작합니다 (진행 중 작업은 종료돼요).",
+        "update.button.yes": "예, 업데이트",
+        "update.button.no": "아니오",
+        "update.decided.approved": "업데이트 진행 중…",
+        "update.decided.dismissed": "이 버전 건너뜀",
+        "update.busy": "이미 업데이트가 진행 중이에요.",
+        "update.installed": "✅ 설치 완료. 새 버전으로 재시작합니다…",
+        "update.installFailed":
+            "❌ 자동 업데이트 설치에 실패했어요. 수동으로 `bash swift/scripts/install.sh` 후 재시작해 주세요.",
+        "update.dismissed": "이 버전 알림을 껐어요. 더 새 버전이 나오면 다시 알려드릴게요.",
+        "update.denied": "자동 업데이트는 서버 관리자(Administrator) 또는 admin 티어만 결정할 수 있어요.",
+        "update.manualOnly":
+            "자동 설치 경로를 찾지 못했어요. 전체 체크아웃에서 `bash swift/scripts/install.sh`로 수동 업데이트하세요.",
+        "update.upToDate": "최신 버전이에요.",
+        "update.checkFailed": "버전 확인에 실패했어요 (네트워크/레지스트리).",
+        "update.disabled": "자동 업데이트가 꺼져 있어요 (`autoUpdate.enabled=false`).",
+
+        // Watchdog
+        "watchdog.idle":
+            "약 3분 동안 새 활동이 없습니다. 아직 긴 작업을 하는 중일 수도 있고, 멈췄을 수도 있습니다. 채널 위쪽·스레드를 확인해 보거나, 작업이 끝났는지 에이전트한테 물어보세요.",
+
+        // Config locale autosave
+        "config.autosaved.locale": "언어를 저장했어요: {locale}",
+        "config.locale.ko": "한국어 (ko)",
+        "config.locale.en": "English (en)",
+    ]
+
+    /// English overrides (major slash/error/stream paths). Absent keys fall back to ko.
+    private static let en: [String: String] = [
+        "auth.denied": "Permission denied: {reason}",
+        "auth.denied.bare": "Permission denied.",
+        "router.noSession": "No session bound to this channel. Run `/agent start` first.",
+        "cmd.error": "Could not process the command: {error}",
+        "cmd.error.generic": "Could not process the command. Please try again shortly.",
+
+        "cmd.stop.done": "Stopped the session.",
+        "cmd.stopAll.done": "Stopped all sessions ({count}).",
+        "cmd.clear.done":
+            "Cleared conversation context. Started a fresh session with the same folder and settings.",
+        "cmd.clear.public":
+            "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
+        "cmd.close.done": "Closed the session and archived it.",
+        "cmd.resume.none": "No session to resume. Use `/agent start` to start a new one.",
+        "cmd.resume.rebound": "Reconnected this channel.",
+        "cmd.start.intro":
+            "Chat with the agent in this channel. Sending a message starts work. Use `/agent close` to end the session and clean up the channel.",
+        "cmd.start.channelCreated": "Session channel created: {channel}",
+        "cmd.setup.done": "Channel setup complete. Start a session with `/agent start` in {control}.",
+        "cmd.setup.alreadyDone":
+            "Channel setup is already complete. Start a session with `/agent start` in {control}.",
+        "cmd.setup.unavailable":
+            "Could not create channels. Check that the bot has Manage Channels permission.",
+        "cmd.config.opened":
+            "Opened the roles & defaults panel. ① Pick roles and save, ② defaults below save on change.",
+        "cmd.config.denied":
+            "`/config` is limited to server Administrators or the admin tier.",
+
+        "cmd.mode.switched": "Switched backend to {backend}.",
+        "cmd.mode.freshContext":
+            "⚠️ Switching to {backend} starts a fresh conversation in this channel. Prior context does not carry over.",
+        "cmd.perm.switched": "Updated permission settings: {perm}",
+        "cmd.model.switched":
+            "Switched this session’s model to {model} (applies from the next turn; conversation kept).",
+        "cmd.model.unsupported":
+            "This backend does not support switching the model mid-session (Claude only).",
+        "cmd.model.failed": "Failed to switch the model. Check the terminal logs.",
+        "cmd.effort.switched":
+            "Switched this session’s reasoning effort to {effort} (applies from the next turn; conversation kept).",
+        "cmd.effort.unsupported":
+            "This backend does not support switching the reasoning effort mid-session.",
+        "cmd.effort.failed": "Failed to switch the reasoning effort. Check the terminal logs.",
+
+        "cmd.interrupt.button": "⏹️ Stop",
+        "cmd.interrupt.done": "Stopped the current task. You can keep the conversation going.",
+        "cmd.interrupt.none": "No running task to stop.",
+
+        "stream.responding": "Responding…",
+        "stream.responded": "Response complete",
+        "stream.thinking": "Thinking…",
+        "stream.thought": "Thought for {sec}s",
+
+        "status.title": "Session status",
+        "status.mode": "Mode",
+        "status.cwd": "Working folder",
+        "status.session": "Session ID",
+        "status.permMode": "Permission mode",
+        "status.usage.codex": "usage/limits unavailable (Codex CLI limitation)",
+        "resume.status.title": "Session resumed",
+        "resume.done": "Session resumed: {channel}",
+        "resume.none": "No session to resume.",
+
+        "perm.request.title": "Permission request",
+        "perm.button.allow": "Allow",
+        "perm.button.always": "Always allow",
+        "perm.button.deny": "Deny",
+        "perm.default": "Default (ask each time)",
+        "perm.acceptEdits": "Auto-approve edits",
+        "perm.bypassPermissions": "Bypass all permissions (⚠️ dangerous)",
+        "perm.plan": "Plan (read-only)",
+        "perm.dontAsk": "Pre-approved only (deny unapproved)",
+        "perm.auto": "Auto (model decides)",
+        "perm.read-only": "Read-only (confirm on run)",
+        "perm.workspace-write": "Workspace write allowed",
+        "perm.danger-full-access": "Full access (⚠️ no sandbox)",
+
+        "thread.work": "Work log",
+        "tool.result": "Result",
+        "tool.error": "Error",
+        "transcript.working": "working…",
+
+        "usage.title": "Claude usage",
+        "usage.title.grok": "Grok usage",
+        "usage.title.codex": "Codex usage",
+        "stats.title": "📊 Agent Stats",
+        "stats.active": "Active sessions ({n})",
+        "stats.none": "No active sessions.",
+
+        "doc.shared": "Shared the document into a thread: `{path}`",
+        "doc.error.notFound": "File not found: `{path}`",
+        "doc.error.escape": "The path cannot be shared.",
+        "doc.error.tooLarge": "The file is too large (max {max}).",
+        "doc.error.notMarkdown": "Only markdown (.md) files can be shared.",
+        "doc.error.notFile": "Not a file (directory/binary): `{path}`",
+
+        "wizard.title": "Start session",
+        "wizard.started": "Started session. Backend {backend} · folder `{cwd}`",
+        "wizard.cancelled": "Cancelled session start.",
+        "wizard.cancel": "Cancel",
+        "wizard.next": "Next",
+        "wizard.back": "⬅ Back",
+        "wizard.start": "✅ Start",
+        "wizard.recfg.title": "Switch agent — {backend}",
+        "wizard.recfg.start": "✅ Switch",
+        "wizard.recfg.cancelled": "Agent switch cancelled.",
+
+        "update.title": "🔄 A new version is available",
+        "update.body":
+            "`discord-agent-bridge` {latest} is available (current {current}).\nUpdate now? Only an admin can decide.\nPressing **Yes** installs it and restarts into the new version immediately (in-flight work is dropped).",
+        "update.button.yes": "Yes, update",
+        "update.button.no": "No",
+        "update.decided.approved": "Updating…",
+        "update.decided.dismissed": "Version skipped",
+        "update.busy": "An update is already in progress.",
+        "update.installed": "✅ Installed. Restarting into the new version…",
+        "update.installFailed":
+            "❌ Auto-update failed to install. Run `bash swift/scripts/install.sh` manually, then restart.",
+        "update.dismissed": "Muted this version. I’ll notify you again when a newer one ships.",
+        "update.denied": "Only a server Administrator or the admin tier can decide auto-updates.",
+        "update.manualOnly":
+            "Could not find an auto-install path. From a full checkout run `bash swift/scripts/install.sh` to update manually.",
+        "update.upToDate": "Already up to date.",
+        "update.checkFailed": "Version check failed (network/registry).",
+        "update.disabled": "Auto-update is off (`autoUpdate.enabled=false`).",
+
+        "watchdog.idle":
+            "No new activity for about 3 minutes. It may still be working on a long task, or it may have stalled. Check above in the channel and any threads, or ask the agent whether the work finished.",
+
+        "config.autosaved.locale": "Saved language: {locale}",
+        "config.locale.ko": "한국어 (ko)",
+        "config.locale.en": "English (en)",
+    ]
+}

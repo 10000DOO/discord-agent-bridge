@@ -3,11 +3,11 @@ import Foundation
 // Tool-activity feed (TS `src/discord/renderers/toolThread.ts`).
 // Posts tool_use input + tool_result headers into TurnThreadRegistry threads.
 
-/// Labels (ko; TS i18n `tool.result` / `tool.error` / `thread.work`).
+/// Labels (TS i18n `tool.result` / `tool.error` / `thread.work`).
 public enum ToolThreadLabels {
-    public static let result = "결과"
-    public static let error = "오류"
-    public static let workThread = "작업 내역"
+    public static var result: String { I18n.t("tool.result") }
+    public static var error: String { I18n.t("tool.error") }
+    public static var workThread: String { I18n.t("thread.work") }
 }
 
 public final class ToolThreadHandler: @unchecked Sendable {

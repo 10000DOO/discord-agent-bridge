@@ -52,34 +52,33 @@ public struct SessionStatus: Sendable, Equatable {
     }
 }
 
-/// Korean labels (TS i18n status.* / perm.* / resume.status.title).
+/// Labels (TS i18n status.* / perm.* / resume.status.title).
 public enum StatusEmbedLabels {
-    public static let title = "세션 상태"
+    public static var title: String { I18n.t("status.title") }
     /// `/agent resume` + resume-wizard intro (TS `resume.status.title`).
-    public static let resumeTitle = "세션 재개됨"
-    public static let mode = "모드"
-    public static let permMode = "권한 모드"
-    public static let cwd = "작업 폴더"
-    public static let session = "세션 ID"
-    public static let usageCodex = "사용량/한도 정보 없음 (Codex CLI 제한)"
+    public static var resumeTitle: String { I18n.t("resume.status.title") }
+    public static var mode: String { I18n.t("status.mode") }
+    public static var permMode: String { I18n.t("status.permMode") }
+    public static var cwd: String { I18n.t("status.cwd") }
+    public static var session: String { I18n.t("status.session") }
+    public static var usageCodex: String { I18n.t("status.usage.codex") }
 }
 
 /// Channel intro body under the status embed (TS `cmd.start.intro`).
-public let sessionStatusIntroContent =
-    "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요."
+public var sessionStatusIntroContent: String { I18n.t("cmd.start.intro") }
 
 /// Human label for a permMode code (Claude + Codex vocabularies).
 public func permModeLabel(_ perm: String) -> String {
     switch perm {
-    case "default": return "기본 (매번 확인)"
-    case "acceptEdits": return "편집 자동 승인"
-    case "bypassPermissions": return "전체 자동 승인 (⚠️ 위험)"
-    case "plan": return "플랜 (읽기 전용)"
-    case "dontAsk": return "사전 승인만 허용 (미승인 거부)"
-    case "auto": return "자동 판단 (모델이 승인/거부)"
-    case "read-only": return "읽기 전용 (실행 시 확인)"
-    case "workspace-write": return "작업 폴더 쓰기 허용"
-    case "danger-full-access": return "전체 접근 (⚠️ 샌드박스 없음)"
+    case "default": return I18n.t("perm.default")
+    case "acceptEdits": return I18n.t("perm.acceptEdits")
+    case "bypassPermissions": return I18n.t("perm.bypassPermissions")
+    case "plan": return I18n.t("perm.plan")
+    case "dontAsk": return I18n.t("perm.dontAsk")
+    case "auto": return I18n.t("perm.auto")
+    case "read-only": return I18n.t("perm.read-only")
+    case "workspace-write": return I18n.t("perm.workspace-write")
+    case "danger-full-access": return I18n.t("perm.danger-full-access")
     default: return perm
     }
 }

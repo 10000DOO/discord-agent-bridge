@@ -182,27 +182,27 @@ func postDocumentShare(
     )
 }
 
-/// Localized share outcome for `/doc` ephemeral reply (ko; mirrors TS i18n doc.* keys).
+/// Localized share outcome for `/doc` ephemeral reply (TS i18n doc.* keys).
 func formatDocShareReply(path: String, result: ShareResult) -> String {
     if result.ok {
         let p = result.path ?? path
-        return "문서를 스레드에 공유했어요: `\(p)`"
+        return I18n.t("doc.shared", ["path": p])
     }
     guard let code = result.code else {
-        return "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요."
+        return I18n.t("router.noSession")
     }
     switch code {
     case .notFound:
-        return "파일을 찾을 수 없어요: `\(path)`"
+        return I18n.t("doc.error.notFound", ["path": path])
     case .escape:
-        return "경로를 공유할 수 없어요."
+        return I18n.t("doc.error.escape")
     case .tooLarge:
         let max = result.max ?? "?"
-        return "파일이 너무 커요 (최대 \(max))."
+        return I18n.t("doc.error.tooLarge", ["max": max])
     case .notMarkdown:
-        return "마크다운(.md)만 공유할 수 있어요."
+        return I18n.t("doc.error.notMarkdown")
     case .notFile:
-        return "파일이 아니에요(디렉터리/바이너리): `\(path)`"
+        return I18n.t("doc.error.notFile", ["path": path])
     }
 }
 

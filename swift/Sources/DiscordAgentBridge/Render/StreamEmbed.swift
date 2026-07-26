@@ -8,10 +8,10 @@ import Foundation
 public let streamEmbedDescLimit = 4096
 
 public enum StreamEmbedLabels {
-    public static let responding = InterruptLabels.responding
-    public static let responded = InterruptLabels.finished
-    /// TS `stream.thinking` / i18n ko.
-    public static let thinking = "생각 중…"
+    public static var responding: String { InterruptLabels.responding }
+    public static var responded: String { InterruptLabels.finished }
+    /// TS `stream.thinking` / i18n.
+    public static var thinking: String { I18n.t("stream.thinking") }
 }
 
 /// Which live stream phase the control embed shows (TS kind: text | thinking).

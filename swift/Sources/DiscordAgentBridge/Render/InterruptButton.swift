@@ -7,13 +7,14 @@ import Foundation
 public let interruptCustomIdPrefix = "interrupt"
 
 public enum InterruptLabels {
-    public static let button = "⏹️ 중단"
-    public static let responding = "응답 중…"
-    public static let done = "현재 작업을 중단했어요. 이어서 대화할 수 있어요."
-    public static let none = "중단할 실행 중인 작업이 없어요."
-    public static let denied = "권한이 없습니다."
+    public static var button: String { I18n.t("cmd.interrupt.button") }
+    public static var responding: String { I18n.t("stream.responding") }
+    public static var done: String { I18n.t("cmd.interrupt.done") }
+    public static var none: String { I18n.t("cmd.interrupt.none") }
+    /// Generic deny without `{reason}` (interrupt / update button paths).
+    public static var denied: String { I18n.t("auth.denied.bare") }
     /// Control message after the turn ends (button disabled / removed).
-    public static let finished = "응답 완료"
+    public static var finished: String { I18n.t("stream.responded") }
 }
 
 /// Live control-message content while a turn runs (optional tool count HUD, W11-g slice4).

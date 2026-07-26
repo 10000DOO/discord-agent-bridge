@@ -297,7 +297,8 @@ public func buildUsageEmbed(
         && snap?.fiveHour == nil
         && snap?.sevenDayOpus == nil
         && snap?.sevenDaySonnet == nil
-    let title = extras?.title ?? (isGrokWeeklyOnly ? "Grok 사용량" : "Claude 사용량")
+    let title = extras?.title
+        ?? (isGrokWeeklyOnly ? I18n.t("usage.title.grok") : I18n.t("usage.title"))
     let description = buildDescription(ctx: ctxUsage, meta: meta, now: now)
 
     return UsageEmbedSpec(

@@ -543,10 +543,12 @@ public final class ConfigPanel: @unchecked Sendable {
             config.locale = locale
             try await store.save(config)
             defaults.locale = locale
+            // Process-wide UI language (TS app.ts setLocale on config change).
+            I18n.applyFromConfigLocale(locale)
         } catch {
             return .autosaved(notice: "locale 저장 실패: \(error)")
         }
-        return .autosaved(notice: "언어 (global) → \(localeLabel(locale))")
+        return .autosaved(notice: I18n.t("config.autosaved.locale", ["locale": localeLabel(locale)]))
     }
 
     // MARK: Notifications
@@ -737,8 +739,8 @@ public final class ConfigPanel: @unchecked Sendable {
 /// Human label for a locale code (TS `config.locale.ko` / `config.locale.en`).
 public func localeLabel(_ locale: String) -> String {
     switch locale {
-    case "ko": return "한국어 (ko)"
-    case "en": return "English (en)"
+    case "ko": return I18n.t("config.locale.ko")
+    case "en": return I18n.t("config.locale.en")
     default: return locale
     }
 }
