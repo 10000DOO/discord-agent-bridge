@@ -25,20 +25,21 @@ struct SessionRegistryTests {
 @Suite("routeDecision")
 struct RouteDecisionTests {
     @Test func prefixesWin() {
-        #expect(routeDecision(content: "!claude hi", binding: nil) == .prefixClaude("hi"))
-        #expect(routeDecision(content: "!codex do x", binding: nil) == .prefixCodex("do x"))
-        #expect(routeDecision(content: "!grok yo", binding: nil) == .prefixGrok("yo"))
-        #expect(routeDecision(content: "!custom kimi", binding: nil) == .prefixCustom("kimi"))
+        // Prefixes can select a backend only after the channel is bound.
+        #expect(routeDecision(content: "!claude hi", binding: nil) == .ignore)
+        #expect(routeDecision(content: "!codex do x", binding: nil) == .ignore)
+        #expect(routeDecision(content: "!grok yo", binding: nil) == .ignore)
+        #expect(routeDecision(content: "!custom kimi", binding: nil) == .ignore)
         // prefix wins even when a (different) binding exists
         #expect(routeDecision(content: "!codex hi", binding: SessionConfig(backend: .claude)) == .prefixCodex("hi"))
         #expect(routeDecision(content: "!custom x", binding: SessionConfig(backend: .codex)) == .prefixCustom("x"))
     }
 
     @Test func emptyPromptIsUsage() {
-        #expect(routeDecision(content: "!claude ", binding: nil) == .usage("!claude"))
-        #expect(routeDecision(content: "!codex    ", binding: nil) == .usage("!codex"))
+        #expect(routeDecision(content: "!claude ", binding: nil) == .ignore)
+        #expect(routeDecision(content: "!codex    ", binding: nil) == .ignore)
         #expect(routeDecision(content: "!grok ", binding: SessionConfig(backend: .codex)) == .usage("!grok"))
-        #expect(routeDecision(content: "!custom ", binding: nil) == .usage("!custom"))
+        #expect(routeDecision(content: "!custom ", binding: nil) == .ignore)
     }
 
     @Test func boundRoutesPlainText() {

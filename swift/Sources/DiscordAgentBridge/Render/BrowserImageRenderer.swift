@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 
 // Headless Chrome CLI image renderer (TS `browserRenderer.ts` parity without puppeteer).
 //
@@ -245,6 +247,58 @@ public actor BrowserImageRenderer {
             deps.logger?("screenshot is not a PNG")
             return nil
         }
-        return RenderedImage(data: data, name: name)
+        // Chrome captures its whole viewport. Remove only the uniform page background so
+        // Discord receives the rendered table/diagram, not a 1400×900 document screenshot.
+        return RenderedImage(data: cropRenderedContent(data) ?? data, name: name)
     }
+}
+
+private let renderBackground = (r: UInt8(0x1e), g: UInt8(0x21), b: UInt8(0x24))
+
+func renderContentCropRect(pixels: Data, width: Int, height: Int, bytesPerRow: Int) -> CGRect? {
+    guard width > 0, height > 0, bytesPerRow >= width * 4 else { return nil }
+    var minX = width, minY = height, maxX = -1, maxY = -1
+    pixels.withUnsafeBytes { raw in
+        guard let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+        for y in 0..<height {
+            for x in 0..<width {
+                let p = bytes + y * bytesPerRow + x * 4
+                // Two levels tolerate Chrome's color-management/alpha rounding at the edge.
+                if abs(Int(p[0]) - Int(renderBackground.r)) > 2 ||
+                    abs(Int(p[1]) - Int(renderBackground.g)) > 2 ||
+                    abs(Int(p[2]) - Int(renderBackground.b)) > 2
+                {
+                    minX = min(minX, x); minY = min(minY, y)
+                    maxX = max(maxX, x); maxY = max(maxY, y)
+                }
+            }
+        }
+    }
+    guard maxX >= minX, maxY >= minY else { return nil }
+    let padding = 16
+    let x = max(0, minX - padding), y = max(0, minY - padding)
+    let right = min(width, maxX + padding + 1), bottom = min(height, maxY + padding + 1)
+    return CGRect(x: x, y: y, width: right - x, height: bottom - y)
+}
+
+private func cropRenderedContent(_ png: Data) -> Data? {
+    guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+    else { return nil }
+    let width = image.width, height = image.height, row = width * 4
+    var pixels = Data(count: row * height)
+    guard let context = CGContext(
+        data: pixels.withUnsafeMutableBytes { $0.baseAddress }, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: row, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    guard let rect = renderContentCropRect(pixels: pixels, width: width, height: height, bytesPerRow: row),
+          let cropped = image.cropping(to: rect)
+    else { return nil }
+    let output = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(destination, cropped, nil)
+    guard CGImageDestinationFinalize(destination) else { return nil }
+    return output as Data
 }

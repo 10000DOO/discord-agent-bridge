@@ -45,10 +45,26 @@ struct DabMain {
             return
         }
 
-        // C12: config.json's discord.token is a lowest-priority fallback (below env/argv) —
-        // was a dead field (schema-only, never read) before this.
-        let configToken = try? await ConfigStore.shared.load().discord.token
-        guard let token = DiscordToken.resolve(configToken: configToken) else {
+        // A present config.json is authoritative: surface decode/validation errors instead of
+        // silently booting with an env/argv token. Env/argv remain first-run fallbacks only.
+        let config: AppConfig?
+        if await ConfigStore.shared.exists() {
+            do {
+                config = try await ConfigStore.shared.load()
+            } catch {
+                fputs("Failed to load config: \(error)\n", stderr)
+                exit(1)
+            }
+        } else {
+            config = nil
+        }
+        let token: String?
+        if let config {
+            token = DiscordToken.resolve(environment: [:], arguments: [], configToken: config.discord.token)
+        } else {
+            token = DiscordToken.resolve()
+        }
+        guard let token else {
             fputs(DiscordToken.usage + "\n", stderr)
             exit(1)
         }
@@ -74,7 +90,7 @@ struct DabMain {
         // G-P1-08: process-wide UI language from config.locale (default ko).
         // C11: process-wide log level from config.logLevel, read once at boot (TS reads
         // config once before creating its single `app` logger; no hot-reload — matches).
-        if let cfg = try? await ConfigStore.shared.load() {
+        if let cfg = config {
             I18n.applyFromConfigLocale(cfg.locale)
             if let level = LogLevel(rawValue: cfg.logLevel) {
                 currentLogLevel.withLock { $0 = level }
@@ -190,6 +206,7 @@ struct EventHandler: GatewayEventHandler {
         // G-P1-07: remember bot user id for Manage Channels checks on subsequent GuildCreate.
         // READY only carries UnavailableGuild stubs; full guilds arrive as GuildCreate (boot + join).
         await BotGatewayIdentity.shared.setUserId(user.id.rawValue)
+        signalSuccessorReadyIfRequested()
         log.info("auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()
@@ -221,6 +238,11 @@ struct EventHandler: GatewayEventHandler {
         await GuildAdminCache.shared.setGuild(guildId: guildId, ownerId: payload.owner_id.rawValue, adminRoleIds: adminRoleIds)
         // Never throws — autoProvisionGuild swallows create failures so one guild never kills ready.
         await runAutoProvisionGuild(client: client, guildId: guildId, manageChannels: canManage)
+        // READY's first due-check can precede GuildCreate and find no control channels. Retry
+        // only when that exact condition was recorded, after this guild's channel is persisted.
+        if let updater = await AutoUpdaterRegistry.shared.get() {
+            await updater.checkAfterControlChannelReady()
+        }
     }
 
     /// Q1-b: keep GuildAdminCache current when a role's Administrator bit (or the role itself)
@@ -302,7 +324,23 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
+    /// Every Discord-originated response is rendered under its guild's persisted locale.
+    /// DMs are structurally hidden at registration time; retain the process default only as a
+    /// defensive fallback for malformed/non-guild events and a guild without an override.
+    private func responseLocale(guildId: String?) async -> AppLocale {
+        guard let guildId, !guildId.isEmpty else { return I18n.getLocale() }
+        let server = await ConfigStore.shared.loadServerConfig(guildId: guildId)
+        return I18n.resolveServerLocale(server?.locale)
+    }
+
     func onInteractionCreate(_ payload: Interaction) async throws {
+        let locale = await responseLocale(guildId: payload.guild_id?.rawValue)
+        try await I18n.withLocale(locale) {
+            try await handleInteractionCreate(payload)
+        }
+    }
+
+    private func handleInteractionCreate(_ payload: Interaction) async throws {
         // (A-ac) Application-command autocomplete (G-P1-03). Must answer with type 8 within ~3s;
         // never auth-deny text / never treat as a slash invoke (DiscordBM shares the data shape).
         if payload.type == .applicationCommandAutocomplete {
@@ -517,7 +555,7 @@ struct EventHandler: GatewayEventHandler {
             switch modelResult {
             case .ok: modelMessage = I18n.t("cmd.model.switched", ["model": value])
             case .noBinding: modelMessage = noSession
-            case .invalidEffort, .applyFailed: modelMessage = I18n.t("cmd.model.failed")
+            case .invalidEffort, .applyFailed, .persistFailed: modelMessage = I18n.t("cmd.model.failed")
             }
             try await respondEphemeral(payload, modelMessage)
 
@@ -546,7 +584,7 @@ struct EventHandler: GatewayEventHandler {
             switch effortResult {
             case .ok: effortMessage = I18n.t("cmd.effort.switched", ["effort": value])
             case .noBinding: effortMessage = noSession
-            case .invalidEffort, .applyFailed: effortMessage = I18n.t("cmd.effort.failed")
+            case .invalidEffort, .applyFailed, .persistFailed: effortMessage = I18n.t("cmd.effort.failed")
             }
             try await respondEphemeral(payload, effortMessage)
 
@@ -660,6 +698,16 @@ struct EventHandler: GatewayEventHandler {
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
             case "start":
+                // Starting a new wizard on an occupied channel would replace its persisted
+                // owner. Only the current owner or a server admin may perform that transfer.
+                if let owner = await SessionStore.shared.binding(channelId: channelId)?.ownerId,
+                   !owner.isEmpty,
+                   owner != actorId,
+                   decision.tier != .admin
+                {
+                    try await respondEphemeral(payload, "이 채널 세션의 소유자 또는 관리자만 새 세션으로 바꿀 수 있어요.")
+                    return
+                }
                 // W11-b2: folder → [preset if any] → backend→model→effort→perm.
                 // G-P1-06: config.favorites → browseRoots/allowedRoots; empty → unbounded (TS Fix 1).
                 // Browser starts at DAB_CWD else home (clamped to first root when bounded).
@@ -1448,6 +1496,12 @@ struct EventHandler: GatewayEventHandler {
             break
         }
 
+        // A queued wizard action can wait behind another click or provision a channel. Defer it
+        // before queueing so Discord's 3-second acknowledgement deadline is never at risk.
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
         await WizardRegistry.shared.enqueue(channelId: channelId) {
             // M18: an earlier queued job on this channel (e.g. a prior click that already
             // completed/cancelled the wizard) may have removed it while this job waited its
@@ -1481,9 +1535,9 @@ struct EventHandler: GatewayEventHandler {
                         let text = ok
                             ? "백엔드를 \(p.backend.rawValue) 로 바꿨어요."
                             : "전환 실패: 이 채널에 바인딩된 세션이 없습니다."
-                        _ = try? await client.createInteractionResponse(
-                            id: payload.id, token: payload.token,
-                            payload: .updateMessage(.init(content: text, embeds: [], components: []))
+                        _ = try? await client.updateOriginalInteractionResponse(
+                            appId: payload.application_id, token: payload.token,
+                            payload: .init(content: text, embeds: [], components: [])
                         )
                         if ok, let ch = payload.channel_id {
                             let gid = p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId
@@ -1501,9 +1555,9 @@ struct EventHandler: GatewayEventHandler {
                             )
                         }
                     } else {
-                        _ = try? await client.createInteractionResponse(
-                            id: payload.id, token: payload.token,
-                            payload: .updateMessage(.init(content: "전환 실패 (선택 없음).", embeds: [], components: []))
+                        _ = try? await client.updateOriginalInteractionResponse(
+                            appId: payload.application_id, token: payload.token,
+                            payload: .init(content: "전환 실패 (선택 없음).", embeds: [], components: [])
                         )
                     }
                 } else if let p = wizard.startParams {
@@ -1521,7 +1575,18 @@ struct EventHandler: GatewayEventHandler {
                         sessionsCategoryId: sessionsCategoryId,
                         fallbackChannelId: p.channelId
                     )
-                    await bindFromWizard(p, channelId: bindChannelId)
+                    guard await bindFromWizard(p, channelId: bindChannelId) else {
+                        _ = try? await client.updateOriginalInteractionResponse(
+                            appId: payload.application_id,
+                            token: payload.token,
+                            payload: .init(
+                                content: "세션 설정을 저장하지 못했습니다. 기존 세션은 변경되지 않았습니다.",
+                                embeds: [],
+                                components: []
+                            )
+                        )
+                        return
+                    }
 
                     let sessionCaps = await resolveSessionCapabilities(
                         backend: p.backend, guildId: guildId
@@ -1573,13 +1638,13 @@ struct EventHandler: GatewayEventHandler {
                             + (extra.isEmpty ? "" : " (\(extra))")
                             + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
                     }
-                    _ = try? await client.createInteractionResponse(
-                        id: payload.id, token: payload.token,
-                        payload: .updateMessage(.init(
+                    _ = try? await client.updateOriginalInteractionResponse(
+                        appId: payload.application_id, token: payload.token,
+                        payload: .init(
                             content: replyText,
                             embeds: [],
                             components: saveRows.isEmpty ? [] : saveRows
-                        ))
+                        )
                     )
                     // Intro + status embed on the bound session channel (TS postSessionIntro).
                     // W16-g residual: best-effort pin so status stays at the top of the channel.
@@ -1590,23 +1655,23 @@ struct EventHandler: GatewayEventHandler {
                         embed: statusEmbed
                     )
                 } else {
-                    _ = try? await client.createInteractionResponse(
-                        id: payload.id, token: payload.token,
-                        payload: .updateMessage(.init(content: "시작 실패 (선택 없음).", embeds: [], components: []))
+                    _ = try? await client.updateOriginalInteractionResponse(
+                        appId: payload.application_id, token: payload.token,
+                        payload: .init(content: "시작 실패 (선택 없음).", embeds: [], components: [])
                     )
                 }
             case .cancelled:
                 await WizardRegistry.shared.remove(channelId: channelId)
                 let (embeds, _) = discordPayload(from: wizard.render())
-                _ = try? await client.createInteractionResponse(
-                    id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(embeds: embeds, components: []))
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(embeds: embeds, components: [])
                 )
             default:
                 let (embeds, components) = discordPayload(from: wizard.render())
-                _ = try? await client.createInteractionResponse(
-                    id: payload.id, token: payload.token,
-                    payload: .updateMessage(.init(embeds: embeds, components: components))
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(embeds: embeds, components: components)
                 )
             }
         }
@@ -1888,19 +1953,16 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
-    /// Registry bind + store upsert. `channelId` defaults to wizard params (same channel);
-    /// A4D start path passes the newly created session channel id when available.
-    private func bindFromWizard(_ p: WizardStartParams, channelId: String? = nil) async {
+    /// Atomically replace a live binding after the wizard selection is durably saved.
+    /// `channelId` defaults to wizard params (same channel); A4D start passes a newly created
+    /// session channel id when available.
+    private func bindFromWizard(_ p: WizardStartParams, channelId: String? = nil) async -> Bool {
         let model = p.model.isEmpty ? nil : p.model
         let effort = p.effort.isEmpty ? nil : p.effort
         let perm = p.permMode.isEmpty ? nil : p.permMode
         let bindId = channelId ?? p.channelId
         // G-P0-05: carry binding-resident projectAuth across REPLACE (TS start()).
         let existing = await SessionStore.shared.binding(channelId: bindId)
-        await SessionRegistry.shared.bind(
-            channelId: bindId,
-            SessionConfig(backend: p.backend, model: model, effort: effort, permMode: perm)
-        )
         let record = PersistedSession(
             backend: p.backend,
             backendSessionId: nil,
@@ -1919,10 +1981,17 @@ struct EventHandler: GatewayEventHandler {
             updatedAt: ISO8601DateFormatter().string(from: Date()),
             archived: false
         )
-        try? await SessionStore.shared.upsert(channelId: bindId, record)
+        return await SessionLifecycle.shared.replaceBinding(channelId: bindId, with: record)
     }
 
     func onMessageCreate(_ payload: Gateway.MessageCreate) async throws {
+        let locale = await responseLocale(guildId: payload.guild_id?.rawValue)
+        try await I18n.withLocale(locale) {
+            try await handleMessageCreate(payload)
+        }
+    }
+
+    private func handleMessageCreate(_ payload: Gateway.MessageCreate) async throws {
         // Ignore bots / webhooks
         if payload.author?.bot == true { return }
         if payload.webhook_id != nil { return }
@@ -2665,6 +2734,7 @@ func emitDeliverPayload(
             channelId: channelId,
             payload: Payloads.CreateMessage(
                 content: payload.content,
+                allowed_mentions: .init(parse: []),
                 files: [RawFile(data: buf, filename: name)],
                 attachments: [Payloads.Attachment(index: 0, filename: name)]
             )
@@ -2674,7 +2744,7 @@ func emitDeliverPayload(
     if let content = payload.content {
         _ = try await client.createMessage(
             channelId: channelId,
-            payload: .init(content: content)
+            payload: .init(content: content, allowed_mentions: .init(parse: []))
         )
     }
 }

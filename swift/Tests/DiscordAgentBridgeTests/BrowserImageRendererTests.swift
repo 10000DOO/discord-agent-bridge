@@ -4,6 +4,16 @@ import Foundation
 
 @Suite("BrowserImageRenderer")
 struct BrowserImageRendererTests {
+    @Test func cropBoundsKeepOnlyContentWithPadding() {
+        var pixels = Data(repeating: 0, count: 50 * 50 * 4)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            pixels[i] = 0x1e; pixels[i + 1] = 0x21; pixels[i + 2] = 0x24; pixels[i + 3] = 0xff
+        }
+        let content = (25 * 50 + 25) * 4
+        pixels[content] = 0xff
+        #expect(renderContentCropRect(pixels: pixels, width: 50, height: 50, bytesPerRow: 200) == CGRect(x: 9, y: 9, width: 33, height: 33))
+    }
+
     @Test func sizeGuardReturnsNilWithoutLaunchingChrome() async {
         let launched = LockedBox(false)
         let big = String(repeating: "x", count: MAX_BLOCK_CHARS + 1)

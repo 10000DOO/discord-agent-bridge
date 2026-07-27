@@ -23,7 +23,8 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
             name: spec.name,
             description: spec.description,
             options: subs,
-            default_member_permissions: adminPerms
+            default_member_permissions: adminPerms,
+            dm_permission: false
         )
     }
     if !spec.options.isEmpty {
@@ -31,14 +32,16 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
             name: spec.name,
             description: spec.description,
             options: spec.options.map(stringOption),
-            default_member_permissions: adminPerms
+            default_member_permissions: adminPerms,
+            dm_permission: false
         )
     }
     return Payloads.ApplicationCommandCreate(
         name: spec.name,
-        description: spec.description,
-        options: nil,
-        default_member_permissions: adminPerms
+            description: spec.description,
+            options: nil,
+            default_member_permissions: adminPerms,
+            dm_permission: false
     )
 }
 
@@ -480,4 +483,3 @@ private func configPanelActionRow(_ row: ConfigPanelRow) -> Interaction.ActionRo
     }
     return Interaction.ActionRow(components: comps)
 }
-

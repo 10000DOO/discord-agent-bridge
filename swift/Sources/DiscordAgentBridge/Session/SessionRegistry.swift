@@ -61,12 +61,14 @@ public enum RouteDecision: Sendable, Equatable {
     case ignore                 // nothing to do
 }
 
-/// Explicit prefixes win (one-off override); otherwise a bound channel routes plain text; else ignore.
+/// Prefixes are accepted only for an already-bound channel; otherwise every message is ignored.
+/// This prevents an arbitrary unbound channel from starting a backend process by typing a prefix.
 /// `hasAttachments`: empty body + files still routes on a bound channel (G-P0-01).
 /// `isDM`: TS `messageRouter.ts:144` mirror (H15) — DMs (no guildId) are ignored unconditionally,
 /// before prefix/binding logic runs, regardless of dmPolicy (that's a separate, later gate).
 public func routeDecision(content: String, binding: SessionConfig?, hasAttachments: Bool = false, isDM: Bool = false) -> RouteDecision {
     if isDM { return .ignore }
+    guard let binding else { return .ignore }
     func strip(_ prefix: String) -> String? {
         guard content.hasPrefix(prefix) else { return nil }
         return String(content.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -75,9 +77,7 @@ public func routeDecision(content: String, binding: SessionConfig?, hasAttachmen
     if let p = strip("!codex ")  { return p.isEmpty ? .usage("!codex")  : .prefixCodex(p) }
     if let p = strip("!grok ")   { return p.isEmpty ? .usage("!grok")   : .prefixGrok(p) }
     if let p = strip("!custom ") { return p.isEmpty ? .usage("!custom") : .prefixCustom(p) }
-    if let binding {
-        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty || hasAttachments { return .bound(binding.backend, text) }
-    }
+    let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !text.isEmpty || hasAttachments { return .bound(binding.backend, text) }
     return .ignore
 }

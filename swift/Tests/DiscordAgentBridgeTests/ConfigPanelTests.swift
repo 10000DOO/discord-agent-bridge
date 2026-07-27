@@ -272,7 +272,7 @@ struct ConfigPanelTests {
         #expect(server?.defaults?.permissionMode == "acceptEdits")
     }
 
-    @Test func autosaveLocaleWritesGlobalConfig() async throws {
+    @Test func autosaveLocaleWritesOnlyThisGuildConfig() async throws {
         let prevLocale = I18n.getLocale()
         defer { I18n.setLocale(prevLocale) }
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
@@ -286,12 +286,10 @@ struct ConfigPanelTests {
             return
         }
         #expect(notice.contains("English") || notice.contains("en"))
-        #expect(I18n.getLocale() == .en)
         let global = try await store.load()
-        #expect(global.locale == "en")
-        // Global-only — server.locale left untouched.
+        #expect(global.locale == "ko")
         let server = await store.loadServerConfig(guildId: "g1")
-        #expect(server?.locale == nil)
+        #expect(server?.locale == "en")
         // In-memory defaults + re-render mark en selected.
         #expect(defaultSelected(selectById(panel.render().defaultRows, ConfigPanelIds.locale)) == "en")
     }

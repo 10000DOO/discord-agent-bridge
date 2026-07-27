@@ -654,12 +654,13 @@ public final class ConfigPanel: @unchecked Sendable {
             return .ignored
         }
         do {
-            var config = try await store.load()
-            config.locale = locale
-            try await store.save(config)
+            let existing = await store.loadServerConfig(guildId: guildId)
+            var next = existing ?? ServerConfig(guildId: guildId)
+            next.version = existing?.version ?? CONFIG_VERSION
+            next.guildId = guildId
+            next.locale = locale
+            try await store.saveServerConfig(next)
             defaults.locale = locale
-            // Process-wide UI language (TS app.ts setLocale on config change).
-            I18n.applyFromConfigLocale(locale)
         } catch {
             return .autosaved(notice: "locale 저장 실패: \(error)")
         }
