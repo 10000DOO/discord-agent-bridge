@@ -399,6 +399,21 @@ public func runUpdateCommand(
                 return
             }
 
+            // Drain both child pipes while it runs. Reading after waitUntilExit can deadlock
+            // once either pipe fills and the child blocks trying to write the other stream.
+            let stdout = LockedBox(Data())
+            let stderr = LockedBox(Data())
+            let drains = DispatchGroup()
+            func drain(_ pipe: Pipe, into buffer: LockedBox<Data>) {
+                drains.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    buffer.withLock { $0 = pipe.fileHandleForReading.readDataToEndOfFile() }
+                    drains.leave()
+                }
+            }
+            drain(outPipe, into: stdout)
+            drain(errPipe, into: stderr)
+
             let box = LockedBox<Process?>(process)
             let timedOutBox = LockedBox(false)
             let timeout = max(0.001, Double(timeoutMs) / 1000.0)
@@ -418,8 +433,9 @@ public func runUpdateCommand(
             timer.cancel()
             box.withLock { $0 = nil }
 
-            let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            drains.wait()
+            let out = String(data: stdout.withLock { $0 }, encoding: .utf8) ?? ""
+            let err = String(data: stderr.withLock { $0 }, encoding: .utf8) ?? ""
             let timedOut = timedOutBox.withLock { $0 }
             cont.resume(returning: ProcessCapture(
                 stdout: out,
@@ -433,6 +449,11 @@ public func runUpdateCommand(
 
 // MARK: - Restart
 
+public enum RestartResult: Sendable, Equatable {
+    case handedOff
+    case manualRestartRequired
+}
+
 public struct RestartPerformDeps: Sendable {
     public var strategy: RestartStrategy
     public var platformIsDarwin: Bool
@@ -440,7 +461,9 @@ public struct RestartPerformDeps: Sendable {
     public var dabBinaryPath: String
     public var fileExists: @Sendable (String) -> Bool
     public var runKickstart: @Sendable () -> Bool
-    public var spawnDetached: @Sendable (String, [String]) -> Bool
+    public var spawnDetached: @Sendable (String, [String], [String: String]) -> Bool
+    public var makeReadyMarker: @Sendable () -> URL?
+    public var waitForReadyMarker: @Sendable (URL) -> Bool
     public var exitProcess: @Sendable (Int32) -> Void
 
     public init(
@@ -450,7 +473,18 @@ public struct RestartPerformDeps: Sendable {
         dabBinaryPath: String = (NSHomeDirectory() as NSString).appendingPathComponent(".dab/bin/dab"),
         fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
         runKickstart: @escaping @Sendable () -> Bool = { false },
-        spawnDetached: @escaping @Sendable (String, [String]) -> Bool = { _, _ in false },
+        spawnDetached: @escaping @Sendable (String, [String], [String: String]) -> Bool = { _, _, _ in false },
+        makeReadyMarker: @escaping @Sendable () -> URL? = {
+            FileManager.default.temporaryDirectory.appendingPathComponent("dab-successor-\(UUID().uuidString).ready")
+        },
+        waitForReadyMarker: @escaping @Sendable (URL) -> Bool = { marker in
+            let deadline = Date().addingTimeInterval(15)
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: marker.path) { return true }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            return false
+        },
         exitProcess: @escaping @Sendable (Int32) -> Void = { code in Foundation.exit(code) }
     ) {
         self.strategy = strategy
@@ -460,38 +494,55 @@ public struct RestartPerformDeps: Sendable {
         self.fileExists = fileExists
         self.runKickstart = runKickstart
         self.spawnDetached = spawnDetached
+        self.makeReadyMarker = makeReadyMarker
+        self.waitForReadyMarker = waitForReadyMarker
         self.exitProcess = exitProcess
     }
 }
 
-/// Perform post-install restart. In production supervised path, `exitProcess(0)` does not return.
-public func performRestart(_ d: RestartPerformDeps, onLog: @Sendable (String) -> Void = { _ in }) {
+/// Perform post-install restart. launchd/systemd own one service slot, so `kickstart -k` first
+/// terminates the old process and cannot prove a successor gateway READY marker. Keep the old bot
+/// alive on every supervised path until a supervisor-level handoff protocol exists. A successful
+/// foreground successor invokes `onHandoff` before the old process exits so its caller can publish
+/// the installed status without claiming success for a deferred restart.
+public func performRestart(
+    _ d: RestartPerformDeps,
+    onLog: @Sendable (String) -> Void = { _ in },
+    onHandoff: @escaping @Sendable () async -> Void = {}
+) async -> RestartResult {
     switch d.strategy {
     case .supervised:
-        // Prefer kickstart when available so a stuck KeepAlive agent is replaced immediately;
-        // always exit so the current process hands off cleanly.
-        if d.platformIsDarwin, d.fileExists(launchdPlistPath(home: d.home)) {
-            onLog("auto-update: supervised restart — launchctl kickstart then exit")
-            _ = d.runKickstart()
-        } else {
-            onLog("auto-update: supervised restart — exit(0)")
-        }
-        d.exitProcess(0)
+        onLog("auto-update: supervised restart deferred; READY handoff is unavailable, current bot remains running")
+        return .manualRestartRequired
 
     case .respawn:
         if d.platformIsDarwin, d.fileExists(launchdPlistPath(home: d.home)) {
-            onLog("auto-update: respawn via launchctl kickstart")
-            _ = d.runKickstart()
-            d.exitProcess(0)
-            return
+            onLog("auto-update: launchd respawn deferred; READY handoff is unavailable, current bot remains running")
+            return .manualRestartRequired
         }
         if d.fileExists(d.dabBinaryPath) {
-            onLog("auto-update: respawn detached \(d.dabBinaryPath)")
-            _ = d.spawnDetached(d.dabBinaryPath, [])
+            guard let marker = d.makeReadyMarker() else {
+                onLog("auto-update: respawn aborted (could not create successor readiness marker)")
+                return .manualRestartRequired
+            }
+            defer { try? FileManager.default.removeItem(at: marker) }
+            onLog("auto-update: starting successor \(d.dabBinaryPath) before handoff")
+            guard d.spawnDetached(d.dabBinaryPath, [], ["DAB_SUCCESSOR_READY_FILE": marker.path]) else {
+                onLog("auto-update: respawn aborted (successor launch failed)")
+                return .manualRestartRequired
+            }
+            guard d.waitForReadyMarker(marker) else {
+                onLog("auto-update: respawn aborted (successor did not reach gateway ready); current bot remains running")
+                return .manualRestartRequired
+            }
+            onLog("auto-update: successor ready; exiting previous bot")
         } else {
-            onLog("auto-update: respawn skipped (binary missing at \(d.dabBinaryPath))")
+            onLog("auto-update: respawn aborted (binary missing at \(d.dabBinaryPath)); current bot remains running")
+            return .manualRestartRequired
         }
+        await onHandoff()
         d.exitProcess(0)
+        return .handedOff
     }
 }
 
@@ -514,7 +565,7 @@ public func launchctlKickstart(label: String = "com.discord-agent-bridge") -> Bo
 }
 
 /// Detached re-exec of the installed dab binary (foreground / unsupervised runs).
-public func spawnDetachedDab(path: String, args: [String] = []) -> Bool {
+public func spawnDetachedDab(path: String, args: [String] = [], environment: [String: String] = [:]) -> Bool {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: path)
     p.arguments = args
@@ -522,7 +573,7 @@ public func spawnDetachedDab(path: String, args: [String] = []) -> Bool {
     p.standardOutput = FileHandle.nullDevice
     p.standardError = FileHandle.nullDevice
     // Inherit env so DISCORD_BOT_TOKEN etc. still apply for foreground restarts.
-    p.environment = ProcessInfo.processInfo.environment
+    p.environment = ProcessInfo.processInfo.environment.merging(environment, uniquingKeysWith: { _, new in new })
     do {
         try p.run()
         // Do not wait — hand off and let caller exit.
@@ -530,6 +581,13 @@ public func spawnDetachedDab(path: String, args: [String] = []) -> Bool {
     } catch {
         return false
     }
+}
+
+/// A respawned foreground bot writes this only after Discord's gateway emits READY. The old
+/// process waits for it before exiting, permitting the user-approved brief overlap safely.
+public func signalSuccessorReadyIfRequested(env: [String: String] = ProcessInfo.processInfo.environment) {
+    guard let path = env["DAB_SUCCESSOR_READY_FILE"], !path.isEmpty else { return }
+    FileManager.default.createFile(atPath: path, contents: Data("ready".utf8))
 }
 
 // MARK: - High-level install entry (wiring)

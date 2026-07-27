@@ -5,12 +5,8 @@ import Foundation
 private let log = Logger(name: "auto-update")
 
 /// Process-wide AutoUpdater handle (created after gateway ready so postPrompt can use the client).
-actor AutoUpdaterRegistry {
+extension AutoUpdaterRegistry {
     static let shared = AutoUpdaterRegistry()
-    private var updater: AutoUpdater?
-
-    func set(_ u: AutoUpdater) { updater = u }
-    func get() -> AutoUpdater? { updater }
 }
 
 // MARK: - DiscordBM mapping
@@ -90,57 +86,62 @@ func startAutoUpdater(client: any DiscordClient) async {
                 }
             )
         },
-        restart: {
+        restart: { onHandoff in
             if dryRun {
                 log.info("auto-update dry-run — skip restart")
-                return
+                return .manualRestartRequired
             }
             let strategy = detectRestartStrategy(RestartDetectDeps())
-            performRestart(
+            return await performRestart(
                 RestartPerformDeps(
                     strategy: strategy,
                     runKickstart: { launchctlKickstart() },
-                    spawnDetached: { path, args in spawnDetachedDab(path: path, args: args) },
+                    spawnDetached: { path, args, environment in spawnDetachedDab(path: path, args: args, environment: environment) },
                     exitProcess: { code in Foundation.exit(code) }
                 ),
-                onLog: { log.info($0) }
+                onLog: { log.info($0) },
+                onHandoff: onHandoff
             )
         },
         messages: .korean,
         onLog: { msg in log.info(msg) }
     ))
-    await AutoUpdaterRegistry.shared.set(updater)
-    await updater.start()
+    await AutoUpdaterRegistry.shared.startReplacing(with: updater)
     log.info("auto-updater started (version \(version)\(dryRun ? ", DAB_UPDATE_DRY_RUN" : ""))")
 }
 
-func postUpdatePromptToControlChannels(client: any DiscordClient, latest: String) async {
+func postUpdatePromptToControlChannels(client: any DiscordClient, latest: String) async -> Bool {
     let current = readAppVersion()
     let (embedSpec, rows) = buildUpdatePrompt(version: latest, currentVersion: current)
     let embed = discordEmbed(from: embedSpec)
     let components = discordActionRows(from: rows)
     let guildIds = await ConfigStore.shared.listServerGuildIds()
+    var delivered = false
     for guildId in guildIds {
         guard let server = await ConfigStore.shared.loadServerConfig(guildId: guildId),
               let controlId = server.channels?.controlChannelId,
               !controlId.isEmpty
         else { continue }
-        let adminRoles = server.auth?.adminRoleIds ?? []
-        let content: String
-        if adminRoles.isEmpty {
-            content = "@here"
-        } else {
-            content = adminRoles.map { "<@&\($0)>" }.joined(separator: " ")
-        }
+        // Update approval is deliberately the one broadcast exception: operators chose to
+        // notify everyone currently present in the control channel, not just admin roles.
+        let content = "@here"
         // C14: retry-wrapped. onGone omitted — a control channel has no session binding to
         // clean up (TS never does so either; a stale controlChannelId config entry is a
         // separate, pre-existing concern this WO does not touch).
-        _ = await createMessageWithRetry(
+        if await createMessageWithRetry(
             client: client,
             channelId: ChannelSnowflake(controlId),
-            payload: .init(content: content, embeds: [embed], components: components)
-        )
+            payload: .init(
+                content: content,
+                embeds: [embed],
+                allowed_mentions: .init(parse: [.everyone]),
+                components: components
+            )
+        ) != nil {
+            delivered = true
+        }
     }
+    return delivered
 }
 
 func announceToControlChannels(client: any DiscordClient, text: String) async {

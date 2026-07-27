@@ -55,6 +55,18 @@ struct BuildUpdateInstallPlanTests {
 
 @Suite("runUpdateInstallPlan")
 struct RunUpdateInstallPlanTests {
+    @Test func commandDrainsLargeStdoutAndStderrConcurrently() async {
+        let result = await runUpdateCommand(
+            executable: "/bin/sh",
+            args: ["-c", "(yes stdout | head -c 131072) & (yes stderr | head -c 131072 >&2) & wait"],
+            timeoutMs: 5_000
+        )
+        #expect(!result.timedOut)
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.utf8.count == 131_072)
+        #expect(result.stderr.utf8.count == 131_072)
+    }
+
     @Test func successRunsAllStepsInOrder() async {
         let calls = LockedBox<[(String, [String], [String: String])]>([])
         let plan = UpdateInstallPlan(steps: [
@@ -211,30 +223,32 @@ struct RestartStrategyTests {
         #expect(s == .supervised)
     }
 
-    @Test func performRestartSupervisedExitsAndMayKickstart() {
+    @Test func performRestartSupervisedKeepsCurrentBotWithoutReadyHandoff() async {
         let kick = LockedBox(0)
         let exits = LockedBox<[Int32]>([])
         let spawn = LockedBox(0)
-        performRestart(
+        let result = await performRestart(
             RestartPerformDeps(
                 strategy: .supervised,
                 platformIsDarwin: true,
                 home: "/h",
                 fileExists: { $0 == launchdPlistPath(home: "/h") },
                 runKickstart: { kick.withLock { $0 += 1 }; return true },
-                spawnDetached: { _, _ in spawn.withLock { $0 += 1 }; return true },
+                spawnDetached: { _, _, _ in spawn.withLock { $0 += 1 }; return true },
                 exitProcess: { code in exits.withLock { $0.append(code) } }
             )
         )
-        #expect(kick.withLock { $0 } == 1)
+        #expect(kick.withLock { $0 } == 0)
         #expect(spawn.withLock { $0 } == 0)
-        #expect(exits.withLock { $0 } == [0])
+        #expect(exits.withLock { $0 }.isEmpty)
+        #expect(result == .manualRestartRequired)
     }
 
-    @Test func performRestartRespawnSpawnsBinary() {
+    @Test func performRestartRespawnSpawnsBinary() async {
         let spawn = LockedBox<[(String, [String])]>([])
         let exits = LockedBox<[Int32]>([])
-        performRestart(
+        let handoffs = LockedBox(0)
+        let result = await performRestart(
             RestartPerformDeps(
                 strategy: .respawn,
                 platformIsDarwin: true,
@@ -242,15 +256,58 @@ struct RestartStrategyTests {
                 dabBinaryPath: "/h/.dab/bin/dab",
                 fileExists: { $0 == "/h/.dab/bin/dab" },
                 runKickstart: { false },
-                spawnDetached: { path, args in
+                spawnDetached: { path, args, _ in
                     spawn.withLock { $0.append((path, args)) }
                     return true
                 },
+                makeReadyMarker: { URL(fileURLWithPath: "/tmp/dab-ready") },
+                waitForReadyMarker: { _ in true },
                 exitProcess: { code in exits.withLock { $0.append(code) } }
-            )
+            ),
+            onHandoff: { handoffs.withLock { $0 += 1 } }
         )
         #expect(spawn.withLock { $0.map(\.0) } == ["/h/.dab/bin/dab"])
+        #expect(handoffs.withLock { $0 } == 1)
         #expect(exits.withLock { $0 } == [0])
+        #expect(result == .handedOff)
+    }
+
+    @Test func performRestartRespawnLaunchdFallbackKeepsCurrentBot() async {
+        let kick = LockedBox(0)
+        let exits = LockedBox<[Int32]>([])
+        let result = await performRestart(
+            RestartPerformDeps(
+                strategy: .respawn,
+                platformIsDarwin: true,
+                home: "/h",
+                fileExists: { $0 == launchdPlistPath(home: "/h") },
+                runKickstart: { kick.withLock { $0 += 1 }; return true },
+                exitProcess: { code in exits.withLock { $0.append(code) }
+                }
+            )
+        )
+        #expect(kick.withLock { $0 } == 0)
+        #expect(exits.withLock { $0 }.isEmpty)
+        #expect(result == .manualRestartRequired)
+    }
+
+    @Test func performRestartKeepsCurrentBotWhenSuccessorNeverBecomesReady() async {
+        let exits = LockedBox<[Int32]>([])
+        let result = await performRestart(
+            RestartPerformDeps(
+                strategy: .respawn,
+                platformIsDarwin: false,
+                dabBinaryPath: "/tmp/dab",
+                fileExists: { $0 == "/tmp/dab" },
+                spawnDetached: { _, _, _ in true },
+                makeReadyMarker: { URL(fileURLWithPath: "/tmp/dab-not-ready") },
+                waitForReadyMarker: { _ in false },
+                exitProcess: { code in exits.withLock { $0.append(code) }
+                }
+            )
+        )
+        #expect(exits.withLock { $0 }.isEmpty)
+        #expect(result == .manualRestartRequired)
     }
 }
 

@@ -74,12 +74,29 @@ struct I18nTests {
         #expect(I18n.t("perm.button.deny") == "거부")
     }
 
+    @Test func requestLocaleDoesNotMutateGlobalFallback() async throws {
+        I18n.setLocale(.ko)
+        let translated = try await I18n.withLocale(.en) {
+            I18n.t("perm.button.deny")
+        }
+        #expect(translated == "Deny")
+        #expect(I18n.t("perm.button.deny") == "거부")
+    }
+
     @Test func resolveLocaleDefaultsUnknownToKo() {
         #expect(I18n.resolveLocale(nil) == .ko)
         #expect(I18n.resolveLocale("") == .ko)
         #expect(I18n.resolveLocale("ja") == .ko)
         #expect(I18n.resolveLocale("en") == .en)
         #expect(I18n.resolveLocale("ko") == .ko)
+    }
+
+    @Test func missingGuildLocaleKeepsGlobalFallback() {
+        withLocale(.en) {
+            #expect(I18n.resolveServerLocale(nil) == .en)
+            #expect(I18n.resolveServerLocale("") == .en)
+            #expect(I18n.resolveServerLocale("ko") == .ko)
+        }
     }
 
     @Test func applyFromConfigLocale() {

@@ -59,6 +59,19 @@ struct AutoUpdaterCheckTests {
         #expect(r.kind == .available)
         #expect(h.postsBox.withLock { $0 }.isEmpty)
     }
+
+    @Test func retriesWhenControlChannelExistsButPromptSendFails() async {
+        let h = UpdateHarness(postPromptAvailable: false)
+        _ = await h.updater.checkNow()
+        #expect(h.postsBox.withLock { $0 }.isEmpty)
+
+        h.postPromptAvailableBox.withLock { $0 = true }
+        await h.updater.checkAfterControlChannelReady()
+        #expect(h.postsBox.withLock { $0 } == ["1.1.0"])
+
+        await h.updater.checkAfterControlChannelReady()
+        #expect(h.postsBox.withLock { $0 } == ["1.1.0"])
+    }
 }
 
 @Suite("AutoUpdater.approve / dismiss")
@@ -93,6 +106,14 @@ struct AutoUpdaterDecisionTests {
         #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installFailed])
     }
 
+    @Test func installSuccessWithDeferredRestartAnnouncesManualRestartRequired() async {
+        let h = UpdateHarness(withInstall: true, restartResult: .manualRestartRequired)
+        let ctx = DecisionProbe()
+        await h.updater.approve("1.1.0", ctx: ctx.asCtx())
+        #expect(h.restartCallsBox.withLock { $0 } == 1)
+        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.manualRestartRequired])
+    }
+
     @Test func dismissPersistsAndAcks() async {
         let h = UpdateHarness()
         let ctx = DecisionProbe()
@@ -104,6 +125,66 @@ struct AutoUpdaterDecisionTests {
         let r = await h.updater.checkNow()
         #expect(r.kind == .dismissed)
         #expect(h.postsBox.withLock { $0 }.isEmpty)
+    }
+}
+
+@Suite("AutoUpdaterRegistry")
+struct AutoUpdaterRegistryTests {
+    @Test func replacingStopsPreviousSchedule() async {
+        let first = UpdateHarness(intervalMs: 10)
+        let second = UpdateHarness(intervalMs: 10)
+        let registry = AutoUpdaterRegistry()
+        await registry.startReplacing(with: first.updater)
+
+        for _ in 0..<20 where first.fetchCallsBox.withLock({ $0 }) < 2 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(first.fetchCallsBox.withLock { $0 } >= 2)
+
+        await registry.startReplacing(with: second.updater)
+        let firstCallsAfterReplacement = first.fetchCallsBox.withLock { $0 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        let current = await registry.get()
+        #expect(current === second.updater)
+        #expect(first.fetchCallsBox.withLock { $0 } == firstCallsAfterReplacement)
+        #expect(second.fetchCallsBox.withLock { $0 } >= 2)
+        await second.updater.stop()
+    }
+
+    @Test func replacementWaitsForPreviousDueCheckBeforeStartingSuccessor() async {
+        let events = LockedBox<[String]>([])
+        let first = UpdateHarness(intervalMs: 500_000, fetchLatest: {
+            events.withLock { $0.append("first-start") }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            events.withLock { $0.append("first-end") }
+            return "1.1.0"
+        })
+        let second = UpdateHarness(intervalMs: 500_000, fetchLatest: {
+            events.withLock { $0.append("second-start") }
+            return "1.1.0"
+        })
+        let registry = AutoUpdaterRegistry()
+
+        let firstStart = Task { await registry.startReplacing(with: first.updater) }
+        for _ in 0..<20 where !events.withLock({ $0.contains("first-start") }) {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(events.withLock { $0.contains("first-start") })
+        let replacement = Task { await registry.startReplacing(with: second.updater) }
+        await firstStart.value
+        await replacement.value
+        let order = events.withLock { $0 }
+        if let firstEnd = order.firstIndex(of: "first-end"),
+           let secondStart = order.firstIndex(of: "second-start")
+        {
+            #expect(firstEnd < secondStart)
+        } else {
+            #expect(Bool(false), "expected both due checks to run")
+        }
+        #expect(second.fetchCallsBox.withLock { $0 } == 1)
+        await first.updater.stop()
+        await second.updater.stop()
     }
 }
 
@@ -135,11 +216,17 @@ private final class UpdateHarness: @unchecked Sendable {
     let installCallsBox: LockedBox<Int>
     let restartCallsBox: LockedBox<Int>
     let announcesBox: LockedBox<[String]>
+    let postPromptAvailableBox: LockedBox<Bool>
+    let fetchCallsBox: LockedBox<Int>
 
     init(
         latest: String? = "1.1.0",
         withInstall: Bool = false,
-        installOk: Bool = true
+        installOk: Bool = true,
+        restartResult: RestartResult = .handedOff,
+        postPromptAvailable: Bool = true,
+        intervalMs: Int = updateDefaultIntervalMs,
+        fetchLatest: (@Sendable () async -> String?)? = nil
     ) {
         let metaBox = LockedBox(AutoUpdateMeta())
         let postsBox = LockedBox<[String]>([])
@@ -148,6 +235,8 @@ private final class UpdateHarness: @unchecked Sendable {
         let installCallsBox = LockedBox(0)
         let restartCallsBox = LockedBox(0)
         let announcesBox = LockedBox<[String]>([])
+        let postPromptAvailableBox = LockedBox(postPromptAvailable)
+        let fetchCallsBox = LockedBox(0)
         let okBox = LockedBox(installOk)
 
         var install: (@Sendable () async -> UpdateInstallResult)?
@@ -162,8 +251,13 @@ private final class UpdateHarness: @unchecked Sendable {
         let deps = AutoUpdaterDeps(
             currentVersion: "1.0.0",
             enabled: { enabledBox.withLock { $0 } },
+            intervalMs: intervalMs,
             now: { 1_000_000 },
-            fetchLatest: { latestBox.withLock { $0 } },
+            fetchLatest: {
+                fetchCallsBox.withLock { $0 += 1 }
+                if let fetchLatest { return await fetchLatest() }
+                return latestBox.withLock { $0 }
+            },
             readMeta: { metaBox.withLock { $0 } },
             writeMeta: { patch in
                 metaBox.withLock { m in
@@ -171,10 +265,18 @@ private final class UpdateHarness: @unchecked Sendable {
                     if let d = patch.dismissedVersion { m.dismissedVersion = d }
                 }
             },
-            postPrompt: { v in postsBox.withLock { $0.append(v) } },
+            postPrompt: { v in
+                guard postPromptAvailableBox.withLock({ $0 }) else { return false }
+                postsBox.withLock { $0.append(v) }
+                return true
+            },
             announce: { t in announcesBox.withLock { $0.append(t) } },
             install: install,
-            restart: { restartCallsBox.withLock { $0 += 1 } },
+            restart: { onHandoff in
+                restartCallsBox.withLock { $0 += 1 }
+                if restartResult == .handedOff { await onHandoff() }
+                return restartResult
+            },
             messages: .korean,
             onLog: { _ in }
         )
@@ -185,5 +287,7 @@ private final class UpdateHarness: @unchecked Sendable {
         self.installCallsBox = installCallsBox
         self.restartCallsBox = restartCallsBox
         self.announcesBox = announcesBox
+        self.postPromptAvailableBox = postPromptAvailableBox
+        self.fetchCallsBox = fetchCallsBox
     }
 }

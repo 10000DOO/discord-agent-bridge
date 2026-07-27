@@ -9,22 +9,37 @@ public enum AppLocale: String, Sendable, Equatable, CaseIterable {
     case en
 }
 
-/// Process-wide UI language (TS module-level `activeLocale`).
+/// Global fallback language plus request-local overrides. Discord events for different guilds
+/// run concurrently, so the selected server language must not be stored as mutable global state.
 public enum I18n {
     private static let active = LockedBox(AppLocale.ko)
+    @TaskLocal private static var requestLocale: AppLocale?
 
     public static func setLocale(_ locale: AppLocale) {
         active.withLock { $0 = locale }
     }
 
     public static func getLocale() -> AppLocale {
-        active.withLock { $0 }
+        requestLocale ?? active.withLock { $0 }
+    }
+
+    public static func withLocale<T>(_ locale: AppLocale, operation: () async throws -> T) async rethrows -> T {
+        try await $requestLocale.withValue(locale) {
+            try await operation()
+        }
     }
 
     /// Parse config.locale (unknown / empty → ko).
     public static func resolveLocale(_ raw: String?) -> AppLocale {
         guard let raw, let loc = AppLocale(rawValue: raw) else { return .ko }
         return loc
+    }
+
+    /// A guild's locale overrides the process setting only when it is explicitly persisted.
+    /// Missing server configuration must retain the configured global fallback, not reset to ko.
+    public static func resolveServerLocale(_ raw: String?) -> AppLocale {
+        guard let raw, !raw.isEmpty else { return getLocale() }
+        return resolveLocale(raw)
     }
 
     /// Apply global config.locale (boot + /config autosave).
@@ -306,6 +321,8 @@ public enum I18n {
         "update.denied": "자동 업데이트는 서버 관리자(Administrator) 또는 admin 티어만 결정할 수 있어요.",
         "update.manualOnly":
             "자동 설치 경로를 찾지 못했어요. 전체 체크아웃에서 `bash swift/scripts/install.sh`로 수동 업데이트하세요.",
+        "update.manualRestartRequired":
+            "✅ 설치는 완료됐지만 안전한 자동 재시작을 확인할 수 없어요. 현재 서비스를 수동으로 재시작해 주세요.",
         "update.upToDate": "최신 버전이에요.",
         "update.checkFailed": "버전 확인에 실패했어요 (네트워크/레지스트리).",
         "update.disabled": "자동 업데이트가 꺼져 있어요 (`autoUpdate.enabled=false`).",
@@ -604,6 +621,8 @@ public enum I18n {
         "update.denied": "Only a server Administrator or the admin tier can decide auto-updates.",
         "update.manualOnly":
             "Could not find an auto-install path. From a full checkout run `bash swift/scripts/install.sh` to update manually.",
+        "update.manualRestartRequired":
+            "✅ Installation completed, but a safe automatic restart could not be confirmed. Restart the current service manually.",
         "update.upToDate": "Already up to date.",
         "update.checkFailed": "Version check failed (network/registry).",
         "update.disabled": "Auto-update is off (`autoUpdate.enabled=false`).",
