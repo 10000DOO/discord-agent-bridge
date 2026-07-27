@@ -109,7 +109,7 @@ public enum I18n {
             "채널을 만들 수 없어요. 봇에 \"채널 관리(Manage Channels)\" 권한이 있는지 확인하세요.",
         "cmd.config.opened":
             "역할·기본값 설정 패널을 열었어요. ① 역할을 고르고 저장, ② 아래 기본값은 고르면 바로 저장돼요.",
-        "cmd.config.denied": "`/config` 는 서버 관리자(Administrator) 또는 admin 티어만 사용할 수 있어요.",
+        "cmd.config.denied": "`/config` 는 실제 Discord 서버 관리자(Administrator)만 사용할 수 있어요.",
 
         // Mode / model / effort / perm
         "cmd.mode.switched": "백엔드를 {backend} 로 바꿨어요.",
@@ -382,6 +382,23 @@ public enum I18n {
         "config.render.enable": "렌더 켜기",
         "config.render.disable": "렌더 끄기",
         "config.render.install": "Chromium 설치/재설치",
+        "config.access.title": "👤 사용자 예외 권한",
+        "config.access.intro": "선택한 사용자에게만 기본 권한보다 우선하는 예외 tier를 설정합니다.",
+        "config.access.default": "기본 권한: **{tier}**",
+        "config.access.selected": "선택: {user} → **{tier}**",
+        "config.access.override": "저장된 예외: **{tier}**",
+        "config.access.inherited": "저장된 예외 없음 — 기본 권한을 적용합니다.",
+        "config.access.noSelection": "사용자를 선택하세요",
+        "config.access.user.placeholder": "예외를 설정할 사용자 (1명)",
+        "config.access.tier.placeholder": "적용할 권한 tier",
+        "config.access.tier.admin": "admin",
+        "config.access.tier.execute": "execute",
+        "config.access.tier.read-only": "read-only",
+        "config.access.tier.none": "none (완전 차단)",
+        "config.access.apply": "예외 저장",
+        "config.access.reset": "기본값으로 복귀",
+        "config.access.selectUser": "먼저 사용자를 선택하세요.",
+        "config.access.saveFailed": "사용자 예외 권한 저장 실패: {error}",
         "config.locale.ko": "한국어 (ko)",
         "config.locale.en": "English (en)",
     ]
@@ -401,7 +418,6 @@ public enum I18n {
             "After inviting the bot to your server, set up roles by clicking through the Discord `/config` command.",
         "setup.defaultsInDiscord":
             "Set defaults like model, language, and permissions in Discord `/config` after inviting the bot.",
-
         "cmd.stop.done": "Stopped the session.",
         "cmd.stopAll.done": "Stopped all sessions ({count}).",
         "cmd.clear.done":
@@ -422,8 +438,7 @@ public enum I18n {
             "Could not create channels. Check that the bot has Manage Channels permission.",
         "cmd.config.opened":
             "Opened the roles & defaults panel. ① Pick roles and save, ② defaults below save on change.",
-        "cmd.config.denied":
-            "`/config` is limited to server Administrators or the admin tier.",
+        "cmd.config.denied": "Only an actual Discord server Administrator can use `/config`.",
 
         "cmd.mode.switched": "Switched backend to {backend}.",
         "cmd.mode.freshContext":
@@ -679,6 +694,23 @@ public enum I18n {
         "config.render.enable": "Turn on rendering",
         "config.render.disable": "Turn off rendering",
         "config.render.install": "Install/reinstall Chromium",
+        "config.access.title": "👤 Member policy exception",
+        "config.access.intro": "Set a final tier exception for only the selected member.",
+        "config.access.default": "Default tier: **{tier}**",
+        "config.access.selected": "Selected: {user} → **{tier}**",
+        "config.access.override": "Saved exception: **{tier}**",
+        "config.access.inherited": "No saved exception — the default tier applies.",
+        "config.access.noSelection": "Select a user",
+        "config.access.user.placeholder": "Member to override (one user)",
+        "config.access.tier.placeholder": "Tier to apply",
+        "config.access.tier.admin": "admin",
+        "config.access.tier.execute": "execute",
+        "config.access.tier.read-only": "read-only",
+        "config.access.tier.none": "none (block completely)",
+        "config.access.apply": "Save exception",
+        "config.access.reset": "Restore default",
+        "config.access.selectUser": "Select a user first.",
+        "config.access.saveFailed": "Could not save the member exception: {error}",
         "config.locale.ko": "한국어 (ko)",
         "config.locale.en": "English (en)",
     ]

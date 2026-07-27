@@ -1,8 +1,8 @@
 import Foundation
 
 // Role-tier authorization gate — 1:1 port of src/core/auth.ts (§7.1). Called by BOTH the
-// message and interaction entry points BEFORE anything reaches a mode. Deny-by-default
-// (fail-secure): an empty allowlist grants nothing.
+// message and interaction entry points BEFORE anything reaches a mode. Guild member policy uses
+// an explicit fallback tier; unreadable configuration still fails secure.
 //
 // Tier capability nests: admin ⊇ execute ⊇ read-only. A per-project ACL (projectAuth)
 // NARROWS access (intersect). DM traffic (no guild) honors dmPolicy.
@@ -73,6 +73,19 @@ public struct AuthResult: Sendable, Equatable {
     }
 }
 
+/// Resolved guild policy. Legacy allowlists retain their server-over-global replacement rules;
+/// member overrides are guild-local and final before those lists are consulted.
+public struct EffectiveGuildAuth: Sendable, Equatable {
+    public var adminRoleIds: [String]
+    public var executeRoleIds: [String]
+    public var readOnlyRoleIds: [String]
+    public var adminUserIds: [String]
+    public var executeUserIds: [String]
+    public var readOnlyUserIds: [String]
+    public var memberDefaultTier: MemberTierSetting
+    public var memberTierOverrides: [String: MemberTierSetting]
+}
+
 // Per-project access control on a channel binding (narrows only). Stored on
 // PersistedSession; DabMain passes SessionStore.binding?.projectAuth into authorize.
 // Codable (W15-b). Wizard edit UI optional; if store has it, it is enforced (G-P0-05).
@@ -103,7 +116,7 @@ public struct Authorizer: Sendable {
                 return AuthResult(allowed: false, reason: "DMs are not permitted (dmPolicy=deny).")
             }
             // DM allowed: global-only allowlists, no server layer, no per-project ACL.
-            return decide(global, input, nil)
+            return decideLegacy(global, input, nil)
         }
 
         // Guild context: layer server auth over global (per-tier replace when present).
@@ -114,16 +127,17 @@ public struct Authorizer: Sendable {
 
     /// Layer server auth over global. Present server list REPLACES that tier (may widen).
     /// dmPolicy is global-only.
-    public static func effectiveAuth(global: GlobalAuth, server: ServerConfig?) -> GlobalAuth {
+    public static func effectiveAuth(global: GlobalAuth, server: ServerConfig?) -> EffectiveGuildAuth {
         let s = server?.auth
-        return GlobalAuth(
+        return EffectiveGuildAuth(
             adminRoleIds: s?.adminRoleIds ?? global.adminRoleIds,
             executeRoleIds: s?.executeRoleIds ?? global.executeRoleIds,
             readOnlyRoleIds: s?.readOnlyRoleIds ?? global.readOnlyRoleIds,
             adminUserIds: s?.adminUserIds ?? global.adminUserIds,
             executeUserIds: s?.executeUserIds ?? global.executeUserIds,
             readOnlyUserIds: s?.readOnlyUserIds ?? global.readOnlyUserIds,
-            dmPolicy: global.dmPolicy
+            memberDefaultTier: s?.memberDefaultTier ?? global.memberDefaultTier,
+            memberTierOverrides: s?.memberTierOverrides ?? [:]
         )
     }
 
@@ -140,16 +154,58 @@ public struct Authorizer: Sendable {
 
     // Resolve the actor's highest tier, then check it clears the action's minimum tier and
     // (if present) the per-project ACL.
-    private func decide(_ auth: GlobalAuth, _ input: AuthInput, _ projectAuth: ProjectAuth?) -> AuthResult {
+    private func decideLegacy(_ auth: GlobalAuth, _ input: AuthInput, _ projectAuth: ProjectAuth?) -> AuthResult {
         // A Discord Administrator is ALWAYS the admin tier and bypasses both the role allowlists
         // and the per-project ACL — the operator who set the bot up can never lock themselves out.
         if input.isAdministrator {
             return AuthResult(allowed: true, tier: .admin)
         }
 
-        guard let tier = resolveTier(auth, input.roleIds, input.userId) else {
+        guard let tier = resolveTier(
+            adminRoleIds: auth.adminRoleIds,
+            executeRoleIds: auth.executeRoleIds,
+            readOnlyRoleIds: auth.readOnlyRoleIds,
+            adminUserIds: auth.adminUserIds,
+            executeUserIds: auth.executeUserIds,
+            readOnlyUserIds: auth.readOnlyUserIds,
+            roleIds: input.roleIds,
+            userId: input.userId
+        ) else {
             return AuthResult(allowed: false, reason: "No authorized role for this actor (fail-secure).")
         }
+
+        return decideTier(tier, input, projectAuth)
+    }
+
+    private func decide(_ auth: EffectiveGuildAuth, _ input: AuthInput, _ projectAuth: ProjectAuth?) -> AuthResult {
+        // Actual Discord Administrator/owner remains an unchangeable escape hatch.
+        if input.isAdministrator {
+            return AuthResult(allowed: true, tier: .admin)
+        }
+        if let setting = auth.memberTierOverrides[input.userId] {
+            guard let tier = roleTier(setting) else {
+                return AuthResult(allowed: false, reason: "This member is explicitly blocked.")
+            }
+            return decideTier(tier, input, projectAuth)
+        }
+        let legacyTier = resolveTier(
+            adminRoleIds: auth.adminRoleIds,
+            executeRoleIds: auth.executeRoleIds,
+            readOnlyRoleIds: auth.readOnlyRoleIds,
+            adminUserIds: auth.adminUserIds,
+            executeUserIds: auth.executeUserIds,
+            readOnlyUserIds: auth.readOnlyUserIds,
+            roleIds: input.roleIds,
+            userId: input.userId
+        )
+        let tier = higherTier(legacyTier, roleTier(auth.memberDefaultTier))
+        guard let tier else {
+            return AuthResult(allowed: false, reason: "No authorized role for this actor (fail-secure).")
+        }
+        return decideTier(tier, input, projectAuth)
+    }
+
+    private func decideTier(_ tier: RoleTier, _ input: AuthInput, _ projectAuth: ProjectAuth?) -> AuthResult {
 
         // TIER_RANK / ACTION_MIN_TIER are total over their enums (every case is a key).
         let required = ACTION_MIN_TIER[input.action]!
@@ -171,14 +227,38 @@ public struct Authorizer: Sendable {
     }
 
     // Highest tier the actor's roles OR user id grant, or nil if none match (deny-by-default).
-    private func resolveTier(_ auth: GlobalAuth, _ roleIds: [String], _ userId: String) -> RoleTier? {
+    private func roleTier(_ setting: MemberTierSetting) -> RoleTier? {
+        switch setting {
+        case .admin: return .admin
+        case .execute: return .execute
+        case .readOnly: return .readOnly
+        case .none: return nil
+        }
+    }
+
+    private func higherTier(_ lhs: RoleTier?, _ rhs: RoleTier?) -> RoleTier? {
+        guard let lhs else { return rhs }
+        guard let rhs else { return lhs }
+        return TIER_RANK[lhs]! >= TIER_RANK[rhs]! ? lhs : rhs
+    }
+
+    private func resolveTier(
+        adminRoleIds: [String],
+        executeRoleIds: [String],
+        readOnlyRoleIds: [String],
+        adminUserIds: [String],
+        executeUserIds: [String],
+        readOnlyUserIds: [String],
+        roleIds: [String],
+        userId: String
+    ) -> RoleTier? {
         let roles = Set(roleIds)
         func has(_ allowRoles: [String], _ allowUsers: [String]) -> Bool {
             allowRoles.contains { roles.contains($0) } || allowUsers.contains(userId)
         }
-        if has(auth.adminRoleIds, auth.adminUserIds) { return .admin }
-        if has(auth.executeRoleIds, auth.executeUserIds) { return .execute }
-        if has(auth.readOnlyRoleIds, auth.readOnlyUserIds) { return .readOnly }
+        if has(adminRoleIds, adminUserIds) { return .admin }
+        if has(executeRoleIds, executeUserIds) { return .execute }
+        if has(readOnlyRoleIds, readOnlyUserIds) { return .readOnly }
         return nil
     }
 }

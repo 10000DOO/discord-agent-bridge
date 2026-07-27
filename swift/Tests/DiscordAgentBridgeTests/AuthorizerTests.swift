@@ -14,12 +14,13 @@ private func tempBaseDir() -> URL {
         .appendingPathComponent("dab-auth-\(UUID().uuidString)", isDirectory: true)
 }
 
-// Write a minimal config.json (secrets + auth) via JSON so loadAuth partial-tolerates.
+// Write a minimal valid config.json (secrets + auth) via JSON.
 private func writeAuthConfig(
     _ dir: URL,
     admin: [String] = [],
     execute: [String] = [],
     readOnly: [String] = [],
+    memberDefaultTier: String = "none",
     dmPolicy: String = "deny"
 ) throws {
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -27,6 +28,7 @@ private func writeAuthConfig(
         "adminRoleIds": admin,
         "executeRoleIds": execute,
         "readOnlyRoleIds": readOnly,
+        "memberDefaultTier": memberDefaultTier,
         "dmPolicy": dmPolicy,
     ]
     let obj: [String: Any] = [
@@ -312,16 +314,13 @@ struct ConfigStoreLoadAuthTests {
         #expect(g == .empty)
     }
 
-    @Test func absentFieldsFallBackToEmptyAndDeny() async throws {
+    @Test func invalidGlobalConfigDoesNotPartiallyDecodeAuth() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // Partial auth-only file (no discord) → full load fails → partial path.
+        // Missing secrets makes the global config invalid, even though auth itself decodes.
         let obj: [String: Any] = ["version": 2, "auth": ["executeRoleIds": [EXEC_ROLE]]]
         try JSONSerialization.data(withJSONObject: obj).write(to: dir.appendingPathComponent("config.json"))
         let g = await store(dir).loadAuth()
-        #expect(g.executeRoleIds == [EXEC_ROLE])
-        #expect(g.adminRoleIds.isEmpty)
-        #expect(g.readOnlyRoleIds.isEmpty)
-        #expect(g.dmPolicy == "deny")
+        #expect(g == .empty)
     }
 }

@@ -471,6 +471,11 @@ struct EventHandler: GatewayEventHandler {
         } else {
             setupBootstrap = false
         }
+        let isDiscordAdministrator = await hasDiscordAdministrator(
+            payload,
+            guildId: payload.guild_id?.rawValue,
+            userId: actorId
+        )
         let decision = setupBootstrap
             ? AuthResult(allowed: true, tier: .admin)
             : await Authorizer(config: .shared).authorize(
@@ -480,7 +485,7 @@ struct EventHandler: GatewayEventHandler {
                     action: authAction,
                     guildId: payload.guild_id?.rawValue,
                     channelId: channelId,
-                    isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
+                    isAdministrator: isDiscordAdministrator
                 ),
                 projectAuth: projectAuth
             )
@@ -872,6 +877,10 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, I18n.t("auth.denied", ["reason": "DM"]))
                 return
             }
+            guard isDiscordAdministrator else {
+                try await respondEphemeral(payload, I18n.t("cmd.config.denied"))
+                return
+            }
             let store = ConfigStore.shared
             let global: AppConfig
             do {
@@ -1158,6 +1167,24 @@ struct EventHandler: GatewayEventHandler {
         return messageAuthorId
     }
 
+    /// Interactions usually carry the computed Administrator permission. The cache additionally
+    /// preserves the guild-owner bypass when that field is unavailable or Discord omits it.
+    private func hasDiscordAdministrator(
+        _ payload: Interaction,
+        guildId: String?,
+        userId: String
+    ) async -> Bool {
+        if payload.member?.permissions?.contains(.administrator) == true {
+            return true
+        }
+        guard let guildId else { return false }
+        return await GuildAdminCache.shared.isAdministrator(
+            guildId: guildId,
+            userId: userId,
+            roleIds: payload.member?.roles.map(\.rawValue) ?? []
+        )
+    }
+
     /// W16-b: drive the open `/config` panel. Owner-gated. Roles batch until Save;
     /// backend/model/effort/permMode/locale auto-save; 🔔 notifications sub-panel.
     private func handleConfigComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
@@ -1171,24 +1198,11 @@ struct EventHandler: GatewayEventHandler {
             )
             return
         }
-        // Admin gate (same as /config open). Discord Administrator always widens.
-        let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
-        let decision = await Authorizer(config: .shared).authorize(
-            AuthInput(
-                userId: clicker,
-                roleIds: payload.member?.roles.map(\.rawValue) ?? [],
-                action: .admin,
-                guildId: guildId,
-                channelId: channelId,
-                isAdministrator: payload.member?.permissions?.contains(.administrator) ?? false
-            ),
-            projectAuth: projectAuth
-        )
-        guard decision.allowed else {
+        guard await hasDiscordAdministrator(payload, guildId: guildId, userId: clicker) else {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]),
+                    content: I18n.t("cmd.config.denied"),
                     flags: [.ephemeral]
                 ))
             )
@@ -1257,6 +1271,12 @@ struct EventHandler: GatewayEventHandler {
                     flags: [.ephemeral],
                     components: rows
                 ))
+            )
+        case .accessUpdated(let sub):
+            let (embeds, rows) = discordPayload(from: sub)
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .updateMessage(.init(embeds: embeds, components: rows))
             )
         case .renderUpdated(let sub):
             let (embeds, rows) = discordPayload(from: sub)

@@ -98,8 +98,7 @@ public actor ConfigStore {
             let cfg = try load()
             return cfg.auth
         } catch {
-            // Partial-tolerant path: try decoding only the auth block (W13 behavior).
-            return Self.loadAuthPartial(from: configPath)
+            return .empty
         }
     }
 
@@ -257,6 +256,90 @@ public actor ConfigStore {
             ?? ConfigStoreError.validation("admin bootstrap save verification failed for guild \(guildId)")
     }
 
+    /// Set one final, guild-scoped member policy exception. This deliberately does not touch the
+    /// legacy user allowlists: those remain readable for compatibility but cannot override this
+    /// explicit setting during authorization.
+    public func setServerMemberTierOverride(
+        guildId: String,
+        userId: String,
+        tier: MemberTierSetting
+    ) throws {
+        let trimmedUserId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUserId.isEmpty else {
+            throw ConfigStoreError.validation("member tier override userId must not be empty")
+        }
+        let existing = try existingServerConfigForMemberPolicySave(guildId: guildId)
+        var auth = existing?.auth ?? ServerAuthPartial()
+        var overrides = auth.memberTierOverrides ?? [:]
+        overrides[trimmedUserId] = tier
+        auth.memberTierOverrides = overrides
+        try saveMemberPolicyServerConfig(guildId: guildId, existing: existing, auth: auth)
+    }
+
+    /// Remove one member exception so the user returns to the effective guild default.
+    public func clearServerMemberTierOverride(guildId: String, userId: String) throws {
+        let trimmedUserId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUserId.isEmpty else {
+            throw ConfigStoreError.validation("member tier override userId must not be empty")
+        }
+        guard let existing = try existingServerConfigForMemberPolicySave(guildId: guildId) else { return }
+        var auth = existing.auth ?? ServerAuthPartial()
+        var overrides = auth.memberTierOverrides ?? [:]
+        guard overrides.removeValue(forKey: trimmedUserId) != nil else { return }
+        auth.memberTierOverrides = overrides.isEmpty ? nil : overrides
+        try saveMemberPolicyServerConfig(guildId: guildId, existing: existing, auth: auth)
+    }
+
+    /// Persist a guild-local member fallback. It only affects members without an explicit
+    /// override or a legacy role/user grant.
+    public func setServerMemberDefaultTier(guildId: String, tier: MemberTierSetting) throws {
+        let existing = try existingServerConfigForMemberPolicySave(guildId: guildId)
+        var auth = existing?.auth ?? ServerAuthPartial()
+        auth.memberDefaultTier = tier
+        try saveMemberPolicyServerConfig(guildId: guildId, existing: existing, auth: auth)
+    }
+
+    /// A missing server file is the only case where member-policy setters may create one. A
+    /// present but unreadable/invalid file must remain intact for an operator to repair.
+    private func existingServerConfigForMemberPolicySave(guildId: String) throws -> ServerConfig? {
+        let path = serverConfigPath(guildId: guildId)
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        guard let existing = loadServerConfig(guildId: guildId) else {
+            throw ConfigStoreError.validation(
+                "existing server config at \(path.path) is unreadable or invalid; refusing to overwrite it"
+            )
+        }
+        return existing
+    }
+
+    private func saveMemberPolicyServerConfig(
+        guildId: String,
+        existing: ServerConfig?,
+        auth: ServerAuthPartial
+    ) throws {
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.auth = auth
+        var lastErr: Error?
+        for _ in 0..<3 {
+            do {
+                try saveServerConfig(next)
+                guard let reloaded = loadServerConfig(guildId: guildId), reloaded.auth == auth else {
+                    lastErr = ConfigStoreError.validation(
+                        "member policy not preserved after save (read-after-write verification failed)"
+                    )
+                    continue
+                }
+                return
+            } catch {
+                lastErr = error
+            }
+        }
+        throw lastErr
+            ?? ConfigStoreError.validation("member policy save verification failed for guild \(guildId)")
+    }
+
     // MARK: - Nice-to-have (cheap)
 
     /// Append tool to global autoAllowClaudeTools (§7A/§8.1 always-allow). Idempotent: a tool
@@ -314,37 +397,6 @@ public actor ConfigStore {
         return out
     }
 
-    /// W13-compatible partial auth read when full load fails.
-    private static func loadAuthPartial(from url: URL) -> GlobalAuth {
-        guard let data = try? Data(contentsOf: url),
-              let file = try? JSONDecoder().decode(AuthOnlyFile.self, from: data),
-              let auth = file.auth else {
-            return .empty
-        }
-        return GlobalAuth(
-            adminRoleIds: auth.adminRoleIds ?? [],
-            executeRoleIds: auth.executeRoleIds ?? [],
-            readOnlyRoleIds: auth.readOnlyRoleIds ?? [],
-            adminUserIds: auth.adminUserIds ?? [],
-            executeUserIds: auth.executeUserIds ?? [],
-            readOnlyUserIds: auth.readOnlyUserIds ?? [],
-            dmPolicy: auth.dmPolicy ?? "deny"
-        )
-    }
-
-    private struct AuthOnlyFile: Decodable {
-        var auth: AuthBlock?
-    }
-    private struct AuthBlock: Decodable {
-        var adminRoleIds: [String]?
-        var executeRoleIds: [String]?
-        var readOnlyRoleIds: [String]?
-        var adminUserIds: [String]?
-        var executeUserIds: [String]?
-        var readOnlyUserIds: [String]?
-        var dmPolicy: String?
-    }
-
     /// JSONDecoder accepts null for every Optional, while the TS schema only permits it on
     /// nullable leaves. Reject a server file with a null in any other declared field so the
     /// fail-safe load path drops the whole override instead of silently widening it.
@@ -357,7 +409,7 @@ public actor ConfigStore {
         )
 
         if let auth = root["auth"] as? [String: Any] {
-            try rejectNulls(in: auth, checking: ["adminRoleIds", "executeRoleIds", "readOnlyRoleIds", "adminUserIds", "executeUserIds", "readOnlyUserIds"], allowing: [])
+            try rejectNulls(in: auth, checking: ["adminRoleIds", "executeRoleIds", "readOnlyRoleIds", "adminUserIds", "executeUserIds", "readOnlyUserIds", "memberDefaultTier", "memberTierOverrides"], allowing: [])
         }
         if let defaults = root["defaults"] as? [String: Any] {
             try rejectNulls(in: defaults, checking: ["mode", "claudeModel", "codexModel", "permissionMode", "permissionProfile", "codexHome", "claudeEffort", "codexEffort"], allowing: ["permissionProfile"])

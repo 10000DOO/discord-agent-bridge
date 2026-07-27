@@ -26,6 +26,15 @@ public struct DiscordSecrets: Codable, Sendable, Equatable {
     }
 }
 
+/// Persisted member policy setting. `none` is intentionally separate from `RoleTier`: it
+/// represents an explicit deny, while `RoleTier` only represents an access grant.
+public enum MemberTierSetting: String, Codable, Sendable, Equatable, CaseIterable {
+    case admin
+    case execute
+    case readOnly = "read-only"
+    case none
+}
+
 /// Global auth block (and effective auth after server layer).
 public struct GlobalAuth: Codable, Sendable, Equatable {
     public var adminRoleIds: [String]
@@ -35,6 +44,8 @@ public struct GlobalAuth: Codable, Sendable, Equatable {
     public var adminUserIds: [String]
     public var executeUserIds: [String]
     public var readOnlyUserIds: [String]
+    /// Guild-member fallback when no explicit grant or per-user override applies.
+    public var memberDefaultTier: MemberTierSetting
     public var dmPolicy: String
 
     public init(
@@ -44,6 +55,7 @@ public struct GlobalAuth: Codable, Sendable, Equatable {
         adminUserIds: [String] = [],
         executeUserIds: [String] = [],
         readOnlyUserIds: [String] = [],
+        memberDefaultTier: MemberTierSetting = .admin,
         dmPolicy: String = "deny"
     ) {
         self.adminRoleIds = adminRoleIds
@@ -52,11 +64,13 @@ public struct GlobalAuth: Codable, Sendable, Equatable {
         self.adminUserIds = adminUserIds
         self.executeUserIds = executeUserIds
         self.readOnlyUserIds = readOnlyUserIds
+        self.memberDefaultTier = memberDefaultTier
         self.dmPolicy = dmPolicy
     }
 
-    /// Fail-secure default: empty allowlists + dmPolicy=deny.
-    public static let empty = GlobalAuth()
+    /// Fail-secure default used only when the whole config cannot be read. A decoded legacy
+    /// config without the new field is normalized to `.admin` by `applyDefaults` instead.
+    public static let empty = GlobalAuth(memberDefaultTier: .none)
 }
 
 public struct Profile: Codable, Sendable, Equatable {
@@ -301,13 +315,19 @@ public struct ServerAuthPartial: Codable, Sendable, Equatable {
     public var adminUserIds: [String]?
     public var executeUserIds: [String]?
     public var readOnlyUserIds: [String]?
+    /// nil inherits the global member fallback.
+    public var memberDefaultTier: MemberTierSetting?
+    /// Guild-scoped, final per-user policy. Values take precedence over every bot allowlist.
+    public var memberTierOverrides: [String: MemberTierSetting]?
     public init(
         adminRoleIds: [String]? = nil,
         executeRoleIds: [String]? = nil,
         readOnlyRoleIds: [String]? = nil,
         adminUserIds: [String]? = nil,
         executeUserIds: [String]? = nil,
-        readOnlyUserIds: [String]? = nil
+        readOnlyUserIds: [String]? = nil,
+        memberDefaultTier: MemberTierSetting? = nil,
+        memberTierOverrides: [String: MemberTierSetting]? = nil
     ) {
         self.adminRoleIds = adminRoleIds
         self.executeRoleIds = executeRoleIds
@@ -315,6 +335,8 @@ public struct ServerAuthPartial: Codable, Sendable, Equatable {
         self.adminUserIds = adminUserIds
         self.executeUserIds = executeUserIds
         self.readOnlyUserIds = readOnlyUserIds
+        self.memberDefaultTier = memberDefaultTier
+        self.memberTierOverrides = memberTierOverrides
     }
 }
 
@@ -556,6 +578,10 @@ public func validateServerConfig(_ c: ServerConfig) throws {
     if let mode = c.defaults?.permissionMode, !PERM_MODES.contains(mode) {
         throw ConfigValidationError.invalidField("defaults.permissionMode")
     }
+    if let overrides = c.auth?.memberTierOverrides,
+       overrides.keys.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+        throw ConfigValidationError.invalidField("auth.memberTierOverrides userId")
+    }
 }
 
 // MARK: - applyDefaults (port config.ts:39–74)
@@ -580,6 +606,7 @@ func configDefaultsDict() -> [String: Any] {
             "adminUserIds": [String](),
             "executeUserIds": [String](),
             "readOnlyUserIds": [String](),
+            "memberDefaultTier": "admin",
             "dmPolicy": "deny",
         ] as [String: Any],
         "defaults": [

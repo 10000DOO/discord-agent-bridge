@@ -18,13 +18,15 @@ private func writeAuthConfig(
     _ dir: URL,
     adminUsers: [String] = [],
     executeUsers: [String] = [],
-    readOnlyUsers: [String] = []
+    readOnlyUsers: [String] = [],
+    memberDefaultTier: String = "none"
 ) throws {
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let auth: [String: Any] = [
         "adminUserIds": adminUsers,
         "executeUserIds": executeUsers,
         "readOnlyUserIds": readOnlyUsers,
+        "memberDefaultTier": memberDefaultTier,
     ]
     let obj: [String: Any] = [
         "version": 2,
