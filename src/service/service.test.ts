@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFile as execFileCallback } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -265,6 +265,86 @@ describe('buildRunScript', () => {
       });
       expect(stdout.trim()).toBe('install-node');
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('Swift installer renders a safe launcher with nvm and inherited-Node fallbacks', async () => {
+    if (process.platform !== 'darwin') return;
+
+    const root = await mkdtemp(path.join(tmpdir(), 'dab-swift-run-script-'));
+    const home = path.join(root, 'home');
+    const injectedMarker = path.join(root, 'must-not-exist');
+    const installBin = path.join(root, 'install-$(touch "$DAB_TEST_MARKER")');
+    const nvmBin = path.join(root, 'nvm-bin');
+    const systemBin = path.join(root, 'system-bin');
+    const helperBin = path.join(root, 'helper-bin');
+    const binDir = path.join(home, '.dab', 'bin');
+    let generatedDir: string | undefined;
+    try {
+      await mkdir(path.join(home, '.nvm'), { recursive: true });
+      await Promise.all([mkdir(installBin), mkdir(nvmBin), mkdir(systemBin), mkdir(helperBin), mkdir(binDir, { recursive: true })]);
+      await writeExecutable(path.join(installBin, 'node'), '#!/bin/bash\necho install-node\n');
+      await writeExecutable(path.join(nvmBin, 'node'), '#!/bin/bash\necho nvm-node\n');
+      await writeExecutable(path.join(systemBin, 'node'), '#!/bin/bash\necho system-node\n');
+      await writeExecutable(path.join(binDir, 'dab'), '#!/bin/bash\nnode\n');
+      // Preserve the dry-run artifact long enough to execute the actual rendered launcher.
+      await writeExecutable(path.join(helperBin, 'rm'), '#!/bin/bash\nexit 0\n');
+      const install = await execFile('/bin/bash', ['swift/scripts/install.sh', '--dry-run'], {
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: `${helperBin}:${installBin}:${systemBin}:${process.env.PATH ?? ''}`,
+        },
+      });
+      const runScriptMatch = /^\s{2}generated \(temp\) run\.sh: (.+)$/m.exec(install.stdout);
+      if (!runScriptMatch) throw new Error('Swift installer did not report generated run.sh.');
+      const runScript = runScriptMatch[1];
+      generatedDir = path.dirname(runScript);
+      expect(await readFile(runScript, 'utf8')).toContain('install_node_dir=');
+
+      await writeFile(
+        path.join(home, '.nvm', 'nvm.sh'),
+        'nvm() {\n  [ "$1" = "which" ] || return 1\n  [ "$2" = "node" ] || return 1\n  printf "%s\\n" "$NVM_NODE_PATH"\n}\n',
+        'utf8',
+      );
+      let result = await execFile('/bin/bash', [runScript], {
+        env: {
+          ...process.env,
+          HOME: home,
+          DAB_TEST_MARKER: injectedMarker,
+          PATH: `${systemBin}:${process.env.PATH ?? ''}`,
+          NVM_NODE_PATH: path.join(nvmBin, 'node'),
+        },
+      });
+      expect(result.stdout.trim()).toBe('nvm-node');
+
+      await writeFile(path.join(home, '.nvm', 'nvm.sh'), 'nvm() { return 1; }\n', 'utf8');
+      result = await execFile('/bin/bash', [runScript], {
+        env: {
+          ...process.env,
+          HOME: home,
+          DAB_TEST_MARKER: injectedMarker,
+          PATH: `${systemBin}:${process.env.PATH ?? ''}`,
+        },
+      });
+      expect(result.stdout.trim()).toBe('install-node');
+
+      // If the captured install-time Node is later removed, preserve and use the inherited
+      // system Node rather than emitting a broken PATH entry.
+      await rm(path.join(installBin, 'node'));
+      result = await execFile('/bin/bash', [runScript], {
+        env: {
+          ...process.env,
+          HOME: home,
+          DAB_TEST_MARKER: injectedMarker,
+          PATH: `${systemBin}:${process.env.PATH ?? ''}`,
+        },
+      });
+      expect(result.stdout.trim()).toBe('system-node');
+      await expect(readFile(injectedMarker, 'utf8')).rejects.toThrow();
+    } finally {
+      if (generatedDir) await rm(generatedDir, { recursive: true, force: true });
       await rm(root, { recursive: true, force: true });
     }
   });
