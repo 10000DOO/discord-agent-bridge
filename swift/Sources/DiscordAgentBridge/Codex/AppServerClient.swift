@@ -139,7 +139,7 @@ public final class CodexAppServerClient: @unchecked Sendable {
         let resolved = spawn ?? resolveCodexSpawn(codexCommand: codexCommand)
         var envExtra: [String: String] = environment ?? [:]
         if let codexHome {
-            envExtra["CODEX_HOME"] = codexHome
+            envExtra["CODEX_HOME"] = resolveCodexHome(codexHome)
         }
         let transport = try ProcessSidecarTransport(
             spawn: resolved,

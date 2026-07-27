@@ -702,7 +702,7 @@ struct CodexSessionBridgeTests {
     // to `configure` — not the ones passed to `init` (which stay nil here). The script dumps its
     // inherited `CODEX_HOME` to a file and exits; the bridge's `initialize()` call fails right
     // after (child already gone), which the test ignores via `try?`.
-    @Test func configureReachesProductionSpawn() async throws {
+    @Test func configureExpandsCodexHomeBeforeProductionSpawn() async throws {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-configure-wiring-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -715,14 +715,14 @@ struct CodexSessionBridgeTests {
         // Omitting `makeClient:` runs the production default closure; store/configStore stay
         // isolated per the `makeCodexBridge` convention.
         let bridge = CodexSessionBridge(store: freshTempStore(), configStore: freshTempConfigStore())
-        await bridge.configure(codexHome: tmpDir.path, codexCliCommand: scriptPath)
+        await bridge.configure(codexHome: "~/.codex", codexCliCommand: scriptPath)
         _ = try? await bridge.runTurn(channelId: "c", text: "hi")
 
         let sawFile = await waitUntil { FileManager.default.fileExists(atPath: outFile.path) }
         #expect(sawFile)
         let captured = (try? String(contentsOf: outFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        #expect(captured == "CODEX_HOME=\(tmpDir.path)")
+        #expect(captured == "CODEX_HOME=\(NSHomeDirectory())/.codex")
     }
 
 }
