@@ -71,13 +71,14 @@ const PREVIEW_NOTICE = '\n\n… (preview truncated — full document attached ab
 
 export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
   const { options } = req;
+  const requestedPath = normalizeDocumentSharePath(req.path);
 
   // (a) Resolve the requested path. Absolute → resolve as-is; relative → against cwd.
   // Runs BEFORE any thread is opened so a rejected path never creates a thread.
   const root = realpathOrResolve(req.cwd);
-  const resolved = path.isAbsolute(req.path)
-    ? realpathOrResolve(req.path)
-    : realpathOrResolve(path.resolve(req.cwd, req.path));
+  const resolved = path.isAbsolute(requestedPath)
+    ? realpathOrResolve(requestedPath)
+    : realpathOrResolve(path.resolve(req.cwd, requestedPath));
 
   // (b) Existence + must be a regular file. Rejecting every non-regular file (not just
   // directories) mirrors fileDownload.ts and avoids a readFileSync hang on a FIFO/socket.
@@ -106,7 +107,13 @@ export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
   // UTF-8 text/markdown, so it is a cheap, dependency-free binary sniff. Runs BEFORE any
   // thread is opened so a binary file never creates a thread; the content is reused for
   // the body below.
-  const content = fs.readFileSync(resolved, 'utf-8');
+  let content: string;
+  try {
+    content = fs.readFileSync(resolved, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: false, code: 'notFound' };
+    throw err;
+  }
   const NUL = String.fromCharCode(0);
   if (content.includes(NUL)) return { ok: false, code: 'notFile' };
 
@@ -137,6 +144,22 @@ export async function shareDocument(req: ShareRequest): Promise<ShareResult> {
 
   // (j)
   return { ok: true, threadName, path: displayPath };
+}
+
+// Explicit ECMAScript String.prototype.trim scalar set. Keep this in sync with the Swift core;
+// notably U+FEFF is trimmed while U+0085/NEL is not.
+const DOCUMENT_SHARE_TRIM_CLASS = '\\u0009-\\u000D\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF';
+const DOCUMENT_SHARE_TRIM_RE = new RegExp(`^[${DOCUMENT_SHARE_TRIM_CLASS}]+|[${DOCUMENT_SHARE_TRIM_CLASS}]+$`, 'g');
+
+// Discord slash input is often pasted with outer whitespace or one presentation wrapper. Remove
+// at most one matched outer quote/backtick pair; do not alter the inner path text.
+function normalizeDocumentSharePath(input: string): string {
+  const trimmed = input.replace(DOCUMENT_SHARE_TRIM_RE, '');
+  const first = trimmed[0];
+  const isWrapper = first === '`' || first === "'" || first === '"';
+  return trimmed.length >= 2 && isWrapper && trimmed.endsWith(first)
+    ? trimmed.slice(1, -1)
+    : trimmed;
 }
 
 // Wrap a send-only MessageThread as a MessageChannel so deliverAnswer can post the

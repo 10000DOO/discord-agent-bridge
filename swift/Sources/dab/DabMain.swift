@@ -983,7 +983,7 @@ struct EventHandler: GatewayEventHandler {
                 let res = try await postDocumentShare(client: client, channelId: channelId, path: docPath)
                 try await respondEphemeral(payload, formatDocShareReply(path: docPath, result: res))
             } catch {
-                log.error("/doc failed channel=\(channelId): \(error)")
+                log.error("/doc failed channel=\(channelId) code=document_share_error")
                 try await respondEphemeral(payload, "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
             }
 

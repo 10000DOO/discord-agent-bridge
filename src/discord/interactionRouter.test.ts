@@ -948,11 +948,12 @@ describe('InteractionRouter slash commands', () => {
     channelRegistry.set(binding(home));
     const { orchestrator } = fakeOrchestrator();
     const { wiring } = fakeWiring();
+    const { logger: fake, error } = fakeLogger();
     // The core rethrows non-coded errors (EACCES etc.); the edge must catch, not crash.
     const shareDocumentFor = vi.fn((_g: string, _c: string) => async (_p: string): Promise<ShareResult> => {
-      throw new Error('EACCES');
+      throw new Error('EACCES: /private/secret.md');
     });
-    const router = buildRouter({ orchestrator, wiring, shareDocumentFor });
+    const router = buildRouter({ orchestrator, wiring, logger: fake, shareDocumentFor });
     const { interaction, replies } = slash({ commandName: 'doc', getStringValue: 'docs/x.md' });
     await router.handle(interaction);
     // Pin the inner catch (cmd.error.generic) exactly: if it were removed, the throw would
@@ -960,6 +961,8 @@ describe('InteractionRouter slash commands', () => {
     // absolute path). Both messages share '처리하지 못했어요', so only the full generic string
     // — with its unique '잠시 후 다시 시도해 주세요.' tail — distinguishes them.
     expect(replies[0].content).toBe('명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.');
+    expect(error).toHaveBeenCalledWith('failed to share document', { error: 'document_share_error' });
+    expect(JSON.stringify(error.mock.calls)).not.toContain('/private/secret.md');
   });
 
   it('/doc with NO binding returns router.noSession (shareDocumentFor not called)', async () => {

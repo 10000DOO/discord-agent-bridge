@@ -146,13 +146,14 @@ public func loadShareableDocument(
     path: String,
     options: DocumentShareOptions = .default
 ) throws -> Result<LoadedDocument, ShareResult> {
+    let requestedPath = normalizedDocumentSharePath(path)
     // (a) Resolve. Absolute → as-is; relative → against cwd. realpath of deepest existing ancestor.
     let root = realpathOrResolve(cwd)
     let joined: String
-    if (path as NSString).isAbsolutePath {
-        joined = path
+    if (requestedPath as NSString).isAbsolutePath {
+        joined = requestedPath
     } else {
-        joined = (cwd as NSString).appendingPathComponent(path)
+        joined = (cwd as NSString).appendingPathComponent(requestedPath)
     }
     let resolved = realpathOrResolve(joined)
 
@@ -235,6 +236,39 @@ public func loadShareableDocument(
         metaLine: metaLine,
         bodyText: bodyText
     ))
+}
+
+/// ECMAScript `String.prototype.trim` scalar set. Keep this explicit so Swift and the TS core
+/// agree on U+FEFF (trimmed) and U+0085/NEL (preserved).
+private let documentShareTrimScalarValues: Set<UInt32> = [
+    0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020, 0x00A0, 0x1680,
+    0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
+    0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF,
+]
+
+private func trimDocumentSharePresentationWhitespace(_ path: String) -> String {
+    let scalars = path.unicodeScalars
+    guard let first = scalars.indices.first(where: { !documentShareTrimScalarValues.contains(scalars[$0].value) }),
+          let last = scalars.indices.reversed().first(where: { !documentShareTrimScalarValues.contains(scalars[$0].value) })
+    else {
+        return ""
+    }
+    return String(scalars[first...last])
+}
+
+/// Discord slash input is frequently pasted with surrounding whitespace or one presentation wrapper.
+/// Remove at most one matched outer quote/backtick pair; do not alter the inner path text.
+private func normalizedDocumentSharePath(_ path: String) -> String {
+    var normalized = trimDocumentSharePresentationWhitespace(path)
+    if normalized.count >= 2,
+       let first = normalized.first,
+       first == normalized.last,
+       first == "`" || first == "'" || first == "\""
+    {
+        normalized.removeFirst()
+        normalized.removeLast()
+    }
+    return normalized
 }
 
 // MARK: - Share (load + post)

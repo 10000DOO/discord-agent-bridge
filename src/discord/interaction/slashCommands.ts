@@ -585,8 +585,8 @@ export async function shareDoc(host: InteractionRouterHost, i: SlashInteraction)
         // Uncoded failure = the channel has no live session/sink (shareDocumentFor backstop).
         await i.editReply({ content: t('router.noSession') });
       }
-    } catch (err) {
-      host.logError('failed to share document', err);
+    } catch {
+      host.logError('failed to share document', 'document_share_error');
       await i.editReply({ content: t('cmd.error.generic') });
     }
   }

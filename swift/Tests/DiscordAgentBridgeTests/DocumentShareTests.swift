@@ -135,6 +135,88 @@ struct DocumentShareLoadTests {
         #expect(doc.basename == "abs.md")
     }
 
+    @Test func trimsUnicodeWhitespaceAroundExternalAbsolutePath() throws {
+        let fx = try makeDocFixture()
+        defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
+        let abs = fx.outside.appendingPathComponent("space.md")
+        try Data("outside absolute".utf8).write(to: abs)
+
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "\u{00A0}\(abs.path)\u{2003}", options: opts())
+        guard case .success(let doc) = r else {
+            Issue.record("expected success")
+            return
+        }
+        #expect(doc.displayPath == abs.path)
+    }
+
+    @Test func unwrapsOneMatchedOuterWrapperAroundExternalAbsolutePath() throws {
+        let fx = try makeDocFixture()
+        defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
+        let abs = fx.outside.appendingPathComponent("inline-code.md")
+        try Data("outside absolute".utf8).write(to: abs)
+
+        for wrapper in ["`", "'", "\""] {
+            let r = try loadShareableDocument(
+                cwd: fx.cwd.path,
+                path: "  \(wrapper)\(abs.path)\(wrapper)  ",
+                options: opts()
+            )
+            guard case .success(let doc) = r else {
+                Issue.record("expected success for \(wrapper) wrapper")
+                return
+            }
+            #expect(doc.displayPath == abs.path)
+        }
+    }
+
+    @Test func preservesWrapperInnerTextAndOnlyRemovesOneMatchedPair() throws {
+        let fx = try makeDocFixture()
+        defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
+        let abs = fx.outside.appendingPathComponent("wrapper.md")
+        try Data("outside absolute".utf8).write(to: abs)
+
+        for input in ["`", "`\(abs.path)", "'\(abs.path)\"", "``\(abs.path)``", "` \(abs.path) `"] {
+            let r = try loadShareableDocument(cwd: fx.cwd.path, path: input, options: opts())
+            guard case .failure(let result) = r else {
+                Issue.record("expected wrapper syntax to remain part of the path")
+                return
+            }
+            #expect(result.code == .notFound)
+        }
+    }
+
+    @Test func preservesQuotesThatArePartOfFilename() throws {
+        let fx = try makeDocFixture()
+        defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
+        let name = "'quoted'.md"
+        try Data("body".utf8).write(to: fx.cwd.appendingPathComponent(name))
+
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: name, options: opts())
+        guard case .success(let doc) = r else {
+            Issue.record("expected quoted filename to load")
+            return
+        }
+        #expect(doc.basename == name)
+    }
+
+    @Test func matchesECMAScriptWhitespacePolicyForFeffAndNel() throws {
+        let fx = try makeDocFixture()
+        defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
+        try Data("body".utf8).write(to: fx.cwd.appendingPathComponent("feff.md"))
+        let feff = try loadShareableDocument(cwd: fx.cwd.path, path: "\u{FEFF}feff.md\u{FEFF}", options: opts())
+        #expect(feff.isSuccess)
+
+        let nelDirectory = "\u{0085}nel-dir"
+        try FileManager.default.createDirectory(at: fx.cwd.appendingPathComponent(nelDirectory), withIntermediateDirectories: true)
+        try Data("body".utf8).write(to: fx.cwd.appendingPathComponent(nelDirectory).appendingPathComponent("nel.md"))
+        let nel = try loadShareableDocument(cwd: fx.cwd.path, path: "\(nelDirectory)/nel.md", options: opts())
+        guard case .success(let doc) = nel else {
+            Issue.record("expected NEL filename to remain untrimmed")
+            return
+        }
+        #expect(doc.displayPath == "\(nelDirectory)/nel.md")
+    }
+
     @Test func allowsRelativeEscapeWhenTargetValid() throws {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
