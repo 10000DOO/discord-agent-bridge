@@ -182,15 +182,21 @@ public actor BrowserImageRenderer {
         }
         let fileURL = URL(fileURLWithPath: mermaidPath).absoluteString
         let html = buildMermaidRenderHtml(code: code, mermaidJsURL: fileURL)
+        // Wider viewport than the table default: wide/content-heavy diagrams need room to
+        // reach their natural size (HtmlTemplates.swift's block-layout fix lets mermaid's own
+        // `max-width` cap do the rest — small diagrams stay small, only wide ones grow).
         // Module top-level await is covered by load; virtual-time helps slow diagrams.
         return await screenshot(
             html: html,
             name: "diagram.png",
-            extraArgs: ["--virtual-time-budget=10000"]
+            extraArgs: ["--virtual-time-budget=10000"],
+            windowSize: "2600,1800"
         )
     }
 
-    private func screenshot(html: String, name: String, extraArgs: [String]) async -> RenderedImage? {
+    private func screenshot(
+        html: String, name: String, extraArgs: [String], windowSize: String = "1400,900"
+    ) async -> RenderedImage? {
         guard let exe = deps.executablePath ?? deps.findChrome() else {
             deps.logger?("chrome executable not found")
             return nil
@@ -221,7 +227,11 @@ public actor BrowserImageRenderer {
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--hide-scrollbars",
-            "--window-size=1400,900",
+            "--window-size=\(windowSize)",
+            // Retina-quality capture: TS parity `browserRenderer.ts:140`
+            // (`deviceScaleFactor: 2`). Logical viewport size is per-caller (`windowSize`
+            // above); only the rendered pixel buffer doubles.
+            "--force-device-scale-factor=2",
             "--default-background-color=1e2124",
             // Block all outbound network — rendered HTML embeds untrusted user
             // content (Discord table/mermaid text) and must never be able to
@@ -275,7 +285,9 @@ func renderContentCropRect(pixels: Data, width: Int, height: Int, bytesPerRow: I
         }
     }
     guard maxX >= minX, maxY >= minY else { return nil }
-    let padding = 16
+    // Pixel buffer is now captured at 2x device scale (`--force-device-scale-factor=2`),
+    // so padding must double too to keep the same ~16 CSS-px visual margin.
+    let padding = 32
     let x = max(0, minX - padding), y = max(0, minY - padding)
     let right = min(width, maxX + padding + 1), bottom = min(height, maxY + padding + 1)
     return CGRect(x: x, y: y, width: right - x, height: bottom - y)

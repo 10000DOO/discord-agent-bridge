@@ -167,7 +167,20 @@ struct DabMain {
             }
             group.addTask {
                 for await event in await bot.events {
-                    await EventHandler(event: event, client: bot.client).handleAsync()
+                    // messageCreate/interactionCreate are the high-frequency, potentially-slow
+                    // events (turn runs, slash commands) — run them off the loop so one channel's
+                    // long turn never blocks another channel's interaction (gateway-event-loop-
+                    // serialized.md). Every other event (ready/guildCreate/role changes/channel
+                    // delete) keeps its current sequential await: onReady seeds the bot user id
+                    // that onGuildCreate reads, and that ordering must not change.
+                    switch event.data {
+                    case .messageCreate, .interactionCreate:
+                        Task {
+                            await EventHandler(event: event, client: bot.client).handleAsync()
+                        }
+                    default:
+                        await EventHandler(event: event, client: bot.client).handleAsync()
+                    }
                 }
             }
         }
@@ -505,24 +518,56 @@ struct EventHandler: GatewayEventHandler {
 
         switch cmd.name {
         case "stop":
+            // Stopping the live bridge can be slow; ack before it starts so Discord's
+            // three-second interaction token never expires (mirrors /agent start's defer).
+            let stopDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard stopDeferred != nil else { return }
             _ = await life.stopChannel(
                 channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
             )
-            try await respondEphemeral(payload, I18n.t("cmd.stop.done"))
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: I18n.t("cmd.stop.done"))
+            )
 
         case "stop-all":
+            // Loops stopChannel over every active channel — same slow-teardown risk as /stop.
+            let stopAllDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard stopAllDeferred != nil else { return }
             let count = await life.stopAll(actorId: actorId, guildId: guildId, roleTier: tier)
-            try await respondEphemeral(payload, I18n.t("cmd.stopAll.done", ["count": "\(count)"]))
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: I18n.t("cmd.stopAll.done", ["count": "\(count)"]))
+            )
 
         case "clear":
+            // The live bridge stop this triggers can be slow; ack before it starts so Discord's
+            // three-second interaction token never expires (mirrors /agent start's defer).
+            let clearDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard clearDeferred != nil else { return }
             // PLAN §14.6: keep config, wipe backendSessionId + live bridges (not full unbind).
             let ok = await life.clearChannel(
                 channelId: channelId, actorId: actorId, guildId: guildId,
                 roleTier: tier, defaultCwd: stubCwd
             )
-            try await respondEphemeral(
-                payload,
-                ok ? I18n.t("cmd.clear.done") : noSession
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: ok ? I18n.t("cmd.clear.done") : noSession)
             )
 
         case "model":
@@ -608,15 +653,23 @@ struct EventHandler: GatewayEventHandler {
                 let currentBackend = storeRow?.backend ?? regRow!.backend
                 // Same backend: immediate rebind (fresh context) — R6.
                 if currentBackend == backend {
+                    // rebindBackend stops the live bridge before rebinding — slow, same as /clear.
+                    let modeDeferred = try? await client.createInteractionResponse(
+                        id: payload.id,
+                        token: payload.token,
+                        payload: .deferredChannelMessageWithSource(isEphemeral: true)
+                    )
+                    guard modeDeferred != nil else { return }
                     let ok = await life.rebindBackend(
                         channelId: channelId, backend: backend,
                         actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
                     )
-                    try await respondEphemeral(
-                        payload,
-                        ok
+                    _ = try? await client.updateOriginalInteractionResponse(
+                        appId: payload.application_id,
+                        token: payload.token,
+                        payload: .init(content: ok
                             ? I18n.t("cmd.mode.switched", ["backend": backend.rawValue])
-                            : noSession
+                            : noSession)
                     )
                     if ok, let ch = payload.channel_id {
                         _ = await createMessageWithRetry(
@@ -636,6 +689,14 @@ struct EventHandler: GatewayEventHandler {
                 }
                 // Different backend: DO NOT stop the running session (R1/R4). Open reconfigure
                 // popup (model → effort → perm); stop+rebind only on perm.start confirm.
+                // loadWizardOptionSource warms every backend's catalog, incl. a live Claude sidecar
+                // probe that can cold-start it (same as /agent start) — ack before that starts.
+                let modeWizardDeferred = try? await client.createInteractionResponse(
+                    id: payload.id,
+                    token: payload.token,
+                    payload: .deferredChannelMessageWithSource(isEphemeral: true)
+                )
+                guard modeWizardDeferred != nil else { return }
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
                 let cwd = storeRow?.cwd ?? stubCwd
                 let permMode = storeRow?.permMode ?? regRow?.permMode ?? "default"
@@ -662,14 +723,10 @@ struct EventHandler: GatewayEventHandler {
                 )
                 await WizardRegistry.shared.put(wizard, channelId: channelId)
                 let (embeds, components) = discordPayload(from: wizard.render())
-                _ = try await client.createInteractionResponse(
-                    id: payload.id,
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
                     token: payload.token,
-                    payload: .channelMessageWithSource(.init(
-                        embeds: embeds,
-                        flags: [.ephemeral],
-                        components: components
-                    ))
+                    payload: .init(embeds: embeds, components: components)
                 )
             case "perm":
                 // G-P1-04 / TS switchPerm: known config.profiles name → profile + bundled
@@ -754,12 +811,23 @@ struct EventHandler: GatewayEventHandler {
                     payload: .init(embeds: embeds, components: components)
                 )
             case "close":
+                // Stopping the live bridge can be slow; ack before it starts (same reason as /clear).
+                let closeDeferred = try? await client.createInteractionResponse(
+                    id: payload.id,
+                    token: payload.token,
+                    payload: .deferredChannelMessageWithSource(isEphemeral: true)
+                )
+                guard closeDeferred != nil else { return }
                 // W14: real stop (backend + unbind) — was unbind-only and leaked processes.
                 _ = await life.stopChannel(
                     channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
                 )
                 // Reply BEFORE delete so the ephemeral ack lands (TS slashCommands.close).
-                try await respondEphemeral(payload, I18n.t("cmd.close.done"))
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: I18n.t("cmd.close.done"))
+                )
                 // G-P0-04: A4D dedicated session channel best-effort delete (never control/status/category).
                 if let realGuildId = payload.guild_id?.rawValue {
                     let serverChannels = await ConfigStore.shared
@@ -852,20 +920,34 @@ struct EventHandler: GatewayEventHandler {
                 )
                 return
             }
+            // Creating the channel structure is a handful of sequential Discord API calls;
+            // ack before they start (same reason as /clear/doc — Discord rate limiting can
+            // easily push this past the 3s window).
+            let setupDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard setupDeferred != nil else { return }
             do {
                 let channels = try await ensureGuildChannels(provisioner: provisioner, configStore: store)
                 if setupBootstrap {
                     await registerSetupBootstrapAdmin(guildId: realGuildId, userId: actorId)
                 }
-                try await respondEphemeral(
-                    payload,
-                    I18n.t("cmd.setup.done", ["control": "<#\(channels.controlChannelId)>"])
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: I18n.t("cmd.setup.done", ["control": "<#\(channels.controlChannelId)>"]))
                 )
                 // H6: offer the Chromium install prompt in the fresh control channel.
                 await maybePromptRenderSetup(client: client, channelId: channels.controlChannelId)
             } catch {
                 log.error("/setup failed guild=\(realGuildId): \(error)")
-                try await respondEphemeral(payload, I18n.t("cmd.setup.unavailable"))
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: I18n.t("cmd.setup.unavailable"))
+                )
             }
 
         case "config":
@@ -898,7 +980,15 @@ struct EventHandler: GatewayEventHandler {
             }
             let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
             let backends = Backend.allCases.map(\.rawValue)
-            // Catalog snapshot for model/effort/perm selects (fallback-safe; no live probe required).
+            // Catalog snapshot for model/effort/perm selects. For Claude/.custom this probes the
+            // sidecar (ClaudeCatalog.models → ensureClient) and can cold-start it exactly like
+            // /agent start's wizard warm-up — ack before that starts.
+            let configDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard configDeferred != nil else { return }
             let backendEnum = Backend(rawValue: panelDefaults.backend) ?? .claude
             let catalog = providerCatalog(for: backendEnum)
             let configuredModel = backendEnum == .codex
@@ -944,15 +1034,14 @@ struct EventHandler: GatewayEventHandler {
             await ConfigPanelRegistry.shared.put(panel, guildId: realGuildId, channelId: channelId)
             let view = panel.render()
             let (embeds, roleRows, defaultRows) = discordPayload(from: view)
-            _ = try await client.createInteractionResponse(
-                id: payload.id,
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
                 token: payload.token,
-                payload: .channelMessageWithSource(.init(
+                payload: .init(
                     content: I18n.t("cmd.config.opened"),
                     embeds: embeds,
-                    flags: [.ephemeral],
                     components: roleRows
-                ))
+                )
             )
             if !defaultRows.isEmpty {
                 _ = try? await client.createFollowupMessage(
@@ -975,12 +1064,27 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, I18n.t("router.noSession"))
                 return
             }
+            // Headless Chromium rendering can be slow; ack before it starts (same reason as /clear).
+            let docDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard docDeferred != nil else { return }
             do {
                 let res = try await postDocumentShare(client: client, channelId: channelId, path: docPath)
-                try await respondEphemeral(payload, formatDocShareReply(path: docPath, result: res))
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: formatDocShareReply(path: docPath, result: res))
+                )
             } catch {
                 log.error("/doc failed channel=\(channelId) code=document_share_error")
-                try await respondEphemeral(payload, "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
+                )
             }
 
         case "update":
@@ -989,23 +1093,34 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, "업데이터가 아직 준비되지 않았어요. 잠시 후 다시 시도하세요.")
                 return
             }
+            // checkNow fetches the version registry over the network; ack before it starts
+            // (same reason as /clear/doc — a slow remote fetch must not eat the 3s window).
+            let updateDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard updateDeferred != nil else { return }
             // post:false — we reply here with embed+buttons instead of fanning out to control channels.
             let result = await updater.checkNow(post: false)
             let text = formatUpdateCheckReply(result)
             if result.kind == .available, let latest = result.latestVersion {
                 let (embedSpec, rows) = buildUpdatePrompt(version: latest, currentVersion: result.currentVersion)
-                _ = try await client.createInteractionResponse(
-                    id: payload.id,
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
                     token: payload.token,
-                    payload: .channelMessageWithSource(.init(
+                    payload: .init(
                         content: text,
                         embeds: [discordEmbed(from: embedSpec)],
-                        flags: [.ephemeral],
                         components: discordActionRows(from: rows)
-                    ))
+                    )
                 )
             } else {
-                try await respondEphemeral(payload, text)
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: text)
+                )
             }
 
         default:
@@ -1363,56 +1478,66 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
-        let value = comp.values?.first
-        let step = await flow.handle(WizardInput(id: comp.custom_id, value: value))
-        switch step {
-        case .done:
-            await ResumeWizardRegistry.shared.remove(channelId: channelId)
-            await WizardRegistry.shared.remove(channelId: channelId)
-            let bound = flow.sessionChannelId() ?? channelId
-            _ = try? await client.createInteractionResponse(
-                id: payload.id, token: payload.token,
-                payload: .updateMessage(.init(
-                    content: I18n.t("resume.done", ["channel": "<#\(bound)>"]),
-                    embeds: [],
-                    components: []
-                ))
-            )
-            // G-P1-05 / TS postResumeIntro: status embed on bound channel + soft ensure.
-            if let session = await SessionStore.shared.binding(channelId: bound) {
-                await postResumeChannelIntro(
-                    client: client,
-                    channelId: bound,
-                    session: session
+        // A queued resume action can wait behind another click's slow work (e.g.
+        // "resume.backend.next" cold-starting a backend sidecar to list sessions) — defer it
+        // before queueing so Discord's 3-second acknowledgement deadline is never at risk, no
+        // matter which custom_id is clicked (mirrors handleWizardComponent, DabMain.swift:1653-1658).
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
+
+        // Same-channel resume interactions can now arrive nearly simultaneously (the gateway
+        // event loop dispatches messageCreate/interactionCreate per channel in parallel,
+        // docs/gateway-event-loop-serialized.md §8) — queue so two clicks never interleave
+        // ResumeWizard.handle/render (mirrors WizardRegistry.enqueue, DabMain.swift:1646).
+        await ResumeWizardRegistry.shared.enqueue(channelId: channelId) {
+            // A previously queued job on this channel may have completed/cancelled the flow
+            // while this job waited its turn — re-fetch at execution time instead of trusting
+            // the instance captured above (mirrors handleWizardComponent's WizardRegistry
+            // re-fetch, DabMain.swift:1653).
+            guard let flow = await ResumeWizardRegistry.shared.get(channelId: channelId) else { return }
+            let value = comp.values?.first
+            let step = await flow.handle(WizardInput(id: comp.custom_id, value: value))
+
+            // Always deferred above, so the reply always follows up via
+            // updateOriginalInteractionResponse (mirrors handleWizardComponent).
+            func sendStepUpdate(content: String? = nil, embeds: [Embed] = [], components: [Interaction.ActionRow] = []) async {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(content: content, embeds: embeds, components: components)
                 )
-                if session.backendSessionId != nil {
-                    _ = await SessionLifecycle.shared.softEnsureLive(channelId: bound)
-                }
             }
-        case .empty:
-            await ResumeWizardRegistry.shared.remove(channelId: channelId)
-            _ = try? await client.createInteractionResponse(
-                id: payload.id, token: payload.token,
-                payload: .updateMessage(.init(
-                    content: I18n.t("resume.none"),
-                    embeds: [],
-                    components: []
-                ))
-            )
-        case .cancelled:
-            await ResumeWizardRegistry.shared.remove(channelId: channelId)
-            await WizardRegistry.shared.remove(channelId: channelId)
-            let (embeds, _) = discordPayload(from: flow.render())
-            _ = try? await client.createInteractionResponse(
-                id: payload.id, token: payload.token,
-                payload: .updateMessage(.init(embeds: embeds, components: []))
-            )
-        default:
-            let (embeds, components) = discordPayload(from: flow.render())
-            _ = try? await client.createInteractionResponse(
-                id: payload.id, token: payload.token,
-                payload: .updateMessage(.init(embeds: embeds, components: components))
-            )
+
+            switch step {
+            case .done:
+                await ResumeWizardRegistry.shared.remove(channelId: channelId)
+                await WizardRegistry.shared.remove(channelId: channelId)
+                let bound = flow.sessionChannelId() ?? channelId
+                await sendStepUpdate(content: I18n.t("resume.done", ["channel": "<#\(bound)>"]))
+                // G-P1-05 / TS postResumeIntro: status embed on bound channel + soft ensure.
+                if let session = await SessionStore.shared.binding(channelId: bound) {
+                    await postResumeChannelIntro(
+                        client: client,
+                        channelId: bound,
+                        session: session
+                    )
+                    if session.backendSessionId != nil {
+                        _ = await SessionLifecycle.shared.softEnsureLive(channelId: bound)
+                    }
+                }
+            case .empty:
+                await ResumeWizardRegistry.shared.remove(channelId: channelId)
+                await sendStepUpdate(content: I18n.t("resume.none"))
+            case .cancelled:
+                await ResumeWizardRegistry.shared.remove(channelId: channelId)
+                await WizardRegistry.shared.remove(channelId: channelId)
+                let (embeds, _) = discordPayload(from: flow.render())
+                await sendStepUpdate(embeds: embeds)
+            default:
+                let (embeds, components) = discordPayload(from: flow.render())
+                await sendStepUpdate(embeds: embeds, components: components)
+            }
         }
     }
 

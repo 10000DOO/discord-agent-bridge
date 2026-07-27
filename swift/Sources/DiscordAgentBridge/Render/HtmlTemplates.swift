@@ -173,8 +173,14 @@ public func buildMermaidRenderHtml(code: String, mermaidJsURL: String) -> String
     let srcAttr = escapeHtml(mermaidJsURL)
     return """
     <!doctype html><html><head><meta charset="utf-8"><style>
-      body{margin:0;background:#1e2124;display:inline-block;}
-      #c{display:inline-block;padding:16px;}
+      /* NOT inline-block: mermaid's SVG is `width:100%` + inline `max-width:<natural>px`.
+         An inline-block (shrink-to-fit) ancestor can't resolve that percentage, so Chrome
+         falls back to the ~300px replaced-element default REGARDLESS OF VIEWPORT SIZE —
+         wide diagrams then cram all their nodes into that fixed box and text shrinks with
+         them. A normal block body/#c gives the SVG a real (viewport-sized) width to
+         resolve against, so it grows up to its own natural size instead. */
+      body{margin:0;background:#1e2124;}
+      #c{padding:16px;}
       #c svg{display:block;}
     </style>
     <script src="\(srcAttr)"></script>

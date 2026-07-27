@@ -107,6 +107,32 @@ struct AttachmentDownloadTests {
         #expect(outsideEntries.isEmpty)
     }
 
+    @Test func concurrentDownloadsWithSameFilenameDoNotCollide() async throws {
+        // Regression for the per-call UUID subdirectory (downloadAttachments doc comment,
+        // AttachmentDownload.swift:92-95): two channel turns racing on the same sanitized
+        // filename must not let one overwrite the other's in-flight file.
+        let fx = try makeAttachDlFixture()
+        defer { try? FileManager.default.removeItem(at: fx.base) }
+        let bytesA = Data([1, 1, 1])
+        let bytesB = Data([2, 2, 2])
+        async let a = downloadAttachments(
+            cwd: fx.ws.path,
+            attachments: [IncomingAttachment(url: "https://cdn/a", name: "x.png", contentType: nil)],
+            fetchBytes: { _ in bytesA }
+        )
+        async let b = downloadAttachments(
+            cwd: fx.ws.path,
+            attachments: [IncomingAttachment(url: "https://cdn/b", name: "x.png", contentType: nil)],
+            fetchBytes: { _ in bytesB }
+        )
+        let (r1, r2) = try await (a, b)
+        let f1 = try #require(r1.first)
+        let f2 = try #require(r2.first)
+        #expect(f1.path != f2.path)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: f1.path)) == bytesA)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: f2.path)) == bytesB)
+    }
+
     @Test func emptyAttachmentsReturnsEmpty() async throws {
         let fx = try makeAttachDlFixture()
         defer { try? FileManager.default.removeItem(at: fx.base) }

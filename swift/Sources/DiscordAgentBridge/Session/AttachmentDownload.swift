@@ -89,12 +89,21 @@ public func downloadAttachments(
     // Re-confine after mkdir: a pre-planted symlink at .dab-attachments now realpaths.
     dir = try confineAttachmentPath(root: root, candidate: dir)
 
+    // Per-call subdirectory keyed by a fresh UUID: two messages on the same channel can now
+    // download concurrently (gateway-event-loop-serialized.md parallelizes messageCreate), so a
+    // shared attachment filename must not let one turn's write silently clobber another's
+    // in-flight file. The sanitized name stays the final path component either way.
+    let callDirJoined = (dir as NSString).appendingPathComponent(UUID().uuidString)
+    var callDir = try confineAttachmentPath(root: root, candidate: callDirJoined)
+    try FileManager.default.createDirectory(atPath: callDir, withIntermediateDirectories: true)
+    callDir = try confineAttachmentPath(root: root, candidate: callDir)
+
     var files: [TurnFile] = []
     for att in attachments {
         let name = sanitizeAttachmentName(att.name ?? "attachment")
         let dest = try confineAttachmentPath(
             root: root,
-            candidate: (dir as NSString).appendingPathComponent(name)
+            candidate: (callDir as NSString).appendingPathComponent(name)
         )
         let bytes: Data
         do {

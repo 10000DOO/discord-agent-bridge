@@ -220,6 +220,8 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(ev).not.toHaveProperty('model');
   });
 
+  // Real timer has to run out CONTEXT_USAGE_TIMEOUT_MS (8s), so this needs more
+  // than vitest's default 5s per-test timeout.
   it('emits result after context usage times out instead of waiting forever', async () => {
     const { ctx, events } = makeCtx();
     const query = {
@@ -234,10 +236,10 @@ describe('ClaudeSession — SDK message mapping', () => {
     const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
     const session = new ClaudeSession(ctx, { queryFn });
 
-    await waitFor(() => events.some((event) => event.kind === 'result'), 1_500);
+    await waitFor(() => events.some((event) => event.kind === 'result'), 8_500);
     expect(events).toEqual([{ kind: 'result', text: 'still delivered' }]);
     await session.stop();
-  });
+  }, 10_000);
 
   it('forwards parent_tool_use_id as parentToolUseId on tool_use and tool_result', async () => {
     const { ctx, events } = makeCtx();

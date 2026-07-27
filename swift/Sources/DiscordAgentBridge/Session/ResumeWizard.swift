@@ -330,4 +330,19 @@ public actor ResumeWizardRegistry {
     public func remove(channelId: String) {
         flows[channelId] = nil
     }
+
+    private var queues: [String: Task<Void, Never>] = [:]
+
+    /// Chain a resume-wizard job onto the per-channel queue so concurrent component
+    /// interactions on the same channel never interleave `ResumeWizard.handle`/`render`
+    /// (same rationale/shape as `WizardRegistry.enqueue`, `ChannelWizard.swift:898`).
+    public func enqueue(channelId: String, _ job: @escaping @Sendable () async -> Void) async {
+        let prev = queues[channelId]
+        let next = Task {
+            _ = await prev?.value
+            await job()
+        }
+        queues[channelId] = next
+        await next.value
+    }
 }

@@ -477,6 +477,10 @@ public actor DabSessionBridge {
 
     private func onEvent(handle: String, event: AgentEvent) {
         guard var box = turns[handle], !box.done else { return }
+        // H2: confirm whether/when .result and .turn_complete actually arrive per turn (see
+        // docs/claude-turn-timeout-delay.md WO-3). warn level — info is lost to stdout buffering
+        // under launchd (docs/log-buffering-lost-info-logs.md).
+        log.warn("[DAB-DIAG-EVENT-SEQ] handle=\(handle) kind=\(event.kind)")
         switch event {
         case .text(let t, _):
             box.text += t
@@ -499,12 +503,19 @@ public actor DabSessionBridge {
             }
             box.resultReceived = true
             turns[handle] = box
+            // WO-4 (docs/claude-turn-timeout-delay.md): H2 confirmed `.turnComplete` never
+            // arrives in production, while `.result` always does and already carries the
+            // finished answer text. Finish the turn here instead of waiting for a signal that
+            // never comes — `.turnComplete` case below still finishes safely if it ever does
+            // arrive first (rare case WO-1 covered), since `box.done` guards double-finish.
+            finishTerminalResult(handle: handle)
         case .turnComplete:
             // The Claude SDK's session_state_changed:idle follows all held-back turn events
-            // (including rate_limit). `session.send` itself is only an enqueue ACK.
-            if box.resultReceived {
-                finishTerminalResult(handle: handle)
-            }
+            // (including rate_limit). `session.send` itself is only an enqueue ACK. idle is the
+            // authoritative end-of-turn boundary (TS session.ts:88,258-265) — finish the turn
+            // regardless of whether `.result` arrived, so a lost/undecoded result never stalls
+            // the reply until the turn timeout fallback.
+            finishTerminalResult(handle: handle)
         case .contextUsage:
             // Keep the terminal context snapshot with its owning turn. Discord delivery is
             // serialized in DabMain after answer/footer/mention, never from this event callback.
@@ -652,6 +663,12 @@ public actor DabSessionBridge {
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
         turnDepth[channelId] = nil
+        // Remove the handle before any `await` below: a concurrent `sessionHandle` reuse-path
+        // call runs either fully before this method starts or only after this synchronous
+        // prefix finishes (actor isolation doesn't yield until the first suspension point), so
+        // there's no window where it can hand out a handle this stop() is about to tear down.
+        let handle = sessions.removeValue(forKey: channelId)
+        if let handle { sessionMeta[handle] = nil }
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
         await UsageActivityHost.shared.dispose(channelId: channelId)
@@ -659,8 +676,7 @@ public actor DabSessionBridge {
         // idleWatchdog.stop()) — previously only DabMain's own turn-completion path stopped it,
         // leaving an in-flight turn's timer armed when the session is killed out from under it.
         await IdleWatchdog.shared.stop(channelId: channelId)
-        guard let handle = sessions.removeValue(forKey: channelId) else { return }
-        sessionMeta[handle] = nil
+        guard let handle else { return }
         // Unblock a waiter before the RPC so stop is never stuck on a hung turn.
         if let box = turns[handle], !box.done {
             finishTurnUnlocked(

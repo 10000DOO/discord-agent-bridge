@@ -21,10 +21,12 @@ private actor GateableSidecar {
     private let closeHostAfterSendAck: InMemorySidecarTransport? // simulate host-side EOF after ACK, before terminal event
     private let closeHostAfterTerminalResult: InMemorySidecarTransport? // simulate EOF immediately after terminal result
     private var emitToolsAndSubagentOnce: Bool          // W11-g slice4: one turn of tool/subagent events
+    private let skipResultEvent: Bool                   // regression: turn_complete arrives with no .result at all
+    private let skipTurnCompleteEvent: Bool             // WO-4 regression: .result arrives but turn_complete never does
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil, skipResultEvent: Bool = false, skipTurnCompleteEvent: Bool = false) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -40,6 +42,8 @@ private actor GateableSidecar {
         self.emitToolsAndSubagentOnce = emitToolsAndSubagent
         self.closeHostAfterSendAck = closeHostAfterSendAck
         self.closeHostAfterTerminalResult = closeHostAfterTerminalResult
+        self.skipResultEvent = skipResultEvent
+        self.skipTurnCompleteEvent = skipTurnCompleteEvent
     }
 
     func run() async {
@@ -212,14 +216,18 @@ private actor GateableSidecar {
             )
         }
         await emit(session: session, event: .text(text: "ok:\(text)", delta: true))
-        let resultText: String? = resultEchoesText ? "ok:\(text)" : nil
-        await emit(session: session, event: .result(text: resultText, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
+        if !skipResultEvent {
+            let resultText: String? = resultEchoesText ? "ok:\(text)" : nil
+            await emit(session: session, event: .result(text: resultText, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
+        }
         if emitRateLimitAfterResult {
             if postResultRateDelayNs > 0 { try? await Task.sleep(nanoseconds: postResultRateDelayNs) }
             await emit(session: session, event: .rateLimit(resetAt: nil, rateLimitType: "five_hour", utilization: 73))
         }
         // Claude SDK session_state_changed:idle is the explicit post-drain terminal marker.
-        await emit(session: session, event: .turnComplete)
+        if !skipTurnCompleteEvent {
+            await emit(session: session, event: .turnComplete)
+        }
     }
 
     private func emit(session: String, event: AgentEvent) async {
@@ -250,7 +258,9 @@ private func makeDabBridge(
     postResultRateDelayNs: UInt64 = 0,
     emitToolsAndSubagent: Bool = false,
     closeAfterTerminalResult: Bool = false,
-    resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil
+    resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil,
+    skipResultEvent: Bool = false,
+    skipTurnCompleteEvent: Bool = false
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
     let bridge = DabSessionBridge(
@@ -264,7 +274,9 @@ private func makeDabBridge(
                 emitRateLimitAfterResult: emitRateLimitAfterResult,
                 postResultRateDelayNs: postResultRateDelayNs,
                 emitToolsAndSubagent: emitToolsAndSubagent,
-                closeHostAfterTerminalResult: closeAfterTerminalResult ? pair.host : nil
+                closeHostAfterTerminalResult: closeAfterTerminalResult ? pair.host : nil,
+                skipResultEvent: skipResultEvent,
+                skipTurnCompleteEvent: skipTurnCompleteEvent
             )
             Task { await server.run() }
             return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
@@ -333,12 +345,16 @@ struct DabSessionBridgeTests {
         #expect(turn.rateLimit?.utilization == 50)
     }
 
-    @Test func capturesRateLimitThatArrivesAfterResultBeforeTerminalDelivery() async throws {
+    // WO-4 (docs/claude-turn-timeout-delay.md, §8 known trade-off, user-confirmed): the turn now
+    // finishes on `.result` instead of waiting for `.turnComplete`, so a `rate_limit` event that
+    // arrives after `.result` lands after the turn is already `done` and is dropped by the
+    // `!box.done` guard at the top of `onEvent`. Accepted regression — before WO-4 this was
+    // already lost 100% of the time in production because `.turnComplete` never arrived at all.
+    @Test func rateLimitAfterResultIsNotCapturedByDesign() async throws {
         let (bridge, _) = makeDabBridge(emitRateLimitAfterResult: true, postResultRateDelayNs: 30_000_000)
         let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
         #expect(turn.text == "ok:hi")
-        #expect(turn.rateLimit?.rateLimitType == "five_hour")
-        #expect(turn.rateLimit?.utilization == 73)
+        #expect(turn.rateLimit == nil)
     }
 
     @Test func aggregatesToolsAndSubagentOnTurn() async throws {
@@ -365,6 +381,37 @@ struct DabSessionBridgeTests {
         // .text streams "ok:hi"; .result carries the same text → must NOT double-append.
         let (bridge, _) = makeDabBridge(resultEchoesText: true)
         #expect(try await run(bridge, "hi") == "ok:hi")
+    }
+
+    // Regression (claude-turn-timeout-delay WO-1): turn_complete (idle) is the authoritative
+    // end-of-turn signal even when `.result` never arrives (lost/undecoded) — the turn must finish
+    // immediately off the accumulated `.text`, not stall until the timeout fallback appends
+    // "…(timeout)" (TS session.ts:88,258-265: idle is the boundary, not `result`).
+    @Test func turnCompleteWithoutResultFinishesImmediately() async throws {
+        let timeoutNs: UInt64 = 3_000_000_000   // generous timeout the fix must never need to hit
+        let (bridge, _) = makeDabBridge(timeoutNs: timeoutNs, skipResultEvent: true)
+        let start = Date()
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(reply.text == "ok:hi")
+        #expect(!reply.text.contains("(timeout)"))
+        #expect(reply.usage == nil)               // no `.result` → no usage/cost captured (by design)
+        #expect(elapsedNs < timeoutNs / 2)         // finished well before the timeout fallback could fire
+    }
+
+    // Regression (claude-turn-timeout-delay WO-4): real-world production sequence, per
+    // [DAB-DIAG-EVENT-SEQ] logs (docs/claude-turn-timeout-delay.md H2) — `.result` always arrives,
+    // `.turnComplete` never does. The turn must finish on `.result` alone, without waiting on a
+    // signal that never comes.
+    @Test func resultWithoutTurnCompleteFinishesImmediately() async throws {
+        let timeoutNs: UInt64 = 3_000_000_000   // generous timeout the fix must never need to hit
+        let (bridge, _) = makeDabBridge(resultEchoesText: true, timeoutNs: timeoutNs, skipTurnCompleteEvent: true)
+        let start = Date()
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(reply.text == "ok:hi")
+        #expect(!reply.text.contains("(timeout)"))
+        #expect(elapsedNs < timeoutNs / 2)         // finished well before the timeout fallback could fire
     }
 
     @Test func serializationReentrancyIsolation() async throws {

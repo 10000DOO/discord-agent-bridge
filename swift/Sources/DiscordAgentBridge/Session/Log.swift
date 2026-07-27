@@ -58,7 +58,12 @@ public struct ConsoleSink: LogSink {
             // for stderr writes (e.g. `ConfigStore.swift`, `DabMain.swift`).
             fputs(line + "\n", stderr)
         case .debug, .info:
+            // Explicit flush: when stdout is redirected to a file (non-tty, e.g. launchd),
+            // C stdio switches to full buffering, so lines sit unwritten until the buffer
+            // fills — which never happens for a long-running daemon. stderr above is
+            // already unbuffered by the C standard, so it needs no such call.
             print(line)
+            fflush(stdout)
         }
     }
 }

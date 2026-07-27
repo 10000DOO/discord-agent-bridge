@@ -41,8 +41,12 @@ export interface ClaudeSessionDeps {
 }
 
 // A terminal result must never wait indefinitely on the SDK's optional context
-// accounting request. One second keeps the panel prompt without holding up reply delivery.
-const CONTEXT_USAGE_TIMEOUT_MS = 1_000;
+// accounting request. 1s was too tight once multiple channels run concurrent Claude
+// sessions (getContextUsage competes with other sessions' agent processes for a
+// response), causing the panel's context line to drop often. 8s gives it headroom
+// without holding up reply delivery — the final answer is already sent as soon as
+// `.result` arrives, independent of this best-effort lookup.
+const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
 
 // Map our PermMode straight onto the SDK's native `permissionMode` (§7A). PermMode is
 // now DERIVED from the SDK's PermissionMode (contracts.ts), so every value — including

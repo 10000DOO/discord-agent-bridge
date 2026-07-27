@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "claude-sidecar")
+
 /// Per-session host handlers for sidecar → host reverse RPC and events.
 public struct SidecarSessionHandlers: Sendable {
     public var onEvent: @Sendable (AgentEvent) -> Void
@@ -159,6 +161,9 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         do {
             env = try parseEnvelope(trimmed)
         } catch {
+            // H1: a silently dropped line here could be a lost `.result` (see
+            // DabSessionBridge.onEvent .turnComplete) — log enough to confirm/rule that out.
+            log.warn("[DAB-DIAG-ENVELOPE-DECODE] failed to decode sidecar line error=\(error) line=\(trimmed.prefix(200))")
             return
         }
 

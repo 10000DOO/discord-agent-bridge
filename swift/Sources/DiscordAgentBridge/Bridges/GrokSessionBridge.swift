@@ -259,6 +259,9 @@ public actor GrokSessionBridge {
             model = await configSource.defaultModel()
         }
         let maxTokens = await configSource.contextWindow(model)
+        // TODO(DAB-DIAG-GROK-CTX): temporary diagnostic log for docs/grok-context-usage-panel-missing.md
+        // WO-1 — remove once H1/H2/H3 are confirmed from real Grok session output.
+        log.info("[DAB-DIAG-GROK-CTX] rawTotalTokens=\(String(describing: rawTotalTokens)) resultModelId=\(String(describing: resultModelId)) model=\(model) maxTokens=\(String(describing: maxTokens))")
         return TurnResult(
             text: textOut,
             usage: turnUsage(fromGrokPromptResult: promptResult),
@@ -426,12 +429,17 @@ public actor GrokSessionBridge {
         channelGates[channelId]?.cancel()
         channelGates[channelId] = nil
         turnDepth[channelId] = nil
+        // Remove the channel entry before any `await` below: a concurrent `ensureChannel`
+        // reuse-path call runs either fully before this method starts or only after this
+        // synchronous prefix finishes (actor isolation doesn't yield until the first suspension
+        // point), so there's no window where it can hand out a channel this stop() is tearing down.
+        let ch = channels.removeValue(forKey: channelId)
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
         await UsageActivityHost.shared.dispose(channelId: channelId)
         await IdleWatchdog.shared.stop(channelId: channelId)
         await unregisterAttach(channelId: channelId)
-        guard let ch = channels.removeValue(forKey: channelId) else { return }
+        guard let ch else { return }
         await ch.client.close()
     }
 
