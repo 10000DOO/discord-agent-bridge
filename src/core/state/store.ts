@@ -33,6 +33,9 @@ const migrations: Record<number, (raw: Record<string, unknown>) => Record<string
     }
     return { ...raw, version: 2, channels };
   },
+  // v3 adds an optional context-generation timestamp. No eager value is written:
+  // legacy bindings deliberately fall back to their immutable createdAt value.
+  2: (raw) => ({ ...raw, version: 3 }),
 };
 
 function migrate(raw: Record<string, unknown>): Record<string, unknown> {

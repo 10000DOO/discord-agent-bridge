@@ -13,7 +13,7 @@ import { TurnThreadRegistry } from './turnThread.js';
 import { TranscriptFeedHandler } from './transcriptFeed.js';
 import { MentionOnCompleteHandler } from './mentionOnComplete.js';
 import { buildResultLine } from './resultLine.js';
-import { buildUsageEmbed, type SubagentRun, type UsageSessionMeta } from './usageEmbed.js';
+import { buildUsageEmbed, type SubagentRun, type TurnToolStat, type UsageSessionMeta } from './usageEmbed.js';
 import { t } from '../i18n.js';
 
 // The capability dispatcher (§6): subscribes a channel's AgentEvent stream and, for
@@ -42,6 +42,9 @@ export interface RendererSet {
   transcript(ev: Extract<AgentEvent, { kind: 'progress' | 'result' }>): void;
   // Always: the done-line (cap-aware fields inside).
   result(ev: Extract<AgentEvent, { kind: 'result' }>): void;
+  // Claude's explicit post-drain terminal boundary. Optional so existing renderer
+  // sets that do not need delayed completion remain source-compatible.
+  turnComplete?(): void;
   // caps: usagePanel
   usage(ev: Extract<AgentEvent, { kind: 'context_usage' }>): void;
   // caps: usagePanel — subagent completions feed the panel's turn-local list.
@@ -101,6 +104,9 @@ export class RendererDispatcher {
         this.renderers.result(ev);
         this.renderers.mention(ev);
         break;
+      case 'turn_complete':
+        this.renderers.turnComplete?.();
+        break;
       case 'context_usage':
         if (caps.usagePanel) this.renderers.usage(ev);
         break;
@@ -148,6 +154,11 @@ export interface DefaultRendererSetOptions {
   // Mode-specific usage panel title (e.g. "Claude 사용량" / "Grok 사용량" / "Codex 사용량").
   // Passed through to buildUsageEmbed as extras.title.
   usageTitle?: string;
+  // Only Claude/Custom supply a resolved SDK model rather than configured/provider metadata.
+  observedModelIsActual?: boolean;
+  // Claude SDK exposes an explicit idle-after-drain marker. Wait for it before
+  // rendering the terminal sequence so trailing context/rate events stay on one panel.
+  requireTurnComplete?: boolean;
 }
 
 // Wire the concrete handlers over one channel. Async handler work is fire-and-forget
@@ -196,6 +207,42 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
   const toolNamesById = new Map<string, string>();
   const taskInputsById = new Map<string, { type?: string; description?: string }>();
   let agentRuns: SubagentRun[] = [];
+  // Claude emits context_usage immediately before result. Keep that terminal snapshot
+  // turn-owned until the result dispatcher invokes mention, then append the panel behind
+  // answer/footer/mention just like every other backend.
+  let pendingUsage:
+    | { ctx: Extract<AgentEvent, { kind: 'context_usage' }>; tools: TurnToolStat[]; agents: SubagentRun[] }
+    | null = null;
+  type TerminalUsage = {
+    ctx: Extract<AgentEvent, { kind: 'context_usage' }> | null;
+    tools: TurnToolStat[];
+    agents: SubagentRun[];
+    rendered: boolean;
+  };
+  // Kept mutable until its queued panel actually renders. Grok's ACP adapter can
+  // deliver context_usage in the next task after result; it must enrich this one
+  // terminal panel instead of opening a second panel.
+  let openTerminalUsage: TerminalUsage | null = null;
+  let pendingRateLimit: Extract<AgentEvent, { kind: 'rate_limit' }> | null = null;
+  type ExplicitTerminalTurn = {
+    result: Extract<AgentEvent, { kind: 'result' }>;
+    usage: { ctx: Extract<AgentEvent, { kind: 'context_usage' }>; tools: TurnToolStat[]; agents: SubagentRun[] } | null;
+    rateLimit: Extract<AgentEvent, { kind: 'rate_limit' }> | null;
+    renderResult: (() => void) | null;
+    renderMention: (() => void) | null;
+  };
+  // An explicit marker lets a second turn collect independently while the first
+  // panel still waits in `tail` for an async usage lookup.
+  let explicitTerminal: ExplicitTerminalTurn | null = null;
+  const takeTurnStats = (): { tools: TurnToolStat[]; agents: SubagentRun[] } => {
+    const tools = [...toolCounts.entries()].map(([name, s]) => ({ name, count: s.count, failed: s.failed }));
+    const agents = agentRuns;
+    toolCounts.clear();
+    toolNamesById.clear();
+    taskInputsById.clear();
+    agentRuns = [];
+    return { tools, agents };
+  };
   const noteToolEvent = (ev: Extract<AgentEvent, { kind: 'tool_use' | 'tool_result' }>) => {
     if (ev.kind === 'tool_use') {
       toolNamesById.set(ev.id, ev.name);
@@ -255,6 +302,7 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       swallow(transcript.handle(ev));
     },
     result(ev) {
+      const render = () => {
       // Finalize any open text stream, then post the done-line AFTER it via the shared
       // `tail` so the done-line (and the mention/usage that chain behind it) never lands
       // in the middle of a multi-chunk answer. The `.catch()` before the done-line link
@@ -309,6 +357,32 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
         .catch(() => {})
         .then(() => (line ? channel.send({ content: line }) : undefined));
       swallow(tail);
+      };
+      if (options.requireTurnComplete) {
+        // A backend may report the final context/rate snapshot immediately before
+        // its result event. Move those already-captured values into this turn so
+        // their queued fallback render cannot race the terminal marker.
+        const usage = pendingUsage;
+        const rateLimit = pendingRateLimit;
+        pendingUsage = null;
+        pendingRateLimit = null;
+        explicitTerminal = {
+          result: ev,
+          usage,
+          rateLimit,
+          renderResult: render,
+          renderMention: null,
+        };
+        return;
+      }
+      render();
+    },
+    turnComplete() {
+      const terminal = explicitTerminal;
+      if (!terminal) return;
+      explicitTerminal = null;
+      terminal.renderResult?.();
+      terminal.renderMention?.();
     },
     subagent(ev) {
       const started = ev.toolUseId !== undefined ? taskInputsById.get(ev.toolUseId) : undefined;
@@ -321,47 +395,110 @@ export function createDefaultRendererSet(options: DefaultRendererSetOptions): Re
       });
     },
     usage(ev) {
+      if (options.requireTurnComplete && explicitTerminal) {
+        explicitTerminal.usage = { ctx: ev, ...takeTurnStats() };
+        return;
+      }
+      if (openTerminalUsage && !openTerminalUsage.rendered) {
+        openTerminalUsage.ctx = ev;
+        return;
+      }
       // Capture this turn's context event AND its turn-local stats synchronously:
       // getUsage/getSessionMeta are awaited inside the tail chain, so a subsequent
       // turn's events must not mutate what this send renders. Consuming the stats
       // here also resets them for the next turn.
       const ctx = ev;
-      const tools = [...toolCounts.entries()].map(([name, s]) => ({ name, count: s.count, failed: s.failed }));
-      const agents = agentRuns;
-      toolCounts.clear();
-      toolNamesById.clear();
-      taskInputsById.clear();
-      agentRuns = [];
+      const { tools, agents } = takeTurnStats();
+      const captured = { ctx, tools, agents };
+      pendingUsage = captured;
+      // Claude/Custom hold terminal delivery until the SDK's explicit idle-after-drain
+      // marker. A context event in that interval belongs to the pending terminal panel.
+      // Non-terminal/manual context events still render, but only after the current
+      // synchronous dispatch batch has had a chance to deliver its result+mention.
+      queueMicrotask(() => {
+        if (pendingUsage !== captured) return;
+        pendingUsage = null;
+        tail = tail.catch(() => {}).then(async () => {
+          const usage = (await options.getUsage?.()) ?? null;
+          const meta = (await options.getSessionMeta?.()) ?? null;
+          const embed = buildUsageEmbed(usage, captured.ctx, {
+            meta,
+            tools: captured.tools,
+            agents: captured.agents,
+            ...(options.usageTitle ? { title: options.usageTitle } : {}),
+            ...(options.observedModelIsActual ? { observedModelIsActual: true } : {}),
+          });
+          if (embed) await channel.send({ embeds: [embed] });
+        });
+        swallow(tail);
+      });
+    },
+    mention(ev) {
+      const terminal = options.requireTurnComplete ? explicitTerminal : null;
+      const render = () => {
+      const rateForTurn = terminal?.rateLimit ?? pendingRateLimit;
+      if (!terminal) pendingRateLimit = null;
+      if (rateForTurn) {
+        tail = tail.catch(() => {}).then(async () => {
+          const usage = (await options.getUsage?.()) ?? null;
+          await channel.send({ content: formatRateLimitLine(rateForTurn, usage) });
+        });
+      }
+      tail = tail.catch(() => {}).then(() => mention.handle(ev));
+      // Every provider gets one terminal panel. Claude supplies context_usage just
+      // before result; Grok may have no context window, but its configuration still
+      // renders through UsageSessionMeta.
+      const usageForTurn: TerminalUsage = {
+        ctx: terminal?.usage?.ctx ?? pendingUsage?.ctx ?? null,
+        ...(terminal?.usage ?? pendingUsage ?? takeTurnStats()),
+        rendered: false,
+      };
+      if (!terminal) pendingUsage = null;
+      openTerminalUsage = usageForTurn;
       tail = tail.catch(() => {}).then(async () => {
         const usage = (await options.getUsage?.()) ?? null;
         const meta = (await options.getSessionMeta?.()) ?? null;
-        const embed = buildUsageEmbed(usage, ctx, {
+        usageForTurn.rendered = true;
+        const embed = buildUsageEmbed(usage, usageForTurn.ctx, {
           meta,
-          tools,
-          agents,
+          tools: usageForTurn.tools,
+          agents: usageForTurn.agents,
           ...(options.usageTitle ? { title: options.usageTitle } : {}),
+          ...(options.observedModelIsActual ? { observedModelIsActual: true } : {}),
         });
         if (embed) await channel.send({ embeds: [embed] });
+        if (openTerminalUsage === usageForTurn) openTerminalUsage = null;
       });
       swallow(tail);
-    },
-    mention(ev) {
-      tail = tail.catch(() => {}).then(() => mention.handle(ev));
-      swallow(tail);
+      };
+      // Dispatcher invokes mention alongside result. For Claude/Custom the same terminal
+      // work is deferred to turnComplete after the SDK has drained context/rate events.
+      if (options.requireTurnComplete) {
+        if (terminal) terminal.renderMention = render;
+        return;
+      }
+      render();
     },
     error(ev) {
       swallow(channel.send({ content: `⚠️ ${ev.message}` }));
     },
     rateLimit(ev) {
-      // Pass the latest usage snapshot so a %-less rate_limit event still shows the
-      // utilization for its window (backfilled from the snapshot). getUsage may be async,
-      // so await it in a self-invoking wrapper; the send stays immediate (not on tail).
-      swallow(
-        (async () => {
+      // The latest rate event belongs to the terminal panel's turn. Do not send it
+      // independently here: it could overtake the answer or a completion mention.
+      if (options.requireTurnComplete && explicitTerminal) {
+        explicitTerminal.rateLimit = ev;
+        return;
+      }
+      pendingRateLimit = ev;
+      queueMicrotask(() => {
+        if (pendingRateLimit !== ev) return;
+        pendingRateLimit = null;
+        tail = tail.catch(() => {}).then(async () => {
           const usage = (await options.getUsage?.()) ?? null;
-          return channel.send({ content: formatRateLimitLine(ev, usage) });
-        })(),
-      );
+          await channel.send({ content: formatRateLimitLine(ev, usage) });
+        });
+        swallow(tail);
+      });
     },
     dispose() {
       // Cancel the streaming/thinking debounce timers so a detach mid-stream cannot

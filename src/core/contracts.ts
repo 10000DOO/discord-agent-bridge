@@ -64,6 +64,10 @@ export type AgentEvent =
       tokensOut?: number;
       durationMs?: number;
     }
+  // Claude SDK's `session_state_changed: idle` is the authoritative end-of-turn
+  // signal. It follows held-back result/rate-limit events, so sidecar consumers can
+  // commit one terminal panel without a time-based grace period.
+  | { kind: 'turn_complete' }
   // Claude: query.getContextUsage(); `model` is the init-reported RESOLVED model id
   // actually serving the session (e.g. 'claude-fable-5[1m]'), shown on the usage panel.
   // The optional extras are best-effort session/turn facts for the usage panel — all

@@ -43,6 +43,8 @@ export interface ChannelBinding {
   projectAuth?: ProjectAuth;
   archived: boolean;
   createdAt: string;
+  // Start of the live backend conversation; distinct from the binding's creation time.
+  contextGenerationStartedAt?: string;
   updatedAt: string;
 }
 
@@ -74,6 +76,7 @@ function fromState(guildId: string, channelId: string, s: ChannelBindingState): 
     projectAuth: s.projectAuth,
     archived: s.archived,
     createdAt: s.createdAt,
+    ...(s.contextGenerationStartedAt !== undefined ? { contextGenerationStartedAt: s.contextGenerationStartedAt } : {}),
     updatedAt: s.updatedAt,
   };
 }
@@ -91,6 +94,7 @@ function toState(b: ChannelBinding): ChannelBindingState {
     ...(b.effort !== undefined ? { effort: b.effort } : {}),
     ...(b.projectAuth ? { projectAuth: b.projectAuth } : {}),
     createdAt: b.createdAt,
+    ...(b.contextGenerationStartedAt !== undefined ? { contextGenerationStartedAt: b.contextGenerationStartedAt } : {}),
     updatedAt: b.updatedAt,
     archived: b.archived,
   };
@@ -134,6 +138,16 @@ export class ChannelRegistry {
       ...input,
       archived: input.archived ?? existing?.archived ?? false,
       createdAt: existing?.createdAt ?? timestamp,
+      // A new non-null backend id replaces the conversation; a null→id update is
+      // the same just-started conversation and preserves its earlier timestamp.
+      contextGenerationStartedAt:
+        input.contextGenerationStartedAt
+        ?? (existing?.sessionId !== undefined
+          && existing.sessionId !== null
+          && input.sessionId !== null
+          && existing.sessionId !== input.sessionId
+          ? timestamp
+          : existing?.contextGenerationStartedAt ?? timestamp),
       updatedAt: timestamp,
     };
     this.bindings.set(k, binding);

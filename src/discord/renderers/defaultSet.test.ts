@@ -123,6 +123,109 @@ describe('default renderer set — result line + mention', () => {
     const mention = sent.find((m) => m.content === '<@owner-9>');
     expect(mention?.mentionUserIds).toEqual(['owner-9']);
   });
+
+  it('serializes long answer, completion, mention, and terminal panel in that order', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({
+      channel,
+      ownerId: 'owner-9',
+      getSessionMeta: () => ({ model: 'grok-4', effort: 'high', permMode: 'auto' }),
+      usageTitle: 'Grok 사용량',
+    });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    const answer = 'a'.repeat(3000);
+    dispatcher.dispatch({ kind: 'result', text: answer, costUsd: 0.01 } as AgentEvent);
+    await flush();
+    await flush();
+    const answerIndices = sent
+      .map((m, index) => ((m.content ?? '').startsWith('a') ? index : -1))
+      .filter((index) => index >= 0);
+    const footerIndex = sent.findIndex((m) => (m.content ?? '').includes('완료'));
+    const mentionIndex = sent.findIndex((m) => m.content === '<@owner-9>');
+    const panelIndex = sent.findIndex((m) => m.embeds?.[0]?.title === 'Grok 사용량');
+    expect(answerIndices).toHaveLength(2);
+    expect(Math.max(...answerIndices)).toBeLessThan(footerIndex);
+    expect(footerIndex).toBeLessThan(mentionIndex);
+    expect(mentionIndex).toBeLessThan(panelIndex);
+  });
+
+  it('waits for Grok turn_complete when context_usage arrives after its result', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({
+      channel,
+      ownerId: 'owner-9',
+      requireTurnComplete: true,
+      getSessionMeta: () => ({ model: 'grok-4', effort: 'high', permMode: 'auto' }),
+      usageTitle: 'Grok 사용량',
+    });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'result', text: 'answer' } as AgentEvent);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10, model: 'grok-4' } as AgentEvent);
+    expect(sent).toHaveLength(0);
+    dispatcher.dispatch({ kind: 'turn_complete' } as AgentEvent);
+    await flush();
+    await flush();
+    const panels = sent.flatMap((m) => m.embeds ?? []).filter((embed) => embed.title === 'Grok 사용량');
+    expect(panels).toHaveLength(1);
+    expect(panels[0].fields?.some((field) => field.name === '🟢 컨텍스트')).toBe(true);
+  });
+
+  it('waits for Claude turn_complete so delayed context and rate share one terminal sequence', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({
+      channel,
+      ownerId: 'owner-9',
+      requireTurnComplete: true,
+      getSessionMeta: () => ({ model: 'opus', permMode: 'default' }),
+      usageTitle: 'Claude 사용량',
+    });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+    dispatcher.dispatch({ kind: 'result', text: 'answer' } as AgentEvent);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10 } as AgentEvent);
+    dispatcher.dispatch({ kind: 'rate_limit', rateLimitType: 'five_hour', utilization: 73 } as AgentEvent);
+    expect(sent).toHaveLength(0);
+    dispatcher.dispatch({ kind: 'turn_complete' } as AgentEvent);
+    await flush();
+    await flush();
+    const panels = sent.flatMap((m) => m.embeds ?? []).filter((embed) => embed.title === 'Claude 사용량');
+    expect(panels).toHaveLength(1);
+    expect(panels[0].fields?.some((field) => field.name === '🟢 컨텍스트')).toBe(true);
+    expect(sent.filter((m) => m.content === '<@owner-9>')).toHaveLength(1);
+    expect(sent.filter((m) => (m.content ?? '').includes('사용량 한도 알림'))).toHaveLength(1);
+  });
+
+  it('keeps overlapping explicit turns paired with their own context snapshots', async () => {
+    const { channel, sent } = fakeChannel();
+    const set = createDefaultRendererSet({
+      channel,
+      ownerId: 'owner-9',
+      requireTurnComplete: true,
+      getUsage: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return null;
+      },
+      getSessionMeta: () => ({ model: 'opus', permMode: 'default' }),
+      usageTitle: 'Claude 사용량',
+    });
+    const dispatcher = new RendererDispatcher(set, claudeCaps);
+
+    dispatcher.dispatch({ kind: 'result', text: 'first' } as AgentEvent);
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 2, maxTokens: 100, percentage: 2 } as AgentEvent);
+    dispatcher.dispatch({ kind: 'turn_complete' } as AgentEvent);
+    dispatcher.dispatch({ kind: 'result', text: 'second' } as AgentEvent);
+    dispatcher.dispatch({ kind: 'context_usage', totalTokens: 20, maxTokens: 100, percentage: 20 } as AgentEvent);
+    dispatcher.dispatch({ kind: 'turn_complete' } as AgentEvent);
+
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    const panels = sent.flatMap((m) => m.embeds ?? []).filter((embed) => embed.title === 'Claude 사용량');
+    expect(panels).toHaveLength(2);
+    expect(panels.map((panel) => panel.fields?.find((field) => field.name === '🟢 컨텍스트')?.value)).toEqual([
+      expect.stringContaining('**2%**'),
+      expect.stringContaining('**20%**'),
+    ]);
+  });
 });
 
 describe('default renderer set — rate limit line', () => {
@@ -312,13 +415,14 @@ describe('default renderer set — usage panel extras (hud-level panel)', () => 
       channel,
       ownerId: 'u1',
       getSessionMeta: () => ({ cwd: '/tmp/proj', gitBranch: 'master', permMode: 'plan' }),
+      observedModelIsActual: true,
     });
     const dispatcher = new RendererDispatcher(set, claudeCaps);
     dispatcher.dispatch({ kind: 'context_usage', totalTokens: 10, maxTokens: 100, percentage: 10, model: 'claude-fable-5' } as AgentEvent);
     await flushTwice();
     const embed = usageEmbedFrom(sent);
     expect(embed?.description).toBe('📁 proj git:(master)');
-    expect(embed?.footer).toBe('권한: 플랜 (읽기 전용) · claude-fable-5');
+    expect(embed?.footer).toBe('실제 모델: claude-fable-5');
   });
 
   it('aggregates this turn\'s tools and subagents into the panel, then resets for the next turn', async () => {

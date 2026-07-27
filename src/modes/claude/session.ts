@@ -74,15 +74,21 @@ export class ClaudeSession implements ModeSession {
   sessionId: string | null = null;
 
   // The RESOLVED model id reported by the SDK's init message (e.g.
-  // 'claude-fable-5[1m]') — better for display than ctx.model, which may be an
-  // alias like 'opus'. Carried on context_usage events for the usage panel.
-  private activeModel: string | null = null;
+  // 'claude-fable-5[1m]'). This is intentionally distinct from ctx.model and a
+  // setModel() request: both are configuration, not proof of the model the SDK ran.
+  private observedModel: string | null = null;
 
-  // Human-readable display name for activeModel, captured once from
-  // supportedModels() after the first init (activeModel pattern). Best-effort:
+  // Human-readable display name for observedModel, captured once from
+  // supportedModels() after the first init. Best-effort:
   // a failed/absent control request just leaves the panel showing the id.
   private modelDisplayName: string | null = null;
   private modelDisplayNameRequested = false;
+
+  // A result carries the answer payload, while the SDK's documented
+  // session_state_changed:idle is the authoritative boundary after held-back
+  // messages flush. This prevents a trailing rate_limit_event from being assigned
+  // to the following turn or lost behind a result-only terminal path.
+  private awaitingTurnComplete = false;
 
   // Count of connected MCP servers from the init message, carried on
   // context_usage for the panel's "session composition" line.
@@ -223,7 +229,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     switch (msg.type) {
       case 'system': {
         if (msg.subtype === 'init' && msg.session_id) {
-          if (typeof msg.model === 'string' && msg.model.length > 0) this.activeModel = msg.model;
+          if (typeof msg.model === 'string' && msg.model.length > 0) this.observedModel = msg.model;
           // The param annotation mirrors sdk.d.ts SDKSystemMessage.mcp_servers; the
           // installed d.ts has unresolved names that degrade this member to `any`
           // under skipLibCheck, so inference alone yields an implicit-any param.
@@ -249,6 +255,13 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
             ...(msg.usage?.duration_ms !== undefined ? { durationMs: msg.usage.duration_ms } : {}),
             ...(msg.usage?.tool_uses !== undefined ? { toolUses: msg.usage.tool_uses } : {}),
           });
+        } else if (msg.subtype === 'session_state_changed' && msg.state === 'idle') {
+          // SDK declaration: idle fires after heldBackResult has flushed and the
+          // background agent exits. Do not synthesize this with a timer.
+          if (this.awaitingTurnComplete) {
+            this.awaitingTurnComplete = false;
+            this.ctx.emit({ kind: 'turn_complete' });
+          }
         }
         return;
       }
@@ -287,7 +300,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     }
   }
 
-  // Resolve activeModel to its human-readable displayName via ONE supportedModels()
+  // Resolve observedModel to its human-readable displayName via ONE supportedModels()
   // control request after the first init (same defensive posture as providerCatalog's
   // fetchClaudeModels: any failure — including a test double without the method —
   // just leaves the display name unknown). The resolution (exact-value preference,
@@ -298,7 +311,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     void (async () => {
       try {
         const models = await this.query.supportedModels();
-        const active = this.activeModel;
+        const active = this.observedModel;
         if (!active || !Array.isArray(models)) return;
         this.modelDisplayName = resolveModelDisplayName(active, models);
       } catch {
@@ -398,7 +411,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
           totalTokens: ctx.totalTokens,
           maxTokens: ctx.maxTokens,
           percentage: ctx.percentage,
-          ...(this.activeModel !== null ? { model: this.activeModel } : {}),
+          ...(this.observedModel !== null ? { model: this.observedModel } : {}),
           ...(this.modelDisplayName !== null ? { modelDisplayName: this.modelDisplayName } : {}),
           ...(clearableTokens !== undefined ? { clearableTokens } : {}),
           ...(memoryFileCount !== undefined ? { memoryFileCount } : {}),
@@ -417,6 +430,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
       ...(usage.output_tokens !== undefined ? { tokensOut: usage.output_tokens } : {}),
       ...(msg.duration_ms !== undefined ? { durationMs: msg.duration_ms } : {}),
     });
+    this.awaitingTurnComplete = true;
   }
 
   // Deliver a user turn: enqueue it and hand it to the prompt stream. A turn
@@ -443,17 +457,15 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
 
   // Change the model on the LIVE query mid-session (SDK setModel). A model name or
   // alias ('opus'/'sonnet'/'haiku') is accepted; the SDK resolves it. Takes effect on
-  // the next turn of this same session — no restart, no lost context. activeModel is
-  // updated so the usage panel reflects the new choice. modelDisplayName is re-latched
-  // via supportedModels() so context_usage does not keep the previous model's label
-  // (W11-g residual: setModel displayName re-resolution).
+  // the next turn of this same session — no restart, no lost context.
   async setModel(model?: string): Promise<void> {
     if (this.closed) throw new Error('Claude session is closed.');
     await this.query.setModel(model);
-    if (typeof model === 'string' && model.length > 0) this.activeModel = model;
+    // setModel acknowledges the requested alias but does not report the resolved
+    // runtime model. Hide stale provenance until the SDK emits a new init model.
+    this.observedModel = null;
     this.modelDisplayName = null;
     this.modelDisplayNameRequested = false;
-    this.captureModelDisplayName();
   }
 
   // Change the reasoning effort on the LIVE query mid-session via applyFlagSettings (the

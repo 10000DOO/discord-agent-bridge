@@ -127,7 +127,8 @@ function makeFactory(configure?: (c: FakeAcpClient) => void): {
   return { createClient, clients, options };
 }
 
-const nonResultEvents = (events: AgentEvent[]): AgentEvent[] => events.filter((e) => e.kind !== 'result');
+const nonTerminalEvents = (events: AgentEvent[]): AgentEvent[] =>
+  events.filter((e) => e.kind !== 'result' && e.kind !== 'turn_complete');
 
 describe('GrokAcpSession lifecycle', () => {
   it('lazily inits on the first send: initialize → session/new, and fires onSessionIdReady once', async () => {
@@ -198,15 +199,15 @@ describe('GrokAcpSession update → AgentEvent mapping (D5)', () => {
     await new GrokAcpSession(ctx, { createClient }).send({ text: 'go' });
     expect(clients[0]?.promptTexts).toEqual(['go']);
 
-    expect(nonResultEvents(events)).toEqual([
+    expect(nonTerminalEvents(events)).toEqual([
       { kind: 'text', text: 'hello', delta: true },
       { kind: 'thinking', text: 'pondering', delta: true },
       // path → file_path for DiffView FILE_EDIT_TOOLS
       { kind: 'tool_use', id: 'tc1', name: 'Edit', input: { path: 'a.txt', file_path: 'a.txt' } },
       { kind: 'tool_result', id: 'tc1', ok: true, content: 'done' },
     ]);
-    // A result event is always emitted on a clean turn end.
-    expect(events.at(-1)).toEqual({ kind: 'result' });
+    // A clean turn ends with result followed by the renderer's terminal marker.
+    expect(events.slice(-2)).toEqual([{ kind: 'result' }, { kind: 'turn_complete' }]);
   });
 
   it('skips empty text/thought chunks, falls back on a missing tool id, and stringifies object content', async () => {
@@ -221,7 +222,7 @@ describe('GrokAcpSession update → AgentEvent mapping (D5)', () => {
     const { ctx, events } = makeCtx();
     await new GrokAcpSession(ctx, { createClient }).send({ text: 'go' });
 
-    expect(nonResultEvents(events)).toEqual([
+    expect(nonTerminalEvents(events)).toEqual([
       { kind: 'tool_use', id: 'grok-tool-1', name: 'Read', input: {} },
       { kind: 'tool_result', id: '', ok: false, content: JSON.stringify({ code: 2 }) },
     ]);
@@ -255,7 +256,7 @@ describe('GrokAcpSession update → AgentEvent mapping (D5)', () => {
     const { ctx, events } = makeCtx();
     await new GrokAcpSession(ctx, { createClient }).send({ text: 'go' });
 
-    expect(nonResultEvents(events)).toEqual([
+    expect(nonTerminalEvents(events)).toEqual([
       {
         kind: 'tool_use',
         id: 'spawn1',
@@ -296,7 +297,7 @@ describe('GrokAcpSession update → AgentEvent mapping (D5)', () => {
     const { ctx, events } = makeCtx();
     await new GrokAcpSession(ctx, { createClient }).send({ text: 'go' });
 
-    expect(nonResultEvents(events)).toEqual([
+    expect(nonTerminalEvents(events)).toEqual([
       { kind: 'progress', label: 'Plan', detail: '✓ read the file\n▶ write the fix\n• run tests' },
     ]);
   });
@@ -307,14 +308,16 @@ describe('GrokAcpSession update → AgentEvent mapping (D5)', () => {
     });
     const a = makeCtx();
     await new GrokAcpSession(a.ctx, { createClient: withTokens.createClient }).send({ text: 'x' });
-    expect(a.events.at(-1)).toEqual({ kind: 'result', tokensIn: 10, tokensOut: 20, costUsd: 0.5 });
+    expect(a.events.at(-2)).toEqual({ kind: 'result', tokensIn: 10, tokensOut: 20, costUsd: 0.5 });
+    expect(a.events.at(-1)).toEqual({ kind: 'turn_complete' });
 
     const partial = makeFactory((c) => {
       c.result = { usage: { total_cost_usd: 9.9, cost_is_partial: true } };
     });
     const b = makeCtx();
     await new GrokAcpSession(b.ctx, { createClient: partial.createClient }).send({ text: 'x' });
-    expect(b.events.at(-1)).toEqual({ kind: 'result' }); // cost dropped, no tokens
+    expect(b.events.at(-2)).toEqual({ kind: 'result' }); // cost dropped, no tokens
+    expect(b.events.at(-1)).toEqual({ kind: 'turn_complete' });
   });
 });
 
@@ -380,6 +383,7 @@ describe('GrokAcpSession cost + context_usage from _meta (FIX-2)', () => {
       percentage: 4, // round(17742 / 500000 * 100)
       model: 'grok-4.5',
     });
+    expect(events.map((e) => e.kind).slice(-3)).toEqual(['context_usage', 'result', 'turn_complete']);
   });
 
   it('skips context_usage when no context window is known for the resolved model (still emits costUsd)', async () => {
@@ -392,6 +396,7 @@ describe('GrokAcpSession cost + context_usage from _meta (FIX-2)', () => {
 
     expect(events.find((e) => e.kind === 'context_usage')).toBeUndefined();
     expect(events.find((e) => e.kind === 'result')).toEqual({ kind: 'result', costUsd: 0.01 });
+    expect(events.at(-1)).toEqual({ kind: 'turn_complete' });
   });
 });
 
@@ -402,7 +407,7 @@ describe('GrokAcpSession explicit skips (FIX-5)', () => {
     });
     const { ctx, events } = makeCtx();
     await new GrokAcpSession(ctx, { createClient }).send({ text: 'go' });
-    expect(nonResultEvents(events)).toEqual([]);
+    expect(nonTerminalEvents(events)).toEqual([]);
   });
 });
 

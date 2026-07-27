@@ -21,7 +21,7 @@ export const permModeSchema = z.enum([
   'danger-full-access',
 ]);
 
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 export const channelBindingSchema = z.object({
   guildId: z.string(),
@@ -50,6 +50,8 @@ export const channelBindingSchema = z.object({
     })
     .optional(),
   createdAt: z.string(),
+  // Start of the current backend conversation. Older bindings fall back to createdAt.
+  contextGenerationStartedAt: z.string().optional(),
   updatedAt: z.string(),
   archived: z.boolean(),
 });

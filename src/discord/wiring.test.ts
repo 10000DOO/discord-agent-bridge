@@ -401,7 +401,8 @@ describe('SessionWiring usage-panel session meta', () => {
     const embed = await waitForUsageEmbed(sent);
     expect(embed?.description).toContain('📁 nonexistent-dab-meta-dir');
     expect(embed?.description).not.toContain('git:('); // cwd is not a repo → branch omitted
-    expect(embed?.footer).toBe('권한: 플랜 (읽기 전용) · claude-x');
+    expect(embed?.footer).toBe('실제 모델: claude-x');
+    expect(embed?.fields?.find((field) => field.name === '⚙️ 세션 설정')?.value).toContain('권한: 플랜 (읽기 전용)');
   });
 
   it('includes the git branch when the binding cwd is a real repository', async () => {

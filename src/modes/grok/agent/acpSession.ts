@@ -380,22 +380,28 @@ export class GrokAcpSession implements ModeSession {
       ...(tokensOut !== undefined ? { tokensOut } : {}),
       ...(costUsd !== undefined ? { costUsd } : {}),
     };
-    this.ctx.emit(event);
-
     const totalTokens = result?.totalTokens;
     if (typeof totalTokens === 'number' && totalTokens > 0) {
-      const model = this.model.length > 0 ? this.model : result?.modelId ?? grokConfigSource.defaultModel();
-      const maxTokens = grokConfigSource.contextWindow(model);
+      // The fallback model is only a local context-window lookup key. Do not expose it as a
+      // configured or resolved model when neither the session nor the response identified one.
+      const configuredModel = this.model.length > 0 ? this.model : undefined;
+      const observedModel = configuredModel ?? result?.modelId;
+      const windowModel = observedModel ?? grokConfigSource.defaultModel();
+      const maxTokens = grokConfigSource.contextWindow(windowModel);
       if (typeof maxTokens === 'number' && maxTokens > 0) {
         this.ctx.emit({
           kind: 'context_usage',
           totalTokens,
           maxTokens,
           percentage: Math.min(100, Math.round((totalTokens / maxTokens) * 100)),
-          model,
+          ...(observedModel !== undefined ? { model: observedModel } : {}),
         });
       }
     }
+    // Terminal payload follows every turn-owned context snapshot; the explicit marker below
+    // commits the renderer only after this ACP response has fully drained.
+    this.ctx.emit(event);
+    this.ctx.emit({ kind: 'turn_complete' });
   }
 }
 

@@ -167,6 +167,7 @@ function scriptedMessages() {
         utilization: 87,
       },
     },
+    { type: 'system', subtype: 'session_state_changed', state: 'idle', session_id: 'sess-abc' },
   ];
 }
 
@@ -198,6 +199,7 @@ describe('ClaudeSession — SDK message mapping', () => {
         rateLimitType: 'five_hour',
         utilization: 87,
       },
+      { kind: 'turn_complete' },
     ]);
     expect(state.contextUsageCalls).toBe(1);
   });
@@ -476,8 +478,7 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(events.some((e) => e.kind === 'error')).toBe(false);
   });
 
-  // W11-g residual: setModel must re-resolve modelDisplayName (not keep the init latch).
-  it('re-resolves modelDisplayName after setModel', async () => {
+  it('does not present a setModel alias as SDK-observed model provenance', async () => {
     const { ctx, events } = makeCtx();
     const state = { supportedModelsCalls: 0, setModelCalls: [] as Array<string | undefined> };
     // Pushable message queue so a second result can fire after setModel.
@@ -529,17 +530,15 @@ describe('ClaudeSession — SDK message mapping', () => {
 
     await session.setModel('claude-sonnet-4');
     expect(state.setModelCalls).toEqual(['claude-sonnet-4']);
-    await waitFor(() => state.supportedModelsCalls >= 2);
-    expect(state.supportedModelsCalls).toBe(2);
+    expect(state.supportedModelsCalls).toBe(1);
 
-    // Second turn result → context_usage must carry the NEW display name.
+    // A setModel acknowledgement only proves the request was accepted. Without a new
+    // SDK init model, the next panel must not claim the requested alias as actual.
     push({ type: 'result', subtype: 'success', result: 'turn2' });
     await waitFor(() => events.filter((e) => e.kind === 'context_usage').length >= 2);
     const usages = events.filter((e) => e.kind === 'context_usage');
-    expect(usages[usages.length - 1]).toMatchObject({
-      model: 'claude-sonnet-4',
-      modelDisplayName: 'Claude Sonnet 4',
-    });
+    expect(usages[usages.length - 1]).not.toHaveProperty('model');
+    expect(usages[usages.length - 1]).not.toHaveProperty('modelDisplayName');
 
     await session.stop();
   });

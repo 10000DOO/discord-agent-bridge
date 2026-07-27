@@ -161,6 +161,8 @@ describe('SidecarServer with fake session factory', () => {
       onSend: async (turn, ctx) => {
         ctx.emit({ kind: 'text', text: `echo:${turn.text}`, delta: false });
         ctx.emit({ kind: 'result', text: 'done' });
+        ctx.emit({ kind: 'rate_limit', rateLimitType: 'five_hour', utilization: 73 });
+        ctx.emit({ kind: 'turn_complete' });
       },
       sessionId: 'backend-1',
     });
@@ -207,6 +209,13 @@ describe('SidecarServer with fake session factory', () => {
     await h.out.waitFor((ls) =>
       envs(ls).some((e) => e.type === 'event' && e.event?.kind === 'result'),
     );
+    await h.out.waitFor((ls) =>
+      envs(ls).some((e) => e.type === 'event' && e.event?.kind === 'turn_complete'),
+    );
+    const turnKinds = envs(h.out.lines)
+      .filter((e) => e.type === 'event' && e.session === handle)
+      .map((e) => e.event?.kind);
+    expect(turnKinds).toEqual(['text', 'result', 'rate_limit', 'turn_complete']);
 
     const stopRes = await h.rpc('session.stop', { session: handle });
     expect(stopRes.result).toEqual({ ok: true });

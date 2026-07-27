@@ -65,10 +65,10 @@ describe('buildUsageEmbed', () => {
     expect((embed?.fields ?? []).map((f) => f.name)).toEqual(['🟢 컨텍스트']);
   });
 
-  it('shows the running model id in the footer (the old 모델 field is absorbed)', () => {
+  it('labels the SDK-observed model in the footer', () => {
     const withModel = { ...ctx, model: 'claude-fable-5[1m]' };
-    const embed = buildUsageEmbed(null, withModel);
-    expect(embed?.footer).toBe('claude-fable-5[1m]');
+    const embed = buildUsageEmbed(null, withModel, { observedModelIsActual: true });
+    expect(embed?.footer).toBe('실제 모델: claude-fable-5[1m]');
     expect((embed?.fields ?? []).map((f) => f.name)).not.toContain('모델');
   });
 
@@ -93,10 +93,23 @@ describe('buildUsageEmbed', () => {
     expect(buildUsageEmbed(null, ctx)?.description).toBeUndefined();
   });
 
-  it('puts the permission-mode label and model id into the footer', () => {
+  it('separates configured metadata from an observed model id', () => {
     const withModel = { ...ctx, model: 'claude-fable-5' };
-    const embed = buildUsageEmbed(null, withModel, { meta: { permMode: 'bypassPermissions' } });
-    expect(embed?.footer).toBe('권한: 전체 자동 승인 (⚠️ 위험) · claude-fable-5');
+    const embed = buildUsageEmbed(null, withModel, { meta: { permMode: 'bypassPermissions' }, observedModelIsActual: true });
+    expect(embed?.footer).toBe('실제 모델: claude-fable-5');
+    expect((embed?.fields ?? []).find((field) => field.name === '⚙️ 세션 설정')?.value).toBe(
+      '설정 모델: 자동 선택\n추론: 기본값\n권한: 전체 자동 승인 (⚠️ 위험)',
+    );
+  });
+
+  it('renders configuration when Grok has no usage or known context window', () => {
+    const embed = buildUsageEmbed(null, null, {
+      title: 'Grok 사용량',
+      meta: { model: 'grok-4', effort: 'high', permMode: 'auto' },
+    });
+    expect(embed?.fields).toEqual([
+      { name: '⚙️ 세션 설정', value: '설정 모델: grok-4\n추론: high\n권한: 자동 판단 (모델이 승인/거부)' },
+    ]);
   });
 
   it('appends the /clear savings hint to the context line when clearableTokens is present', () => {

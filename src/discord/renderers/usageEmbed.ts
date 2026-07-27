@@ -39,6 +39,10 @@ const AGENT_LABEL_MAX = 100;
 export interface UsageSessionMeta {
   cwd?: string;
   gitBranch?: string;
+  /** Wizard/profile configuration. This is distinct from a model observed in a turn event. */
+  model?: string;
+  /** Explicit reasoning configuration; absent means the provider default remains in effect. */
+  effort?: string;
   permMode?: SessionPermMode;
   createdAt?: string; // ISO — binding creation, shown as session elapsed time
 }
@@ -67,6 +71,8 @@ export interface UsageEmbedExtras {
   // Explicit panel title from the mode (Claude / Grok / Codex). When set, wins
   // over the weekly-only Grok heuristic below.
   title?: string;
+  /** Only Claude/Custom expose an SDK-resolved model that may be called actual. */
+  observedModelIsActual?: boolean;
 }
 
 // Utilization thresholds → embed color (A4D utilizationColor).
@@ -187,7 +193,9 @@ export function buildUsageEmbed(
   extras?: UsageEmbedExtras,
 ): EmbedSpec | null {
   const haveUsage = usage !== null && 'fetchedAt' in usage;
-  if (!haveUsage && !ctxUsage) return null;
+  // A configured session is useful even when a provider exposes neither account usage
+  // nor a trustworthy context window (notably Grok). Keep its configuration visible.
+  if (!haveUsage && !ctxUsage && !extras?.meta) return null;
 
   const meta = extras?.meta ?? null;
   const now = Date.now();
@@ -229,6 +237,20 @@ export function buildUsageEmbed(
     }
   }
 
+  if (meta) {
+    const configuredModel = meta.model ?? t('usage.autoModel');
+    const effort = meta.effort ?? t('usage.defaultEffort');
+    const permission = meta.permMode ? t(`perm.${meta.permMode}`) : t('usage.autoPermission');
+    fields.push({
+      name: `⚙️ ${t('usage.config')}`,
+      value: [
+        t('usage.configModel', { model: configuredModel }),
+        t('usage.effort', { effort }),
+        t('usage.perm', { perm: permission }),
+      ].join('\n'),
+    });
+  }
+
   const toolsValue = buildToolsValue(extras?.tools ?? []);
   if (toolsValue) fields.push({ name: `🛠️ ${t('usage.tools')}`, value: toolsValue, inline: true });
 
@@ -237,10 +259,12 @@ export function buildUsageEmbed(
 
   if (fields.length === 0) return null;
 
-  // Footer absorbs the old standalone 모델 field: permission mode + resolved id.
+  // Keep observed SDK model separate from configuration: a provider fallback must
+  // never be presented as the configured model.
   const footerParts: string[] = [];
-  if (meta?.permMode) footerParts.push(t('usage.perm', { perm: t(`perm.${meta.permMode}`) }));
-  if (ctxUsage?.model) footerParts.push(ctxUsage.model);
+  if (extras?.observedModelIsActual && ctxUsage?.model) {
+    footerParts.push(t('usage.actualModel', { model: ctxUsage.model }));
+  }
 
   // Prefer an explicit title from the caller (mode-aware wiring). Fallback: weekly-only
   // snapshot (sevenDay present, no fiveHour/opus/sonnet) → Grok title; else Claude.

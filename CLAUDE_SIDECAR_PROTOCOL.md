@@ -118,7 +118,7 @@ Host의 `ClaudeMode`는 사이드카 클라이언트일 뿐이며, 다른 모드
 | `text` | string | yes |
 | `files` | `{ path: string, mime?: string }[]` | no — Host가 cwd 가둔 절대경로 |
 
-**result:** `{ ok: true }` (수락/큐잉). 본문 스트림은 **event**로만.
+**result:** `{ ok: true }` (수락/큐잉). 이것은 턴 완료 신호가 아니다. 본문 스트림과 명시적 종료는 **event**로만 전달한다.
 
 ### 3.4 `session.permission` params
 
@@ -218,11 +218,14 @@ Host 렌더러는 기존 `RendererDispatcher`와 동일하게 kind만 본다. **
 | `tool_result` | `id`, `ok`, `content`, `parentToolUseId?` | |
 | `permission_request` | `id`, `toolName`, `input` | Host가 버튼 후 `session.permission` |
 | `progress` | `label`, `detail?` | Claude는 거의 미사용 |
-| `result` | `text?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `durationMs?` | 턴 완료 |
+| `result` | `text?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `durationMs?` | 결과 payload. 아직 terminal 아님 |
+| `turn_complete` | 없음 | Claude SDK `session_state_changed: idle`에서만 발생하는 drained turn 종료. 해당 턴의 `context_usage`/`rate_limit` 뒤에 온다 |
 | `context_usage` | `totalTokens`, `maxTokens`, `percentage`, `model?`, `modelDisplayName?`, `clearableTokens?`, `memoryFileCount?`, `mcpServerCount?` | |
 | `subagent_result` | `taskId`, `status`, `summary`, `toolUseId?`, `durationMs?`, `toolUses?` | status: completed\|failed\|stopped |
 | `error` | `message`, `retryable` | |
 | `rate_limit` | `resetAt?`, `rateLimitType?`, `utilization?` | 에러 아님 |
+
+`session.send`의 RPC 응답은 enqueue ACK다. Host는 `result`만으로 turn accumulator를 닫으면 안 되며, 반드시 같은 session의 `turn_complete`에서 결과를 확정한다. Claude SDK 선언상 `idle`은 held-back result가 flush된 뒤 발생하므로, `result → rate_limit → turn_complete` 순서도 시간 추측 없이 보존된다.
 
 ### event 봉투 예
 

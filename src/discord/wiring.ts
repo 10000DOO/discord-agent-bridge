@@ -419,6 +419,8 @@ export class SessionWiring {
       getUsage: () => this.getUsageFor(mode),
       getSessionMeta: () => this.getSessionMetaFor(guildId, channelId),
       usageTitle: usageTitleFor(mode),
+      observedModelIsActual: mode === 'claude' || mode === 'custom',
+      requireTurnComplete: mode === 'claude' || mode === 'custom' || mode === 'grok-build',
       logger: this.logger,
     });
     // The dispatcher's permission renderer posts buttons via its own handler; we
@@ -603,8 +605,12 @@ export class SessionWiring {
     if (!binding) return null;
     const meta: UsageSessionMeta = {
       ...(binding.cwd ? { cwd: binding.cwd } : {}),
+      ...(binding.model ? { model: binding.model } : {}),
+      ...(binding.effort ? { effort: binding.effort } : {}),
       ...(binding.permMode ? { permMode: binding.permMode } : {}),
-      ...(binding.createdAt ? { createdAt: binding.createdAt } : {}),
+      ...(binding.contextGenerationStartedAt ?? binding.createdAt
+        ? { createdAt: binding.contextGenerationStartedAt ?? binding.createdAt }
+        : {}),
     };
     const branch = binding.cwd ? await gitBranch(binding.cwd) : null;
     if (branch) meta.gitBranch = branch;
