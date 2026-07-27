@@ -127,16 +127,33 @@ struct UsageEmbedTests {
         #expect(embed?.fields.map(\.name) == ["🟢 컨텍스트"])
     }
 
-    @Test func footerAbsorbsModelAndPerm() {
+    @Test func separatesConfiguredAndObservedModel() {
         let withModel = ContextUsageInfo(
             totalTokens: 30, maxTokens: 100, percentage: 30, model: "claude-fable-5"
         )
         let embed = buildUsageEmbed(
             usage: nil,
             ctxUsage: withModel,
-            extras: UsageEmbedExtras(meta: UsageSessionMeta(permMode: "bypassPermissions"))
+            extras: UsageEmbedExtras(
+                meta: UsageSessionMeta(permMode: "bypassPermissions"),
+                observedModelIsActual: true
+            )
         )
-        #expect(embed?.footer == "권한: 전체 자동 승인 (⚠️ 위험) · claude-fable-5")
+        #expect(embed?.footer == "실제 모델: claude-fable-5")
+        let config = embed?.fields.first { $0.name == "⚙️ 세션 설정" }?.value
+        #expect(config?.contains("설정 모델: 자동 선택") == true)
+        #expect(config?.contains("추론: 기본값") == true)
+        #expect(config?.contains("권한: 전체 자동 승인 (⚠️ 위험)") == true)
+    }
+
+    @Test func configurationPanelRendersWithoutUsageOrContext() {
+        let embed = buildUsageEmbed(
+            usage: .unavailable(UsageUnavailable(reason: .noCredentials)),
+            ctxUsage: nil,
+            extras: UsageEmbedExtras(meta: UsageSessionMeta(model: "grok-4", effort: "high", permMode: "auto"))
+        )
+        #expect(embed?.fields.map(\.name) == ["⚙️ 세션 설정"])
+        #expect(embed?.fields.first?.value == "설정 모델: grok-4\n추론: high\n권한: 자동")
     }
 
     @Test func descriptionFromDisplayNameAndCwd() {
@@ -308,9 +325,9 @@ struct UsageEmbedTests {
         #expect(meta.createdAt == "2026-07-01T00:00:00Z")
     }
 
-    @Test func onlyTerminalSnapshotBackendsPostUsageAtTurnEnd() {
-        #expect(postsUsageAtTurnEnd(for: .claude) == false)
-        #expect(postsUsageAtTurnEnd(for: .custom) == false)
+    @Test func everyBackendPostsOneTerminalUsagePanel() {
+        #expect(postsUsageAtTurnEnd(for: .claude))
+        #expect(postsUsageAtTurnEnd(for: .custom))
         #expect(postsUsageAtTurnEnd(for: .codex) == true)
         #expect(postsUsageAtTurnEnd(for: .grok) == true)
     }

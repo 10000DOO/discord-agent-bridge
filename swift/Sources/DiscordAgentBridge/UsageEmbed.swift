@@ -40,12 +40,19 @@ public struct UsageEmbedSpec: Sendable, Equatable {
 public struct UsageSessionMeta: Sendable, Equatable {
     public var cwd: String?
     public var gitBranch: String?
+    /// Wizard/profile model configuration, distinct from a model observed from the SDK.
+    public var model: String?
+    /// Explicit reasoning configuration; nil means the provider default is in effect.
+    public var effort: String?
     public var permMode: String?
+    /// Current backend conversation start; falls back to binding creation for old state.
     public var createdAt: String? // ISO
 
-    public init(cwd: String? = nil, gitBranch: String? = nil, permMode: String? = nil, createdAt: String? = nil) {
+    public init(cwd: String? = nil, gitBranch: String? = nil, model: String? = nil, effort: String? = nil, permMode: String? = nil, createdAt: String? = nil) {
         self.cwd = cwd
         self.gitBranch = gitBranch
+        self.model = model
+        self.effort = effort
         self.permMode = permMode
         self.createdAt = createdAt
     }
@@ -54,6 +61,8 @@ public struct UsageSessionMeta: Sendable, Equatable {
 public struct UsageEmbedExtras: Sendable, Equatable {
     public var meta: UsageSessionMeta?
     public var title: String?
+    /// Only Claude/Custom SDK events carry a resolved model that may be shown as actual.
+    public var observedModelIsActual: Bool
     /// Turn-local tool aggregates (W11-g slice4).
     public var tools: [TurnToolStat]
     /// Turn-local subagent runs (W11-g slice4).
@@ -62,11 +71,13 @@ public struct UsageEmbedExtras: Sendable, Equatable {
     public init(
         meta: UsageSessionMeta? = nil,
         title: String? = nil,
+        observedModelIsActual: Bool = false,
         tools: [TurnToolStat] = [],
         agents: [SubagentRun] = []
     ) {
         self.meta = meta
         self.title = title
+        self.observedModelIsActual = observedModelIsActual
         self.tools = tools
         self.agents = agents
     }
@@ -85,18 +96,17 @@ public func usageSessionMeta(
     return UsageSessionMeta(
         cwd: cwd,
         gitBranch: branch,
+        model: binding?.model,
+        effort: binding?.effort,
         permMode: binding?.permMode ?? fallbackPermMode,
-        createdAt: binding?.createdAt
+        createdAt: binding?.contextGenerationStartedAt ?? binding?.createdAt
     )
 }
 
-/// Claude and custom stream usage directly through UsageActivityHost; Codex and Grok only
-/// expose their terminal snapshot. Keep each backend on exactly one Discord posting path.
+/// Every backend posts exactly one terminal panel after answer/footer/mention. This compatibility
+/// helper keeps the policy explicit for callers/tests that previously special-cased Claude.
 public func postsUsageAtTurnEnd(for backend: Backend) -> Bool {
-    switch backend {
-    case .claude, .custom: false
-    case .codex, .grok: true
-    }
+    true
 }
 
 // Discord embed hard limit for one field value.
@@ -257,7 +267,9 @@ public func buildUsageEmbed(
     let haveUsage = snap != nil
     let tools = extras?.tools ?? []
     let agents = extras?.agents ?? []
-    if !haveUsage && ctxUsage == nil { return nil }
+    // Grok may legitimately have neither account usage nor a known context window.
+    // A bound session still needs its actual configuration shown.
+    if !haveUsage && ctxUsage == nil && extras?.meta == nil { return nil }
 
     let meta = extras?.meta
     var fields: [UsageEmbedField] = []
@@ -301,6 +313,16 @@ public func buildUsageEmbed(
         }
     }
 
+    if let meta {
+        let configuredModel = meta.model?.isEmpty == false ? meta.model! : "자동 선택"
+        let effort = meta.effort?.isEmpty == false ? meta.effort! : "기본값"
+        let permission = meta.permMode.map(permLabel) ?? "자동"
+        fields.append(UsageEmbedField(
+            name: "⚙️ 세션 설정",
+            value: "설정 모델: \(configuredModel)\n추론: \(effort)\n권한: \(permission)"
+        ))
+    }
+
     if let toolsValue = buildToolsValue(tools) {
         fields.append(UsageEmbedField(name: "🛠️ 이번 턴 도구", value: toolsValue, inline: true))
     }
@@ -311,11 +333,8 @@ public func buildUsageEmbed(
     if fields.isEmpty { return nil }
 
     var footerParts: [String] = []
-    if let perm = meta?.permMode {
-        footerParts.append("권한: \(permLabel(perm))")
-    }
-    if let model = ctxUsage?.model {
-        footerParts.append(model)
+    if extras?.observedModelIsActual == true, let model = ctxUsage?.model {
+        footerParts.append("실제 모델: \(model)")
     }
 
     let isGrokWeeklyOnly =

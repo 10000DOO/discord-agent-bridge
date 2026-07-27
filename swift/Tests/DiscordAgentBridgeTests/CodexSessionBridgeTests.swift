@@ -351,7 +351,7 @@ struct CodexSessionBridgeTests {
 
         let reply = try await turn.value
         #expect(reply.contextUsage?.model == "gpt-5-codex")
-        #expect(buildUsageEmbed(usage: nil, ctxUsage: reply.contextUsage)?.footer == "gpt-5-codex")
+        #expect(buildUsageEmbed(usage: nil, ctxUsage: reply.contextUsage)?.footer == nil)
     }
 
     @Test func eachTurnKeepsItsModelSnapshotWhenConfigChanges() async throws {
@@ -394,9 +394,9 @@ struct CodexSessionBridgeTests {
         let secondReply = try await secondTurn.value
 
         #expect(firstReply.contextUsage?.model == "gpt-5-old")
-        #expect(buildUsageEmbed(usage: nil, ctxUsage: firstReply.contextUsage)?.footer == "gpt-5-old")
+        #expect(buildUsageEmbed(usage: nil, ctxUsage: firstReply.contextUsage)?.footer == nil)
         #expect(secondReply.contextUsage?.model == "gpt-5-new")
-        #expect(buildUsageEmbed(usage: nil, ctxUsage: secondReply.contextUsage)?.footer == "gpt-5-new")
+        #expect(buildUsageEmbed(usage: nil, ctxUsage: secondReply.contextUsage)?.footer == nil)
     }
 
     // W14: stop closes client + drops channel map; interrupt keeps map and sends turn/interrupt.

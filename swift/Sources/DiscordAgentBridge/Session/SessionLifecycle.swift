@@ -195,7 +195,9 @@ public struct SessionLifecycle: Sendable {
 
         session.backendSessionId = nil
         session.lifecycleGeneration = UUID().uuidString
-        session.updatedAt = now()
+        let startedAt = now()
+        session.contextGenerationStartedAt = startedAt
+        session.updatedAt = startedAt
         do {
             try await store.upsert(channelId: channelId, session)
         } catch {
@@ -240,7 +242,9 @@ public struct SessionLifecycle: Sendable {
             session.model = nil
             session.effort = nil
         }
-        session.updatedAt = now()
+        let startedAt = now()
+        session.contextGenerationStartedAt = startedAt
+        session.updatedAt = startedAt
         do {
             try await store.upsert(channelId: channelId, session)
         } catch {
@@ -285,7 +289,9 @@ public struct SessionLifecycle: Sendable {
         session.model = model
         session.effort = effort
         if let permMode { session.permMode = permMode }
-        session.updatedAt = now()
+        let startedAt = now()
+        session.contextGenerationStartedAt = startedAt
+        session.updatedAt = startedAt
         do {
             try await store.upsert(channelId: channelId, session)
         } catch {
@@ -378,6 +384,7 @@ public struct SessionLifecycle: Sendable {
     public func replaceBinding(channelId: String, with session: PersistedSession) async -> Bool {
         var replacement = session
         replacement.lifecycleGeneration = UUID().uuidString
+        replacement.contextGenerationStartedAt = now()
         do {
             try await store.upsert(channelId: channelId, replacement)
         } catch {

@@ -6,7 +6,7 @@ import Foundation
 extension Backend: Codable {}
 
 /// On-disk / in-memory state schema version for `swift-state.json`.
-public let STATE_VERSION = 2
+public let STATE_VERSION = 3
 
 /// One channel's session as persisted to disk (for reconnect after a restart).
 public struct PersistedSession: Codable, Sendable, Equatable {
@@ -23,6 +23,8 @@ public struct PersistedSession: Codable, Sendable, Equatable {
     /// Changes whenever a lifecycle operation replaces the binding. A bridge captures this
     /// value when it starts and its late persistence callback may only update that generation.
     public var lifecycleGeneration: String
+    /// Start time of the current backend conversation, independent of binding creation.
+    public var contextGenerationStartedAt: String?
     public var createdAt: String?
     public var updatedAt: String
     public var archived: Bool
@@ -39,6 +41,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         permissionProfile: String? = nil,
         projectAuth: ProjectAuth? = nil,
         lifecycleGeneration: String = UUID().uuidString,
+        contextGenerationStartedAt: String? = nil,
         createdAt: String? = nil,
         updatedAt: String,
         archived: Bool = false
@@ -54,6 +57,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.permissionProfile = permissionProfile
         self.projectAuth = projectAuth
         self.lifecycleGeneration = lifecycleGeneration
+        self.contextGenerationStartedAt = contextGenerationStartedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.archived = archived
@@ -82,6 +86,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         // Pre-generation state files remain valid. The loaded instance gets one stable token
         // for this process; the next write persists it.
         self.lifecycleGeneration = try c.decodeIfPresent(String.self, forKey: .lifecycleGeneration) ?? UUID().uuidString
+        self.contextGenerationStartedAt = try c.decodeIfPresent(String.self, forKey: .contextGenerationStartedAt)
         self.createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
         self.updatedAt = try c.decode(String.self, forKey: .updatedAt)
         self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
@@ -101,6 +106,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         try c.encodeIfPresent(permissionProfile, forKey: .permissionProfile)
         try c.encodeIfPresent(projectAuth, forKey: .projectAuth)
         try c.encode(lifecycleGeneration, forKey: .lifecycleGeneration)
+        try c.encodeIfPresent(contextGenerationStartedAt, forKey: .contextGenerationStartedAt)
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encode(archived, forKey: .archived)
@@ -108,7 +114,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case backend, backendSessionId, cwd, guildId, ownerId, model, effort, permMode
-        case permissionProfile, projectAuth, lifecycleGeneration, createdAt, updatedAt, archived
+        case permissionProfile, projectAuth, lifecycleGeneration, contextGenerationStartedAt, createdAt, updatedAt, archived
     }
 
     /// Map a stored mode/backend string → `Backend` after `normalizeModeId`. `nil` when the
@@ -149,6 +155,10 @@ private func migrateStateStep(fromVersion: Int, raw: [String: Any]) throws -> [S
             }
             next["channels"] = channels
         }
+        return next
+    case 2:
+        var next = raw
+        next["version"] = 3
         return next
     default:
         throw SessionStoreError.noMigration(from: fromVersion)

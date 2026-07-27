@@ -16,13 +16,15 @@ private actor GateableSidecar {
     private let reqCapture: LockedBox<[String]>?        // records "start" / "resume:<backendId>"
     private let resumeFails: Bool                       // session.resume → error (forces fallback)
     private let emitContextAndRateLimit: Bool           // W11-g slice2: context_usage + rate_limit before result
+    private let emitRateLimitAfterResult: Bool          // protocol permits a trailing terminal rate frame
+    private let postResultRateDelayNs: UInt64
     private let closeHostAfterSendAck: InMemorySidecarTransport? // simulate host-side EOF after ACK, before terminal event
     private let closeHostAfterTerminalResult: InMemorySidecarTransport? // simulate EOF immediately after terminal result
     private var emitToolsAndSubagentOnce: Bool          // W11-g slice4: one turn of tool/subagent events
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -33,6 +35,8 @@ private actor GateableSidecar {
         self.reqCapture = reqCapture
         self.resumeFails = resumeFails
         self.emitContextAndRateLimit = emitContextAndRateLimit
+        self.emitRateLimitAfterResult = emitRateLimitAfterResult
+        self.postResultRateDelayNs = postResultRateDelayNs
         self.emitToolsAndSubagentOnce = emitToolsAndSubagent
         self.closeHostAfterSendAck = closeHostAfterSendAck
         self.closeHostAfterTerminalResult = closeHostAfterTerminalResult
@@ -98,29 +102,9 @@ private actor GateableSidecar {
                 await writeEnv(notify(method: "session.backend_id", params: ["backendSessionId": .string(bid)], session: handle))
             }
         case "session.send":
-            let session = env.session ?? env.params?["session"]?.stringValue ?? ""
-            let text = env.params?["text"]?.stringValue ?? ""
-            lastText = text
-            // G-P0-01: optional files[] capture for bridge tests.
-            if let arr = env.params?["files"]?.arrayValue {
-                let paths = arr.compactMap { $0.objectValue?["path"]?.stringValue }.joined(separator: ",")
-                capture?.withLock { $0["files.paths"] = paths }
-                let mimes = arr.compactMap { $0.objectValue?["mime"]?.stringValue }.joined(separator: ",")
-                capture?.withLock { $0["files.mimes"] = mimes }
-            } else {
-                capture?.withLock { $0["files.paths"] = "" }
-            }
-            await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: session))
-            if let closeHostAfterSendAck {
-                await closeHostAfterSendAck.close()
-                return
-            }
-            if emitsPermission {
-                // Ask for permission; the turn finishes only after session.permission answers.
-                Task { await self.emit(session: session, event: .permissionRequest(id: "perm-1", toolName: "Bash", input: .object(["command": .string("ls")]))) }
-            } else {
-                Task { await self.completeTurn(session: session, text: text) }   // non-blocking
-            }
+            // A live sidecar keeps accepting control RPCs while session.send awaits a turn.
+            // Model that here so interrupt can reach the bridge before the gate releases.
+            Task { await self.handleSessionSend(id: id, env: env) }
         case "session.permission":
             capturePerm?.withLock {
                 $0["behavior"] = env.params?["behavior"]?.stringValue ?? ""
@@ -144,6 +128,34 @@ private actor GateableSidecar {
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: env.session))
         default:
             await writeEnv(resError(id: id, method: method, error: makeError(code: "unsupported", message: method)))
+        }
+    }
+
+    private func handleSessionSend(id: String, env: Envelope) async {
+        let session = env.session ?? env.params?["session"]?.stringValue ?? ""
+        let text = env.params?["text"]?.stringValue ?? ""
+        lastText = text
+        // G-P0-01: optional files[] capture for bridge tests.
+        if let arr = env.params?["files"]?.arrayValue {
+            let paths = arr.compactMap { $0.objectValue?["path"]?.stringValue }.joined(separator: ",")
+            capture?.withLock { $0["files.paths"] = paths }
+            let mimes = arr.compactMap { $0.objectValue?["mime"]?.stringValue }.joined(separator: ",")
+            capture?.withLock { $0["files.mimes"] = mimes }
+        } else {
+            capture?.withLock { $0["files.paths"] = "" }
+        }
+        if let closeHostAfterSendAck {
+            await closeHostAfterSendAck.close()
+            return
+        }
+        if emitsPermission {
+            await writeEnv(res(id: id, method: "session.send", result: .object(["ok": .bool(true)]), session: session))
+            // Ask for permission; the turn finishes only after session.permission answers.
+            await emit(session: session, event: .permissionRequest(id: "perm-1", toolName: "Bash", input: .object(["command": .string("ls")])))
+        } else {
+            await completeTurn(session: session, text: text)
+            await writeEnv(res(id: id, method: "session.send", result: .object(["ok": .bool(true)]), session: session))
+            if let closeHostAfterTerminalResult { await closeHostAfterTerminalResult.close() }
         }
     }
 
@@ -202,9 +214,12 @@ private actor GateableSidecar {
         await emit(session: session, event: .text(text: "ok:\(text)", delta: true))
         let resultText: String? = resultEchoesText ? "ok:\(text)" : nil
         await emit(session: session, event: .result(text: resultText, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
-        if let closeHostAfterTerminalResult {
-            await closeHostAfterTerminalResult.close()
+        if emitRateLimitAfterResult {
+            if postResultRateDelayNs > 0 { try? await Task.sleep(nanoseconds: postResultRateDelayNs) }
+            await emit(session: session, event: .rateLimit(resetAt: nil, rateLimitType: "five_hour", utilization: 73))
         }
+        // Claude SDK session_state_changed:idle is the explicit post-drain terminal marker.
+        await emit(session: session, event: .turnComplete)
     }
 
     private func emit(session: String, event: AgentEvent) async {
@@ -231,6 +246,8 @@ private func makeDabBridge(
     reqCapture: LockedBox<[String]>? = nil,
     resumeFails: Bool = false,
     emitContextAndRateLimit: Bool = false,
+    emitRateLimitAfterResult: Bool = false,
+    postResultRateDelayNs: UInt64 = 0,
     emitToolsAndSubagent: Bool = false,
     closeAfterTerminalResult: Bool = false,
     resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil
@@ -244,6 +261,8 @@ private func makeDabBridge(
                 capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm,
                 emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails,
                 emitContextAndRateLimit: emitContextAndRateLimit,
+                emitRateLimitAfterResult: emitRateLimitAfterResult,
+                postResultRateDelayNs: postResultRateDelayNs,
                 emitToolsAndSubagent: emitToolsAndSubagent,
                 closeHostAfterTerminalResult: closeAfterTerminalResult ? pair.host : nil
             )
@@ -312,6 +331,14 @@ struct DabSessionBridgeTests {
         #expect(turn.contextUsage?.mcpServerCount == 2)
         #expect(turn.rateLimit?.rateLimitType == "five_hour")
         #expect(turn.rateLimit?.utilization == 50)
+    }
+
+    @Test func capturesRateLimitThatArrivesAfterResultBeforeTerminalDelivery() async throws {
+        let (bridge, _) = makeDabBridge(emitRateLimitAfterResult: true, postResultRateDelayNs: 30_000_000)
+        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        #expect(turn.text == "ok:hi")
+        #expect(turn.rateLimit?.rateLimitType == "five_hour")
+        #expect(turn.rateLimit?.utilization == 73)
     }
 
     @Test func aggregatesToolsAndSubagentOnTurn() async throws {
@@ -835,12 +862,11 @@ struct DabSessionBridgeTests {
     }
 }
 
-// H10: DabSessionBridge's .contextUsage/.rateLimit cases push out via UsageActivityHost.shared
-// (dab wires the real Discord post there — DabMain.swift setNotifier). .serialized: this touches
-// the shared singleton, mirrors LogTests/I18nTests' convention for shared-state tests.
-@Suite("DabSessionBridge H10 mid-turn UsageActivityHost notify", .serialized)
+// Terminal usage must stay owned by the turn. A callback from the sidecar used to race answer
+// delivery, so the bridge now accumulates both values and lets DabMain post one final panel.
+@Suite("DabSessionBridge terminal usage ownership", .serialized)
 struct DabSessionBridgeUsageActivityTests {
-    @Test func contextUsageAndRateLimitFireUsageActivityHostDuringTurn() async throws {
+    @Test func contextUsageAndRateLimitStayOnTurnWithoutRealtimeNotifier() async throws {
         let usageChannelId = "usage-\(UUID().uuidString)"
         let recorder = LockedBox<[UsageActivityEvent]>([])
         await UsageActivityHost.shared.setCapabilities(channelId: usageChannelId, Capabilities(usagePanel: true))
@@ -853,24 +879,10 @@ struct DabSessionBridgeUsageActivityTests {
         let (bridge, _) = makeDabBridge(emitContextAndRateLimit: true)
         let turn = try await bridge.runTurn(channelId: usageChannelId, guildId: "g", ownerId: nil, text: "hi")
 
-        // Turn-end value is unaffected by the new real-time push (regression guard).
+        // Terminal values are retained for the single ordered final panel.
         #expect(turn.contextUsage?.percentage == 10)
         #expect(turn.rateLimit?.utilization == 50)
-
-        // Each event fires its own fire-and-forget notify Task (no ordering chain between the
-        // two, mirroring ToolActivityHost's .toolUse handling) — assert by content, not index.
-        #expect(await waitUntil { recorder.withLock { $0.count } == 2 })
-        let events = recorder.withLock { $0 }
-        let contextUsages = events.compactMap { event -> ContextUsageInfo? in
-            if case .contextUsage(let ctx, _, _) = event { return ctx }
-            return nil
-        }
-        let rateLimits = events.compactMap { event -> RateLimitInfo? in
-            if case .rateLimit(let rl) = event { return rl }
-            return nil
-        }
-        #expect(contextUsages.first?.percentage == 10)
-        #expect(rateLimits.first?.utilization == 50)
+        #expect(recorder.withLock { $0.isEmpty })
 
         // Isolated cleanup (this suite is the only place touching the shared singleton).
         await UsageActivityHost.shared.dispose(channelId: usageChannelId)

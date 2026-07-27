@@ -55,6 +55,10 @@ struct AgentEventFullRoundtripTests {
         #expect(try rt(empty) == empty)
     }
 
+    @Test func turnCompleteRoundTrips() throws {
+        #expect(try rt(.turnComplete) == .turnComplete)
+    }
+
     @Test func toolResultWithParent() throws {
         let ev = AgentEvent.toolResult(id: "t", ok: false, content: "err", parentToolUseId: "parent")
         #expect(try rt(ev) == ev)

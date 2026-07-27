@@ -15,6 +15,8 @@ public enum AgentEvent: Codable, Sendable, Equatable {
         tokensOut: Int?,
         durationMs: Int?
     )
+    /// Claude SDK `session_state_changed: idle`: explicit end of a drained turn.
+    case turnComplete
     case contextUsage(
         totalTokens: Int,
         maxTokens: Int,
@@ -51,6 +53,7 @@ public enum AgentEvent: Codable, Sendable, Equatable {
         case .permissionRequest: return "permission_request"
         case .progress: return "progress"
         case .result: return "result"
+        case .turnComplete: return "turn_complete"
         case .contextUsage: return "context_usage"
         case .subagentResult: return "subagent_result"
         case .error: return "error"
@@ -115,6 +118,8 @@ public enum AgentEvent: Codable, Sendable, Equatable {
                 tokensOut: try c.decodeIfPresent(Int.self, forKey: .tokensOut),
                 durationMs: try c.decodeIfPresent(Int.self, forKey: .durationMs)
             )
+        case "turn_complete":
+            self = .turnComplete
         case "context_usage":
             self = .contextUsage(
                 totalTokens: try c.decode(Int.self, forKey: .totalTokens),
@@ -188,6 +193,8 @@ public enum AgentEvent: Codable, Sendable, Equatable {
             try c.encodeIfPresent(tokensIn, forKey: .tokensIn)
             try c.encodeIfPresent(tokensOut, forKey: .tokensOut)
             try c.encodeIfPresent(durationMs, forKey: .durationMs)
+        case .turnComplete:
+            break
         case .contextUsage(
             let total, let max, let pct, let model, let display,
             let clearable, let memCount, let mcpCount

@@ -136,14 +136,6 @@ struct DabMain {
                 client: client, guildId: guildId, sessionChannelId: channelId, event: event, backend: backend
             )
         }
-        // H10: mid-turn context_usage/rate_limit → immediate usage embed / rate-limit line (TS
-        // renderers/index.ts usage(ev)/rateLimit(ev) post on every event, not just at turn end).
-        await UsageActivityHost.shared.setNotifier { channelId, guildId, backend, permMode, event in
-            await postUsageActivity(
-                client: client, channelId: ChannelSnowflake(channelId), guildId: guildId,
-                backend: backend, permMode: permMode, event: event
-            )
-        }
         // W11-g residual: mid-turn stream status embed edits (text / tool_use / progress).
         await StreamStatusHost.shared.setUpdater { channelId, messageId, guildId, spec in
             await editStreamControlMessage(
@@ -714,6 +706,14 @@ struct EventHandler: GatewayEventHandler {
                     try await respondEphemeral(payload, "이 채널 세션의 소유자 또는 관리자만 새 세션으로 바꿀 수 있어요.")
                     return
                 }
+                // The live provider catalog can cold-start a local CLI. Acknowledge before
+                // that work so Discord's three-second interaction token never expires.
+                let deferred = try? await client.createInteractionResponse(
+                    id: payload.id,
+                    token: payload.token,
+                    payload: .deferredChannelMessageWithSource(isEphemeral: true)
+                )
+                guard deferred != nil else { return }
                 // W11-b2: folder → [preset if any] → backend→model→effort→perm.
                 // G-P1-06: config.favorites → browseRoots/allowedRoots; empty → unbounded (TS Fix 1).
                 // Browser starts at DAB_CWD else home (clamped to first root when bounded).
@@ -748,14 +748,10 @@ struct EventHandler: GatewayEventHandler {
                 )
                 await WizardRegistry.shared.put(wizard, channelId: channelId)
                 let (embeds, components) = discordPayload(from: wizard.render())
-                _ = try await client.createInteractionResponse(
-                    id: payload.id,
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
                     token: payload.token,
-                    payload: .channelMessageWithSource(.init(
-                        embeds: embeds,
-                        flags: [.ephemeral],
-                        components: components
-                    ))
+                    payload: .init(embeds: embeds, components: components)
                 )
             case "close":
                 // W14: real stop (backend + unbind) — was unbind-only and leaked processes.
@@ -2131,18 +2127,6 @@ struct EventHandler: GatewayEventHandler {
         await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)
         // C15: guildId/backend for the status-channel tool_use notifier (see setNotifier above).
         await ToolActivityHost.shared.setNotifyContext(channelId: channelId, guildId: guildId, backend: backend)
-        // H10: caps/guildId/backend/permMode for the mid-turn usage notifier (see setNotifier
-        // above). Only DabSessionBridge (.claude/.custom) ever calls UsageActivityHost.notify —
-        // Codex/Grok emit context_usage/rate_limit at most once, synchronously at turn end
-        // already (see swift-port-parity-gaps.md H10), so they never touch this host. Scoping the
-        // registration to the backends that actually use it avoids leaking per-channel state for
-        // channels DabSessionBridge.stop's dispose(channelId:) never visits.
-        if backend == .claude || backend == .custom {
-            await UsageActivityHost.shared.setCapabilities(channelId: channelId, caps)
-            await UsageActivityHost.shared.setNotifyContext(
-                channelId: channelId, guildId: guildId, backend: backend, permMode: binding?.permMode
-            )
-        }
         // Live stream status embed: yellow "응답 중…" + Stop button (W11-g residual).
         // Mid-turn text/tool/progress edits via StreamStatusHost; finalize collapses to done.
         // streaming=false → skip begin (notes no-op); interrupt control message still posts.
@@ -2232,35 +2216,16 @@ struct EventHandler: GatewayEventHandler {
                     }
                 )
             }
-            // Claude/custom stream usage and rate limits through UsageActivityHost as the events
-            // occur. Codex/Grok expose terminal snapshots, so they post only on this path.
-            var usageSnap: UsageResult? = nil
-            let shouldPostUsageAtTurnEnd = postsUsageAtTurnEnd(for: backend)
-            if caps.usagePanel && shouldPostUsageAtTurnEnd {
-                let (snap, usageTitle) = await usageSnapshotAndTitle(backend: backend)
-                usageSnap = snap
-                let embedExtras = UsageEmbedExtras(
-                    meta: await resolveUsageSessionMeta(
-                        channelId: channelId, fallbackPermMode: binding?.permMode
-                    ),
-                    title: usageTitle,
-                    tools: turn.tools,
-                    agents: turn.agents
-                )
-                await postUsageEmbedOrFallback(
-                    client: client, channelId: payload.channel_id, guildId: guildId,
-                    usage: usageSnap, ctxUsage: turn.contextUsage, extras: embedExtras
-                )
-            }
-            // W11-g slice2: rate_limit notice (event fields; enrich with usage snapshot if any).
-            // Always (not usagePanel-gated) — matches TS RendererDispatcher.rateLimit.
-            if let rl = turn.rateLimit, shouldPostUsageAtTurnEnd {
+            let (usageSnap, usageTitle) = await usageSnapshotAndTitle(backend: backend)
+            // A rate update is part of this terminal snapshot. Post it before the completion
+            // mention so the usage panel remains the final terminal artifact.
+            if let rl = turn.rateLimit {
                 await postRateLimitLine(
                     client: client, channelId: payload.channel_id, guildId: guildId,
                     rateLimit: rl, usage: usageSnap
                 )
             }
-            // W11-g slice2: mentionOnComplete — ping session owner (binding) or message author.
+            // mentionOnComplete is terminal output too: answer → footer → mention → usage.
             let ownerId = await resolveOwnerId(channelId: channelId, messageAuthorId: actorId)
             if let mention = mentionOnCompleteContent(ownerId: ownerId) {
                 _ = await createMessageWithRetry(
@@ -2272,6 +2237,21 @@ struct EventHandler: GatewayEventHandler {
                             channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
                         )
                     }
+                )
+            }
+            if caps.usagePanel {
+                let embedExtras = UsageEmbedExtras(
+                    meta: await resolveUsageSessionMeta(
+                        channelId: channelId, fallbackPermMode: binding?.permMode
+                    ),
+                    title: usageTitle,
+                    observedModelIsActual: backend == .claude || backend == .custom,
+                    tools: turn.tools,
+                    agents: turn.agents
+                )
+                await postUsageEmbedOrFallback(
+                    client: client, channelId: payload.channel_id, guildId: guildId,
+                    usage: usageSnap, ctxUsage: turn.contextUsage, extras: embedExtras
                 )
             }
             // W16-g: status-channel notification (result + rate_limit when present).
@@ -2455,6 +2435,7 @@ func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
         permMode: perm,
         permissionProfile: existing?.permissionProfile,
         projectAuth: existing?.projectAuth,
+        contextGenerationStartedAt: existing?.contextGenerationStartedAt,
         createdAt: existing?.createdAt,
         updatedAt: ISO8601DateFormatter().string(from: Date()),
         archived: existing?.archived ?? false

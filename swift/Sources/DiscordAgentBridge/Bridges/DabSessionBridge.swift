@@ -69,6 +69,7 @@ public actor DabSessionBridge {
         /// Turn-local tools/subagent HUD aggregates (W11-g slice4).
         var stats = TurnToolStatsAggregator()
         var done = false
+        var resultReceived = false
         var continuation: CheckedContinuation<TurnResult, Error>?
         var timeoutTask: Task<Void, Never>?
     }
@@ -145,7 +146,13 @@ public actor DabSessionBridge {
         for tail in tails { await tail.value }
         guard client === closedClient else { return }
         for (handle, box) in turns where !box.done {
-            finishTurnUnlocked(handle: handle, result: nil, error: error)
+            // A result without turn_complete is not yet a complete turn. EOF proves no explicit
+            // drain marker can arrive, so retain the accumulated answer instead of timing out.
+            if box.resultReceived {
+                finishTerminalResult(handle: handle)
+            } else {
+                finishTurnUnlocked(handle: handle, result: nil, error: error)
+            }
         }
         sessions.removeAll()
         sessionMeta.removeAll()
@@ -377,6 +384,7 @@ public actor DabSessionBridge {
 
         // Resume the stored backend session if we have one; on failure fall back to a fresh start (F5).
         let started: SessionStartResult
+        var startedFresh = persisted?.backendSessionId == nil
         if let resumeId = persisted?.backendSessionId {
             do {
                 started = try await client.sessionResume(params, backendSessionId: resumeId)
@@ -384,6 +392,7 @@ public actor DabSessionBridge {
             } catch {
                 fallbackNotice[channelId] = sessionFallbackNotice
                 started = try await client.sessionStart(params)
+                startedFresh = true
                 log.warn("session.resume failed (\(error)) → start channel=\(channelId)")
             }
         } else {
@@ -402,6 +411,7 @@ public actor DabSessionBridge {
         let persistBackend = backend
         let persistModel = model
         let persistGeneration = persisted?.lifecycleGeneration
+        let persistContextGenerationStartedAt = startedFresh ? iso8601Now() : nil
         // H8: `perm` may have been reassigned from the live profile lookup above — snapshot it
         // (same as `persistModel`) so the escaping onBackendId closure captures an immutable value.
         let persistPerm = perm
@@ -430,7 +440,8 @@ public actor DabSessionBridge {
                             store: store, backend: persistBackend, channelId: channelId,
                             guildId: guildId, ownerId: ownerId, cwd: cwdValue,
                             model: persistModel, effort: effort, permMode: persistPerm,
-                            backendSessionId: backendId, lifecycleGeneration: persistGeneration
+                            backendSessionId: backendId, lifecycleGeneration: persistGeneration,
+                            contextGenerationStartedAt: persistContextGenerationStartedAt
                         )
                     }
                 },
@@ -449,7 +460,8 @@ public actor DabSessionBridge {
                 store: store, backend: persistBackend, channelId: channelId,
                 guildId: guildId, ownerId: ownerId, cwd: cwdValue,
                 model: persistModel, effort: effort, permMode: persistPerm,
-                backendSessionId: bid, lifecycleGeneration: persistGeneration
+                backendSessionId: bid, lifecycleGeneration: persistGeneration,
+                contextGenerationStartedAt: persistContextGenerationStartedAt
             )
         }
         if (stopEpoch[channelId] ?? 0) != epoch {
@@ -485,30 +497,24 @@ public actor DabSessionBridge {
             if let u = turnUsage(fromResult: costUsd, tokensIn: tokensIn, tokensOut: tokensOut, durationMs: durationMs) {
                 box.usage = u
             }
+            box.resultReceived = true
             turns[handle] = box
-            let out = box.text.isEmpty ? "(empty result)" : box.text
-            finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: out))
+        case .turnComplete:
+            // The Claude SDK's session_state_changed:idle follows all held-back turn events
+            // (including rate_limit). `session.send` itself is only an enqueue ACK.
+            if box.resultReceived {
+                finishTerminalResult(handle: handle)
+            }
         case .contextUsage:
-            // W11-g slice2: keep latest context_usage for the turn result / panel.
-            // H10: also push it out immediately (TS renderers/index.ts usage(ev) posts on every
-            // event, not just at turn end) with the turn-local tools/agents snapshot so far.
+            // Keep the terminal context snapshot with its owning turn. Discord delivery is
+            // serialized in DabMain after answer/footer/mention, never from this event callback.
             if let info = ContextUsageInfo.from(event: event) {
                 box.contextUsage = info
                 turns[handle] = box
-                if let channelId = sessionMeta[handle]?.channelId {
-                    let tools = box.stats.toolsSnapshot()
-                    let agents = box.stats.agentsSnapshot()
-                    Task {
-                        await UsageActivityHost.shared.notify(
-                            channelId: channelId, .contextUsage(info, tools: tools, agents: agents)
-                        )
-                    }
-                }
             }
         case .rateLimit(let resetAt, let rateLimitType, let utilization):
-            // W11-g slice2: capture rate_limit for a post-turn notice line.
-            // H10: TS rateLimit(ev) sends immediately on every event (renderers/index.ts:355-365),
-            // never gated/debounced — push it out now too.
+            // Keep the latest limit snapshot with its owning turn. Sending it from this
+            // callback raced answer delivery and could put a late panel before the answer.
             let info = RateLimitInfo(
                 resetAt: resetAt,
                 rateLimitType: rateLimitType,
@@ -516,9 +522,6 @@ public actor DabSessionBridge {
             )
             box.rateLimit = info
             turns[handle] = box
-            if let channelId = sessionMeta[handle]?.channelId {
-                Task { await UsageActivityHost.shared.notify(channelId: channelId, .rateLimit(info)) }
-            }
         case .error(let message, _):
             finishTurnUnlocked(
                 handle: handle,
@@ -631,6 +634,12 @@ public actor DabSessionBridge {
         } else {
             cont?.resume(returning: result ?? makeTurnResult(box: box, text: box.text))
         }
+    }
+
+    private func finishTerminalResult(handle: String) {
+        guard let box = turns[handle], !box.done else { return }
+        let out = box.text.isEmpty ? "(empty result)" : box.text
+        finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: out))
     }
 
     // MARK: - Lifecycle (W14)

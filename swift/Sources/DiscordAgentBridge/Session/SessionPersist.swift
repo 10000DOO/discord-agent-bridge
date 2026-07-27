@@ -18,7 +18,8 @@ func persistSession(
     effort: String?,
     permMode: String?,
     backendSessionId: String?,
-    lifecycleGeneration: String? = nil
+    lifecycleGeneration: String? = nil,
+    contextGenerationStartedAt: String? = nil
 ) async {
     let existing = await store.binding(channelId: channelId)
     // A backend-id callback can arrive after the channel was reconfigured, closed, or
@@ -51,6 +52,7 @@ func persistSession(
         permissionProfile: existing?.permissionProfile,
         projectAuth: existing?.projectAuth,
         lifecycleGeneration: existing?.lifecycleGeneration ?? UUID().uuidString,
+        contextGenerationStartedAt: contextGenerationStartedAt ?? existing?.contextGenerationStartedAt ?? iso8601Now(),
         createdAt: existing?.createdAt,
         updatedAt: iso8601Now(),
         archived: existing?.archived ?? false

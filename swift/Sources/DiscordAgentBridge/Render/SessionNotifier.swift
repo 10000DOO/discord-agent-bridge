@@ -55,6 +55,8 @@ public func formatNotification(
     usage: UsageResult? = nil
 ) -> String? {
     switch ev {
+    case .turnComplete:
+        return nil
     case .result(_, let costUsd, let tokensIn, let tokensOut, let durationMs):
         guard events.result else { return nil }
         var line = "✅ <#\(sessionChannelId)> 완료"

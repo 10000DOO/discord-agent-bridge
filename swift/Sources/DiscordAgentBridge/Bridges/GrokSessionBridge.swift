@@ -282,6 +282,7 @@ public actor GrokSessionBridge {
         // ponytail: model/effort/bypass are baked at spawn from the FIRST turn's config (TS parity —
         // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
         let persisted = await store.binding(channelId: channelId)
+        var startedFresh = persisted?.backendSessionId == nil
 
         // H8: a profile name persisted on the binding is the source of truth for permissionMode —
         // re-resolve it from the LIVE config here rather than trusting the (possibly stale)
@@ -351,6 +352,7 @@ public actor GrokSessionBridge {
                 } catch {
                     fallbackNotice[channelId] = sessionFallbackNotice
                     _ = try await client.sessionNew(cwd: cwd)
+                    startedFresh = true
                     log.warn("load failed (\(error)) → session/new channel=\(channelId)")
                 }
             } else {
@@ -370,7 +372,7 @@ public actor GrokSessionBridge {
         let channel = Channel(client: client)
         channels[channelId] = channel
         // F7: capture the grok session id + live context.
-        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId, lifecycleGeneration: persisted?.lifecycleGeneration)
+        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId, lifecycleGeneration: persisted?.lifecycleGeneration, contextGenerationStartedAt: startedFresh ? iso8601Now() : nil)
         if (stopEpoch[channelId] ?? 0) != epoch {
             channels[channelId] = nil
             await client.close()
