@@ -129,7 +129,10 @@ private func makeGrokBridge(
     return (bridge, made)
 }
 
-@Suite("GrokSessionBridge")
+// .serialized: `productionSpawnEnvironmentIncludesWellKnownPathDirs` below mutates the process-wide
+// `GROK_CMD` env var, which `configReachesSpawnFactory`'s bare `resolveGrokSpawn(...)` call (no
+// explicit `env:`) also reads — without serialization the two race (WO-13).
+@Suite("GrokSessionBridge", .serialized)
 struct GrokSessionBridgeTests {
     @Test func happyPath() async throws {
         let (bridge, _) = makeGrokBridge()
@@ -206,6 +209,70 @@ struct GrokSessionBridgeTests {
             Issue.record("expected turn timeout")
         } catch let e as AcpClientError {
             #expect(e.message.contains("timed out"))
+        }
+    }
+
+    // M7 (security regression): no bound permMode is a safe default (approval required), not
+    // auto-approve — TS `sessionOrchestrator.ts:817` defaults an unbound session to `'default'`.
+    @Test func grokBypassPermModeNilDefaultsToSafe() {
+        #expect(grokBypassPermMode(nil) == false)
+        #expect(grokBypassPermMode("") == false)
+        #expect(grokBypassPermMode("default") == false)
+        #expect(grokBypassPermMode("bypassPermissions") == true)
+        #expect(grokBypassPermMode("danger-full-access") == true)
+    }
+
+    // M7: an unbound channel (no config → nil permMode) routes through the Discord permission
+    // gate instead of spawning with `--always-approve`.
+    @Test func nilConfigInstallsPermissionHandlerNotBypass() async throws {
+        let spy = LockedBox<[AcpPermissionHandler?]>([])
+        let (bridge, _) = makeGrokBridge(onPermissionSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi")   // no config → nil permMode
+        #expect(spy.withLock { $0.first ?? nil } != nil)
+    }
+
+    // H8: a persisted profile name is re-resolved from the LIVE config at session start — a stale
+    // stored permMode does not win once a profile is bound (TS permissionResolver.resolve()).
+    @Test func profilePermissionModeReresolvedFromLiveConfigAtSessionStart() async throws {
+        let cfg = ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("grok-h8-cfg-\(UUID().uuidString)", isDirectory: true))
+        try await cfg.save(AppConfig(
+            discord: DiscordSecrets(token: "t", clientId: "c"),
+            profiles: ["yolo": Profile(permissionMode: "bypassPermissions", allowedTools: [], policyTier: "relaxed")]
+        ))
+        let store = freshTempStore()
+        // Stale stored permMode ("default", approval-required) predates a later profile edit.
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .grok, cwd: "/x", guildId: "g", permMode: "default", permissionProfile: "yolo", updatedAt: "t"
+        ))
+        let spy = LockedBox<[AcpPermissionHandler?]>([])
+        let (bridge, _) = makeGrokBridge(onPermissionSpy: spy, store: store, configStore: cfg)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, permMode: "default"))
+
+        // Bypass (no handler) — the profile's permissionMode won, not the stale "default".
+        #expect(spy.withLock { $0.first ?? nil } == nil)
+        // The re-resolved mode is what gets persisted going forward.
+        #expect(await store.binding(channelId: "c")?.permMode == "bypassPermissions")
+    }
+
+    // M2 (WO-15): a bound profile name that no longer exists in config blocks the session start
+    // (TS permissionResolver.ts:66-70) instead of silently falling back to the stale persisted
+    // permMode — mirrors CodexSessionBridgeTests.unknownBoundProfileBlocksSessionStart /
+    // DabSessionBridgeTests.deletedProfileReferenceThrows.
+    @Test func unknownBoundProfileBlocksSessionStart() async throws {
+        let cfg = ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("grok-m2-cfg-\(UUID().uuidString)", isDirectory: true))
+        try await cfg.save(AppConfig(discord: DiscordSecrets(token: "t", clientId: "c")))   // no profiles
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .grok, cwd: "/x", guildId: "g", permissionProfile: "ghost", updatedAt: "t"
+        ))
+        let (bridge, _) = makeGrokBridge(store: store, configStore: cfg)
+        do {
+            _ = try await bridge.runTurn(channelId: "c", text: "hi")
+            Issue.record("expected unknown profile error")
+        } catch let e as AcpClientError {
+            #expect(e.message == "Unknown permission profile 'ghost'.")
         }
     }
 
@@ -435,6 +502,48 @@ struct GrokSessionBridgeTests {
         )
         let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-unknown"))
         #expect(reply.contextUsage == nil)
+    }
+
+    // MARK: - WO-13: production spawn wiring (grokChildEnvironment reaches the real child process)
+
+    /// Every other test above injects `makeClient`, bypassing the PRODUCTION closure entirely. This
+    /// one deliberately leaves `makeClient` at its default so the real `resolveGrokSpawn` →
+    /// `grokChildEnvironment()` → `GrokAcpClient(environment:)` wiring runs end to end. `GROK_CMD` is
+    /// redirected (env var, not a fake `makeClient`) to a throwaway script that dumps its inherited
+    /// `$PATH` to a file and exits — no real `grok` binary or ACP handshake required; the bridge's
+    /// `initialize()` call fails right after (child already gone), which the test ignores via `try?`.
+    /// Lives in this `.serialized` suite (not its own) so it can't race `configReachesSpawnFactory`'s
+    /// bare `resolveGrokSpawn(...)` call over the shared `GROK_CMD` env var.
+    @Test func productionSpawnEnvironmentIncludesWellKnownPathDirs() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("grok-spawn-wiring-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let outFile = tmpDir.appendingPathComponent("captured-path.txt")
+        let scriptPath = tmpDir.appendingPathComponent("fake-grok").path
+        let script = "#!/bin/sh\necho \"$PATH\" > \"\(outFile.path)\"\nexit 1\n"
+        try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+
+        setenv("GROK_CMD", scriptPath, 1)
+        defer { unsetenv("GROK_CMD") }
+
+        // Omitting `makeClient:` runs the production default closure this WO wired up; store/
+        // configStore/attachGateway/configSource stay isolated per the `makeGrokBridge` convention.
+        let bridge = GrokSessionBridge(
+            store: freshTempStore(),
+            configStore: ConfigStore(baseDir: FileManager.default.temporaryDirectory
+                .appendingPathComponent("grok-cfg-\(UUID().uuidString)", isDirectory: true)),
+            attachGateway: NoopAttachGateway(),
+            configSource: GrokConfigSource(grokHome: FileManager.default.temporaryDirectory
+                .appendingPathComponent("grok-home-\(UUID().uuidString)", isDirectory: true).path)
+        )
+        _ = try? await bridge.runTurn(channelId: "c", text: "hi")
+
+        let sawFile = await waitUntil { FileManager.default.fileExists(atPath: outFile.path) }
+        #expect(sawFile)
+        let captured = (try? String(contentsOf: outFile, encoding: .utf8)) ?? ""
+        let dirs = captured.split(separator: ":").map(String.init)
+        #expect(dirs.contains { $0.hasSuffix("/.local/bin") })
     }
 }
 

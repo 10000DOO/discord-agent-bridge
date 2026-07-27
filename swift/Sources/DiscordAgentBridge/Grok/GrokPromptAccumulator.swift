@@ -71,6 +71,21 @@ func planStatusMark(_ status: String?) -> String {
 
 // MARK: - Tool mid-turn events (W16-g residual / TS acpSession mapUpdate)
 
+/// M19: lift `parentToolId` from top-level (camelCase/snake_case) or `_meta`, in that order, so a
+/// server that only sets it under `_meta` still routes nested tool calls correctly (TS
+/// `extractUpdate`, acpClient.ts:635-662). Empty strings count as absent.
+func grokParentToolId(_ update: JSONValue) -> String? {
+    func nonEmpty(_ v: JSONValue?) -> String? {
+        v?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    if let v = nonEmpty(update["parentToolId"]) { return v }
+    if let v = nonEmpty(update["parent_tool_use_id"]) { return v }
+    let meta = update["_meta"]
+    if let v = nonEmpty(meta?["parentToolId"]) { return v }
+    if let v = nonEmpty(meta?["parent_tool_use_id"]) { return v }
+    return nil
+}
+
 /// Map grok ACP session/update → tool_use / tool_result. Pure; never throws.
 /// Intermediate tool_call_update (no terminal status) skipped — same as TS.
 public func grokToolEvents(
@@ -83,7 +98,7 @@ public func grokToolEvents(
     let kind = update["sessionUpdate"]?.stringValue ?? ""
     switch kind {
     case "tool_call":
-        let parent = update["parentToolId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        let parent = grokParentToolId(update)
         let id: String = {
             if let tid = update["toolCallId"]?.stringValue, !tid.isEmpty { return tid }
             mintId += 1
@@ -103,7 +118,7 @@ public func grokToolEvents(
         // completed/failed. Only terminal → tool_result (TS acpSession.ts:293-318).
         let status = update["status"]?.stringValue
         guard status == "completed" || status == "failed" else { return [] }
-        let parent = update["parentToolId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        let parent = grokParentToolId(update)
         let id = update["toolCallId"]?.stringValue ?? ""
         let content = stringifyGrokToolContent(
             update["content"] ?? update["rawOutput"] ?? .string("")

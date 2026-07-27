@@ -203,11 +203,16 @@ public actor ClaudeUsageService {
 
     private func parseCredentials(_ raw: String, source: CredentialSource) -> OAuthCredentials? {
         guard let data = raw.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = obj["claudeAiOauth"] as? [String: Any],
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            log("usage credentials are not valid JSON; treating as unavailable (source: \(source.rawValue))")
+            return nil
+        }
+        guard let oauth = obj["claudeAiOauth"] as? [String: Any],
               let access = oauth["accessToken"] as? String, !access.isEmpty,
               let refresh = oauth["refreshToken"] as? String, !refresh.isEmpty
         else {
+            log("usage credentials have an unexpected shape; treating as unavailable (source: \(source.rawValue))")
             return nil
         }
         let expires: Double
@@ -233,6 +238,8 @@ public actor ClaudeUsageService {
             if let data = try? JSONSerialization.data(withJSONObject: merged),
                let json = String(data: data, encoding: .utf8) {
                 writeKeychain(json)
+            } else {
+                log("failed to persist refreshed usage credentials to keychain")
             }
             return
         }
@@ -576,7 +583,7 @@ public actor CodexUsageService {
     private let cacheMs: Double
     private let nowMs: @Sendable () -> Double
     private let log: @Sendable (String) -> Void
-    private let requestRateLimits: CodexRateLimitsRequestFn
+    private var requestRateLimits: CodexRateLimitsRequestFn
 
     private var cached: UsageSnapshot?
 
@@ -591,15 +598,26 @@ public actor CodexUsageService {
         self.cacheMs = max(0, cacheSec) * 1000
         self.nowMs = nowMs
         self.log = log
-        if let requestRateLimits {
-            self.requestRateLimits = requestRateLimits
-        } else {
-            let cmd = codexCommand
-            // Expand ~ so CODEX_HOME is a real path (literal "~/.codex" makes app-server exit 1).
-            let home = resolveCodexHome(codexHome)
-            self.requestRateLimits = {
-                try await defaultRequestCodexRateLimits(codexCommand: cmd, codexHome: home)
-            }
+        self.requestRateLimits = requestRateLimits
+            ?? Self.defaultRequestFn(codexCommand: codexCommand, codexHome: codexHome)
+    }
+
+    /// Reconfigure `.shared`'s codexHome/codexCommand at bot boot (WO-7 wires the real
+    /// config values into this call — `.shared` is a fixed `static let`, so this is the
+    /// only way to move it off the `nil, nil` defaults after construction).
+    public func configure(codexHome: String?, codexCommand: String?) {
+        requestRateLimits = Self.defaultRequestFn(codexCommand: codexCommand, codexHome: codexHome)
+    }
+
+    private static func defaultRequestFn(
+        codexCommand: String?,
+        codexHome: String?
+    ) -> CodexRateLimitsRequestFn {
+        let cmd = codexCommand
+        // Expand ~ so CODEX_HOME is a real path (literal "~/.codex" makes app-server exit 1).
+        let home = resolveCodexHome(codexHome)
+        return {
+            try await defaultRequestCodexRateLimits(codexCommand: cmd, codexHome: home)
         }
     }
 

@@ -105,6 +105,13 @@ private actor GateableCodexServer {
     private func pushNotification(_ method: String, _ params: JSONValue) async {
         await write(["method": .string(method), "params": params])
     }
+    /// H2 test seam: push an arbitrary notification straight through (bypassing the
+    /// gate/completion path) — used to simulate a stale `turn/completed` from an already-finished
+    /// turn racing a still-in-flight one.
+    func pushRawNotification(method: String, params: JSONValue) async {
+        await pushNotification(method, params)
+    }
+
     /// C3 test seam: push a server-initiated `item/tool/call` request to the client.
     func pushToolCall(id: Int, tool: String, arguments: JSONValue, callId: String, threadId: String, turnId: String) async {
         await write([
@@ -125,15 +132,25 @@ private actor GateableCodexServer {
     }
 }
 
+/// A `ConfigStore` backed by a unique temp dir (no config.json) — isolates each bridge test from
+/// the shared store and the real config file (mirrors `freshTempStore` for `SessionStore`).
+private func freshTempConfigStore() -> ConfigStore {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dab-bridge-config-\(UUID().uuidString)", isDirectory: true)
+    return ConfigStore(baseDir: dir)
+}
+
 private func makeCodexBridge(
     gate: TurnGate? = nil,
     initFails: Bool = false,
     completion: GateableCodexServer.Completion = .delta,
     timeoutNs: UInt64? = nil,
+    codexTimeoutMs: Int? = nil,
     capture: LockedBox<[String: String]>? = nil,
     permGate: PermissionGate = .shared,
     onApprovalSpy: LockedBox<[AppServerApprovalHandler?]>? = nil,
     store: SessionStore? = nil,
+    configStore: ConfigStore? = nil,
     backendIdCapture: LockedBox<[String]>? = nil,
     responseCapture: LockedBox<[JSONValue]>? = nil,
     fileAttachHost: FileAttachHost = FileAttachHost(),
@@ -148,7 +165,7 @@ private func makeCodexBridge(
         serverBox?.withLock { $0 = server }
         Task { await server.run() }
         return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000, onApproval: onApproval))
-    }, turnTimeoutOverrideNs: timeoutNs, gate: permGate, store: store ?? freshTempStore(), fileAttachHost: fileAttachHost, documentShareHost: documentShareHost)
+    }, turnTimeoutOverrideNs: timeoutNs, codexTimeoutMs: codexTimeoutMs, gate: permGate, store: store ?? freshTempStore(), configStore: configStore ?? freshTempConfigStore(), fileAttachHost: fileAttachHost, documentShareHost: documentShareHost)
     return (bridge, made)
 }
 
@@ -573,5 +590,166 @@ struct CodexSessionBridgeTests {
 
         await gate.release()
         _ = try await t.value
+    }
+
+    // MARK: - H2: turnId verification
+
+    // A stale `turn/completed` (mismatched turnId) must not finish the still-running turn; only
+    // the correctly turnId'd (or turnId-less) completion from the real fake-server path does.
+    @Test func staleTurnCompletedWithMismatchedTurnIdIsIgnored() async throws {
+        let gate = TurnGate()
+        let serverBox = LockedBox<GateableCodexServer?>(nil)
+        let (bridge, _) = makeCodexBridge(gate: gate, serverBox: serverBox)
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "long") }
+        await gate.waitReceived(1)
+        for _ in 0..<200 where await bridge.activeTurnId(channelId: "c") == nil {
+            await Task.yield()
+        }
+        #expect(await bridge.activeTurnId(channelId: "c") == "u1")
+        guard let server = serverBox.withLock({ $0 }) else {
+            Issue.record("server not captured"); await gate.release(); _ = try await t.value; return
+        }
+
+        await server.pushRawNotification(method: "turn/completed", params: .object(["turnId": .string("stale-turn")]))
+        for _ in 0..<200 { await Task.yield() }
+        #expect(await bridge.isTurnRunning(channelId: "c") == true)   // stale notif ignored — still running
+
+        await gate.release()   // real completion path (delta + turn/completed, no turnId on this fake)
+        let reply = try await t.value
+        #expect(reply.text == "ok:long")
+    }
+
+    // MARK: - M7: safe default when no permMode is bound
+
+    // No config/binding at all → permMode falls back to "default" (approval required), not the
+    // old "bypassPermissions" (auto-approve everything) danger default.
+    @Test func unboundPermModeDefaultsToApprovalRequired() async throws {
+        let capture = LockedBox<[String: String]>([:])
+        let handlers = LockedBox<[AppServerApprovalHandler?]>([])
+        let (bridge, _) = makeCodexBridge(capture: capture, onApprovalSpy: handlers)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi")   // no config → permMode unbound
+        #expect(capture.withLock { $0["approvalPolicy"] } == "on-request")
+        #expect(capture.withLock { $0["sandbox"] } == "workspace-write")
+        #expect(handlers.withLock { $0.first ?? nil } != nil)   // approval handler installed (not auto)
+    }
+
+    // MARK: - C2: config.codexTimeoutMs drives the turn timeout
+
+    @Test func codexTimeoutMsDrivesTurnTimeout() async throws {
+        let gate = TurnGate()
+        let (bridge, _) = makeCodexBridge(gate: gate, codexTimeoutMs: 100)   // 100ms, no test override
+        let t = Task { try await bridge.runTurn(channelId: "c", text: "x") }
+        await gate.waitReceived(1)   // held, never released → codexTimeoutMs-driven timeout fires
+        await #expect(throws: (any Error).self) { _ = try await t.value }
+    }
+
+    // MARK: - C4-b: live /effort switch
+
+    @Test func setEffortValidatesAndRequiresLiveChannel() async throws {
+        let (bridge, _) = makeCodexBridge()
+        #expect(await bridge.setEffort(channelId: "c", effort: "medium") == false)   // no live channel yet
+        _ = try await bridge.runTurn(channelId: "c", text: "hi")
+        #expect(await bridge.setEffort(channelId: "c", effort: "high") == true)       // known effort
+        #expect(await bridge.setEffort(channelId: "c", effort: "zzz-not-a-level") == false)   // unknown
+        #expect(await bridge.setEffort(channelId: "c", effort: "") == true)           // empty clears
+    }
+
+    // MARK: - H8/M2: profile-based permissionMode re-resolution
+
+    // A bound permission PROFILE re-resolves permissionMode from the CURRENT config on every
+    // session start rather than trusting a stored raw permMode.
+    @Test func profileBoundPermissionModeReResolvesFromCurrentConfig() async throws {
+        let configStore = freshTempConfigStore()
+        var appConfig = AppConfig(discord: DiscordSecrets(token: "t", clientId: "c"))
+        appConfig.profiles["reviewer"] = Profile(permissionMode: "plan", allowedTools: [], policyTier: "read-only")
+        try await configStore.save(appConfig)
+
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .codex, cwd: "/x", guildId: "g", permissionProfile: "reviewer", updatedAt: "t"
+        ))
+
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeCodexBridge(capture: capture, store: store, configStore: configStore)
+        _ = try await bridge.runTurn(channelId: "c", guildId: "g", text: "hi", config: SessionConfig(backend: .codex))
+        // "plan" → on-request/read-only (resolveThreadPolicy) — from the profile, not a stale/raw value.
+        #expect(capture.withLock { $0["approvalPolicy"] } == "on-request")
+        #expect(capture.withLock { $0["sandbox"] } == "read-only")
+    }
+
+    // A bound profile name that no longer exists in config blocks the session (TS
+    // permissionResolver.ts:66-70) instead of silently falling back.
+    @Test func unknownBoundProfileBlocksSessionStart() async throws {
+        let configStore = freshTempConfigStore()
+        let appConfig = AppConfig(discord: DiscordSecrets(token: "t", clientId: "c"))   // no profiles
+        try await configStore.save(appConfig)
+
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .codex, cwd: "/x", guildId: "g", permissionProfile: "ghost", updatedAt: "t"
+        ))
+
+        let (bridge, _) = makeCodexBridge(store: store, configStore: configStore)
+        await #expect(throws: (any Error).self) {
+            _ = try await bridge.runTurn(channelId: "c", guildId: "g", text: "hi", config: SessionConfig(backend: .codex))
+        }
+    }
+
+    // WO-14: `configure` is the only way to move `.shared` off its `nil, nil` init defaults.
+    // Every other test above injects `makeClient`, bypassing the PRODUCTION closure entirely.
+    // This one leaves `makeClient` at its default (nil) so the real `resolveCodexSpawn` →
+    // `CodexAppServerClient(spawn:codexHome:)` wiring runs end to end, using the values passed
+    // to `configure` — not the ones passed to `init` (which stay nil here). The script dumps its
+    // inherited `CODEX_HOME` to a file and exits; the bridge's `initialize()` call fails right
+    // after (child already gone), which the test ignores via `try?`.
+    @Test func configureReachesProductionSpawn() async throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-configure-wiring-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let outFile = tmpDir.appendingPathComponent("captured-env.txt")
+        let scriptPath = tmpDir.appendingPathComponent("fake-codex").path
+        let script = "#!/bin/sh\necho \"CODEX_HOME=$CODEX_HOME\" > \"\(outFile.path)\"\nexit 1\n"
+        try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+
+        // Omitting `makeClient:` runs the production default closure; store/configStore stay
+        // isolated per the `makeCodexBridge` convention.
+        let bridge = CodexSessionBridge(store: freshTempStore(), configStore: freshTempConfigStore())
+        await bridge.configure(codexHome: tmpDir.path, codexCliCommand: scriptPath)
+        _ = try? await bridge.runTurn(channelId: "c", text: "hi")
+
+        let sawFile = await waitUntil { FileManager.default.fileExists(atPath: outFile.path) }
+        #expect(sawFile)
+        let captured = (try? String(contentsOf: outFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        #expect(captured == "CODEX_HOME=\(tmpDir.path)")
+    }
+
+}
+
+// MARK: - M6: child-process PATH augmentation (mirrors GrokSpawnTests' grokChildEnvironment suite)
+
+@Suite("codexChildEnvironment")
+struct CodexChildEnvironmentTests {
+    @Test func prependsWellKnownDirsOntoExistingPath() {
+        let env = codexChildEnvironment(
+            baseEnv: ["PATH": "/usr/bin:/bin", "OTHER": "kept"],
+            homeDir: "/Users/alice"
+        )
+        #expect(env["OTHER"] == "kept")
+        let dirs = env["PATH"]?.split(separator: ":").map(String.init) ?? []
+        // Well-known dirs come first, existing PATH entries are preserved at the end untouched.
+        #expect(dirs.suffix(2) == ["/usr/bin", "/bin"])
+        #expect(dirs.contains("/Users/alice/.local/bin"))
+        #expect(dirs.contains("/Users/alice/.nvm/current/bin"))
+    }
+
+    @Test func doesNotDuplicateADirAlreadyOnPath() {
+        let env = codexChildEnvironment(
+            baseEnv: ["PATH": "/Users/alice/.cargo/bin:/usr/bin"],
+            homeDir: "/Users/alice"
+        )
+        let dirs = env["PATH"]?.split(separator: ":").map(String.init) ?? []
+        #expect(dirs.filter { $0 == "/Users/alice/.cargo/bin" }.count == 1)
     }
 }

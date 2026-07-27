@@ -48,6 +48,28 @@ public func codexTurnStep(method: String, params: JSONValue?) -> CodexTurnStep {
     }
 }
 
+// MARK: - Turn id verification (H2 / TS eventMapper.ts:74 `optString(p.turnId)` +
+// appSession.ts:220 `if (!mapped.turnId || mapped.turnId === turnId) settle()`)
+
+/// Extract the turnId a notification carries at its top-level `params.turnId` (present on
+/// `turn/completed`/`turn/failed`/`thread/failed`/`error` among others). `nil` when absent.
+public func codexNotificationTurnId(params: JSONValue?) -> String? {
+    params?["turnId"]?.stringValue
+}
+
+/// True when a finishing notification (`turn/completed`/`turn/failed`/`thread/failed`/`error`)
+/// belongs to the turn currently tracked as active for this channel. A notification without a
+/// turnId always passes (some app-server builds omit it, matching TS `!mapped.turnId`); no
+/// recorded active turn yet also passes (a Swift-only race window — TS always resolves its local
+/// `turnId` before it starts listening, so this case doesn't exist there). Only a PRESENT,
+/// MISMATCHED turnId is rejected — this is what guards against a stale `turn/completed` from an
+/// already-finished/interrupted turn incorrectly completing a newer one.
+public func codexNotificationMatchesActiveTurn(params: JSONValue?, activeTurnId: String?) -> Bool {
+    guard let notifTurnId = codexNotificationTurnId(params: params) else { return true }
+    guard let activeTurnId else { return true }
+    return notifTurnId == activeTurnId
+}
+
 // MARK: - Progress mid-turn (G-P1-02 / TS eventMapper mapItemStarted + turn/started)
 
 /// TS PROGRESS_LABELS (eventMapper.ts) — KO status lines for TranscriptFeed / StreamStatusHost.

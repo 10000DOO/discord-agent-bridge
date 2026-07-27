@@ -96,16 +96,18 @@ public actor PermissionGate {
 
     /// Resolve a pending ask. Returns whether it was accepted: an unknown `reqKey` is a no-op
     /// (false); when `approverId` was set, a `byUserId` mismatch is ignored (false) so a bystander
-    /// cannot answer. First valid resolve wins.
+    /// cannot answer. No approver named (`approverId == nil`) → anyone may resolve. First valid
+    /// resolve wins.
     ///
     /// `always` is accepted like `allow` for the waiting backend (via `backendBehavior`); the host
     /// persists the tool name (peeked before this call) into `autoAllowClaudeTools`.
     @discardableResult
     public func resolve(reqKey: String, action: PermissionDecision, byUserId: String? = nil) -> Bool {
         guard let entry = pending[reqKey] else { return false }
-        // deny-by-default: only the named approver may decide. An ask with no approver (approverId
-        // == nil) cannot be resolved by any click — it stays pending forever.
-        guard let approver = entry.approverId, approver == byUserId else { return false }
+        // Only reject when an approver is named and the actor differs (TS parity:
+        // permissionButtons.ts:133 — `entry.approverId !== null && actorId !== entry.approverId`).
+        // No approver named → this check is skipped entirely, so anyone may resolve.
+        if let approver = entry.approverId, approver != byUserId { return false }
         pending[reqKey] = nil
         entry.continuation.resume(returning: action)
         return true

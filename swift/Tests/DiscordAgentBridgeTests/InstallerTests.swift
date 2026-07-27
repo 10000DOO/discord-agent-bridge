@@ -179,6 +179,38 @@ struct RestartStrategyTests {
         #expect(s == .respawn)
     }
 
+    @Test func windowsAlwaysRespawnsEvenWithMarkerSet() {
+        let s = detectRestartStrategy(RestartDetectDeps(
+            platformIsDarwin: false,
+            platformIsWindows: true,
+            env: ["DAB_SUPERVISED": "1"],
+            home: "/home/u",
+            fileExists: { _ in true }
+        ))
+        #expect(s == .respawn)
+    }
+
+    @Test func linuxRespawnsWhenNoSystemdUnit() {
+        let s = detectRestartStrategy(RestartDetectDeps(
+            platformIsDarwin: false,
+            env: [:],
+            home: "/home/u",
+            fileExists: { _ in false }
+        ))
+        #expect(s == .respawn)
+    }
+
+    @Test func linuxSupervisedWhenSystemdUnitExists() {
+        let unit = systemdUnitPath(home: "/home/u")
+        let s = detectRestartStrategy(RestartDetectDeps(
+            platformIsDarwin: false,
+            env: [:],
+            home: "/home/u",
+            fileExists: { $0 == unit }
+        ))
+        #expect(s == .supervised)
+    }
+
     @Test func performRestartSupervisedExitsAndMayKickstart() {
         let kick = LockedBox(0)
         let exits = LockedBox<[Int32]>([])

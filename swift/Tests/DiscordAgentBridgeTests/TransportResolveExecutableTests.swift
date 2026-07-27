@@ -45,17 +45,51 @@ struct ResolveExecutableTests {
         )
         #expect(found == "./grok")
     }
+
+    // M5: a directory can carry the execute (search) bit, so the production default must not
+    // mistake it for a runnable command — exercises the real `isExecutable` default (no override),
+    // against a real temp dir, with a random command name so no real system PATH entry can collide.
+    @Test func directoryIsNotMistakenForExecutable() throws {
+        let fm = FileManager.default
+        let command = "dab-test-\(UUID().uuidString)"
+        let binDir = fm.temporaryDirectory.appendingPathComponent("dab-test-bin-\(UUID().uuidString)")
+        let collidingDir = binDir.appendingPathComponent(command)
+        try fm.createDirectory(at: collidingDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: binDir) }
+
+        let found = ProcessSidecarTransport.resolveExecutable(
+            command,
+            env: ["PATH": binDir.path],
+            homeDir: "/nonexistent-home-\(UUID().uuidString)"
+        )
+        #expect(found == command)
+    }
 }
 
 @Suite("ProcessSidecarTransport.wellKnownUserBinDirs")
 struct WellKnownUserBinDirsTests {
-    @Test func macOSOrderIsHomeDirsThenHomebrewThenUsrLocal() {
-        #expect(ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: "/Users/alice") == [
+    @Test func macOSOrderIsHomeDirsThenNodeManagersThenHomebrewThenUsrLocal() {
+        #expect(ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: "/Users/alice", env: [:]) == [
             "/Users/alice/.local/bin",
             "/Users/alice/.grok/bin",
             "/Users/alice/.cargo/bin",
+            "/Users/alice/.nvm/current/bin",
+            "/Users/alice/.local/share/fnm/aliases/default/bin",
+            "/Users/alice/.volta/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
         ])
+    }
+
+    // H1: nvm/fnm export env vars pointing at the active version's dir directly; prefer those
+    // over the static default fallback when present.
+    @Test func nvmBinAndFnmDirEnvVarsOverrideDefaults() {
+        let dirs = ProcessSidecarTransport.wellKnownUserBinDirs(
+            homeDir: "/Users/alice",
+            env: ["NVM_BIN": "/Users/alice/.nvm/versions/node/v20.11.0/bin", "FNM_DIR": "/Users/alice/.fnm"]
+        )
+        #expect(dirs.contains("/Users/alice/.nvm/versions/node/v20.11.0/bin"))
+        #expect(dirs.contains("/Users/alice/.fnm/aliases/default/bin"))
+        #expect(!dirs.contains("/Users/alice/.nvm/current/bin"))
     }
 }

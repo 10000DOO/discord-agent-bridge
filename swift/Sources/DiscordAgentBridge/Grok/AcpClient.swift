@@ -653,6 +653,9 @@ func extractAcpSessionId(_ result: JSONValue) -> String? {
     return nil
 }
 
+/// H3: same `redactSecrets` scrub as `buildExitError` — an RPC error's `message` can carry a
+/// backend-echoed secret (token/key in a shell error, auth header, …), so it must not reach the
+/// user unmasked (TS `formatRpcError` always applies `redactString`).
 func formatAcpRpcError(_ error: JSONValue) -> String {
     if case .object(let obj) = error {
         let code: String
@@ -662,9 +665,9 @@ func formatAcpRpcError(_ error: JSONValue) -> String {
             code = "unknown"
         }
         let message = obj["message"]?.stringValue ?? "unknown error"
-        return "grok agent stdio error \(code): \(message)"
+        return redactSecrets("grok agent stdio error \(code): \(message)")
     }
-    return "grok agent stdio error: \(String(describing: error))"
+    return redactSecrets("grok agent stdio error: \(String(describing: error))")
 }
 
 func parseAcpPermissionRequest(requestId: JSONValue, params: JSONValue?) -> AcpPermissionRequest {

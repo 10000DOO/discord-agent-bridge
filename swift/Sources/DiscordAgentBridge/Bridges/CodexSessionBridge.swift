@@ -56,37 +56,64 @@ public actor CodexSessionBridge {
     public static let shared = CodexSessionBridge()
 
     /// Client factory (test seam). The per-channel approval handler is passed at construction (the
-    /// client stores it immutably), so the factory takes it. Default = real spawn. `@testable` in tests.
-    private let makeClient: @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient
-    /// Test seam: override the turn timeout (default nil → DAB_TURN_TIMEOUT_SEC env, floor 5s).
+    /// client stores it immutably), so the factory takes it. `nil` (production default) spawns via
+    /// `codexHome`/`codexCliCommand`/PATH augmentation below (see `ensureChannel`); tests always
+    /// inject a fake. `@testable` in tests.
+    private let makeClient: (@Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient)?
+    /// Test seam: override the turn timeout (default nil → codexTimeoutMs/DAB_TURN_TIMEOUT_SEC env, floor 5s).
     private let turnTimeoutOverrideNs: UInt64?
+    /// C1: configured Codex CLI location (TS appSession.ts:299-312 `resolveCodexHome` +
+    /// `config.codexCliCommand`). `nil` → `CodexAppServerClient`'s own defaults (`~/.codex`,
+    /// `"codex"`). `var` (not `let`) because `.shared` is a fixed `static let` — `configure`
+    /// below (WO-14) is the only way to move it off these `init` defaults after construction,
+    /// mirroring `CodexUsageService.configure`. The resolved config values are wired in at the
+    /// call site (DabMain, WO-14).
+    private var codexHome: String?
+    private var codexCliCommand: String?
+    /// C2: `config.codexTimeoutMs` (ms) — highest priority in `turnTimeoutNs` below.
+    private let codexTimeoutMs: Int?
     /// Permission gate (default shared; tests inject a fresh gate for isolation).
     private let gate: PermissionGate
     /// Session persistence (default shared; tests inject a temp-file store).
     private let store: SessionStore
+    /// H8/M2: global config (profiles) for permissionMode re-resolution at session start.
+    private let configStore: ConfigStore
     /// C3: attach_file / share_document sinks (default shared; tests inject fresh instances
     /// so they never touch the process-wide singleton, mirroring GrokAttachGateway's own DI).
     private let fileAttachHost: FileAttachHost
     private let documentShareHost: DocumentShareHost
 
     init(
-        makeClient: @escaping @Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient = { onApproval in
-            let spawn = resolveCodexSpawn()
-            log.info("spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
-            return try CodexAppServerClient(spawn: spawn, requestTimeoutMs: 120_000, onApproval: onApproval)
-        },
+        makeClient: (@Sendable (_ onApproval: AppServerApprovalHandler?) throws -> CodexAppServerClient)? = nil,
         turnTimeoutOverrideNs: UInt64? = nil,
+        codexHome: String? = nil,
+        codexCliCommand: String? = nil,
+        codexTimeoutMs: Int? = nil,
         gate: PermissionGate = .shared,
         store: SessionStore = .shared,
+        configStore: ConfigStore = .shared,
         fileAttachHost: FileAttachHost = .shared,
         documentShareHost: DocumentShareHost = .shared
     ) {
         self.makeClient = makeClient
         self.turnTimeoutOverrideNs = turnTimeoutOverrideNs
+        self.codexHome = codexHome
+        self.codexCliCommand = codexCliCommand
+        self.codexTimeoutMs = codexTimeoutMs
         self.gate = gate
         self.store = store
+        self.configStore = configStore
         self.fileAttachHost = fileAttachHost
         self.documentShareHost = documentShareHost
+    }
+
+    /// Reconfigure `.shared`'s codexHome/codexCliCommand at bot boot (WO-14 wires the real
+    /// config values into this call — `.shared` is a fixed `static let`, so this is the
+    /// only way to move it off the `nil, nil` defaults after construction). Mirrors
+    /// `CodexUsageService.configure`.
+    public func configure(codexHome: String?, codexCliCommand: String?) {
+        self.codexHome = codexHome
+        self.codexCliCommand = codexCliCommand
     }
 
     /// One-shot resume-failure notice to prepend to the next reply (F5).
@@ -153,7 +180,10 @@ public actor CodexSessionBridge {
 
     private var turnTimeoutNs: UInt64 {
         if let turnTimeoutOverrideNs { return turnTimeoutOverrideNs }
-        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+        // C2: config.codexTimeoutMs (ms) wins over the env-var/default fallback (TS
+        // appSession.ts:60,156 — `ctx.config.codexTimeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS`).
+        if let codexTimeoutMs, codexTimeoutMs > 0 { return UInt64(codexTimeoutMs) * 1_000_000 }
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 1_800
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
@@ -287,10 +317,33 @@ public actor CodexSessionBridge {
             channels[channelId] = nil
         }
         let epoch = stopEpoch[channelId] ?? 0
-        // W11-c: permMode → approvalPolicy/sandbox (resolveThreadPolicy). Default bypassPermissions
-        // (danger) preserved when no permMode bound. A non-auto policy routes Codex approval requests
-        // through the Discord permission gate; an auto policy needs no handler (nil).
-        let policy = resolveThreadPolicy(permMode: config?.permMode ?? "bypassPermissions")
+        let persisted = await store.binding(channelId: channelId)
+
+        // H8: re-resolve permissionMode from the CURRENT config.profiles on every session start
+        // instead of trusting a possibly-stale persisted value (mirrors DabSessionBridge's
+        // allowedTools re-resolution, same-shaped ConfigResolver + SessionStoreBindingSource
+        // lookup). M2: a bound profile that no longer exists in config blocks the session instead
+        // of silently falling back (TS permissionResolver.ts:66-70 throws `Unknown permission
+        // profile`). M7: "default" (approval required) when nothing is bound at all — was
+        // "bypassPermissions" (danger), TS parity sessionOrchestrator.ts:817.
+        var effectivePermMode = config?.permMode ?? "default"
+        if let globalConfig = try? await configStore.load() {
+            let resolvedConfig = try? await ConfigResolver(
+                configStore: configStore,
+                bindingSource: SessionStoreBindingSource(store: store)
+            ).resolve(guildId: guildId, channelId: channelId)
+            if let profileName = resolvedConfig?.permissionProfile {
+                guard let profile = globalConfig.profiles[profileName] else {
+                    throw AppServerError("Unknown permission profile '\(profileName)'.")
+                }
+                effectivePermMode = profile.permissionMode
+            }
+        }
+
+        // W11-c: permMode → approvalPolicy/sandbox (resolveThreadPolicy). A non-auto policy routes
+        // Codex approval requests through the Discord permission gate; an auto policy needs no
+        // handler (nil).
+        let policy = resolveThreadPolicy(permMode: effectivePermMode)
         let gate = self.gate
         let onApproval: AppServerApprovalHandler?
         if isAutoApprovePolicy(policy) {
@@ -311,8 +364,22 @@ public actor CodexSessionBridge {
                 return decision.isAllowing ? .accept : .decline   // always|allow → accept; deny-by-default
             }
         }
-        let client = try makeClient(onApproval)
-        let persisted = await store.binding(channelId: channelId)
+        // C1/M6: production default (no injected test factory) spawns codex directly with the
+        // configured home/command + a PATH-augmented environment; tests always inject `makeClient`.
+        let client: CodexAppServerClient
+        if let makeClient {
+            client = try makeClient(onApproval)
+        } else {
+            let spawn = resolveCodexSpawn(codexCommand: codexCliCommand)
+            log.info("spawning codex app-server: \(spawn.command) \(spawn.args.joined(separator: " "))")
+            client = try CodexAppServerClient(
+                spawn: spawn,
+                codexHome: codexHome,
+                requestTimeoutMs: 120_000,
+                environment: codexChildEnvironment(),
+                onApproval: onApproval
+            )
+        }
 
         var startParams: [String: JSONValue] = [
             "cwd": .string(cwd),
@@ -458,11 +525,16 @@ public actor CodexSessionBridge {
                 turns[channelId] = box
             }
         case .finished(let usage):
+            // H2: a `turn/completed` carrying a turnId that doesn't match the currently active
+            // turn is stale (already-interrupted/finished turn) and must not complete this one
+            // (TS appSession.ts:220 `if (!mapped.turnId || mapped.turnId === turnId) settle()`).
+            guard codexNotificationMatchesActiveTurn(params: params, activeTurnId: activeTurnIds[channelId]) else { break }
             if let usage { box.usage = usage }
             turns[channelId] = box
             let text = box.text.isEmpty ? "(empty result)" : box.text
             finishTurnUnlocked(channelId: channelId, result: makeTurnResult(box: box, text: text))
         case .failed(let message):
+            guard codexNotificationMatchesActiveTurn(params: params, activeTurnId: activeTurnIds[channelId]) else { break }
             finishTurnUnlocked(channelId: channelId, result: nil, error: AppServerError(message))
         case .ignore:
             break
@@ -623,6 +695,9 @@ public actor CodexSessionBridge {
         activeTurnIds[channelId] = nil
         parentByThread[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
+        await StreamStatusHost.shared.dispose(channelId: channelId)
+        await UsageActivityHost.shared.dispose(channelId: channelId)
+        await IdleWatchdog.shared.stop(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()
     }
@@ -646,6 +721,25 @@ public actor CodexSessionBridge {
             activeTurnIds[channelId] = nil
         }
         return true
+    }
+
+    /// Live `/effort` switch for an open Codex channel (TS `CodexAppSession.setEffort`,
+    /// appSession.ts:278-284). Unlike Claude, codex app-server has no mid-thread effort-set RPC —
+    /// TS itself only validates the level and stores it for the NEXT `turn/start`; Swift already
+    /// threads `config.effort` into `executeTurn` on every call (the binding layer persists the
+    /// patch before invoking this), so this function's job mirrors TS exactly: report whether the
+    /// channel is live and the value is a known Codex effort. Codex has no live `setModel`
+    /// counterpart (TS `sessionOrchestrator.ts:389` — only Claude sessions expose `setModel`; a
+    /// Codex session object never does, so `/model` reports "unsupported" there), so no such
+    /// function is added here.
+    /// Returns `false` when the channel has no live thread or the level is unrecognized (an empty
+    /// string always passes — clears the override, mirrors TS's `level.length > 0` guard).
+    @discardableResult
+    public func setEffort(channelId: String, effort: String) async -> Bool {
+        guard channels[channelId] != nil else { return false }
+        let trimmed = effort.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        return await CodexConfigSource.shared.isKnownEffort(trimmed)
     }
 
     /// Test/inspection: whether this channel still holds a live codex client.

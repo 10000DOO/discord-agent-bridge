@@ -285,6 +285,52 @@ struct ClaudeUsageServiceTests {
             Issue.record("expected last-good cache on 429")
         }
     }
+
+    // M3: parsing/schema failures must log a warning instead of silently swallowing (TS
+    // `usageService.ts:302,307`), even though the public contract still never throws.
+
+    @Test func logsWarningOnInvalidJSONCredentials() async {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-usage-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let credsPath = dir.appendingPathComponent(".credentials.json").path
+        try! "not valid json {{{".write(toFile: credsPath, atomically: true, encoding: .utf8)
+
+        let logBox = LockedBox<[String]>([])
+        let svc = ClaudeUsageService(
+            http: MockUsageHTTP(),
+            credentialsPath: credsPath,
+            readKeychain: { nil },
+            nowMs: { 1_000_000 },
+            log: { msg in logBox.withLock { $0.append(msg) } }
+        )
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+        let lines = logBox.withLock { $0 }
+        #expect(lines.contains { $0.contains("not valid JSON") })
+    }
+
+    @Test func logsWarningOnUnexpectedCredentialsShape() async {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-usage-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let credsPath = dir.appendingPathComponent(".credentials.json").path
+        // Valid JSON, but missing the required accessToken/refreshToken fields.
+        try! #"{"claudeAiOauth":{"expiresAt":1}}"#.write(toFile: credsPath, atomically: true, encoding: .utf8)
+
+        let logBox = LockedBox<[String]>([])
+        let svc = ClaudeUsageService(
+            http: MockUsageHTTP(),
+            credentialsPath: credsPath,
+            readKeychain: { nil },
+            nowMs: { 1_000_000 },
+            log: { msg in logBox.withLock { $0.append(msg) } }
+        )
+        #expect(await svc.getUsage() == .unavailable(UsageUnavailable(reason: .noCredentials)))
+        let lines = logBox.withLock { $0 }
+        #expect(lines.contains { $0.contains("unexpected shape") })
+    }
 }
 
 // MARK: - GrokUsageService
@@ -748,6 +794,25 @@ struct CodexUsageServiceTests {
         } else {
             Issue.record("expected last-good cache")
         }
+    }
+
+    // C1 (usage part): `.shared` starts on nil/nil defaults; `configure` is the only way
+    // to move a live singleton off them (WO-7 wires real config values in). Verifies the
+    // call actually rewires the request path — not merely accepted and ignored — by
+    // pointing at a codexCommand that cannot exist and observing the resulting failure.
+    @Test func configureRewiresCodexHomeAndCommand() async {
+        let logBox = LockedBox<[String]>([])
+        let svc = CodexUsageService(
+            cacheSec: 0,
+            nowMs: { 1 },
+            log: { msg in logBox.withLock { $0.append(msg) } }
+        )
+        let bogusCommand = "/definitely/not/a/real/codex-\(UUID().uuidString)"
+        await svc.configure(codexHome: "/tmp/dab-codex-usage-test", codexCommand: bogusCommand)
+        let result = await svc.getUsage()
+        #expect(result == .unavailable(UsageUnavailable(reason: .noCredentials)))
+        let lines = logBox.withLock { $0 }
+        #expect(lines.contains { $0.contains("rateLimits") })
     }
 
     @Test func pureMapperHelpers() {

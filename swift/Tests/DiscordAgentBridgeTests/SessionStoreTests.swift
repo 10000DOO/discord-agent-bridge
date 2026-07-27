@@ -238,6 +238,42 @@ struct SessionStoreTests {
         #expect(await s.binding(channelId: "c-build")?.backend == .grok)
     }
 
+    // H7: an unregistered/corrupt backend value must not silently become `.claude`, and must not
+    // block the rest of the store from loading — only that one binding is skipped.
+    @Test func unknownBackendSkipsOnlyThatBindingKeepsOthers() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let fixture: [String: Any] = [
+            "version": 2,
+            "channels": [
+                "c-good": [
+                    "backend": "claude", "cwd": "/a", "guildId": "g", "updatedAt": "t", "archived": false,
+                ] as [String: Any],
+                "c-bad": [
+                    "backend": "future-backend", "cwd": "/b", "guildId": "g", "updatedAt": "t", "archived": false,
+                ] as [String: Any],
+                "c-good2": [
+                    "backend": "codex", "cwd": "/c", "guildId": "g", "updatedAt": "t", "archived": false,
+                ] as [String: Any],
+            ] as [String: Any],
+        ]
+        try JSONSerialization.data(withJSONObject: fixture).write(to: url)
+
+        let s = SessionStore(fileURL: url)
+        await s.load()
+        #expect(await s.binding(channelId: "c-good")?.backend == .claude)
+        #expect(await s.binding(channelId: "c-good2")?.backend == .codex)
+        #expect(await s.binding(channelId: "c-bad") == nil)   // skipped, NOT silently mapped to .claude
+        #expect(await s.all().count == 2)
+    }
+
+    @Test func backendFromModeReturnsNilForUnknownValue() {
+        #expect(PersistedSession.backend(fromMode: "future-backend") == nil)
+        #expect(PersistedSession.backend(fromMode: "claude") == .claude)
+    }
+
     @Test func optionalBindingFieldsRoundTrip() async throws {
         let url = tempStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

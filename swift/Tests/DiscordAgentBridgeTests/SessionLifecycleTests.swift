@@ -255,7 +255,7 @@ struct SessionLifecycleTests {
         #expect(await life.updateBinding(
             channelId: "c1", patch: BindingPatch(model: "new-model"),
             actorId: "u", guildId: "g"
-        ) == true)
+        ) == .ok)
         #expect(stopped.withLock { $0 } == 0)
         #expect(await store.binding(channelId: "c1")?.model == "new-model")
         #expect(await store.binding(channelId: "c1")?.backendSessionId == "t1")
@@ -287,11 +287,11 @@ struct SessionLifecycleTests {
         #expect(await life.updateBinding(
             channelId: "c1", patch: BindingPatch(model: "sonnet"),
             actorId: "u", guildId: "g"
-        ) == true)
+        ) == .ok)
         #expect(await life.updateBinding(
             channelId: "c1", patch: BindingPatch(effort: "high"),
             actorId: "u", guildId: "g"
-        ) == true)
+        ) == .ok)
         #expect(live.withLock { $0 } == ["model:c1:sonnet", "effort:c1:high"])
         #expect(await store.binding(channelId: "c1")?.model == "sonnet")
         #expect(await store.binding(channelId: "c1")?.effort == "high")
@@ -321,9 +321,65 @@ struct SessionLifecycleTests {
         #expect(await life.updateBinding(
             channelId: "c1", patch: BindingPatch(model: "gpt-5"),
             actorId: "u", guildId: "g"
-        ) == true)
+        ) == .ok)
         #expect(live.withLock { $0 } == 0)
         #expect(await store.binding(channelId: "c1")?.model == "gpt-5")
+    }
+
+    // C4-a: a failed live setModel must not be persisted — the binding stays at its old
+    // model/effort and the caller learns the switch failed instead of a silent "success".
+    @Test func updateBindingClaudeDoesNotPersistWhenLiveApplyFails() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B", cwd: "/x", guildId: "g",
+                model: "old", effort: "low", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude, model: "old", effort: "low"))
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            setModelClaude: { _, _ in false },
+            setEffortClaude: { _, _ in true },
+            now: { "T-fail" }
+        )
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: BindingPatch(model: "new-model"),
+            actorId: "u", guildId: "g"
+        ) == .applyFailed)
+        #expect(await store.binding(channelId: "c1")?.model == "old")
+        #expect(await reg.binding(channelId: "c1")?.model == "old")
+    }
+
+    // M11: an unknown codex effort value must be rejected before it is ever persisted.
+    @Test func updateBindingCodexRejectsUnknownEffort() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .codex, backendSessionId: "t1", cwd: "/x", guildId: "g",
+                effort: "low", updatedAt: "t0"
+            )
+        )
+        await reg.bind(channelId: "c1", SessionConfig(backend: .codex, effort: "low"))
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            isKnownCodexEffort: { _ in false },
+            now: { "T-effort" }
+        )
+        #expect(await life.updateBinding(
+            channelId: "c1", patch: BindingPatch(effort: "not-a-real-effort"),
+            actorId: "u", guildId: "g"
+        ) == .invalidEffort)
+        #expect(await store.binding(channelId: "c1")?.effort == "low")
+        #expect(await reg.binding(channelId: "c1")?.effort == "low")
     }
 
     // G-P1-04: /mode perm profile path persists permissionProfile + resolved permMode.
@@ -359,7 +415,7 @@ struct SessionLifecycleTests {
         #expect(await life.updateBinding(
             channelId: "c1", patch: resolved.bindingPatch,
             actorId: "u", guildId: "g"
-        ) == true)
+        ) == .ok)
         let row = await store.binding(channelId: "c1")
         #expect(row?.permMode == "plan")
         #expect(row?.permissionProfile == "readonly")
@@ -373,7 +429,7 @@ struct SessionLifecycleTests {
         #expect(await life.updateBinding(
             channelId: "c1", patch: raw.bindingPatch,
             actorId: "u", guildId: "g"
-        ) == true)
+        ) == .ok)
         let afterRaw = await store.binding(channelId: "c1")
         #expect(afterRaw?.permMode == "acceptEdits")
         #expect(afterRaw?.permissionProfile == "readonly")

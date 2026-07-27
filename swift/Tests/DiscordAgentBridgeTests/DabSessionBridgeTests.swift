@@ -51,6 +51,7 @@ private actor GateableSidecar {
             counter += 1
             if let m = env.params?["model"]?.stringValue { capture?.withLock { $0["model"] = m } }
             if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
+            if let p = env.params?["permMode"]?.stringValue { capture?.withLock { $0["permMode"] = p } }
             // C9: session.start/resume config.{allowedTools,autoAllowClaudeTools,permissionTimeoutSec}
             if let cfg = env.params?["config"]?.objectValue {
                 if let allowed = cfg["allowedTools"]?.arrayValue {
@@ -516,9 +517,11 @@ struct DabSessionBridgeTests {
         #expect(capture.withLock { $0["config.autoAllowClaudeTools"] } == "Read,Glob,Grep")
     }
 
-    // C9: a persisted binding references a profile no longer in config.profiles (deleted after the
-    // channel bound to it) — falls back to the global auto-allow list; the turn must NOT fail.
-    @Test func deletedProfileReferenceFallsBackSilently() async throws {
+    // M2: a persisted binding references a profile no longer in config.profiles (deleted after the
+    // channel bound to it) — TS permissionResolver.resolve() throws `Unknown permission profile
+    // '<name>'.` and blocks session start; Swift now mirrors that instead of silently falling back
+    // to the global auto-allow list.
+    @Test func deletedProfileReferenceThrows() async throws {
         let cfg = ConfigStore(baseDir: FileManager.default.temporaryDirectory
             .appendingPathComponent("dab-cfg-\(UUID().uuidString)", isDirectory: true))
         try await cfg.save(AppConfig(
@@ -530,11 +533,38 @@ struct DabSessionBridgeTests {
         try await store.upsert(channelId: "c", PersistedSession(
             backend: .claude, cwd: "/x", guildId: "g", permissionProfile: "ghost", updatedAt: "t"
         ))
+        let (bridge, _) = makeDabBridge(store: store, configStore: cfg)
+        do {
+            _ = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
+            Issue.record("expected unknown profile error")
+        } catch let e as SidecarRpcError {
+            #expect(e.code == "unknown_profile")
+            #expect(e.message == "Unknown permission profile 'ghost'.")
+        }
+    }
+
+    // H8: a profile name persisted on the binding must re-resolve permissionMode from LIVE config
+    // on every session start, not just reuse the stale persisted permMode — mirrors the allowedTools
+    // re-fetch already covered by profileAllowedToolsReachSessionStartConfig (same profile record).
+    @Test func profilePermissionModeRefetchedFromLiveConfig() async throws {
+        let cfg = ConfigStore(baseDir: FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-cfg-\(UUID().uuidString)", isDirectory: true))
+        try await cfg.save(AppConfig(
+            discord: DiscordSecrets(token: "t", clientId: "c"),
+            autoAllowClaudeTools: ["Bash"],
+            profiles: ["readonly": Profile(permissionMode: "plan", allowedTools: ["Read", "Glob"], policyTier: "read-only")]
+        ))
+        let store = freshTempStore()
+        // Stale persisted permMode ("bypassPermissions") must NOT win once a profile is bound.
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .claude, cwd: "/x", guildId: "g", permMode: "bypassPermissions",
+            permissionProfile: "readonly", updatedAt: "t"
+        ))
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture, store: store, configStore: cfg)
         let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
         #expect(reply.text == "ok:hi")
-        #expect(capture.withLock { $0["config.allowedTools"] } == "Read")
+        #expect(capture.withLock { $0["permMode"] } == "plan")
     }
 
     // T1 (core): backend id captured on notify → persisted → a fresh bridge sharing the store RESUMES
@@ -678,6 +708,29 @@ struct DabSessionBridgeTests {
         #expect(await bridge.isLive(channelId: "c") == true)
         await bridge.stop(channelId: "c")
         #expect(await bridge.isLive(channelId: "c") == false)
+    }
+
+    // H5: stop() cancels the idle watchdog too (TS wiring.ts detach() calls idleWatchdog.stop()) —
+    // previously only DabMain's own turn-completion path stopped it, so a session killed while a
+    // turn was still in flight left the 3-minute timer armed with nothing left to cancel it.
+    // IdleWatchdog.shared's default timer is a real Task.sleep with no test-time clock injection, so
+    // this checks the call reaches the watchdog cleanly (no crash/hang, no notice shortly after
+    // stop) on a uniquely-named channel — a fake clock to prove the underlying timer was actually
+    // cancelled (vs. simply not yet due) would require a change to IdleWatchdog itself.
+    @Test func stopCancelsIdleWatchdog() async throws {
+        let channel = "watchdog-\(UUID().uuidString)"
+        let posts = LockedBox(0)
+        await IdleWatchdog.shared.setPoster { ch, _ in
+            guard ch == channel else { return }
+            posts.withLock { $0 += 1 }
+        }
+        await IdleWatchdog.shared.arm(channelId: channel)
+
+        let (bridge, _) = makeDabBridge()
+        await bridge.stop(channelId: channel)
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(posts.withLock { $0 } == 0)
     }
 
     @Test func interruptKeepsSessionMap() async throws {

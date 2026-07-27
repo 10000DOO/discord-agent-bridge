@@ -71,7 +71,8 @@ private func makeFolderRoot() throws -> URL {
 
 private func makeWizard(
     options: WizardOptionSource = fakeOptions(),
-    root: URL? = nil
+    root: URL? = nil,
+    profileNames: [String] = []
 ) throws -> (ChannelWizard, URL) {
     let folderRoot: URL
     if let root {
@@ -85,7 +86,8 @@ private func makeWizard(
         channelId: "c1",
         ownerId: "u1",
         browser: browser,
-        options: options
+        options: options,
+        profileNames: profileNames
     )
     return (w, folderRoot)
 }
@@ -582,6 +584,69 @@ struct ChannelWizardTests {
         #expect(capped.count == 25)
         #expect(capped.contains(where: { $0.value == "m27" && $0.isDefault }))
     }
+
+    // MARK: - Permission profile quick-select (C3)
+
+    @Test func noProfileNamesOmitsProfileSelect() async throws {
+        let (w, root) = try makeWizard()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend.next"))
+        await w.handle(WizardInput(id: "model.next"))
+        await w.handle(WizardInput(id: "effort.next"))
+        #expect(w.currentStep() == .perm)
+        #expect(!componentIds(w).contains("perm.profile"))
+        #expect(componentIds(w).contains("perm.mode"))
+    }
+
+    @Test func pickingProfileQuickSelectReflectsInFinalSelection() async throws {
+        let (w, root) = try makeWizard(profileNames: ["work", "readonly"])
+        defer { try? FileManager.default.removeItem(at: root) }
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend.next"))
+        await w.handle(WizardInput(id: "model.next"))
+        await w.handle(WizardInput(id: "effort.next"))
+        #expect(selectOptions(w, customId: "perm.profile").map(\.value) == ["work", "readonly", "__raw__"])
+        #expect(await w.handle(WizardInput(id: "perm.profile", value: "work")) == .perm)
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
+        #expect(w.current().profile == "work")
+        // Picking a profile does not itself change the raw permMode (H8 re-resolves it at
+        // session start from the latest config, not here).
+        #expect(w.current().permMode == "default")
+        #expect(w.startParams?.profile == "work")
+    }
+
+    @Test func pickingRawModeAfterProfileClearsProfile() async throws {
+        let (w, root) = try makeWizard(profileNames: ["work"])
+        defer { try? FileManager.default.removeItem(at: root) }
+        await pastFolder(w)
+        await w.handle(WizardInput(id: "backend.next"))
+        await w.handle(WizardInput(id: "model.next"))
+        await w.handle(WizardInput(id: "effort.next"))
+        await w.handle(WizardInput(id: "perm.profile", value: "work"))
+        // Touching the raw select afterward wins (last touch wins, TS parity).
+        await w.handle(WizardInput(id: "perm.mode", value: "plan"))
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
+        #expect(w.startParams?.profile == nil)
+        #expect(w.startParams?.permMode == "plan")
+    }
+
+    @Test func explicitRawOptionClearsCarriedOverProfile() async throws {
+        let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write", profile: "work")
+        let root = try makeFolderRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let browser = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+        let w = ChannelWizard(
+            guildId: "g1", channelId: "c1", ownerId: "u1",
+            browser: browser, options: fakeOptions(), entry: entry, profileNames: ["work"]
+        )
+        #expect(w.current().profile == "work")
+        await w.handle(WizardInput(id: "model.next"))
+        await w.handle(WizardInput(id: "effort.next"))
+        await w.handle(WizardInput(id: "perm.profile", value: "__raw__"))
+        #expect(await w.handle(WizardInput(id: "perm.start")) == .done)
+        #expect(w.startParams?.profile == nil)
+    }
 }
 
 // MARK: - Preset step (W11-b2)
@@ -707,6 +772,25 @@ struct ChannelWizardPresetTests {
         #expect(isWizardCustomId("preset.direct"))
         #expect(isWizardCustomId("preset.delete"))
         #expect(!isWizardCustomId("preset.save")) // save is post-done modal opener
+    }
+
+    @Test func pickingPresetWithProfileCarriesProfileIntoStartParams() async throws {
+        let withProfile = [
+            Preset(name: "codex-work", backend: "codex", model: "gpt-5.4", profile: "work"),
+        ]
+        let (w, root) = try makeWizardWithPresets(presets: withProfile)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "codex-work")) == .done)
+        #expect(w.startParams?.profile == "work")
+    }
+
+    @Test func pickingPresetWithoutProfileLeavesProfileNil() async throws {
+        let (w, root) = try makeWizardWithPresets()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await w.handle(WizardInput(id: "dir:here"))
+        #expect(await w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
+        #expect(w.startParams?.profile == nil)
     }
 
     @Test func summarizePresetClampsTo100() {

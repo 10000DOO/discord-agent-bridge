@@ -58,6 +58,16 @@ struct DabMain {
             intents: [.guilds, .guildMessages, .messageContent]
         )
 
+        // M13: record this process's PID (TS app.ts:610-618) right after the client is created
+        // and before the gateway login attempt — not after Ready fires (was in onReady, i.e.
+        // after a successful login), so a hung/failed login still leaves a killable pid file.
+        // Best-effort — never blocks boot.
+        do {
+            try writePidFile(baseDir: await ConfigStore.shared.dir, pid: ProcessInfo.processInfo.processIdentifier)
+        } catch {
+            log.warn("failed to write pid file: \(error)")
+        }
+
         log.info("connecting to Discord gateway…")
         log.info("!claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
@@ -69,6 +79,20 @@ struct DabMain {
             if let level = LogLevel(rawValue: cfg.logLevel) {
                 currentLogLevel.withLock { $0 = level }
             }
+            // C1: reconfigure CodexUsageService off its `nil, nil` defaults with the actual
+            // configured codexHome/codexCliCommand (WO-2's `.configure` — `.shared` is a fixed
+            // `static let`, so this is the only way to move it after construction).
+            await CodexUsageService.shared.configure(
+                codexHome: cfg.defaults.codexHome,
+                codexCommand: cfg.defaults.codexCliCommand
+            )
+            // C1/WO-14: same reconfiguration for CodexSessionBridge.shared — without this, the
+            // actual codex session spawn (not just usage polling) keeps ignoring config.json's
+            // codexHome/codexCliCommand.
+            await CodexSessionBridge.shared.configure(
+                codexHome: cfg.defaults.codexHome,
+                codexCliCommand: cfg.defaults.codexCliCommand
+            )
         }
 
         // Wire the permission-button presenter once: the gate (library) posts Allow / Always-Allow /
@@ -169,13 +193,8 @@ struct EventHandler: GatewayEventHandler {
         log.info("auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()
-        // H17: record this process's PID (TS app.ts:611-619) so an operator can later
-        // `kill $(cat agent.pid)` a foreground/detached instance. Best-effort — never blocks boot.
-        do {
-            try writePidFile(baseDir: await ConfigStore.shared.dir, pid: ProcessInfo.processInfo.processIdentifier)
-        } catch {
-            log.warn("failed to write pid file: \(error)")
-        }
+        // M13: pid file is now written in main() right after the client is created, before the
+        // login attempt (see there) — not here, after Ready already fired.
         // C10: eagerly reconnect every restored channel now, instead of waiting for its next
         // message — TS `resumeAll()` + `app.ts`'s boot attach loop (10003 detection + cleanup).
         let resumeSummary = await SessionLifecycle.shared.resumeAll(channelGone: { channelId in
@@ -475,29 +494,61 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, "model 값이 필요합니다.")
                 return
             }
-            let ok = await life.updateBinding(
+            // C4-c: only Claude/.custom sessions expose a live setModel (TS
+            // sessionOrchestrator.ts:389 `if (typeof session.setModel !== 'function') return
+            // 'unsupported'` — codex/grok never do), so report unsupported up front instead of
+            // letting updateBinding persist a model field the backend never reads.
+            let modelStoreRow = await SessionStore.shared.binding(channelId: channelId)
+            let modelRegRow = await SessionRegistry.shared.binding(channelId: channelId)
+            guard let modelBackend = modelStoreRow?.backend ?? modelRegRow?.backend else {
+                try await respondEphemeral(payload, noSession)
+                return
+            }
+            guard modelBackend == .claude || modelBackend == .custom else {
+                try await respondEphemeral(payload, I18n.t("cmd.model.unsupported"))
+                return
+            }
+            let modelResult = await life.updateBinding(
                 channelId: channelId, patch: BindingPatch(model: value),
                 actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
             )
             // Claude live session: updateBinding also fires session.setModel (W11-g).
-            try await respondEphemeral(
-                payload,
-                ok ? I18n.t("cmd.model.switched", ["model": value]) : noSession
-            )
+            let modelMessage: String
+            switch modelResult {
+            case .ok: modelMessage = I18n.t("cmd.model.switched", ["model": value])
+            case .noBinding: modelMessage = noSession
+            case .invalidEffort, .applyFailed: modelMessage = I18n.t("cmd.model.failed")
+            }
+            try await respondEphemeral(payload, modelMessage)
 
         case "effort":
             guard let value = try? cmd.requireOption(named: "value").requireString(), !value.isEmpty else {
                 try await respondEphemeral(payload, "effort 값이 필요합니다.")
                 return
             }
-            let ok = await life.updateBinding(
+            // C4-c: Grok sessions never expose live effort switching (TS acpSession.ts —
+            // setModel/setEffort intentionally absent); Claude/.custom/Codex do.
+            let effortStoreRow = await SessionStore.shared.binding(channelId: channelId)
+            let effortRegRow = await SessionRegistry.shared.binding(channelId: channelId)
+            guard let effortBackend = effortStoreRow?.backend ?? effortRegRow?.backend else {
+                try await respondEphemeral(payload, noSession)
+                return
+            }
+            guard effortBackend != .grok else {
+                try await respondEphemeral(payload, I18n.t("cmd.effort.unsupported"))
+                return
+            }
+            let effortResult = await life.updateBinding(
                 channelId: channelId, patch: BindingPatch(effort: value),
                 actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
             )
-            try await respondEphemeral(
-                payload,
-                ok ? I18n.t("cmd.effort.switched", ["effort": value]) : noSession
-            )
+            let effortMessage: String
+            switch effortResult {
+            case .ok: effortMessage = I18n.t("cmd.effort.switched", ["effort": value])
+            case .noBinding: effortMessage = noSession
+            case .invalidEffort, .applyFailed: effortMessage = I18n.t("cmd.effort.failed")
+            }
+            try await respondEphemeral(payload, effortMessage)
 
         case "mode":
             guard let sub = cmd.options?.first else { return }
@@ -554,7 +605,10 @@ struct EventHandler: GatewayEventHandler {
                 let permMode = storeRow?.permMode ?? regRow?.permMode ?? "default"
                 let optionSource = await loadWizardOptionSource()
                 // G-P1-06: same favorites confinement as /agent start (reconfigure rarely uses folder).
-                let favorites = (try? await ConfigStore.shared.load())?.favorites ?? []
+                let globalConfig = try? await ConfigStore.shared.load()
+                let favorites = globalConfig?.favorites ?? []
+                // C3: registered permission profile names for the perm step's quick-select.
+                let profileNames = Array((globalConfig?.profiles ?? [:]).keys)
                 let browser = DirectoryBrowser(
                     allowedRoots: browseRoots(fromFavorites: favorites),
                     startPath: cwd,
@@ -566,8 +620,9 @@ struct EventHandler: GatewayEventHandler {
                     ownerId: ownerId,
                     browser: browser,
                     options: optionSource,
-                    // Omit model/effort → seed NEW backend defaults; carry cwd/perm from binding.
-                    entry: WizardEntry(backend: backend, cwd: cwd, permMode: permMode)
+                    // Omit model/effort → seed NEW backend defaults; carry cwd/perm/profile from binding.
+                    entry: WizardEntry(backend: backend, cwd: cwd, permMode: permMode, profile: storeRow?.permissionProfile),
+                    profileNames: profileNames
                 )
                 await WizardRegistry.shared.put(wizard, channelId: channelId)
                 let (embeds, components) = discordPayload(from: wizard.render())
@@ -589,13 +644,13 @@ struct EventHandler: GatewayEventHandler {
                 }
                 let profiles = (try? await ConfigStore.shared.load())?.profiles ?? [:]
                 let resolved = resolveModePerm(value: value, profiles: profiles)
-                let ok = await life.updateBinding(
+                let permResult = await life.updateBinding(
                     channelId: channelId, patch: resolved.bindingPatch,
                     actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
                 )
                 try await respondEphemeral(
                     payload,
-                    ok ? I18n.t("cmd.perm.switched", ["perm": resolved.display]) : noSession
+                    permResult == .ok ? I18n.t("cmd.perm.switched", ["perm": resolved.display]) : noSession
                 )
             default:
                 try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
@@ -611,7 +666,10 @@ struct EventHandler: GatewayEventHandler {
                 // nativePanel: package is macOS-only → always wire host picker (dir:panel).
                 let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
                 let optionSource = await loadWizardOptionSource()
-                let favorites = (try? await ConfigStore.shared.load())?.favorites ?? []
+                let globalConfig = try? await ConfigStore.shared.load()
+                let favorites = globalConfig?.favorites ?? []
+                // C3: registered permission profile names for the perm step's quick-select.
+                let profileNames = Array((globalConfig?.profiles ?? [:]).keys)
                 let roots = browseRoots(fromFavorites: favorites)
                 let browser = DirectoryBrowser(
                     allowedRoots: roots,
@@ -627,6 +685,7 @@ struct EventHandler: GatewayEventHandler {
                     browser: browser,
                     options: optionSource,
                     presets: serverPresets,
+                    profileNames: profileNames,
                     onDeletePreset: { name in
                         _ = try? await ConfigStore.shared.removeServerPreset(guildId: guildForPresets, name: name)
                         return await ConfigStore.shared.loadServerConfig(guildId: guildForPresets)?.presets ?? []
@@ -1390,6 +1449,13 @@ struct EventHandler: GatewayEventHandler {
         }
 
         await WizardRegistry.shared.enqueue(channelId: channelId) {
+            // M18: an earlier queued job on this channel (e.g. a prior click that already
+            // completed/cancelled the wizard) may have removed it while this job waited its
+            // turn — re-fetch from the registry at EXECUTION time instead of trusting the
+            // instance captured when this job was dispatched (TS components.ts:243-249 does the
+            // same `host.wizards.get(wKey)` fetch inside the queued job). Shadows the outer
+            // `wizard` so everything below always drives the still-live instance.
+            guard let wizard = await WizardRegistry.shared.get(channelId: channelId) else { return }
             let value = comp.values?.first
             let step = await wizard.handle(WizardInput(id: comp.custom_id, value: value))
 
@@ -1477,7 +1543,8 @@ struct EventHandler: GatewayEventHandler {
                             backend: p.backend.rawValue,
                             model: p.model.isEmpty ? nil : p.model,
                             effort: p.effort.isEmpty ? nil : p.effort,
-                            permMode: p.permMode.isEmpty ? nil : p.permMode
+                            permMode: p.permMode.isEmpty ? nil : p.permMode,
+                            profile: p.profile
                         )
                         let draftKey = PresetDraftRegistry.key(guildId: guildId, channelId: channelId)
                         await PresetDraftRegistry.shared.set(draft, key: draftKey)
@@ -1843,7 +1910,10 @@ struct EventHandler: GatewayEventHandler {
             model: model,
             effort: effort,
             permMode: perm,
-            permissionProfile: existing?.permissionProfile,
+            // C3: the wizard's perm step now collects a quick-select profile — its choice (or
+            // nil for raw mode) is the source of truth here, same as model/effort/permMode above
+            // (was `existing?.permissionProfile`, which never let a freshly-picked profile persist).
+            permissionProfile: p.profile,
             projectAuth: existing?.projectAuth,
             createdAt: existing?.createdAt,
             updatedAt: ISO8601DateFormatter().string(from: Date()),

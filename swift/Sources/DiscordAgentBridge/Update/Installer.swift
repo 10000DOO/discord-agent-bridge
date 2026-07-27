@@ -19,17 +19,20 @@ public enum RestartStrategy: String, Sendable, Equatable {
 
 public struct RestartDetectDeps: Sendable {
     public var platformIsDarwin: Bool
+    public var platformIsWindows: Bool
     public var env: [String: String]
     public var home: String
     public var fileExists: @Sendable (String) -> Bool
 
     public init(
         platformIsDarwin: Bool = true,
+        platformIsWindows: Bool = false,
         env: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
         fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) {
         self.platformIsDarwin = platformIsDarwin
+        self.platformIsWindows = platformIsWindows
         self.env = env
         self.home = home
         self.fileExists = fileExists
@@ -39,6 +42,12 @@ public struct RestartDetectDeps: Sendable {
 /// launchd LaunchAgent plist path for the Swift dab service.
 public func launchdPlistPath(home: String = NSHomeDirectory()) -> String {
     (home as NSString).appendingPathComponent("Library/LaunchAgents/com.discord-agent-bridge.plist")
+}
+
+/// systemd --user unit path for the Swift dab service (TS `service/systemd.ts` `systemdUnitPath`).
+/// Old-install fallback signal for `detectRestartStrategy` on Linux — not full service support (H4, held back).
+public func systemdUnitPath(home: String = NSHomeDirectory()) -> String {
+    (home as NSString).appendingPathComponent(".config/systemd/user/discord-agent-bridge.service")
 }
 
 // MARK: - PID file (H17, TS `update/environment.ts:48` `pidFilePath` + `installer.ts:88-97`)
@@ -67,13 +76,20 @@ public func removePidFile(baseDir: URL) {
     try? FileManager.default.removeItem(at: target)
 }
 
-/// Decide restart strategy after in-place upgrade (TS `detectRestartStrategy`).
+/// Decide restart strategy after in-place upgrade (TS `detectRestartStrategy`,
+/// `src/update/environment.ts:27-44`).
+/// - Windows → respawn always (scheduled task doesn't relaunch on exit; marker is irrelevant)
 /// - `DAB_SUPERVISED=1` → supervised
 /// - darwin + plist present → supervised (old-install fallback)
+/// - linux (non-darwin, non-Windows) + systemd unit present → supervised (old-install fallback)
 /// - otherwise → respawn
 public func detectRestartStrategy(_ d: RestartDetectDeps) -> RestartStrategy {
+    if d.platformIsWindows { return .respawn }
     if d.env["DAB_SUPERVISED"] == "1" { return .supervised }
     if d.platformIsDarwin, d.fileExists(launchdPlistPath(home: d.home)) {
+        return .supervised
+    }
+    if !d.platformIsDarwin, d.fileExists(systemdUnitPath(home: d.home)) {
         return .supervised
     }
     return .respawn

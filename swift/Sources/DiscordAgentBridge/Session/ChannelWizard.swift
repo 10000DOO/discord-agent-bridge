@@ -110,6 +110,8 @@ public struct WizardStartParams: Sendable, Equatable {
     public var model: String
     public var effort: String
     public var permMode: String
+    /// Named permission profile picked in the perm step's quick-select, or nil for raw mode (C3).
+    public var profile: String?
 
     public init(
         guildId: String,
@@ -119,7 +121,8 @@ public struct WizardStartParams: Sendable, Equatable {
         ownerId: String,
         model: String,
         effort: String,
-        permMode: String
+        permMode: String,
+        profile: String? = nil
     ) {
         self.guildId = guildId
         self.channelId = channelId
@@ -129,6 +132,7 @@ public struct WizardStartParams: Sendable, Equatable {
         self.model = model
         self.effort = effort
         self.permMode = permMode
+        self.profile = profile
     }
 }
 
@@ -187,7 +191,7 @@ public func isWizardCustomId(_ customId: String) -> Bool {
     case "backend", "backend.next",
          "model", "model.next",
          "effort", "effort.next",
-         "perm.mode", "perm.start",
+         "perm.mode", "perm.profile", "perm.start",
          "preset.pick", "preset.direct", "preset.delete",
          "wizard.back", "cancel":
         return true
@@ -267,6 +271,8 @@ public struct WizardSelection: Sendable, Equatable {
     public var model: String
     public var effort: String
     public var permMode: String
+    /// Named permission profile picked via the perm step's quick-select, or nil for raw mode (C3).
+    public var profile: String? = nil
 }
 
 /// Seed for `/mode backend` reconfigure popup: skip folder/backend, open at model.
@@ -275,6 +281,8 @@ public struct WizardEntry: Sendable, Equatable {
     public var backend: Backend
     public var cwd: String
     public var permMode: String
+    /// Existing binding's permission profile, carried over as-is (nil = raw mode) (C3).
+    public var profile: String?
     public var model: String?
     public var effort: String?
 
@@ -282,12 +290,14 @@ public struct WizardEntry: Sendable, Equatable {
         backend: Backend,
         cwd: String,
         permMode: String,
+        profile: String? = nil,
         model: String? = nil,
         effort: String? = nil
     ) {
         self.backend = backend
         self.cwd = cwd
         self.permMode = permMode
+        self.profile = profile
         self.model = model
         self.effort = effort
     }
@@ -312,6 +322,9 @@ public final class ChannelWizard: @unchecked Sendable {
     private var pending: Pending = Pending()
     /// Snapshot of saved presets at open; shrinks on delete. Empty → no preset step (R6).
     private var presets: [Preset]
+    /// Named permission profiles offered as the perm step's quick-select (C3). Empty → raw-only,
+    /// same as before this feature (WO-7 passes `Array(config.profiles.keys)`).
+    private let profileNames: [String]
     /// Side-effect on delete (router persists to ConfigStore, returns disk-truth preset list).
     /// Nil (tests) → local filter fallback.
     private let onDeletePreset: ((String) async -> [Preset])?
@@ -333,6 +346,9 @@ public final class ChannelWizard: @unchecked Sendable {
         var model: String?
         var effort: String?
         var permMode: String?
+        /// Pending profile pick (`perm.profile`); mutually exclusive with `permMode` — whichever
+        /// select the driver touches last wins (mirrors TS's single `pending.perm` slot).
+        var profile: String?
     }
 
     public init(
@@ -343,6 +359,7 @@ public final class ChannelWizard: @unchecked Sendable {
         options: WizardOptionSource,
         entry: WizardEntry? = nil,
         presets: [Preset] = [],
+        profileNames: [String] = [],
         onDeletePreset: ((String) async -> [Preset])? = nil,
         summarizePreset: ((Preset) -> String)? = nil,
         backendAvailable: ((String) -> Bool)? = nil
@@ -353,12 +370,13 @@ public final class ChannelWizard: @unchecked Sendable {
         self.browser = browser
         self.options = options
         self.presets = presets
+        self.profileNames = profileNames
         self.onDeletePreset = onDeletePreset
         self.summarizePresetFn = summarizePreset
         self.backendAvailable = backendAvailable
         if let entry {
             // Reconfigure (backend switch): skip folder/preset/backend, start at model.
-            // backend/cwd/permMode carry over; model/effort seed from caller or new-backend defaults.
+            // backend/cwd/permMode/profile carry over; model/effort seed from caller or new-backend defaults.
             self.kind = .reconfigure
             self.firstStep = .model
             self.step = .model
@@ -368,7 +386,8 @@ public final class ChannelWizard: @unchecked Sendable {
                 backend: entry.backend,
                 model: entry.model ?? models.first?.value ?? options.defaults.model,
                 effort: entry.effort ?? options.defaultEffort(for: entry.backend),
-                permMode: entry.permMode
+                permMode: entry.permMode,
+                profile: entry.profile
             )
         } else {
             self.kind = .start
@@ -380,7 +399,10 @@ public final class ChannelWizard: @unchecked Sendable {
                 backend: d.backend,
                 model: d.model,
                 effort: d.effort,
-                permMode: d.permMode
+                permMode: d.permMode,
+                // No config-level default profile is surfaced to the wizard yet — raw until the
+                // driver picks one (perm.profile) or a preset seeds it.
+                profile: nil
             )
         }
     }
@@ -395,6 +417,7 @@ public final class ChannelWizard: @unchecked Sendable {
         allowedRoots: [String] = [],
         entry: WizardEntry? = nil,
         presets: [Preset] = [],
+        profileNames: [String] = [],
         onDeletePreset: ((String) async -> [Preset])? = nil,
         summarizePreset: ((Preset) -> String)? = nil,
         backendAvailable: ((String) -> Bool)? = nil
@@ -407,6 +430,7 @@ public final class ChannelWizard: @unchecked Sendable {
             options: options,
             entry: entry,
             presets: presets,
+            profileNames: profileNames,
             onDeletePreset: onDeletePreset,
             summarizePreset: summarizePreset,
             backendAvailable: backendAvailable
@@ -532,6 +556,7 @@ public final class ChannelWizard: @unchecked Sendable {
                 ?? selection.model
             selection.effort = picked.effort ?? options.defaultEffort(for: backend)
             selection.permMode = picked.permMode ?? options.defaults.permMode
+            selection.profile = picked.profile
             fromPreset = true
             commitStart()
         }
@@ -547,7 +572,8 @@ public final class ChannelWizard: @unchecked Sendable {
             ownerId: ownerId,
             model: selection.model,
             effort: selection.effort,
-            permMode: selection.permMode
+            permMode: selection.permMode,
+            profile: selection.profile
         )
         step = .done
     }
@@ -583,12 +609,25 @@ public final class ChannelWizard: @unchecked Sendable {
         }
     }
 
+    /// `perm.profile` (quick-select) and `perm.mode` (raw) are mutually exclusive — picking one
+    /// clears any pending pick on the other, so whichever the driver touched last wins on commit
+    /// (mirrors TS's single `pending.perm` slot with `profile:`/`mode:` prefixes).
     private func handlePerm(_ input: WizardInput) {
-        if input.id == "perm.mode", let v = input.value {
+        if input.id == "perm.profile", let v = input.value {
+            pending.profile = v
+            pending.permMode = nil
+        } else if input.id == "perm.mode", let v = input.value {
             pending.permMode = v
+            pending.profile = nil
         } else if input.id == "perm.start" {
-            if let p = pending.permMode {
-                selection.permMode = p
+            if let p = pending.profile {
+                // "__raw__" is the explicit advanced-option sentinel (TS parity) — an explicit
+                // opt-out of the profile quick-select, not "no pick".
+                selection.profile = p == "__raw__" ? nil : p
+                pending.profile = nil
+            } else if let m = pending.permMode {
+                selection.permMode = m
+                selection.profile = nil
                 pending.permMode = nil
             }
             commitStart()
@@ -602,6 +641,7 @@ public final class ChannelWizard: @unchecked Sendable {
         selection.effort = options.defaultEffort(for: backend)
         let perms = options.perms(for: backend)
         selection.permMode = perms.first?.value ?? selection.permMode
+        selection.profile = nil
         pending = Pending()
     }
 
@@ -687,15 +727,37 @@ public final class ChannelWizard: @unchecked Sendable {
             )
         case .perm:
             let selected = pending.permMode ?? selection.permMode
+            var rows: [WizardRow] = []
+            // Quick-select: config.profiles names + an explicit "advanced" opt-out (C3). Only
+            // shown when the guild has ≥1 registered profile (WO-7 injects `profileNames`).
+            if !profileNames.isEmpty {
+                let selectedProfile = pending.profile ?? selection.profile
+                let profileOpts = capSelectOptions(
+                    profileNames.map { name in
+                        WizardSelectOption(label: name, value: name, isDefault: name == selectedProfile)
+                    } + [
+                        WizardSelectOption(
+                            label: I18n.t("wizard.profile.advanced"),
+                            value: "__raw__",
+                            isDefault: selectedProfile == nil
+                        ),
+                    ]
+                )
+                if !profileOpts.isEmpty {
+                    rows.append(WizardRow(components: [
+                        .select(customId: "perm.profile", placeholder: I18n.t("wizard.step.perm"), options: profileOpts),
+                    ]))
+                }
+            }
             let modeOpts = capSelectOptions(
                 options.perms(for: selection.backend).map { p in
                     WizardSelectOption(label: p.label, value: p.value, isDefault: p.value == selected)
                 }
             )
-            var rows: [WizardRow] = []
             if !modeOpts.isEmpty {
+                // Placeholder names it as the manual/advanced path once the quick-select exists (TS parity).
                 rows.append(WizardRow(components: [
-                    .select(customId: "perm.mode", placeholder: I18n.t("status.permMode"), options: modeOpts),
+                    .select(customId: "perm.mode", placeholder: I18n.t("wizard.profile.advanced"), options: modeOpts),
                 ]))
             }
             let startLabel = kind == .reconfigure ? I18n.t("wizard.recfg.start") : I18n.t("wizard.start")

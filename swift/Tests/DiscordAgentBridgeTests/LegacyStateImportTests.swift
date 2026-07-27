@@ -172,6 +172,45 @@ struct LegacyStateImportTests {
         #expect(active["c3"] != nil)
     }
 
+    // Case 7 (H7): one of three channels has an unregistered/unknown `mode` value — that channel
+    // alone is skipped (never silently imported as claude), the other two still import.
+    @Test func skipsUnknownBackendModeKeepsOthers() async throws {
+        let legacyURL = tempLegacyURL()
+        let swiftURL = tempStoreURL()
+        defer {
+            try? FileManager.default.removeItem(at: legacyURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: swiftURL.deletingLastPathComponent())
+        }
+        try FileManager.default.createDirectory(at: legacyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let legacy: [String: Any] = [
+            "version": 1,
+            "channels": [
+                "g1:c1": [
+                    "mode": "claude", "cwd": "/ws1", "guildId": "g1", "updatedAt": "2026-01-01T00:00:00Z", "archived": false,
+                ] as [String: Any],
+                // Unregistered backend value — must be skipped, not silently imported as claude.
+                "g1:c2": [
+                    "mode": "future-backend", "cwd": "/ws2", "guildId": "g1", "updatedAt": "2026-01-02T00:00:00Z", "archived": false,
+                ] as [String: Any],
+                "g1:c3": [
+                    "mode": "grok", "cwd": "/ws3", "guildId": "g1", "updatedAt": "2026-01-03T00:00:00Z", "archived": false,
+                ] as [String: Any],
+            ] as [String: Any],
+        ]
+        try JSONSerialization.data(withJSONObject: legacy).write(to: legacyURL)
+
+        let store = SessionStore(fileURL: swiftURL)
+        let imported = await LegacyStateImport.runIfNeeded(legacyFileURL: legacyURL, swiftFileURL: swiftURL, store: store)
+        #expect(imported == 2)
+
+        await store.load()
+        let active = await store.active()
+        #expect(active["c1"] != nil)
+        #expect(active["c2"] == nil)
+        #expect(active["c3"] != nil)
+    }
+
     // Case 5 (R5): the legacy file is opened read-only — its bytes and mtime must be identical
     // before and after a successful import.
     @Test func leavesLegacyFileUntouchedAfterImport() async throws {

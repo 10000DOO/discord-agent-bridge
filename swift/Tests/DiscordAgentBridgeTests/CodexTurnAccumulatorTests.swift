@@ -385,6 +385,25 @@ struct CodexTurnStepTests {
         #expect(parentResult == "spawn-1")
     }
 
+    // H2: turnId extraction + stale-completion guard (TS eventMapper.ts:74 + appSession.ts:220).
+    @Test func notificationTurnIdExtraction() {
+        #expect(codexNotificationTurnId(params: .object(["turnId": .string("u1")])) == "u1")
+        #expect(codexNotificationTurnId(params: .object([:])) == nil)
+        #expect(codexNotificationTurnId(params: nil) == nil)
+    }
+
+    @Test func notificationMatchesActiveTurnGuard() {
+        // No turnId on the notification → always matches (some app-server builds omit it).
+        #expect(codexNotificationMatchesActiveTurn(params: .object([:]), activeTurnId: "u1"))
+        #expect(codexNotificationMatchesActiveTurn(params: nil, activeTurnId: "u1"))
+        // No active turn recorded yet → let it through (Swift-only race window).
+        #expect(codexNotificationMatchesActiveTurn(params: .object(["turnId": .string("stale")]), activeTurnId: nil))
+        // Matching turnId → matches.
+        #expect(codexNotificationMatchesActiveTurn(params: .object(["turnId": .string("u1")]), activeTurnId: "u1"))
+        // Mismatched turnId (stale turn/completed from an already-finished turn) → rejected (H2).
+        #expect(codexNotificationMatchesActiveTurn(params: .object(["turnId": .string("stale")]), activeTurnId: "u1") == false)
+    }
+
     @Test func failurePaths() {
         for method in ["turn/failed", "thread/failed", "error"] {
             let step = codexTurnStep(method: method, params: .object(["error": .object(["message": .string("boom")])]))

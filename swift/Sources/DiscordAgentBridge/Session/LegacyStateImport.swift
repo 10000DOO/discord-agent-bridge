@@ -49,15 +49,19 @@ public enum LegacyStateImport {
         return imported
     }
 
-    /// Map one legacy channel binding dict to `PersistedSession`. `cwd`/`updatedAt` are the only
-    /// fields whose absence/wrong type skips the whole channel (D5/WO-1) — everything else reads
-    /// best-effort with the same fallback `backend(fromMode:)` already applies to an unknown mode.
+    /// Map one legacy channel binding dict to `PersistedSession`. `cwd`/`updatedAt`/an unmatched
+    /// `mode` (H7) are the only fields whose absence/mismatch skips the whole channel (D5/WO-1) —
+    /// everything else reads best-effort.
     private static func parseSession(_ binding: [String: Any], guildIdFallback: String) -> PersistedSession? {
         guard let cwd = binding["cwd"] as? String,
               let updatedAt = binding["updatedAt"] as? String
         else { return nil }
 
         let mode = (binding["mode"] as? String) ?? ""
+        // Unknown backend value (H7): skip just this channel rather than silently mapping it to
+        // `.claude`, which would run a corrupt/unregistered backend's session under the wrong
+        // tools/permissions.
+        guard let backend = PersistedSession.backend(fromMode: mode) else { return nil }
         let guildId = (binding["guildId"] as? String) ?? guildIdFallback
 
         var projectAuth: ProjectAuth?
@@ -67,7 +71,7 @@ public enum LegacyStateImport {
         }
 
         return PersistedSession(
-            backend: PersistedSession.backend(fromMode: mode),
+            backend: backend,
             backendSessionId: binding["sessionId"] as? String,
             cwd: cwd,
             guildId: guildId,

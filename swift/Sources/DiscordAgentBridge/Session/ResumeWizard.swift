@@ -99,6 +99,8 @@ public final class ResumeWizard: @unchecked Sendable {
     private var pendingBackend: Backend?
     private var sessions: [ResumableSession] = []
     private var resumedChannelId: String?
+    /// Set when `opts.resume` throws; surfaced in the next `.pick` render (H9).
+    private var lastResumeError: String?
 
     public let ownerId: String
 
@@ -146,6 +148,7 @@ public final class ResumeWizard: @unchecked Sendable {
 
     private func resumeSession(_ sessionId: String) async {
         guard sessions.contains(where: { $0.sessionId == sessionId }) else { return }
+        lastResumeError = nil
         do {
             let result = try await opts.resume(ResumeParams(
                 guildId: opts.guildId,
@@ -158,7 +161,10 @@ public final class ResumeWizard: @unchecked Sendable {
             resumedChannelId = result.channelId
             step = .done
         } catch {
-            // Stay on pick so the user can try another session; caller may log.
+            // Stay on pick so the user can try another session; surface the failure
+            // on the next render (TS resumeWizard.ts:115-128 relies on guarded() for
+            // this — Swift's handle() doesn't throw, so the wizard shows it itself).
+            lastResumeError = I18n.t("cmd.error", ["error": error.localizedDescription])
         }
     }
 
@@ -200,9 +206,13 @@ public final class ResumeWizard: @unchecked Sendable {
                 let label = time.isEmpty ? base : clipResumeLabel("\(base) · \(time)", 95)
                 return WizardSelectOption(label: label, value: s.sessionId, isDefault: false)
             }
+            var description = I18n.t("resume.step.pick")
+            if let lastResumeError {
+                description = "\(lastResumeError)\n\(description)"
+            }
             return WizardView(
                 title: title,
-                description: I18n.t("resume.step.pick"),
+                description: description,
                 rows: [
                     WizardRow(components: [
                         .select(

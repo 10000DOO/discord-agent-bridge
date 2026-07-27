@@ -86,16 +86,23 @@ struct PermissionGateTests {
         #expect(await gate.resolve(reqKey: "k", action: .deny, byUserId: "owner") == false)   // already settled
     }
 
-    // Regression guard (c2 security RV): a prompt with NO approver cannot be resolved by anyone —
-    // it stays pending forever (TS parity — no timeout, never auto-allow via a stray click either).
-    @Test func nilApproverCannotBeResolved() async {
+    // H6 (TS parity, permissionButtons.ts:133): a prompt with NO approver can be resolved by
+    // anyone — the approver check only applies when `approverId` is actually set.
+    @Test func nilApproverCanBeResolvedByAnyone() async {
         let gate = PermissionGate()
         let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash")) }
         await waitRegistered(gate)
-        #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "anyone") == false)
-        #expect(await gate.resolve(reqKey: "k", action: .allow) == false)   // byUserId nil too
-        #expect(await gate.pendingCount() == 1)   // still pending — nothing can ever resolve it
-        t.cancel()   // never resolves; drop the waiter instead of hanging the test
+        #expect(await gate.resolve(reqKey: "k", action: .allow, byUserId: "anyone") == true)
+        #expect(await t.value == .allow)
+    }
+
+    // Same as above but with byUserId omitted entirely — still resolves when there's no approver.
+    @Test func nilApproverResolvesEvenWithoutByUserId() async {
+        let gate = PermissionGate()
+        let t = Task { await gate.await(prompt: .init(reqKey: "k", channelId: "c", toolName: "bash")) }
+        await waitRegistered(gate)
+        #expect(await gate.resolve(reqKey: "k", action: .deny) == true)   // byUserId nil
+        #expect(await t.value == .deny)
     }
 }
 

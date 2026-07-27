@@ -87,6 +87,17 @@ struct ResumeWizardTests {
         #expect(w.sessionChannelId() == "c-new")
     }
 
+    @Test func resumeFailureShowsErrorAndStaysOnPick() async {
+        let sessions = [ResumableSession(sessionId: "cl-1", cwd: "/proj", label: "Claude work")]
+        let w = makeFlow(sessions: [.claude: sessions], resumeThrows: true)
+        _ = await w.handle(WizardInput(id: "resume.backend.next"))
+        #expect(w.currentStep() == .pick)
+        let step = await w.handle(WizardInput(id: "resume.pick", value: "cl-1"))
+        #expect(step == .pick)
+        #expect(w.sessionChannelId() == nil)
+        #expect(w.render().description.contains("명령을 처리하지 못했어요"))
+    }
+
     @Test func stalePickIdIsIgnored() async {
         let sessions = [ResumableSession(sessionId: "cl-1", cwd: "/proj")]
         let w = makeFlow(sessions: [.claude: sessions])

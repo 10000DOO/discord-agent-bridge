@@ -59,7 +59,12 @@ public struct PersistedSession: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let rawMode = try c.decode(String.self, forKey: .backend)
-        self.backend = Self.backend(fromMode: rawMode)
+        guard let backend = Self.backend(fromMode: rawMode) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .backend, in: c, debugDescription: "Unknown backend value: \(rawMode)"
+            )
+        }
+        self.backend = backend
         self.backendSessionId = try c.decodeIfPresent(String.self, forKey: .backendSessionId)
         self.cwd = try c.decode(String.self, forKey: .cwd)
         self.guildId = try c.decode(String.self, forKey: .guildId)
@@ -97,14 +102,16 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         case permissionProfile, projectAuth, createdAt, updatedAt, archived
     }
 
-    /// Map a stored mode/backend string → `Backend` after `normalizeModeId`.
-    public static func backend(fromMode mode: String) -> Backend {
+    /// Map a stored mode/backend string → `Backend` after `normalizeModeId`. `nil` when the
+    /// value matches no known `Backend` (H7) — callers must skip that one binding instead of
+    /// silently mapping it to `.claude`, which would run a corrupt/unregistered backend's
+    /// session under the wrong tools/permissions.
+    public static func backend(fromMode mode: String) -> Backend? {
         let n = normalizeModeId(mode)
         if n == "grok-build" { return .grok }
         if let b = Backend(rawValue: n) { return b }
         if let b = Backend(rawValue: mode) { return b }
-        // Unknown id: fall back to claude (should not happen for known backends incl. custom).
-        return .claude
+        return nil
     }
 }
 
@@ -321,12 +328,38 @@ public actor SessionStore {
             return nil  // corrupt → nil
         }
         do {
-            let migrated = try migrateState(json)
+            var migrated = try migrateState(json)
+            // Decode channels one binding at a time (below) so a single unknown-backend/corrupt
+            // value (H7) is skipped without discarding the rest of the store — the synthesized
+            // dictionary decode of `channels` would otherwise throw for the whole map on one bad
+            // key. Left untouched (and free to throw as before) when `channels` isn't a dict.
+            let rawChannels = migrated["channels"] as? [String: Any]
+            if rawChannels != nil {
+                migrated["channels"] = [String: Any]()
+            }
             let mdata = try JSONSerialization.data(withJSONObject: migrated)
-            return try JSONDecoder().decode(StoreFile.self, from: mdata)
+            var file = try JSONDecoder().decode(StoreFile.self, from: mdata)
+            if let rawChannels {
+                file.channels = decodeChannels(rawChannels)
+            }
+            return file
         } catch {
             return nil
         }
+    }
+
+    /// Decode each channel binding independently (see `readFile`). A binding whose value isn't a
+    /// dict, or whose `backend` doesn't match a known `Backend` (H7), is skipped on its own.
+    private static func decodeChannels(_ raw: [String: Any]) -> [String: PersistedSession] {
+        var result: [String: PersistedSession] = [:]
+        for (key, value) in raw {
+            guard let dict = value as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let session = try? JSONDecoder().decode(PersistedSession.self, from: data)
+            else { continue }
+            result[key] = session
+        }
+        return result
     }
 
     private static func writeFile(_ url: URL, _ file: StoreFile) throws {

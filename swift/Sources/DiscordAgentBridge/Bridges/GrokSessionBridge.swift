@@ -51,7 +51,9 @@ public actor GrokSessionBridge {
             )
             log.info("spawning grok agent stdio: \(spawn.command) \(spawn.args.joined(separator: " "))")
             // Control-request timeout only (60s). Turn budget is bridge-owned (sessionPrompt has none).
-            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: 60_000, mcpServers: mcpServers, onPermission: onPermission)
+            // M6/WO-13: augment the child's PATH with well-known nvm/fnm/volta dirs (mirrors
+            // CodexSessionBridge's codexChildEnvironment() wiring below).
+            return try GrokAcpClient(spawn: spawn, requestTimeoutMs: 60_000, environment: grokChildEnvironment(), mcpServers: mcpServers, onPermission: onPermission)
         },
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,
@@ -279,12 +281,33 @@ public actor GrokSessionBridge {
         let epoch = stopEpoch[channelId] ?? 0
         // ponytail: model/effort/bypass are baked at spawn from the FIRST turn's config (TS parity —
         // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
+        let persisted = await store.binding(channelId: channelId)
+
+        // H8: a profile name persisted on the binding is the source of truth for permissionMode —
+        // re-resolve it from the LIVE config here rather than trusting the (possibly stale)
+        // stored/bound value, so an operator's edit to profiles.<name>.permissionMode takes effect
+        // on the next session start/resume without a `/mode perm` round-trip (TS
+        // permissionResolver.resolve()). M2 (WO-15): a bound profile that no longer exists in config
+        // blocks the session instead of silently falling back to the stale value (TS
+        // permissionResolver.ts:66-70 throws `Unknown permission profile`) — mirrors
+        // DabSessionBridge (WO-4) / CodexSessionBridge (WO-1), closing the backend parity gap RV
+        // flagged. Same fail-secure treatment when config.json itself is missing/unreadable as the
+        // other two bridges: the stale/persisted value stands rather than throwing the turn.
+        var effectiveConfig = config
+        if let globalConfig = try? await configStore.load(), let profileName = persisted?.permissionProfile {
+            guard let profile = globalConfig.profiles[profileName] else {
+                throw AcpClientError("Unknown permission profile '\(profileName)'.")
+            }
+            var patched = config ?? SessionConfig(backend: .grok)
+            patched.permMode = profile.permissionMode
+            effectiveConfig = patched
+        }
 
         // W11-c: bypass permMode → `--always-approve` (no handler). Non-bypass → route grok's
         // permission asks through the Discord gate (onPermission); waits forever if unanswered.
         let gate = self.gate
         let onPermission: AcpPermissionHandler?
-        if grokBypassPermMode(config?.permMode) {
+        if grokBypassPermMode(effectiveConfig?.permMode) {
             onPermission = nil   // `--always-approve`: grok never asks
         } else {
             let configStore = self.configStore
@@ -308,8 +331,7 @@ public actor GrokSessionBridge {
         // C5: fresh attach_file/share_document MCP registration for this (re)spawn only —
         // the early-return-if-live path above never rebuilds it (TS ensureClient parity).
         let mcpServers = try await buildMcpServers(channelId: channelId)
-        let client = try makeClient(config, onPermission, mcpServers)
-        let persisted = await store.binding(channelId: channelId)
+        let client = try makeClient(effectiveConfig, onPermission, mcpServers)
 
         do {
             _ = try await client.initialize()
@@ -340,7 +362,7 @@ public actor GrokSessionBridge {
         let channel = Channel(client: client)
         channels[channelId] = channel
         // F7: capture the grok session id + live context.
-        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: client.sessionId)
+        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId)
         if (stopEpoch[channelId] ?? 0) != epoch {
             channels[channelId] = nil
             await client.close()
@@ -395,6 +417,9 @@ public actor GrokSessionBridge {
         channelGates[channelId] = nil
         turnDepth[channelId] = nil
         await ToolActivityHost.shared.dispose(channelId: channelId)
+        await StreamStatusHost.shared.dispose(channelId: channelId)
+        await UsageActivityHost.shared.dispose(channelId: channelId)
+        await IdleWatchdog.shared.stop(channelId: channelId)
         await unregisterAttach(channelId: channelId)
         guard let ch = channels.removeValue(forKey: channelId) else { return }
         await ch.client.close()
@@ -454,10 +479,14 @@ func buildGrokPromptBlocks(text: String, files: [TurnFile]) throws -> [AcpPrompt
     return blocks
 }
 
-/// Whether a permMode auto-approves for Grok (→ `--always-approve`, no permission UI). No bound
-/// permMode → true (danger default parity). Non-bypass modes route asks through the gate.
+/// Whether a permMode auto-approves for Grok (→ `--always-approve`, no permission UI). M7: no bound
+/// permMode → false (safe default; approval required) — TS `sessionOrchestrator.ts:817` defaults an
+/// unbound session to `'default'`, not an auto-approve mode. The normal wizard/preset start path
+/// always sets a non-empty permMode (`ChannelWizard` seeds `options.defaults.permMode`, falls back
+/// further to `"default"`), so this branch is only reached by a channel with no permMode ever bound
+/// (e.g. a pre-permMode legacy import) — never by a freshly wizard-started session.
 func grokBypassPermMode(_ permMode: String?) -> Bool {
-    guard let permMode, !permMode.isEmpty else { return true }
+    guard let permMode, !permMode.isEmpty else { return false }
     return permMode == "bypassPermissions" || permMode == "danger-full-access"
 }
 

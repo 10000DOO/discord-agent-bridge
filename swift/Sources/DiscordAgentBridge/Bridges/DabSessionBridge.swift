@@ -278,7 +278,7 @@ public actor DabSessionBridge {
         }()
         var model = persisted?.model ?? config?.model
         let effort = persisted?.effort ?? config?.effort
-        let perm = persisted?.permMode ?? config?.permMode ?? permMode
+        var perm = persisted?.permMode ?? config?.permMode ?? permMode
         let cwdValue = cwd
 
         // W16-f: prepareSession for custom — merge process env + allow-listed dotfile keys;
@@ -307,10 +307,15 @@ public actor DabSessionBridge {
         // sessionOrchestrator.buildContext: modeConfig.allowedTools = modeConfig.autoAllowClaudeTools
         // = perm.allowedTools). Profiles are looked up from the top-level config only (never
         // server-layered, matching TS); permissionTimeoutSec IS server-layered via ConfigResolver.
-        // A profile name that no longer exists in config.profiles (e.g. deleted after a channel
-        // bound to it) falls back to the global auto-allow list rather than failing the turn —
-        // TS throws here, but Swift prefers the fail-secure default already used elsewhere
-        // (ConfigStore.autoAllowClaudeTools()) over killing a turn on a stale config reference.
+        // M2: a profile name that no longer exists in config.profiles (e.g. deleted after a channel
+        // bound to it) now blocks session start with an error, matching TS
+        // permissionResolver.ts:66-70 (`throw new Error("Unknown permission profile '<name>'.")`) —
+        // a stale profile reference is a config mistake the operator needs to see, not something to
+        // paper over with the global auto-allow list.
+        // H8: when the profile IS found, its permissionMode supersedes any persisted/env value
+        // computed above — permissionMode is re-resolved from live config on every session start,
+        // exactly like allowedTools already is below (both come from the same profile record, TS
+        // permissionResolver.ts:71-72).
         // Same fail-secure treatment when config.json itself is missing/unreadable: empty
         // allowedTools + 0 timeout (matches ConfigStore.autoAllowClaudeTools()'s own "or empty
         // when config is missing/unreadable" contract) instead of throwing the turn.
@@ -321,6 +326,15 @@ public actor DabSessionBridge {
                 configStore: configStore,
                 bindingSource: SessionStoreBindingSource(store: store)
             ).resolve(guildId: guildId, channelId: channelId)
+            if let profileName = resolvedConfig?.permissionProfile {
+                guard let profile = globalConfig.profiles[profileName] else {
+                    throw SidecarRpcError(
+                        code: "unknown_profile",
+                        message: "Unknown permission profile '\(profileName)'."
+                    )
+                }
+                perm = profile.permissionMode
+            }
             effectiveAllowedTools = resolvedConfig?.permissionProfile
                 .flatMap { globalConfig.profiles[$0]?.allowedTools }
                 ?? globalConfig.autoAllowClaudeTools
@@ -362,6 +376,9 @@ public actor DabSessionBridge {
         let store = self.store
         let persistBackend = backend
         let persistModel = model
+        // H8: `perm` may have been reassigned from the live profile lookup above — snapshot it
+        // (same as `persistModel`) so the escaping onBackendId closure captures an immutable value.
+        let persistPerm = perm
         // host.file.share / host.file.attach reverse RPC → Host sinks (Discord wired in dab).
         let shareChannelId = channelId
         // Extend the chain *synchronously* in the event callback so arrival order is kept
@@ -386,7 +403,7 @@ public actor DabSessionBridge {
                         await persistSession(
                             store: store, backend: persistBackend, channelId: channelId,
                             guildId: guildId, ownerId: ownerId, cwd: cwdValue,
-                            model: persistModel, effort: effort, permMode: perm,
+                            model: persistModel, effort: effort, permMode: persistPerm,
                             backendSessionId: backendId
                         )
                     }
@@ -405,7 +422,7 @@ public actor DabSessionBridge {
             await persistSession(
                 store: store, backend: persistBackend, channelId: channelId,
                 guildId: guildId, ownerId: ownerId, cwd: cwdValue,
-                model: persistModel, effort: effort, permMode: perm,
+                model: persistModel, effort: effort, permMode: persistPerm,
                 backendSessionId: bid
             )
         }
@@ -603,6 +620,10 @@ public actor DabSessionBridge {
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
         await UsageActivityHost.shared.dispose(channelId: channelId)
+        // H5: cancel the idle watchdog on session teardown too (TS wiring.ts detach() calls
+        // idleWatchdog.stop()) — previously only DabMain's own turn-completion path stopped it,
+        // leaving an in-flight turn's timer armed when the session is killed out from under it.
+        await IdleWatchdog.shared.stop(channelId: channelId)
         guard let handle = sessions.removeValue(forKey: channelId) else { return }
         sessionMeta[handle] = nil
         // Unblock a waiter before the RPC so stop is never stuck on a hung turn.

@@ -1,5 +1,19 @@
 import Foundation
 
+/// Outcome of `updateBinding` (C4-a/M11). TS `orchestrator.setModel`/`setEffort` collapse to
+/// `'ok' | 'no-session' | 'unsupported' | 'error'`; this collapses to what this layer can tell
+/// apart without touching the bridges. `DabMain` (WO-7) maps each case to a user-facing i18n key.
+public enum BindingUpdateResult: Sendable, Equatable {
+    /// Patch applied and persisted.
+    case ok
+    /// No registry/store binding for this channel (TS `router.noSession`).
+    case noBinding
+    /// `patch.effort` is set on a codex binding but is not a catalog-known value — nothing persisted.
+    case invalidEffort
+    /// Claude/`.custom` live session declined the model/effort switch — nothing persisted.
+    case applyFailed
+}
+
 /// Thin orchestration over the three bridges + SessionRegistry + SessionStore for stop /
 /// interrupt / stopAll / clear / rebind / field updates (W14 + W11-d). Mirrors
 /// `sessionOrchestrator.ts` stop/interrupt/stopAll + slash binding ops without pulling Discord
@@ -12,6 +26,8 @@ public struct SessionLifecycle: Sendable {
     public typealias InterruptOp = @Sendable (String) async -> Bool
     /// Live field switch on an open Claude session (`channelId`, `value`) → applied?
     public typealias LiveFieldOp = @Sendable (String, String) async -> Bool
+    /// M11: is `value` a catalog-known codex effort level?
+    public typealias EffortValidator = @Sendable (String) async -> Bool
 
     private let registry: SessionRegistry
     private let store: SessionStore
@@ -24,6 +40,7 @@ public struct SessionLifecycle: Sendable {
     private let interruptGrok: InterruptOp
     private let setModelClaude: LiveFieldOp
     private let setEffortClaude: LiveFieldOp
+    private let isKnownCodexEffort: EffortValidator
     private let now: @Sendable () -> String
 
     public init(
@@ -42,6 +59,9 @@ public struct SessionLifecycle: Sendable {
         setEffortClaude: @escaping LiveFieldOp = {
             await DabSessionBridge.shared.setEffort(channelId: $0, effort: $1)
         },
+        isKnownCodexEffort: @escaping EffortValidator = {
+            await CodexConfigSource.shared.isKnownEffort($0)
+        },
         // Default cannot call internal `iso8601Now` from a public default-arg expression.
         now: (@Sendable () -> String)? = nil
     ) {
@@ -56,6 +76,7 @@ public struct SessionLifecycle: Sendable {
         self.interruptGrok = interruptGrok
         self.setModelClaude = setModelClaude
         self.setEffortClaude = setEffortClaude
+        self.isKnownCodexEffort = isKnownCodexEffort
         self.now = now ?? { iso8601Now() }
     }
 
@@ -264,10 +285,12 @@ public struct SessionLifecycle: Sendable {
     }
 
     /// Patch model/effort/permMode on registry+store without stopping the live session.
-    /// When the channel is Claude and a live sidecar session exists, also pushes
-    /// `session.setModel` / `session.setEffort` (TS orchestrator.setModel/setEffort).
-    /// Codex/Grok stay binding-only (next ensure/turn picks up the new fields).
-    /// Returns false when no binding exists (TS `router.noSession`).
+    /// C4-a: for Claude/`.custom`, a `model`/`effort` patch is applied to the live sidecar
+    /// session FIRST (TS `orchestrator.setModel`/`setEffort`: try the live session, only persist
+    /// on success) — a failed apply leaves the binding untouched and reports the failure instead
+    /// of silently persisting anyway. M11: a codex `effort` patch must name a catalog-known value
+    /// or nothing is persisted. Codex/Grok are otherwise binding-only (next ensure/turn picks up
+    /// the new fields). Returns `.noBinding` when no binding exists (TS `router.noSession`).
     @discardableResult
     public func updateBinding(
         channelId: String,
@@ -276,27 +299,31 @@ public struct SessionLifecycle: Sendable {
         guildId: String,
         roleTier: String = "execute",
         defaultCwd: String = NSHomeDirectory()
-    ) async -> Bool {
+    ) async -> BindingUpdateResult {
         guard var session = await resolveSession(
             channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
-        ) else { return false }
+        ) else { return .noBinding }
+
+        // M11: validate before ever touching registry/store.
+        if session.backend == .codex, let effort = patch.effort {
+            guard await isKnownCodexEffort(effort) else { return .invalidEffort }
+        }
+
+        // C4-a: try the live switch before persisting (W11-g setModel displayName
+        // re-resolution requires the RPC). `.custom` also rides DabSessionBridge.
+        if session.backend == .claude || session.backend == .custom {
+            if let model = patch.model {
+                guard await setModelClaude(channelId, model) else { return .applyFailed }
+            }
+            if let effort = patch.effort {
+                guard await setEffortClaude(channelId, effort) else { return .applyFailed }
+            }
+        }
 
         // Field patches must not wipe the resume id unless explicitly requested.
         session = applyPatch(to: session, patch, now: now())
         try? await store.upsert(channelId: channelId, session)
         await registry.bind(channelId: channelId, sessionConfig(from: session))
-
-        // Live in-place switch for Claude sidecar backends (W11-g setModel displayName
-        // re-resolution requires the RPC). `.custom` also rides DabSessionBridge.
-        // Best-effort: binding already updated; a missing/unsupported live session is fine.
-        if session.backend == .claude || session.backend == .custom {
-            if let model = patch.model {
-                _ = await setModelClaude(channelId, model)
-            }
-            if let effort = patch.effort {
-                _ = await setEffortClaude(channelId, effort)
-            }
-        }
 
         let action: String
         if patch.model != nil { action = "model" }
@@ -314,7 +341,7 @@ public struct SessionLifecycle: Sendable {
             permMode: session.permMode,
             status: "ok"
         ))
-        return true
+        return .ok
     }
 
     /// `/agent resume`: re-register registry from a non-archived store row (G-P1-05).

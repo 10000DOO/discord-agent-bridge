@@ -413,6 +413,31 @@ struct AcpClientTests {
         )
         #expect(allow["outcome"]?["optionId"]?.stringValue == "a")
     }
+
+    // H3 (security regression): formatAcpRpcError must scrub secrets the same way buildExitError
+    // does — a backend-echoed error message can carry a leaked token, and it must not reach the
+    // user unmasked.
+    @Test func formatAcpRpcErrorRedactsSecrets() {
+        let withXaiKey = formatAcpRpcError(.object([
+            "code": .number(-32000),
+            "message": .string("auth failed for xai-abcdEFGH12345678ijklmnop"),
+        ]))
+        #expect(!withXaiKey.contains("xai-abcdEFGH12345678ijklmnop"))
+        #expect(withXaiKey.contains("[REDACTED]"))
+
+        let withBearerToken = formatAcpRpcError(.object([
+            "code": .number(401),
+            "message": .string("rejected: Bearer sk-ant-1234567890abcdefgh"),
+        ]))
+        #expect(!withBearerToken.contains("sk-ant-1234567890abcdefgh"))
+
+        // Non-secret messages still pass through unchanged (besides the fixed prefix).
+        let plain = formatAcpRpcError(.object([
+            "code": .number(-32601),
+            "message": .string("method not found"),
+        ]))
+        #expect(plain == "grok agent stdio error -32601: method not found")
+    }
 }
 
 @Suite("classifyAcpFailure / stderrTail")
@@ -635,6 +660,58 @@ struct GrokUpdateStepTests {
         #expect(grokToolEvents(method: "session/update", params: failed, mintId: &seq) == [
             .toolResult(id: "t2", ok: false, content: "boom", parentToolUseId: nil),
         ])
+    }
+
+    // M19: parentToolId falls back through top-level snake_case, then `_meta` (camelCase then
+    // snake_case), in that order — top-level camelCase always wins when present (TS extractUpdate).
+    @Test func toolCallParentToolIdFallsBackThroughSnakeCaseAndMeta() {
+        var seq = 0
+
+        let snakeTop = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("t1"),
+            "title": .string("Bash"),
+            "parent_tool_use_id": .string("parent-snake"),
+        ])])
+        guard case .toolUse(_, _, _, let p1)? = grokToolEvents(method: "session/update", params: snakeTop, mintId: &seq).first else {
+            Issue.record("expected tool_use"); return
+        }
+        #expect(p1 == "parent-snake")
+
+        let metaCamel = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("t2"),
+            "title": .string("Bash"),
+            "_meta": .object(["parentToolId": .string("parent-meta-camel")]),
+        ])])
+        guard case .toolUse(_, _, _, let p2)? = grokToolEvents(method: "session/update", params: metaCamel, mintId: &seq).first else {
+            Issue.record("expected tool_use"); return
+        }
+        #expect(p2 == "parent-meta-camel")
+
+        let metaSnake = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("t3"),
+            "title": .string("Bash"),
+            "_meta": .object(["parent_tool_use_id": .string("parent-meta-snake")]),
+        ])])
+        guard case .toolUse(_, _, _, let p3)? = grokToolEvents(method: "session/update", params: metaSnake, mintId: &seq).first else {
+            Issue.record("expected tool_use"); return
+        }
+        #expect(p3 == "parent-meta-snake")
+
+        // Top-level camelCase wins over `_meta` when both are present.
+        let both = JSONValue.object(["update": .object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("t4"),
+            "title": .string("Bash"),
+            "parentToolId": .string("top-wins"),
+            "_meta": .object(["parentToolId": .string("meta-loses")]),
+        ])])
+        guard case .toolUse(_, _, _, let p4)? = grokToolEvents(method: "session/update", params: both, mintId: &seq).first else {
+            Issue.record("expected tool_use"); return
+        }
+        #expect(p4 == "top-wins")
     }
 
     @Test func toolCallMintsIdWhenMissing() {

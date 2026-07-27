@@ -100,13 +100,19 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         _ command: String,
         env: [String: String] = ProcessInfo.processInfo.environment,
         homeDir: String = NSHomeDirectory(),
-        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+        isExecutable: (String) -> Bool = { path in
+            // A directory can carry the execute (search) bit, so `isExecutableFile` alone would
+            // wrongly accept it as a runnable command (M5; TS `resolveCli.ts:69-78` `isFile()`).
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            return exists && !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: path)
+        }
     ) -> String {
         if command.contains("/") {
             return command
         }
         let pathDirs = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
-        for dir in pathDirs + wellKnownUserBinDirs(homeDir: homeDir) {
+        for dir in pathDirs + wellKnownUserBinDirs(homeDir: homeDir, env: env) {
             let candidate = URL(fileURLWithPath: dir).appendingPathComponent(command)
             if isExecutable(candidate.path) {
                 return candidate.path
@@ -116,9 +122,23 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
     }
 
     /// Well-known user/system bin dirs searched when `PATH` misses (TS `wellKnownUserBinDirs`
-    /// mirror, `resolveCli.ts:20-46`). Windows dirs are not ported (out of scope for this build).
-    static func wellKnownUserBinDirs(homeDir: String) -> [String] {
-        let common = ["\(homeDir)/.local/bin", "\(homeDir)/.grok/bin", "\(homeDir)/.cargo/bin"]
+    /// mirror, `resolveCli.ts:20-46`, plus Node version manager dirs for H1). Windows dirs are
+    /// not ported (out of scope for this build).
+    static func wellKnownUserBinDirs(
+        homeDir: String,
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String] {
+        // nvm exports NVM_BIN as the active version's bin dir directly; fall back to the `current`
+        // symlink nvm maintains under ~/.nvm when the var isn't set (e.g. launchd/systemd spawn).
+        let nvmBin = env["NVM_BIN"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(homeDir)/.nvm/current/bin"
+        // fnm exports FNM_DIR as its root data dir; the active version lives under aliases/default.
+        let fnmDir = env["FNM_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(homeDir)/.local/share/fnm"
+        let fnmBin = "\(fnmDir)/aliases/default/bin"
+        let voltaBin = "\(homeDir)/.volta/bin"
+        let common = [
+            "\(homeDir)/.local/bin", "\(homeDir)/.grok/bin", "\(homeDir)/.cargo/bin",
+            nvmBin, fnmBin, voltaBin,
+        ]
         #if os(macOS)
         return common + ["/opt/homebrew/bin", "/usr/local/bin"]
         #elseif os(Linux)

@@ -42,12 +42,26 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
     )
 }
 
+/// M17: human-readable choice labels for known backend ids (TS `BACKEND_LABELS`,
+/// src/discord/client.ts:90) — `SlashCommandSpec`'s `backend` choices otherwise expose the raw
+/// enum id ("claude"/"codex"/"grok") as the Discord-visible name. `custom` is deliberately
+/// absent: its label is already the dynamically-resolved provider name the library computes
+/// (`customBackendLabel()`), not a fixed string, and must not be overridden here.
+private let backendChoiceLabels: [String: String] = [
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "grok": "Grok",
+]
+
 private func stringOption(_ opt: SlashCommandSpec.Option) -> ApplicationCommand.Option {
     // Discord: autocomplete and static choices are mutually exclusive; empty choices → omit.
     let staticChoices: [ApplicationCommand.Option.Choice]? =
         opt.autocomplete || opt.choices.isEmpty
         ? nil
-        : opt.choices.map { .init(name: $0.name, value: .string($0.value)) }
+        : opt.choices.map { choice in
+            let name = opt.name == "backend" ? (backendChoiceLabels[choice.value] ?? choice.name) : choice.name
+            return .init(name: name, value: .string(choice.value))
+        }
     return ApplicationCommand.Option(
         type: .string,
         name: opt.name,
