@@ -53,6 +53,22 @@ SKIP_LAUNCHCTL=0
 
 log() { printf '%s\n' "$*"; }
 
+# A copied linker-signed executable can retain stale Finder provenance and then be
+# rejected by launchd's code-signing policy. Repair the destination only: deleting
+# a missing attribute is harmless, while signing or verification failures must
+# stop the install before launchd sees an unusable binary.
+repair_macos_binary_signature() {
+  local binary="$1"
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  command -v codesign >/dev/null 2>&1 || {
+    log "FATAL: codesign is required to install the macOS launchd binary" >&2
+    return 1
+  }
+  xattr -d com.apple.provenance "$binary" 2>/dev/null || true
+  codesign --force --sign - "$binary"
+  codesign --verify --strict "$binary"
+}
+
 # run.sh is what launchd executes. It fixes PATH (child CLI discovery) and cwd
 # (sidecar repo-relative paths), sources the 0600 env, then exec's dab.
 gen_run_script() {
@@ -151,6 +167,9 @@ if [ "$DRY_RUN" = "1" ]; then
   selfcheck "$tmp/$LABEL.plist" "$tmp/run.sh" 0
   log "  ok: plutil -lint passed; run.sh bash -n passed"
   log "  repo root (run.sh cwd): $REPO_ROOT"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    log "  macOS binary post-install: clear stale provenance, ad-hoc sign, verify"
+  fi
   log "  plist -> run.sh:        $RUN_SCRIPT"
   log "  plist logs:             $OUT_LOG , $ERR_LOG"
   log "  generated (temp) plist: $tmp/$LABEL.plist"
@@ -167,6 +186,7 @@ log "== install to $DAB_HOME =="
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$(dirname "$PLIST")"
 cp "$BUILT_BIN" "$BIN_DIR/dab"
 chmod 0755 "$BIN_DIR/dab"
+repair_macos_binary_signature "$BIN_DIR/dab"
 
 if [ ! -f "$ENV_FILE" ]; then
   cp "$ENV_EXAMPLE" "$ENV_FILE"

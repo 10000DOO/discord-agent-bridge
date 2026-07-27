@@ -294,9 +294,12 @@ describe('buildRunScript', () => {
         env: {
           ...process.env,
           HOME: home,
+          DAB_TEST_INSTALL_SECRET: 'must-not-appear-in-installer-output',
           PATH: `${helperBin}:${installBin}:${systemBin}:${process.env.PATH ?? ''}`,
         },
       });
+      expect(install.stdout).toContain('macOS binary post-install: clear stale provenance, ad-hoc sign, verify');
+      expect(install.stdout).not.toContain('must-not-appear-in-installer-output');
       const runScriptMatch = /^\s{2}generated \(temp\) run\.sh: (.+)$/m.exec(install.stdout);
       if (!runScriptMatch) throw new Error('Swift installer did not report generated run.sh.');
       const runScript = runScriptMatch[1];
