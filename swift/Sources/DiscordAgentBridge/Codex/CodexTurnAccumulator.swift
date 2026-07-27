@@ -153,14 +153,25 @@ private func codexFileChangeProgressDetail(_ item: JSONValue) -> String? {
 /// Fires many times per turn (TS comment: "Do NOT emit context_usage here — app-server
 /// streams this many times per turn") — the caller keeps only the latest snapshot and
 /// surfaces it once via `TurnResult.contextUsage` at turn end (appSession.ts:211-219).
-/// Codex never sets `model` on this snapshot (TS parity — field stays nil).
-public func codexContextUsage(method: String, params: JSONValue?) -> ContextUsageInfo? {
+/// App-server does not report a resolved model here, so use only the explicitly configured
+/// session model. When it is absent, leave `model` nil rather than guessing the CLI default.
+public func codexContextUsage(
+    method: String,
+    params: JSONValue?,
+    model: String? = nil
+) -> ContextUsageInfo? {
     guard method == "thread/tokenUsage/updated" else { return nil }
     guard let usage = params?["tokenUsage"] else { return nil }
     guard let totalTokens = usage["total"]?["totalTokens"]?.numberValue else { return nil }
     guard let maxTokens = usage["modelContextWindow"]?.numberValue, maxTokens > 0 else { return nil }
     let percentage = min(100.0, (totalTokens / maxTokens * 100).rounded())
-    return ContextUsageInfo(totalTokens: Int(totalTokens), maxTokens: Int(maxTokens), percentage: percentage)
+    let configuredModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return ContextUsageInfo(
+        totalTokens: Int(totalTokens),
+        maxTokens: Int(maxTokens),
+        percentage: percentage,
+        model: configuredModel?.isEmpty == false ? configuredModel : nil
+    )
 }
 
 // MARK: - Tool mid-turn events (W16-g residual / TS eventMapper mapItemCompleted)

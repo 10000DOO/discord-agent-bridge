@@ -460,6 +460,21 @@ struct CodexTurnStepTests {
         ))
     }
 
+    @Test func contextUsageUsesConfiguredModelOnly() {
+        let params: JSONValue = .object([
+            "tokenUsage": .object([
+                "total": .object(["totalTokens": .number(1_200)]),
+                "modelContextWindow": .number(200_000),
+            ]),
+        ])
+        #expect(codexContextUsage(
+            method: "thread/tokenUsage/updated", params: params, model: " gpt-5.1-codex "
+        )?.model == "gpt-5.1-codex")
+        #expect(codexContextUsage(
+            method: "thread/tokenUsage/updated", params: params, model: "   "
+        )?.model == nil)
+    }
+
     @Test func contextUsageIgnoresOtherMethodsAndMissingFields() {
         let validUsage: JSONValue = .object([
             "tokenUsage": .object([

@@ -152,6 +152,8 @@ public actor CodexSessionBridge {
         var usage: TurnUsage?
         /// C2: latest `thread/tokenUsage/updated` snapshot (kept, not emitted mid-turn).
         var contextUsage: ContextUsageInfo?
+        /// Explicit turn model only; nil means Codex selected its CLI default.
+        var contextModel: String?
         /// Turn-local tools/subagent HUD + ToolActivityHost feed (W16-g residual).
         var stats = TurnToolStatsAggregator()
         /// Mint ids for codex items that lack `id` / `itemId`.
@@ -239,6 +241,7 @@ public actor CodexSessionBridge {
             turns[channelId] = TurnBox(
                 text: "",
                 usage: nil,
+                contextModel: config?.model,
                 done: false,
                 continuation: cont,
                 timeoutTask: timeoutTask
@@ -463,7 +466,7 @@ public actor CodexSessionBridge {
         // C2: thread/tokenUsage/updated → keep the latest context_usage snapshot; makeTurnResult
         // surfaces it once via TurnResult.contextUsage at turn end (TS appSession.ts:211-219,
         // not emitted mid-turn since this notification fires many times per turn).
-        if let ctx = codexContextUsage(method: method, params: params) {
+        if let ctx = codexContextUsage(method: method, params: params, model: box.contextModel) {
             box.contextUsage = ctx
             turns[channelId] = box
         }

@@ -322,6 +322,83 @@ struct CodexSessionBridgeTests {
         #expect(got["turnModel"] == "gpt-5-codex")
     }
 
+    @Test func configuredModelReachesTurnResultAndUsagePanel() async throws {
+        let gate = TurnGate()
+        let serverBox = LockedBox<GateableCodexServer?>(nil)
+        let (bridge, _) = makeCodexBridge(gate: gate, serverBox: serverBox)
+        let turn = Task {
+            try await bridge.runTurn(
+                channelId: "c",
+                text: "usage",
+                config: SessionConfig(backend: .codex, model: "gpt-5-codex")
+            )
+        }
+        await gate.waitReceived(1)
+        guard let server = serverBox.withLock({ $0 }) else {
+            Issue.record("server not captured")
+            await gate.release()
+            _ = try await turn.value
+            return
+        }
+        await server.pushRawNotification(method: "thread/tokenUsage/updated", params: .object([
+            "tokenUsage": .object([
+                "total": .object(["totalTokens": .number(1_200)]),
+                "modelContextWindow": .number(200_000),
+            ]),
+        ]))
+        for _ in 0..<200 { await Task.yield() }
+        await gate.release()
+
+        let reply = try await turn.value
+        #expect(reply.contextUsage?.model == "gpt-5-codex")
+        #expect(buildUsageEmbed(usage: nil, ctxUsage: reply.contextUsage)?.footer == "gpt-5-codex")
+    }
+
+    @Test func eachTurnKeepsItsModelSnapshotWhenConfigChanges() async throws {
+        let gate = TurnGate()
+        let serverBox = LockedBox<GateableCodexServer?>(nil)
+        let (bridge, _) = makeCodexBridge(gate: gate, serverBox: serverBox)
+        let usage: JSONValue = .object([
+            "tokenUsage": .object([
+                "total": .object(["totalTokens": .number(1_200)]),
+                "modelContextWindow": .number(200_000),
+            ]),
+        ])
+
+        let firstTurn = Task {
+            try await bridge.runTurn(
+                channelId: "c", text: "first", config: SessionConfig(backend: .codex, model: "gpt-5-old")
+            )
+        }
+        await gate.waitReceived(1)
+        guard let server = serverBox.withLock({ $0 }) else {
+            Issue.record("server not captured")
+            await gate.release()
+            _ = try await firstTurn.value
+            return
+        }
+        await server.pushRawNotification(method: "thread/tokenUsage/updated", params: usage)
+        for _ in 0..<200 { await Task.yield() }
+        await gate.release()
+        let firstReply = try await firstTurn.value
+
+        let secondTurn = Task {
+            try await bridge.runTurn(
+                channelId: "c", text: "second", config: SessionConfig(backend: .codex, model: "gpt-5-new")
+            )
+        }
+        await gate.waitReceived(2)
+        await server.pushRawNotification(method: "thread/tokenUsage/updated", params: usage)
+        for _ in 0..<200 { await Task.yield() }
+        await gate.release()
+        let secondReply = try await secondTurn.value
+
+        #expect(firstReply.contextUsage?.model == "gpt-5-old")
+        #expect(buildUsageEmbed(usage: nil, ctxUsage: firstReply.contextUsage)?.footer == "gpt-5-old")
+        #expect(secondReply.contextUsage?.model == "gpt-5-new")
+        #expect(buildUsageEmbed(usage: nil, ctxUsage: secondReply.contextUsage)?.footer == "gpt-5-new")
+    }
+
     // W14: stop closes client + drops channel map; interrupt keeps map and sends turn/interrupt.
     @Test func stopClosesAndDropsChannel() async throws {
         let (bridge, made) = makeCodexBridge()

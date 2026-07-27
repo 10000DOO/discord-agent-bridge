@@ -132,6 +132,19 @@ describe('mapAppServerNotification', () => {
     expect(r.tokenUsage).toBeUndefined();
   });
 
+  it('includes only an explicitly configured model on tokenUsage snapshots', () => {
+    const params = {
+      tokenUsage: {
+        total: { totalTokens: 2500 },
+        modelContextWindow: 10000,
+      },
+    };
+    expect(mapAppServerNotification('thread/tokenUsage/updated', params, { model: ' gpt-5.1-codex ' }).tokenUsage)
+      .toMatchObject({ model: 'gpt-5.1-codex' });
+    expect(mapAppServerNotification('thread/tokenUsage/updated', params, { model: '   ' }).tokenUsage)
+      .not.toHaveProperty('model');
+  });
+
   it('maps webSearch and mcpToolCall', () => {
     const web = mapAppServerNotification(
       'item/completed',

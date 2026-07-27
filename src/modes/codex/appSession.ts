@@ -177,6 +177,7 @@ export class CodexAppSession implements ModeSession {
       const turnId = await client.turnStart(turnParams);
 
       const mapCtx: MapContext = {
+        model: this.model,
         mainThreadId: threadId,
         parentByThread: this.parentByThread,
         onSpawnThread: (childThreadId, spawnToolId) => {

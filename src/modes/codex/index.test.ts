@@ -311,7 +311,7 @@ describe('CodexMode.start / CodexAppSession.send', () => {
     const fake = new FakeClient();
     fake.autoCompleteTurn = false;
     const mode = new CodexMode({ createClient: makeCreateClient(fake) });
-    const { ctx, events } = makeCtx();
+    const { ctx, events } = makeCtx({ config: { codexModel: 'gpt-5.1-codex' } });
     const session = await mode.start(ctx);
 
     const sendP = session.send({ text: 'work' });
@@ -369,6 +369,7 @@ describe('CodexMode.start / CodexAppSession.send', () => {
       totalTokens: 2500,
       maxTokens: 10000,
       percentage: 25,
+      model: 'gpt-5.1-codex',
     });
 
     // Terminal ordering contract: usage snapshot precedes result so hosts can

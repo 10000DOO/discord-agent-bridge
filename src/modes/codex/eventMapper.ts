@@ -6,6 +6,9 @@ import type { AgentEvent, Logger } from '../../core/contracts.js';
 // exitCode, item/agentMessage/delta, turn/completed, etc.
 
 export interface MapContext {
+  // Explicit Codex model configured for this session. Omit it when Codex selects
+  // its own default, because token-usage notifications do not report a resolved model.
+  model?: string;
   mainThreadId?: string;
   // childThreadId → parent spawn tool_use id
   parentByThread?: Map<string, string>;
@@ -195,12 +198,14 @@ function mapInner(method: string, params: unknown, ctx?: MapContext): MappedNoti
         typeof usage.modelContextWindow === 'number' ? usage.modelContextWindow : undefined;
       // No snapshot without a positive context window (same guard as grok).
       if (totalTokens === undefined || maxTokens === undefined || maxTokens <= 0) return EMPTY;
+      const model = ctx?.model?.trim();
       return {
         events: [],
         tokenUsage: {
           totalTokens,
           maxTokens,
           percentage: Math.min(100, Math.round((totalTokens / maxTokens) * 100)),
+          ...(model ? { model } : {}),
         },
         ...(threadId ? { threadId } : {}),
         ...(turnId ? { turnId } : {}),
