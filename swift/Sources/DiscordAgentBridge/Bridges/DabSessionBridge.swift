@@ -116,16 +116,41 @@ public actor DabSessionBridge {
             self.sessions.removeAll()
         }
         let c = try makeClient()
+        self.client = c
+        c.addCloseHandler { [weak self, weak c] error in
+            guard let c else { return }
+            Task { await self?.handleClientClosed(c, error: error) }
+        }
         do {
             try await c.connect()
         } catch {
             // connect failed: close the spawned child so it does not leak as an orphan.
             await c.close()
+            if self.client === c { self.client = nil }
             throw error
         }
         log.info("sidecar ready (cwd=\(cwd) permMode=\(permMode))")
-        self.client = c
         return c
+    }
+
+    /// A sidecar EOF invalidates every handle on its single shared transport. Acknowledged turns
+    /// otherwise wait for their terminal event until the turn timer fires, so fail them now and
+    /// force the next turn through `ensureClient()` to create a fresh client/session.
+    private func handleClientClosed(_ closedClient: ClaudeSidecarClient, error: SidecarRpcError) async {
+        // `onEvent` is queued from the synchronous client callback. EOF can schedule this handler
+        // before the queued terminal result reaches this actor, so drain the tails that existed at
+        // close notification before deciding which turns still need a transport failure.
+        let handles = Array(sessionMeta.keys)
+        let tails = eventChains.withLock { chains in handles.compactMap { chains[$0] } }
+        for tail in tails { await tail.value }
+        guard client === closedClient else { return }
+        for (handle, box) in turns where !box.done {
+            finishTurnUnlocked(handle: handle, result: nil, error: error)
+        }
+        sessions.removeAll()
+        sessionMeta.removeAll()
+        client = nil
+        log.warn("sidecar transport closed; invalidated live Claude sessions")
     }
 
     /// Live Claude model/permission/effort catalog via the sidecar (W11-h). R4: any sidecar
@@ -576,7 +601,7 @@ public actor DabSessionBridge {
                     result: nil,
                     error: SidecarRpcError(
                         code: "internal",
-                        message: "turn timeout (no text)",
+                        message: "turn timeout (no terminal result)",
                         retryable: true
                     )
                 )

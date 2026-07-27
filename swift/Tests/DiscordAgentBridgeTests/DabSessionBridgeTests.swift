@@ -16,11 +16,13 @@ private actor GateableSidecar {
     private let reqCapture: LockedBox<[String]>?        // records "start" / "resume:<backendId>"
     private let resumeFails: Bool                       // session.resume → error (forces fallback)
     private let emitContextAndRateLimit: Bool           // W11-g slice2: context_usage + rate_limit before result
+    private let closeHostAfterSendAck: InMemorySidecarTransport? // simulate host-side EOF after ACK, before terminal event
+    private let closeHostAfterTerminalResult: InMemorySidecarTransport? // simulate EOF immediately after terminal result
     private var emitToolsAndSubagentOnce: Bool          // W11-g slice4: one turn of tool/subagent events
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitToolsAndSubagent: Bool = false) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -32,6 +34,8 @@ private actor GateableSidecar {
         self.resumeFails = resumeFails
         self.emitContextAndRateLimit = emitContextAndRateLimit
         self.emitToolsAndSubagentOnce = emitToolsAndSubagent
+        self.closeHostAfterSendAck = closeHostAfterSendAck
+        self.closeHostAfterTerminalResult = closeHostAfterTerminalResult
     }
 
     func run() async {
@@ -107,6 +111,10 @@ private actor GateableSidecar {
                 capture?.withLock { $0["files.paths"] = "" }
             }
             await writeEnv(res(id: id, method: method, result: .object(["ok": .bool(true)]), session: session))
+            if let closeHostAfterSendAck {
+                await closeHostAfterSendAck.close()
+                return
+            }
             if emitsPermission {
                 // Ask for permission; the turn finishes only after session.permission answers.
                 Task { await self.emit(session: session, event: .permissionRequest(id: "perm-1", toolName: "Bash", input: .object(["command": .string("ls")]))) }
@@ -194,6 +202,9 @@ private actor GateableSidecar {
         await emit(session: session, event: .text(text: "ok:\(text)", delta: true))
         let resultText: String? = resultEchoesText ? "ok:\(text)" : nil
         await emit(session: session, event: .result(text: resultText, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
+        if let closeHostAfterTerminalResult {
+            await closeHostAfterTerminalResult.close()
+        }
     }
 
     private func emit(session: String, event: AgentEvent) async {
@@ -221,6 +232,7 @@ private func makeDabBridge(
     resumeFails: Bool = false,
     emitContextAndRateLimit: Bool = false,
     emitToolsAndSubagent: Bool = false,
+    closeAfterTerminalResult: Bool = false,
     resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
@@ -232,7 +244,8 @@ private func makeDabBridge(
                 capture: capture, emitsPermission: emitsPermission, capturePerm: capturePerm,
                 emitsBackendId: emitsBackendId, reqCapture: reqCapture, resumeFails: resumeFails,
                 emitContextAndRateLimit: emitContextAndRateLimit,
-                emitToolsAndSubagent: emitToolsAndSubagent
+                emitToolsAndSubagent: emitToolsAndSubagent,
+                closeHostAfterTerminalResult: closeAfterTerminalResult ? pair.host : nil
             )
             Task { await server.run() }
             return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
@@ -393,8 +406,53 @@ struct DabSessionBridgeTests {
         let gate = TurnGate()
         let (bridge, _) = makeDabBridge(gate: gate, timeoutNs: 100_000_000)   // 100ms
         let t = Task { try await run(bridge, "x") }
-        await gate.waitReceived(1)                  // held, no events → TurnBox timeout (no text) → throw
-        await #expect(throws: (any Error).self) { _ = try await t.value }
+        await gate.waitReceived(1)                  // held, no terminal event → TurnBox timeout → throw
+        do {
+            _ = try await t.value
+            Issue.record("expected timeout")
+        } catch let error as SidecarRpcError {
+            #expect(error.message == "turn timeout (no terminal result)")
+        }
+    }
+
+    @Test func eofAfterSendAckFailsTurnAndRespawnsClient() async throws {
+        let calls = LockedBox(0)
+        let made = MadeClients<ClaudeSidecarClient>()
+        let bridge = DabSessionBridge(
+            makeClient: {
+                let attempt = calls.withLock { $0 += 1; return $0 }
+                let pair = InMemorySidecarTransport.makePair()
+                let server = GateableSidecar(
+                    transport: pair.sidecar,
+                    gate: nil,
+                    closeHostAfterSendAck: attempt == 1 ? pair.host : nil
+                )
+                Task { await server.run() }
+                return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
+            },
+            turnTimeoutOverrideNs: 500_000_000,
+            store: freshTempStore(),
+            configStore: ConfigStore(baseDir: FileManager.default.temporaryDirectory
+                .appendingPathComponent("dab-cfg-missing-\(UUID().uuidString)", isDirectory: true))
+        )
+
+        do {
+            _ = try await run(bridge, "first")
+            Issue.record("expected immediate sidecar EOF failure")
+        } catch let error as SidecarRpcError {
+            #expect(error.message.contains("closed"))
+        }
+        #expect(made.count == 1)
+
+        #expect(try await run(bridge, "second") == "ok:second")
+        #expect(made.count == 2)
+    }
+
+    @Test func terminalResultBeforeEofCompletesTurn() async throws {
+        let (bridge, made) = makeDabBridge(closeAfterTerminalResult: true)
+
+        #expect(try await run(bridge, "done") == "ok:done")
+        #expect(made.count == 1)
     }
 
     // W11-c: permission_request event → Discord gate → session.permission with the owner's decision.

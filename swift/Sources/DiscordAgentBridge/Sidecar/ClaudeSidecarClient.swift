@@ -49,6 +49,8 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         var ready = false
         var readyWaiters: [CheckedContinuation<Void, Never>] = []
         var closed = false
+        var closeError: SidecarRpcError?
+        var closeHandlers: [UUID: @Sendable (SidecarRpcError) -> Void] = [:]
         var started = false
         var reqSeq: Int = 0
     }
@@ -92,6 +94,9 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
 
     /// Begin reading sidecar stdout. Resolves when `sidecar.ready` is seen (or already).
     public func connect() async throws {
+        guard !isClosed else {
+            throw SidecarRpcError(code: "internal", message: "sidecar transport closed unexpectedly", retryable: true)
+        }
         let alreadyStarted = state.withLock { s -> Bool in
             if s.started { return true }
             s.started = true
@@ -99,6 +104,9 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         }
         if alreadyStarted {
             await waitReady()
+            guard !isClosed else {
+                throw SidecarRpcError(code: "internal", message: "sidecar transport closed unexpectedly", retryable: true)
+            }
             return
         }
 
@@ -109,13 +117,16 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
                     self.onLine(line)
                 }
             } catch {
-                self.failAll(SidecarRpcError(code: "internal", message: "sidecar stdout closed: \(error)"))
+                await self.handleTransportClosure()
                 return
             }
-            self.failAll(SidecarRpcError(code: "internal", message: "sidecar stdout closed"))
+            await self.handleTransportClosure()
         }
 
         await waitReady()
+        guard !isClosed else {
+            throw SidecarRpcError(code: "internal", message: "sidecar transport closed unexpectedly", retryable: true)
+        }
     }
 
     private func waitReady() async {
@@ -290,7 +301,13 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         params: [String: JSONValue]? = nil,
         session: String? = nil
     ) async throws -> JSONValue {
+        guard !isClosed else {
+            throw SidecarRpcError(code: "internal", message: "sidecar transport closed unexpectedly", retryable: true)
+        }
         try await connect()
+        guard !isClosed else {
+            throw SidecarRpcError(code: "internal", message: "sidecar transport closed unexpectedly", retryable: true)
+        }
         let id = nextId()
         return try await withCheckedThrowingContinuation { cont in
             let timeoutTask = Task { [weak self] in
@@ -447,8 +464,20 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         return try ClaudeCatalogResult(from: result)
     }
 
-    private func failAll(_ err: SidecarRpcError) {
-        let (all, waiters) = state.withLock { s -> ([PendingRpc], [CheckedContinuation<Void, Never>]) in
+    /// Register a one-shot transport-close observer. A handler added after closure is invoked
+    /// immediately so a bridge cannot retain a dead client because it raced the EOF.
+    public func addCloseHandler(_ handler: @escaping @Sendable (SidecarRpcError) -> Void) {
+        let error = state.withLock { s -> SidecarRpcError? in
+            if let closeError = s.closeError { return closeError }
+            s.closeHandlers[UUID()] = handler
+            return nil
+        }
+        if let error { handler(error) }
+    }
+
+    private func failAll(_ err: SidecarRpcError, closing: Bool = false) {
+        let (all, waiters, handlers) = state.withLock {
+            s -> ([PendingRpc], [CheckedContinuation<Void, Never>], [@Sendable (SidecarRpcError) -> Void]) in
             let pending = Array(s.pending.values)
             s.pending = [:]
             let w = s.readyWaiters
@@ -456,23 +485,36 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
             if !s.ready {
                 s.ready = true
             }
-            return (pending, w)
+            let handlers: [@Sendable (SidecarRpcError) -> Void]
+            if closing, !s.closed {
+                s.closed = true
+                s.closeError = err
+                handlers = Array(s.closeHandlers.values)
+                s.closeHandlers = [:]
+            } else {
+                handlers = []
+            }
+            return (pending, w, handlers)
         }
         for w in waiters { w.resume() }
         for p in all {
             p.timeoutTask.cancel()
             p.continuation.resume(throwing: err)
         }
+        for handler in handlers { handler(err) }
+    }
+
+    private func handleTransportClosure() async {
+        failAll(
+            SidecarRpcError(code: "internal", message: "sidecar transport closed unexpectedly", retryable: true),
+            closing: true
+        )
+        await transport.close()
     }
 
     public func close() async {
-        let already = state.withLock { s -> Bool in
-            if s.closed { return true }
-            s.closed = true
-            return false
-        }
-        if already { return }
-        failAll(SidecarRpcError(code: "internal", message: "client closed"))
+        guard !isClosed else { return }
+        failAll(SidecarRpcError(code: "internal", message: "client closed"), closing: true)
         readTask?.cancel()
         await transport.close()
         _ = ownsTransport

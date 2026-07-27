@@ -43,6 +43,22 @@ private func respondOnce(_ t: InMemorySidecarTransport, with fields: [String: JS
 
 @Suite("Claude client hardening")
 struct ClaudeClientHardeningTests {
+    @Test func eofBeforeReadyMakesConnectThrow() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000)
+        await pair.host.close() // EOF arrives before sidecar.ready.
+
+        do {
+            try await client.connect()
+            Issue.record("expected connect failure after ready-before EOF")
+        } catch let err as SidecarRpcError {
+            #expect(err.message == "sidecar transport closed unexpectedly")
+            #expect(err.retryable)
+        }
+        #expect(client.isClosed)
+        await pair.sidecar.close()
+    }
+
     @Test func requestTimeoutRetryable() async throws {
         let pair = InMemorySidecarTransport.makePair()
         await emitReady(pair.sidecar) // ready, but nobody answers requests
@@ -86,6 +102,7 @@ struct ClaudeClientHardeningTests {
         } catch let err as SidecarRpcError {
             #expect(err.message.contains("closed"))
         }
+        #expect(client.isClosed)
         await client.close()
         await pair.sidecar.close()
     }
