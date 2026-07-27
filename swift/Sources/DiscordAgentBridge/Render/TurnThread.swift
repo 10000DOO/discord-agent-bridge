@@ -100,14 +100,20 @@ public func isSubagentSpawnTool(_ name: String) -> Bool {
 public func subagentThreadName(name: String, input: JSONValue) -> String {
     var raw = name
     if let o = input.objectValue {
-        if let s = o["subagent_type"]?.stringValue, !s.isEmpty { raw = s }
+        if let s = o["agentNickname"]?.stringValue, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { raw = s }
+        else if let s = o["agent_name"]?.stringValue, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { raw = s }
+        else if let s = o["agentName"]?.stringValue, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { raw = s }
+        else if let s = o["subagent_type"]?.stringValue, !s.isEmpty { raw = s }
         else if let s = o["subagentType"]?.stringValue, !s.isEmpty { raw = s }
         else if let s = o["agentRole"]?.stringValue, !s.isEmpty { raw = s }
-        else if let s = o["agentNickname"]?.stringValue, !s.isEmpty { raw = s }
         else if let s = o["nickname"]?.stringValue, !s.isEmpty { raw = s }
         else if let s = o["description"]?.stringValue, !s.isEmpty { raw = s }
     }
-    return DiscordText.truncate(raw, DiscordText.threadNameLimit)
+    let safe = raw.unicodeScalars.map { scalar -> Character in
+        CharacterSet.controlCharacters.contains(scalar) ? " " : Character(String(scalar))
+    }
+    let normalized = String(safe).split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    return DiscordText.truncate(normalized.isEmpty ? name : normalized, DiscordText.threadNameLimit)
 }
 
 /// Registry key for the main work thread.
@@ -156,7 +162,22 @@ public final class TurnThreadRegistry: @unchecked Sendable {
         state.withLock { s in
             s.toolIdToKey[id] = key
             if isSubagentSpawnTool(name), key != MAIN_THREAD_KEY, s.keyNames[key] == nil {
-                s.keyNames[key] = subagentThreadName(name: name, input: input)
+                let base = subagentThreadName(name: name, input: input)
+                let used = Set(s.keyNames.values)
+                var candidate = base
+                var discriminator = 1
+                // The short spawn-id suffix is not unique by itself; make the displayed
+                // title the final collision key and add a stable ordinal when necessary.
+                while used.contains(candidate) {
+                    let ordinal = discriminator == 1 ? "" : "-\(discriminator)"
+                    let suffix = " · \(key.suffix(6))\(ordinal)"
+                    candidate = DiscordText.truncate(
+                        base,
+                        max(0, DiscordText.threadNameLimit - suffix.count)
+                    ) + suffix
+                    discriminator += 1
+                }
+                s.keyNames[key] = candidate
             }
         }
         return key

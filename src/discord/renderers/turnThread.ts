@@ -75,20 +75,26 @@ export function isSubagentSpawnTool(name: string): boolean {
   return SUBAGENT_SPAWN_TOOLS.has(name);
 }
 
-// Display name for a spawn tool's Discord thread. Prefers subagent_type / subagentType /
-// agentRole / agentNickname / description, then the tool name. Capped to Discord's limit.
+// Display name for a spawn tool's Discord thread. An explicit agent name is the only
+// identity-like label we promote ahead of the role/type; ids remain registry keys.
 export function subagentThreadName(name: string, input: unknown): string {
   let raw = name;
   if (input !== null && typeof input === 'object' && !Array.isArray(input)) {
     const o = input as Record<string, unknown>;
-    if (typeof o.subagent_type === 'string' && o.subagent_type.length > 0) raw = o.subagent_type;
+    if (typeof o.agentNickname === 'string' && o.agentNickname.trim().length > 0) raw = o.agentNickname;
+    else if (typeof o.agent_name === 'string' && o.agent_name.trim().length > 0) raw = o.agent_name;
+    else if (typeof o.agentName === 'string' && o.agentName.trim().length > 0) raw = o.agentName;
+    else if (typeof o.subagent_type === 'string' && o.subagent_type.length > 0) raw = o.subagent_type;
     else if (typeof o.subagentType === 'string' && o.subagentType.length > 0) raw = o.subagentType;
     else if (typeof o.agentRole === 'string' && o.agentRole.length > 0) raw = o.agentRole;
-    else if (typeof o.agentNickname === 'string' && o.agentNickname.length > 0) raw = o.agentNickname;
     else if (typeof o.nickname === 'string' && o.nickname.length > 0) raw = o.nickname;
     else if (typeof o.description === 'string' && o.description.length > 0) raw = o.description;
   }
-  return truncate(raw, THREAD_NAME_LIMIT);
+  // Discord names must not contain control characters; collapse whitespace so a hostile
+  // tool input cannot create visually blank or multi-line titles.
+  // eslint-disable-next-line no-control-regex -- Discord thread titles cannot carry control code points.
+  const safe = raw.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
+  return truncate(safe || name, THREAD_NAME_LIMIT);
 }
 
 /** Registry key for the main work thread. */
@@ -149,7 +155,18 @@ export class TurnThreadRegistry {
     const key = this.keyForToolUse(ev);
     this.toolIdToKey.set(ev.id, key);
     if (isSubagentSpawnTool(ev.name) && key !== MAIN_THREAD_KEY && !this.keyNames.has(key)) {
-      this.keyNames.set(key, subagentThreadName(ev.name, ev.input));
+      const base = subagentThreadName(ev.name, ev.input);
+      const used = new Set(this.keyNames.values());
+      let candidate = base;
+      let discriminator = 1;
+      // A six-character id suffix can itself collide. Keep the generated title as the
+      // uniqueness key and add a deterministic ordinal until it is genuinely unused.
+      while (used.has(candidate)) {
+        const suffix = ` · ${key.slice(-6)}${discriminator === 1 ? '' : `-${discriminator}`}`;
+        candidate = `${truncate(base, THREAD_NAME_LIMIT - suffix.length)}${suffix}`;
+        discriminator += 1;
+      }
+      this.keyNames.set(key, candidate);
     }
     return key;
   }

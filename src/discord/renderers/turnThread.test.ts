@@ -125,13 +125,22 @@ describe('subagentThreadName / isSubagentSpawnTool', () => {
     expect(isSubagentSpawnTool('Bash')).toBe(false);
   });
 
-  it('prefers subagent_type then subagentType then agentRole/nickname then description then name', () => {
+  it('prefers agentNickname over every other supplied identity, then falls back deterministically', () => {
+    expect(subagentThreadName('Task', { agentNickname: 'Scout', agentName: 'other', subagent_type: 'developer' })).toBe('Scout');
     expect(subagentThreadName('Task', { subagent_type: 'developer', description: 'x' })).toBe('developer');
     expect(subagentThreadName('Task', { subagentType: 'reviewer' })).toBe('reviewer');
     expect(subagentThreadName('spawnAgent', { agentRole: 'explorer' })).toBe('explorer');
     expect(subagentThreadName('spawnAgent', { agentNickname: 'Scout' })).toBe('Scout');
     expect(subagentThreadName('Task', { description: 'Fix the bug' })).toBe('Fix the bug');
     expect(subagentThreadName('spawn_subagent', {})).toBe('spawn_subagent');
+  });
+
+  it('normalizes unsafe titles and truncates to Discords limit', () => {
+    const title = subagentThreadName('Task', { agentNickname: `  Scout\n\u0000${'x'.repeat(150)} ` });
+    expect(title).toMatch(/^Scout /);
+    // eslint-disable-next-line no-control-regex -- assert the title sanitizer removes controls.
+    expect(title).not.toMatch(/[\n\u0000]/);
+    expect(title.length).toBeLessThanOrEqual(100);
   });
 });
 
@@ -188,6 +197,19 @@ describe('TurnThreadRegistry', () => {
       parentToolUseId: 'spawn1',
     });
     expect(resultThread?.id).toBe('t1');
+  });
+
+  it('suffixes colliding long subagent names without truncating the discriminator', async () => {
+    const { channel, names } = fakeChannel();
+    const reg = new TurnThreadRegistry({ channel, mainName: '작업 내역' });
+    const nickname = 'Scout '.repeat(30);
+    await reg.getForToolUse({ kind: 'tool_use', id: 'spawn-abcdef', name: 'Task', input: { agentNickname: nickname } });
+    await reg.getForToolUse({ kind: 'tool_use', id: 'spawn-123456', name: 'Task', input: { agentNickname: nickname } });
+    await reg.getForToolUse({ kind: 'tool_use', id: 'other-123456', name: 'Task', input: { agentNickname: nickname } });
+    expect(new Set(names).size).toBe(3);
+    expect(names[1].endsWith(' · 123456')).toBe(true);
+    expect(names[2].endsWith(' · 123456-2')).toBe(true);
+    expect(names.every((name) => name.length <= 100)).toBe(true);
   });
 
   it('returns null from getForToolResult when the target thread is not opened yet', async () => {

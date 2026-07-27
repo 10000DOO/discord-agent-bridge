@@ -172,6 +172,33 @@ struct TurnThreadTests {
         #expect(isSubagentSpawnTool("Task"))
         #expect(subagentThreadName(name: "Task", input: .object(["description": .string("do it")])) == "do it")
     }
+
+    @Test func subagentTitlePrefersNicknameAndNormalizesUnsafeLongInput() {
+        let nickname = "  Scout\n\u{0000}" + String(repeating: "x", count: 150)
+        let title = subagentThreadName(name: "Task", input: .object([
+            "agentNickname": .string(nickname),
+            "agentName": .string("other"),
+            "subagent_type": .string("developer"),
+        ]))
+        #expect(title.hasPrefix("Scout "))
+        #expect(!title.contains("\n"))
+        #expect(!title.contains("\u{0000}"))
+        #expect(title.count <= DiscordText.threadNameLimit)
+    }
+
+    @Test func collidingLongNicknamesKeepSpawnSuffix() async throws {
+        let fake = FakePosts()
+        let reg = TurnThreadRegistry(channel: fake.channel(), mainName: "작업 내역")
+        let nickname = String(repeating: "Scout ", count: 30)
+        _ = try await reg.getForToolUse(id: "spawn-abcdef", name: "Task", input: .object(["agentNickname": .string(nickname)]), parentToolUseId: nil)
+        _ = try await reg.getForToolUse(id: "spawn-123456", name: "Task", input: .object(["agentNickname": .string(nickname)]), parentToolUseId: nil)
+        _ = try await reg.getForToolUse(id: "other-123456", name: "Task", input: .object(["agentNickname": .string(nickname)]), parentToolUseId: nil)
+        #expect(fake.names.count == 3)
+        #expect(Set(fake.names).count == 3)
+        #expect(fake.names[1].hasSuffix(" · 123456"))
+        #expect(fake.names[2].hasSuffix(" · 123456-2"))
+        #expect(fake.names.allSatisfy { $0.count <= DiscordText.threadNameLimit })
+    }
 }
 
 @Suite("ToolThreadHandler")
