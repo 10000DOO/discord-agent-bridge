@@ -66,6 +66,19 @@ struct ConfigStoreTests {
         #expect(loaded.limits.codexTimeoutMs == 1_800_000)
     }
 
+    @Test func documentShareLimitsMustBePositive() throws {
+        var config = makeConfig()
+        config.documentShare = DocumentShareSection(maxBytes: 0)
+        #expect(throws: ConfigValidationError.self) {
+            try validateAppConfig(config)
+        }
+
+        config.documentShare = DocumentShareSection(previewMaxChars: -1)
+        #expect(throws: ConfigValidationError.self) {
+            try validateAppConfig(config)
+        }
+    }
+
     @Test func missingFileThrowsOnLoad() async {
         let store = ConfigStore(baseDir: tempDir())
         #expect(await store.exists() == false)
@@ -137,6 +150,19 @@ struct ConfigStoreTests {
         // Schema fail (version wrong type after decode fail)
         try Data(#"{"version":"nope","guildId":"g1"}"#.utf8).write(to: path)
         #expect(await store.loadServerConfig(guildId: "g1") == nil)
+    }
+
+    @Test func serverConfigWithDisallowedNullReturnsNull() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        let path = await store.serverConfigPath(guildId: "g1")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        try Data(#"{"version":1,"guildId":"g1","defaults":{"mode":null}}"#.utf8).write(to: path)
+        #expect(await store.loadServerConfig(guildId: "g1") == nil)
+
+        try Data(#"{"version":1,"guildId":"g1","defaults":{"permissionProfile":null}}"#.utf8).write(to: path)
+        #expect(await store.loadServerConfig(guildId: "g1")?.defaults?.permissionProfileExplicitlyNull == true)
     }
 
     @Test func serverRoundTrip() async throws {
@@ -229,7 +255,8 @@ struct ConfigStoreTests {
             guildId: "g1",
             auth: ServerAuthPartial(adminRoleIds: ["a1"]),
             defaults: ServerDefaultsPartial(mode: "codex"),
-            locale: "en"
+            locale: "en",
+            capabilities: CapabilitiesPartial(toolThreads: false, usagePanel: false)
         ))
         try await store.addServerPreset(
             guildId: "g1",
@@ -240,6 +267,7 @@ struct ConfigStoreTests {
         #expect(loaded?.auth?.adminRoleIds == ["a1"])
         #expect(loaded?.defaults?.mode == "codex")
         #expect(loaded?.locale == "en")
+        #expect(loaded?.capabilities == CapabilitiesPartial(toolThreads: false, usagePanel: false))
     }
 
     @Test func addServerPresetOverwritesSameName() async throws {

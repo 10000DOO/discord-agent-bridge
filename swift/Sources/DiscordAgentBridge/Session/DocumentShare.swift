@@ -145,7 +145,7 @@ public func loadShareableDocument(
     cwd: String,
     path: String,
     options: DocumentShareOptions = .default
-) -> Result<LoadedDocument, ShareResult> {
+) throws -> Result<LoadedDocument, ShareResult> {
     // (a) Resolve. Absolute → as-is; relative → against cwd. realpath of deepest existing ancestor.
     let root = realpathOrResolve(cwd)
     let joined: String
@@ -157,27 +157,16 @@ public func loadShareableDocument(
     let resolved = realpathOrResolve(joined)
 
     // (b) Existence + regular file.
-    var isDir: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir) else {
-        return .failure(.reject(.notFound))
-    }
-    if isDir.boolValue {
-        return .failure(.reject(.notFile))
-    }
     let attrs: [FileAttributeKey: Any]
     do {
         attrs = try FileManager.default.attributesOfItem(atPath: resolved)
     } catch {
-        // Race: gone between exists and attributes → notFound (TS ENOENT path).
-        let ns = error as NSError
-        if ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoSuchFileError {
+        if isNoSuchFileError(error) {
             return .failure(.reject(.notFound))
         }
-        // Unexpected I/O — surface as throw via Result-less path by mapping to notFound for
-        // the known missing case; other errors rethrow through shareDocument.
-        return .failure(.reject(.notFound))
+        throw error
     }
-    if let type = attrs[.type] as? FileAttributeType, type != .typeRegular {
+    guard (attrs[.type] as? FileAttributeType) == .typeRegular else {
         return .failure(.reject(.notFile))
     }
     let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
@@ -200,7 +189,10 @@ public func loadShareableDocument(
     do {
         data = try Data(contentsOf: URL(fileURLWithPath: resolved))
     } catch {
-        return .failure(.reject(.notFound))
+        if isNoSuchFileError(error) {
+            return .failure(.reject(.notFound))
+        }
+        throw error
     }
     if data.contains(0) {
         return .failure(.reject(.notFile))
@@ -221,8 +213,11 @@ public func loadShareableDocument(
     case "full":
         bodyText = content
     default: // "preview" (and unknown → preview, matching defaults)
-        if content.count > options.previewMaxChars {
-            let end = content.index(content.startIndex, offsetBy: options.previewMaxChars)
+        // Config validation requires a positive value, but injected callers can still pass a
+        // negative limit. Clamp before String.index so a bad runtime option cannot trap.
+        let previewMaxChars = max(0, options.previewMaxChars)
+        if content.count > previewMaxChars {
+            let end = content.index(content.startIndex, offsetBy: previewMaxChars)
             bodyText = String(content[..<end]) + documentPreviewNotice
         } else {
             bodyText = content
@@ -254,7 +249,7 @@ public func shareDocument(
     renderImage: ImageRenderFn? = nil
 ) async throws -> ShareResult {
     let loaded: LoadedDocument
-    switch loadShareableDocument(cwd: cwd, path: path, options: options) {
+    switch try loadShareableDocument(cwd: cwd, path: path, options: options) {
     case .failure(let res):
         return res
     case .success(let doc):
@@ -318,6 +313,13 @@ private func fileExtension(of path: String) -> String {
     let base = (path as NSString).lastPathComponent
     guard let dot = base.lastIndex(of: "."), dot != base.startIndex else { return "" }
     return String(base[dot...]).lowercased()
+}
+
+private func isNoSuchFileError(_ error: Error) -> Bool {
+    let ns = error as NSError
+    return (ns.domain == NSPOSIXErrorDomain && ns.code == 2)
+        || (ns.domain == NSCocoaErrorDomain
+            && (ns.code == NSFileNoSuchFileError || ns.code == NSFileReadNoSuchFileError))
 }
 
 /// Components after `root` joined with `/`. Empty when equal. Both absolute/realpath-resolved.

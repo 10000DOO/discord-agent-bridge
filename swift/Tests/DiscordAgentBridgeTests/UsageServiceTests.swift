@@ -343,6 +343,11 @@ private func writeGrokAuth(path: String, key: String = grokAccessToken) {
     try! data.write(to: URL(fileURLWithPath: path))
 }
 
+@Test func grokAuthUsesFirstValidAccountInFileOrder() {
+    let data = Data("{\"disabled\":{\"key\":\"\"},\"chosen\":{\"key\":\"FIRST\"},\"later\":{\"key\":\"SECOND\"}}".utf8)
+    #expect(firstGrokAccessToken(in: data) == "FIRST")
+}
+
 private func billingBody(_ overrides: [String: Any] = [:]) -> [String: Any] {
     var config: [String: Any] = [
         "currentPeriod": [

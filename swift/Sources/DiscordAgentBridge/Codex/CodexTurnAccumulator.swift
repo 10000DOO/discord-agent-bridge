@@ -197,7 +197,7 @@ public func codexToolEvents(
             ?? ""
         let exitCode = item["exitCode"]?.numberValue.map { Int($0) }
             ?? item["exit_code"]?.numberValue.map { Int($0) }
-        let ok = (exitCode ?? 0) == 0
+        let ok = exitCode == 0
         return [
             .toolUse(id: id, name: "shell", input: .object(["command": .string(command)]), parentToolUseId: parentToolUseId),
             .toolResult(id: id, ok: ok, content: output, parentToolUseId: parentToolUseId),

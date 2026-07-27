@@ -499,9 +499,12 @@ public final class GrokAcpClient: @unchecked Sendable {
 
         let rawId = msg["id"]
         let idNum: Int? = {
-            guard let rawId else { return nil }
-            if case .number(let n) = rawId { return Int(n) }
-            return nil
+            guard case .number(let value) = rawId,
+                  value.isFinite,
+                  value > 0,
+                  let id = Int(exactly: value)
+            else { return nil }
+            return id
         }()
         let idValue = rawId
         let method = msg["method"]?.stringValue

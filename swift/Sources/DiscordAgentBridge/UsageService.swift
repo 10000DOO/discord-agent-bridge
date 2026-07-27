@@ -479,27 +479,10 @@ public actor GrokUsageService {
 
     // MARK: auth
 
-    /// First account entry with a non-empty `key`. Missing/unreadable/malformed → nil.
+    /// First account entry in source-file order with a non-empty `key`.
     private func readAccessToken() -> String? {
-        guard let raw = try? String(contentsOfFile: authPath, encoding: .utf8),
-              let data = raw.data(using: .utf8)
-        else { return nil }
-        guard let parsed = try? JSONSerialization.jsonObject(with: data) else {
-            log("grok auth is not valid JSON; treating as unavailable")
-            return nil
-        }
-        guard let map = parsed as? [String: Any] else {
-            log("grok auth has an unexpected shape; treating as unavailable")
-            return nil
-        }
-        for value in map.values {
-            guard let account = value as? [String: Any],
-                  let key = account["key"] as? String,
-                  !key.isEmpty
-            else { continue }
-            return key
-        }
-        return nil
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: authPath)) else { return nil }
+        return firstGrokAccessToken(in: data, log: log)
     }
 
     // MARK: billing
@@ -567,6 +550,78 @@ public actor GrokUsageService {
             fetchedAt: nowMs()
         )
     }
+}
+
+/// `Dictionary.values` has no source-order guarantee. Scan only the top-level JSON members,
+/// then let JSONSerialization validate/decode each account value in the original order.
+func firstGrokAccessToken(in data: Data, log: @Sendable (String) -> Void = { _ in }) -> String? {
+    guard let values = orderedTopLevelJSONObjectValues(data) else {
+        log("grok auth is not valid JSON; treating as unavailable")
+        return nil
+    }
+    for value in values {
+        guard let account = try? JSONSerialization.jsonObject(with: value) as? [String: Any],
+              let key = account["key"] as? String,
+              !key.isEmpty
+        else { continue }
+        return key
+    }
+    return nil
+}
+
+private func orderedTopLevelJSONObjectValues(_ data: Data) -> [Data]? {
+    let bytes = Array(data)
+    var i = 0
+    func whitespace() { while i < bytes.count && [9, 10, 13, 32].contains(bytes[i]) { i += 1 } }
+    func string() -> Bool {
+        guard i < bytes.count, bytes[i] == 34 else { return false }
+        i += 1
+        while i < bytes.count {
+            if bytes[i] == 92 { i += 2; continue }
+            if bytes[i] == 34 { i += 1; return true }
+            i += 1
+        }
+        return false
+    }
+    func value() -> Bool {
+        guard i < bytes.count else { return false }
+        if bytes[i] == 34 { return string() }
+        if bytes[i] != 123 && bytes[i] != 91 {
+            while i < bytes.count && bytes[i] != 44 && bytes[i] != 125 && bytes[i] != 93 { i += 1 }
+            return i > 0
+        }
+        var closing: [UInt8] = [bytes[i] == 123 ? 125 : 93]
+        i += 1
+        while i < bytes.count, !closing.isEmpty {
+            if bytes[i] == 34 { guard string() else { return false }; continue }
+            if bytes[i] == 123 { closing.append(125) }
+            else if bytes[i] == 91 { closing.append(93) }
+            else if bytes[i] == closing.last { _ = closing.popLast() }
+            i += 1
+        }
+        return closing.isEmpty
+    }
+
+    whitespace()
+    guard i < bytes.count, bytes[i] == 123 else { return nil }
+    i += 1
+    var values: [Data] = []
+    while true {
+        whitespace()
+        if i < bytes.count, bytes[i] == 125 { i += 1; break }
+        guard string() else { return nil }
+        whitespace(); guard i < bytes.count, bytes[i] == 58 else { return nil }
+        i += 1; whitespace()
+        let start = i
+        guard value() else { return nil }
+        values.append(Data(bytes[start..<i]))
+        whitespace(); guard i < bytes.count else { return nil }
+        if bytes[i] == 125 { i += 1; break }
+        guard bytes[i] == 44 else { return nil }
+        i += 1
+    }
+    whitespace()
+    return i == bytes.count ? values : nil
 }
 
 // MARK: - Codex rate limits (TS modes/codex/usageService.ts)

@@ -24,6 +24,8 @@ private struct GatewayHTTPRequest {
     let body: Data
 }
 
+public let GROK_ATTACH_GATEWAY_MAX_BODY_BYTES = 1_048_576
+
 /// Surface `GrokSessionBridge` depends on (test seam) — lets unit tests that never exercise C5's
 /// HTTP round trip inject a no-socket fake instead of paying for a real `NWListener` per test.
 public protocol GrokAttachGatewayProviding: Sendable {
@@ -157,11 +159,14 @@ public actor GrokAttachGateway: GrokAttachGatewayProviding {
                 contentLength = Int(value) ?? 0
             }
         }
+        guard contentLength >= 0, contentLength <= GROK_ATTACH_GATEWAY_MAX_BODY_BYTES else { return nil }
 
         var body = buffer[headerRange.upperBound...]
+        guard body.count <= GROK_ATTACH_GATEWAY_MAX_BODY_BYTES else { return nil }
         while body.count < contentLength {
             guard let chunk = await receiveChunk(connection), !chunk.isEmpty else { break }
             body.append(chunk)
+            guard body.count <= GROK_ATTACH_GATEWAY_MAX_BODY_BYTES else { return nil }
         }
         return GatewayHTTPRequest(method: method, path: path, body: Data(body.prefix(contentLength)))
     }

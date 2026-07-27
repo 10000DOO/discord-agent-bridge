@@ -539,6 +539,10 @@ public func validateAppConfig(_ c: AppConfig) throws {
     if let m = c.documentShare?.bodyMode, !BODY_MODES.contains(m) {
         throw ConfigValidationError.invalidField("documentShare.bodyMode")
     }
+    if let documentShare = c.documentShare,
+       documentShare.maxBytes <= 0 || documentShare.previewMaxChars <= 0 {
+        throw ConfigValidationError.invalidField("documentShare.limits")
+    }
     for (name, profile) in c.profiles where !PERM_MODES.contains(profile.permissionMode) {
         throw ConfigValidationError.invalidField("profiles.\(name).permissionMode")
     }

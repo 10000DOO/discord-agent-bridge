@@ -188,6 +188,50 @@ struct CodexClientHardeningTests {
         fakeTask.cancel()
     }
 
+    @Test func fractionalResponseIdDoesNotCompletePendingRequest() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let responder = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    guard let request = decodeObject(line), let id = request["id"] else { continue }
+                    try? await pair.sidecar.writeLine(#"{"id":1.5,"result":{"accepted":false}}"# + "\n")
+                    await writeRaw(pair.sidecar, ["id": id, "result": .object(["accepted": .bool(true)])])
+                    return
+                }
+            } catch {}
+        }
+
+        let result = try await client.request(method: "ping")
+        #expect(result["accepted"]?.boolValue == true)
+
+        await client.close()
+        await pair.sidecar.close()
+        responder.cancel()
+    }
+
+    @Test func outOfRangeResponseIdDoesNotCompletePendingRequest() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let responder = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    guard let request = decodeObject(line), let id = request["id"] else { continue }
+                    try? await pair.sidecar.writeLine(#"{"id":9223372036854775808,"result":{"accepted":false}}"# + "\n")
+                    await writeRaw(pair.sidecar, ["id": id, "result": .object(["accepted": .bool(true)])])
+                    return
+                }
+            } catch {}
+        }
+
+        let result = try await client.request(method: "ping")
+        #expect(result["accepted"]?.boolValue == true)
+
+        await client.close()
+        await pair.sidecar.close()
+        responder.cancel()
+    }
+
     @Test func threadStartNoIdThrows() async throws {
         let pair = InMemorySidecarTransport.makePair()
         let responder = respondOnce(pair.sidecar, with: ["result": .object([:])])
@@ -303,6 +347,50 @@ struct GrokClientHardeningTests {
         await client.close()
         await pair.sidecar.close()
         fakeTask.cancel()
+    }
+
+    @Test func fractionalResponseIdDoesNotCompletePendingRequest() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let responder = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    guard let request = decodeObject(line), let id = request["id"] else { continue }
+                    try? await pair.sidecar.writeLine(#"{"jsonrpc":"2.0","id":1.5,"result":{"accepted":false}}"# + "\n")
+                    await writeRaw(pair.sidecar, ["id": id, "result": .object(["accepted": .bool(true)])])
+                    return
+                }
+            } catch {}
+        }
+
+        let result = try await client.request(method: "ping")
+        #expect(result["accepted"]?.boolValue == true)
+
+        await client.close()
+        await pair.sidecar.close()
+        responder.cancel()
+    }
+
+    @Test func outOfRangeResponseIdDoesNotCompletePendingRequest() async throws {
+        let pair = InMemorySidecarTransport.makePair()
+        let client = GrokAcpClient(transport: pair.host, requestTimeoutMs: 5_000)
+        let responder = Task {
+            do {
+                for try await line in pair.sidecar.lines {
+                    guard let request = decodeObject(line), let id = request["id"] else { continue }
+                    try? await pair.sidecar.writeLine(#"{"jsonrpc":"2.0","id":9223372036854775808,"result":{"accepted":false}}"# + "\n")
+                    await writeRaw(pair.sidecar, ["id": id, "result": .object(["accepted": .bool(true)])])
+                    return
+                }
+            } catch {}
+        }
+
+        let result = try await client.request(method: "ping")
+        #expect(result["accepted"]?.boolValue == true)
+
+        await client.close()
+        await pair.sidecar.close()
+        responder.cancel()
     }
 
     @Test func sessionNewNoIdThrows() async throws {

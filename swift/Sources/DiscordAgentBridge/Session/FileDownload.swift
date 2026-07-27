@@ -56,7 +56,7 @@ public final class FileDownload: @unchecked Sendable {
     public func browse(relativeDir: String = ".") throws -> [DirEntry] {
         let target = try resolveConfined(relativeDir)
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: target) else { return [] }
+        let names = try fm.contentsOfDirectory(atPath: target)
         var entries: [DirEntry] = []
         for name in names where !name.hasPrefix(".") {
             let full = (target as NSString).appendingPathComponent(name)
@@ -79,7 +79,9 @@ public final class FileDownload: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: target, isDirectory: &isDir) else {
             throw FileDownloadError.notFound(relativePath)
         }
-        if isDir.boolValue {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: target),
+              (attributes[.type] as? FileAttributeType) == .typeRegular
+        else {
             throw FileDownloadError.notAFile(relativePath)
         }
         return OutgoingFile(path: target, name: (target as NSString).lastPathComponent)

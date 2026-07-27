@@ -48,6 +48,14 @@ struct DiscordTokenTests {
         #expect(DiscordToken.resolve(environment: [:], arguments: ["dab"], configToken: nil) == nil)
     }
 
+    @Test func whitespaceOnlyTokensAreNotUsable() {
+        #expect(DiscordToken.resolve(
+            environment: ["DISCORD_BOT_TOKEN": " \n ", "DISCORD_TOKEN": "\t"],
+            arguments: ["dab", "  "],
+            configToken: "\n"
+        ) == nil)
+    }
+
     @Test func argvStillWinsOverConfigToken() {
         let t = DiscordToken.resolve(environment: [:], arguments: ["dab", "argtoken"], configToken: "cfg-token")
         #expect(t == "argtoken")

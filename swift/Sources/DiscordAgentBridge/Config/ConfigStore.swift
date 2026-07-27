@@ -124,6 +124,7 @@ public actor ConfigStore {
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }
         do {
             let data = try Data(contentsOf: path)
+            try Self.validateServerJSONNulls(data)
             let cfg = try JSONDecoder().decode(ServerConfig.self, from: data)
             try validateServerConfig(cfg)
             var out = cfg
@@ -166,7 +167,8 @@ public actor ConfigStore {
             favorites: existing?.favorites,
             presets: others + [preset],
             channels: existing?.channels,
-            notifications: existing?.notifications
+            notifications: existing?.notifications,
+            capabilities: existing?.capabilities
         )
         var lastErr: Error?
         for _ in 0..<3 {
@@ -204,7 +206,8 @@ public actor ConfigStore {
             favorites: existing?.favorites,
             presets: presets.filter { $0.name != name },
             channels: existing?.channels,
-            notifications: existing?.notifications
+            notifications: existing?.notifications,
+            capabilities: existing?.capabilities
         )
         try saveServerConfig(next)
         return true
@@ -340,6 +343,55 @@ public actor ConfigStore {
         var executeUserIds: [String]?
         var readOnlyUserIds: [String]?
         var dmPolicy: String?
+    }
+
+    /// JSONDecoder accepts null for every Optional, while the TS schema only permits it on
+    /// nullable leaves. Reject a server file with a null in any other declared field so the
+    /// fail-safe load path drops the whole override instead of silently widening it.
+    private static func validateServerJSONNulls(_ data: Data) throws {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        try rejectNulls(
+            in: root,
+            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities"],
+            allowing: ["auditChannelId"]
+        )
+
+        if let auth = root["auth"] as? [String: Any] {
+            try rejectNulls(in: auth, checking: ["adminRoleIds", "executeRoleIds", "readOnlyRoleIds", "adminUserIds", "executeUserIds", "readOnlyUserIds"], allowing: [])
+        }
+        if let defaults = root["defaults"] as? [String: Any] {
+            try rejectNulls(in: defaults, checking: ["mode", "claudeModel", "codexModel", "permissionMode", "permissionProfile", "codexHome", "claudeEffort", "codexEffort"], allowing: ["permissionProfile"])
+        }
+        if let limits = root["limits"] as? [String: Any] {
+            try rejectNulls(in: limits, checking: ["maxSessionsPerUser", "permissionTimeoutSec", "codexTimeoutMs"], allowing: [])
+        }
+        if let channels = root["channels"] as? [String: Any] {
+            try rejectNulls(in: channels, checking: ["categoryId", "controlChannelId", "sessionsCategoryId", "statusChannelId"], allowing: ["statusChannelId"])
+        }
+        if let notifications = root["notifications"] as? [String: Any] {
+            try rejectNulls(in: notifications, checking: ["enabled", "channelId", "events"], allowing: ["channelId"])
+            if let events = notifications["events"] as? [String: Any] {
+                try rejectNulls(in: events, checking: ["result", "error", "toolUse"], allowing: [])
+            }
+        }
+        if let capabilities = root["capabilities"] as? [String: Any] {
+            try rejectNulls(in: capabilities, checking: ["streaming", "toolThreads", "fileDiff", "usagePanel"], allowing: [])
+        }
+        if let presets = root["presets"] as? [[String: Any]] {
+            for preset in presets {
+                try rejectNulls(in: preset, checking: ["name", "backend", "model", "effort", "permMode", "profile"], allowing: ["profile"])
+            }
+        }
+    }
+
+    private static func rejectNulls(
+        in object: [String: Any],
+        checking fields: Set<String>,
+        allowing allowed: Set<String>
+    ) throws {
+        for (key, value) in object where fields.contains(key) && value is NSNull && !allowed.contains(key) {
+            throw ConfigStoreError.validation("server config field \(key) must not be null")
+        }
     }
 
     /// Atomic write (tmp + rename), 0600. Matches SessionStore.writeFile + TS writeSecure.

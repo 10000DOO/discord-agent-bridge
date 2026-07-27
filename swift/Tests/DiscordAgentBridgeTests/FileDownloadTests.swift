@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Darwin
 @testable import DiscordAgentBridge
 
 /// Temp workspace + outside dir (realpath-stable on macOS /var → /private/var).
@@ -101,6 +102,34 @@ struct FileDownloadTests {
             Issue.record("expected notAFile")
         } catch let e as FileDownloadError {
             #expect(e == .notAFile("src"))
+        }
+    }
+
+    @Test func rejectsNonRegularFiles() throws {
+        let fx = try makeFileDlFixture()
+        defer { try? FileManager.default.removeItem(at: fx.base) }
+        let fifo = fx.root.appendingPathComponent("events")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+
+        let dl = FileDownload(workspaceRoot: fx.root.path)
+        do {
+            _ = try dl.download(relativePath: "events")
+            Issue.record("expected non-regular file rejection")
+        } catch let e as FileDownloadError {
+            #expect(e == .notAFile("events"))
+        }
+    }
+
+    @Test func browsePropagatesDirectoryReadErrors() throws {
+        let fx = try makeFileDlFixture()
+        defer { try? FileManager.default.removeItem(at: fx.base) }
+        let dl = FileDownload(workspaceRoot: fx.root.path)
+
+        do {
+            _ = try dl.browse(relativeDir: "missing-directory")
+            Issue.record("expected directory read error")
+        } catch {
+            // The caller must receive the FileManager I/O error instead of an empty listing.
         }
     }
 }

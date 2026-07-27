@@ -11,17 +11,17 @@ public enum DiscordToken {
         arguments: [String] = CommandLine.arguments,
         configToken: String? = nil
     ) -> String? {
-        if let token = environment["DISCORD_BOT_TOKEN"], !token.isEmpty {
+        if let token = environment["DISCORD_BOT_TOKEN"], !token.isBlank {
             return token
         }
-        if let token = environment["DISCORD_TOKEN"], !token.isEmpty {
+        if let token = environment["DISCORD_TOKEN"], !token.isBlank {
             return token
         }
         if arguments.count > 1 {
             let token = arguments[1]
-            if !token.isEmpty { return token }
+            if !token.isBlank { return token }
         }
-        if let token = configToken, !token.isEmpty {
+        if let token = configToken, !token.isBlank {
             return token
         }
         return nil
@@ -36,4 +36,10 @@ public enum DiscordToken {
       export DISCORD_BOT_TOKEN=your_bot_token
       swift run dab
     """
+}
+
+private extension String {
+    var isBlank: Bool {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }

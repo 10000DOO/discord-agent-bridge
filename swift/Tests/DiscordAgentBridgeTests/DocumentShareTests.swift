@@ -49,7 +49,7 @@ struct DocumentShareLoadTests {
     @Test func notFoundMissingFile() throws {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "nope.md", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "nope.md", options: opts())
         guard case .failure(let res) = r else {
             Issue.record("expected failure")
             return
@@ -63,7 +63,7 @@ struct DocumentShareLoadTests {
         try FileManager.default.createDirectory(
             at: fx.cwd.appendingPathComponent("adir"), withIntermediateDirectories: true
         )
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "adir", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "adir", options: opts())
         guard case .failure(let res) = r else {
             Issue.record("expected failure")
             return
@@ -75,7 +75,7 @@ struct DocumentShareLoadTests {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         try Data(repeating: 0x61, count: 200).write(to: fx.cwd.appendingPathComponent("big.md"))
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "big.md", options: opts { $0.maxBytes = 100 })
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "big.md", options: opts { $0.maxBytes = 100 })
         guard case .failure(let res) = r else {
             Issue.record("expected failure")
             return
@@ -88,7 +88,7 @@ struct DocumentShareLoadTests {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         try Data("plain".utf8).write(to: fx.cwd.appendingPathComponent("notes.txt"))
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "notes.txt", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "notes.txt", options: opts())
         guard case .failure(let res) = r else {
             Issue.record("expected failure")
             return
@@ -101,7 +101,7 @@ struct DocumentShareLoadTests {
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         // '#', space, NUL, 'a'
         try Data([0x23, 0x20, 0x00, 0x61]).write(to: fx.cwd.appendingPathComponent("bin.md"))
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "bin.md", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "bin.md", options: opts())
         guard case .failure(let res) = r else {
             Issue.record("expected failure")
             return
@@ -113,7 +113,7 @@ struct DocumentShareLoadTests {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         // path "" resolves to cwd (directory) → notFile
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "", options: opts())
         guard case .failure(let res) = r else {
             Issue.record("expected failure")
             return
@@ -126,7 +126,7 @@ struct DocumentShareLoadTests {
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         let abs = fx.outside.appendingPathComponent("abs.md")
         try Data("outside absolute".utf8).write(to: abs)
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: abs.path, options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: abs.path, options: opts())
         guard case .success(let doc) = r else {
             Issue.record("expected success")
             return
@@ -140,7 +140,7 @@ struct DocumentShareLoadTests {
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         try Data("top secret".utf8).write(to: fx.outside.appendingPathComponent("secret.md"))
         let rel = "../\(fx.outside.lastPathComponent)/secret.md"
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: rel, options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: rel, options: opts())
         guard case .success(let doc) = r else {
             Issue.record("expected success for outside path (share is not confined)")
             return
@@ -154,7 +154,7 @@ struct DocumentShareLoadTests {
         let sub = fx.cwd.appendingPathComponent("sub", isDirectory: true)
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         try Data("body".utf8).write(to: sub.appendingPathComponent("doc.md"))
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "sub/doc.md", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "sub/doc.md", options: opts())
         guard case .success(let doc) = r else {
             Issue.record("expected success")
             return
@@ -166,8 +166,25 @@ struct DocumentShareLoadTests {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         try Data("body".utf8).write(to: fx.cwd.appendingPathComponent("DOC.MARKDOWN"))
-        let r = loadShareableDocument(cwd: fx.cwd.path, path: "DOC.MARKDOWN", options: opts())
+        let r = try loadShareableDocument(cwd: fx.cwd.path, path: "DOC.MARKDOWN", options: opts())
         #expect(r.isSuccess)
+    }
+
+    @Test func negativePreviewLimitDoesNotTrap() throws {
+        let fx = try makeDocFixture()
+        defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
+        try Data("body".utf8).write(to: fx.cwd.appendingPathComponent("doc.md"))
+
+        let r = try loadShareableDocument(
+            cwd: fx.cwd.path,
+            path: "doc.md",
+            options: opts { $0.previewMaxChars = -1 }
+        )
+        guard case .success(let doc) = r else {
+            Issue.record("expected document to load")
+            return
+        }
+        #expect(doc.bodyText == documentPreviewNotice)
     }
 
     @Test func fiveShareErrorCodesExist() {
@@ -180,7 +197,7 @@ struct DocumentShareLoadTests {
         let fx = try makeDocFixture()
         defer { try? FileManager.default.removeItem(at: fx.cwd.deletingLastPathComponent()) }
         try Data("x".utf8).write(to: fx.outside.appendingPathComponent("x.md"))
-        let r = loadShareableDocument(
+        let r = try loadShareableDocument(
             cwd: fx.cwd.path,
             path: fx.outside.appendingPathComponent("x.md").path,
             options: opts()

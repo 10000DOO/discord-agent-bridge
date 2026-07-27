@@ -12,6 +12,24 @@ private func makeGatewayWorkspace() throws -> URL {
 
 @Suite("GrokAttachGateway")
 struct GrokAttachGatewayTests {
+    @Test func requestBodyLimitIsOneMiB() {
+        #expect(GROK_ATTACH_GATEWAY_MAX_BODY_BYTES == 1_048_576)
+    }
+
+    @Test func rejectsRequestBodiesOverOneMiBBeforeRouting() async throws {
+        let gateway = GrokAttachGateway()
+        try await gateway.whenReady()
+        var request = URLRequest(url: URL(string: await gateway.baseURL + "/attach")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(repeating: 0x20, count: GROK_ATTACH_GATEWAY_MAX_BODY_BYTES + 1)
+        do {
+            _ = try await URLSession.shared.data(for: request)
+            Issue.record("oversized gateway request must be rejected")
+        } catch {
+            // Gateway closes the connection before JSON routing; URLSession surfaces that close.
+        }
+    }
+
     @Test func healthCheckOk() async throws {
         let gateway = GrokAttachGateway()
         try await gateway.whenReady()

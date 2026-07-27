@@ -97,6 +97,28 @@ struct CodexTurnStepTests {
         #expect(events.contains(.toolResult(id: "c2", ok: false, content: "err", parentToolUseId: nil)))
     }
 
+    @Test func toolEventsCommandWithoutExitCodeFails() {
+        var seq = 0
+        var parents: [String: String] = [:]
+        let events = codexToolEvents(
+            method: "item/completed",
+            params: .object(["item": .object([
+                "type": .string("commandExecution"),
+                "id": .string("c3"),
+                "command": .string("unknown"),
+                "aggregatedOutput": .string("no exit status"),
+            ])]),
+            mintId: &seq,
+            parentByThread: &parents
+        )
+        #expect(events.contains(.toolResult(
+            id: "c3",
+            ok: false,
+            content: "no exit status",
+            parentToolUseId: nil
+        )))
+    }
+
     @Test func toolEventsFileChange() {
         var seq = 0
         var parents: [String: String] = [:]
