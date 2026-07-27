@@ -178,7 +178,8 @@ describe('ClaudeSession — SDK message mapping', () => {
     const { queryFn, state } = fakeQueryFn(scriptedMessages());
     const session = new ClaudeSession(ctx, { queryFn });
 
-    // context_usage is emitted asynchronously after the result event.
+    // Sidecar terminal ordering contract: context_usage is emitted before result
+    // so Swift can include it in the terminal turn panel.
     await waitFor(() => events.some((e) => e.kind === 'context_usage'));
     await session.stop();
 
@@ -188,9 +189,9 @@ describe('ClaudeSession — SDK message mapping', () => {
       { kind: 'thinking', text: 'hmm', delta: true },
       { kind: 'tool_use', id: 'tu-1', name: 'Read', input: { file_path: '/tmp/ws/a.txt' } },
       { kind: 'tool_result', id: 'tu-1', ok: true, content: 'file body' },
-      { kind: 'result', text: 'done', costUsd: 0.0123, tokensIn: 100, tokensOut: 42, durationMs: 4200 },
       // Carries the init-reported RESOLVED model id for the usage panel.
       { kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617, model: 'claude-fable-5[1m]' },
+      { kind: 'result', text: 'done', costUsd: 0.0123, tokensIn: 100, tokensOut: 42, durationMs: 4200 },
       {
         kind: 'rate_limit',
         resetAt: new Date(1000 * 1000).toISOString(),
@@ -215,6 +216,25 @@ describe('ClaudeSession — SDK message mapping', () => {
     const ev = events.find((e) => e.kind === 'context_usage');
     expect(ev).toEqual({ kind: 'context_usage', totalTokens: 1234, maxTokens: 200000, percentage: 0.617 });
     expect(ev).not.toHaveProperty('model');
+  });
+
+  it('emits result after context usage times out instead of waiting forever', async () => {
+    const { ctx, events } = makeCtx();
+    const query = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'result', subtype: 'success', result: 'still delivered' };
+      },
+      close() {},
+      async getContextUsage() {
+        await new Promise<never>(() => {});
+      },
+    };
+    const queryFn: QueryFn = () => query as unknown as ReturnType<QueryFn>;
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((event) => event.kind === 'result'), 1_500);
+    expect(events).toEqual([{ kind: 'result', text: 'still delivered' }]);
+    await session.stop();
   });
 
   it('forwards parent_tool_use_id as parentToolUseId on tool_use and tool_result', async () => {

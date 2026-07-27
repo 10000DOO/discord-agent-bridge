@@ -257,16 +257,62 @@ struct UsageEmbedTests {
         #expect((field?.value.count ?? 0) <= 1024)
     }
 
-    @Test func toolsOnlyPanelWithoutUsageOrContext() {
+    @Test func toolsOnlyDoesNotOpenPanelWithoutUsageOrContext() {
         let tools = [TurnToolStat(name: "Read", count: 1)]
         let embed = buildUsageEmbed(
             usage: nil,
             ctxUsage: nil,
             extras: UsageEmbedExtras(tools: tools)
         )
-        #expect(embed != nil)
-        #expect(embed?.fields.map(\.name) == ["🛠️ 이번 턴 도구"])
-        #expect(embed?.fields.first?.value == "✅ Read ×1")
+        #expect(embed == nil)
+    }
+
+    @Test func bindingMetaCarriesWorkspaceBranchElapsedAndPermissionForEveryBackend() {
+        for backend in Backend.allCases {
+            let binding = PersistedSession(
+                backend: backend,
+                cwd: "/Volumes/src/discord-agent-bridge",
+                guildId: "g",
+                permMode: "plan",
+                createdAt: "2026-07-01T00:00:00Z",
+                updatedAt: "2026-07-01T00:00:00Z"
+            )
+            let meta = usageSessionMeta(
+                binding: binding,
+                fallbackCwd: "/unused",
+                fallbackPermMode: "default",
+                gitBranchForCwd: { $0 == binding.cwd ? "main" : nil }
+            )
+            #expect(meta == UsageSessionMeta(
+                cwd: "/Volumes/src/discord-agent-bridge",
+                gitBranch: "main",
+                permMode: "plan",
+                createdAt: "2026-07-01T00:00:00Z"
+            ))
+        }
+    }
+
+    @Test func bindingMetaKeepsPanelMetadataWhenGitLookupFails() {
+        let binding = PersistedSession(
+            backend: .claude,
+            cwd: "/not-a-repository",
+            guildId: "g",
+            permMode: "default",
+            createdAt: "2026-07-01T00:00:00Z",
+            updatedAt: "2026-07-01T00:00:00Z"
+        )
+        let meta = usageSessionMeta(binding: binding, gitBranchForCwd: { _ in nil })
+        #expect(meta.cwd == "/not-a-repository")
+        #expect(meta.gitBranch == nil)
+        #expect(meta.permMode == "default")
+        #expect(meta.createdAt == "2026-07-01T00:00:00Z")
+    }
+
+    @Test func onlyTerminalSnapshotBackendsPostUsageAtTurnEnd() {
+        #expect(postsUsageAtTurnEnd(for: .claude) == false)
+        #expect(postsUsageAtTurnEnd(for: .custom) == false)
+        #expect(postsUsageAtTurnEnd(for: .codex) == true)
+        #expect(postsUsageAtTurnEnd(for: .grok) == true)
     }
 }
 

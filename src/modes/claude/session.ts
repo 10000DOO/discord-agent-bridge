@@ -40,6 +40,10 @@ export interface ClaudeSessionDeps {
   env?: Options['env'];
 }
 
+// A terminal result must never wait indefinitely on the SDK's optional context
+// accounting request. One second keeps the panel prompt without holding up reply delivery.
+const CONTEXT_USAGE_TIMEOUT_MS = 1_000;
+
 // Map our PermMode straight onto the SDK's native `permissionMode` (§7A). PermMode is
 // now DERIVED from the SDK's PermissionMode (contracts.ts), so every value — including
 // 'dontAsk'/'auto' — is a valid SDK value and passes through verbatim, faithful to
@@ -200,7 +204,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
   private async consume(): Promise<void> {
     try {
       for await (const msg of this.query) {
-        this.mapMessage(msg);
+        await this.mapMessage(msg);
       }
     } catch (err) {
       // An abort (from stop()) is expected shutdown, not a failure to surface.
@@ -215,7 +219,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
 
   // One SDK message → zero or more AgentEvents. Unknown/other message types are
   // ignored (with a debug log) so a new SDK message kind never crashes the loop.
-  private mapMessage(msg: SDKMessage): void {
+  private async mapMessage(msg: SDKMessage): Promise<void> {
     switch (msg.type) {
       case 'system': {
         if (msg.subtype === 'init' && msg.session_id) {
@@ -261,7 +265,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
         return;
       }
       case 'result': {
-        this.mapResult(msg);
+        await this.mapResult(msg);
         return;
       }
       case 'rate_limit_event': {
@@ -363,24 +367,24 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     }
   }
 
-  // result → result event with cost/tokens/duration, then context_usage from
-  // query.getContextUsage() (§5a, §7.4). getContextUsage is best-effort: a
-  // failure never turns a completed turn into an error.
-  private mapResult(msg: SDKMessage & { type: 'result' }): void {
+  // A terminal result is the turn boundary for sidecar hosts. Capture and emit
+  // context_usage first so a host that releases its accumulator on `result`
+  // cannot lose the panel snapshot or attach it to the following turn.
+  // getContextUsage remains best-effort: a failure still emits the result.
+  private async mapResult(msg: SDKMessage & { type: 'result' }): Promise<void> {
     const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage ?? {};
     const resultText = msg.subtype === 'success' ? msg.result : undefined;
-    this.ctx.emit({
-      kind: 'result',
-      ...(resultText !== undefined ? { text: resultText } : {}),
-      ...(msg.total_cost_usd !== undefined ? { costUsd: msg.total_cost_usd } : {}),
-      ...(usage.input_tokens !== undefined ? { tokensIn: usage.input_tokens } : {}),
-      ...(usage.output_tokens !== undefined ? { tokensOut: usage.output_tokens } : {}),
-      ...(msg.duration_ms !== undefined ? { durationMs: msg.duration_ms } : {}),
-    });
-
-    void this.query
-      .getContextUsage()
-      .then((ctx) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ctx = await Promise.race([
+        this.query.getContextUsage(),
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => resolve(null), CONTEXT_USAGE_TIMEOUT_MS);
+          timeout.unref?.();
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      if (ctx) {
         // 'Messages' is the CLI's message-history category — exactly what /clear
         // reclaims. Category names are matched defensively (an unknown/renamed set
         // simply drops the hint), as do memoryFiles (a test double may omit both).
@@ -400,10 +404,19 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
           ...(memoryFileCount !== undefined ? { memoryFileCount } : {}),
           ...(this.mcpServerCount !== null ? { mcpServerCount: this.mcpServerCount } : {}),
         });
-      })
-      .catch(() => {
-        // Best-effort: no context panel this turn if the SDK cannot report it.
-      });
+      }
+    } catch {
+      if (timeout) clearTimeout(timeout);
+      // Best-effort: no context panel this turn if the SDK cannot report it.
+    }
+    this.ctx.emit({
+      kind: 'result',
+      ...(resultText !== undefined ? { text: resultText } : {}),
+      ...(msg.total_cost_usd !== undefined ? { costUsd: msg.total_cost_usd } : {}),
+      ...(usage.input_tokens !== undefined ? { tokensIn: usage.input_tokens } : {}),
+      ...(usage.output_tokens !== undefined ? { tokensOut: usage.output_tokens } : {}),
+      ...(msg.duration_ms !== undefined ? { durationMs: msg.duration_ms } : {}),
+    });
   }
 
   // Deliver a user turn: enqueue it and hand it to the prompt stream. A turn

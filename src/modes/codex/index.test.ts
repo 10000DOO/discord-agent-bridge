@@ -307,7 +307,7 @@ describe('CodexMode.start / CodexAppSession.send', () => {
     expect(fake.calls.map((c) => c.method)).toEqual(['initialize', 'thread/resume', 'turn/start']);
   });
 
-  it('emits a single context_usage after result when tokenUsage updates fire mid-turn', async () => {
+  it('ignores a stale terminal before emitting current context_usage and result', async () => {
     const fake = new FakeClient();
     fake.autoCompleteTurn = false;
     const mode = new CodexMode({ createClient: makeCreateClient(fake) });
@@ -346,6 +346,15 @@ describe('CodexMode.start / CodexAppSession.send', () => {
     fake.emit('thread/tokenUsage/updated', usageParams(2500));
     expect(events.filter((e) => e.kind === 'context_usage')).toHaveLength(0);
 
+    // A delayed completion from an older turn must not consume the current turn's
+    // cached usage or produce a stale result while this send() is still pending.
+    fake.emit('turn/completed', {
+      threadId: 'thread-xyz',
+      turnId: 'turn-stale',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    expect(events).toEqual([]);
+
     fake.emit('turn/completed', {
       threadId: 'thread-xyz',
       turnId: 'turn-1',
@@ -362,11 +371,12 @@ describe('CodexMode.start / CodexAppSession.send', () => {
       percentage: 25,
     });
 
-    // Order: result first, then context_usage (matches Claude).
+    // Terminal ordering contract: usage snapshot precedes result so hosts can
+    // finish the current turn with its context panel intact.
     const resultIdx = events.findIndex((e) => e.kind === 'result');
     const usageIdx = events.findIndex((e) => e.kind === 'context_usage');
     expect(resultIdx).toBeGreaterThanOrEqual(0);
-    expect(usageIdx).toBeGreaterThan(resultIdx);
+    expect(usageIdx).toBeLessThan(resultIdx);
   });
 });
 

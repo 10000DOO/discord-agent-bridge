@@ -72,6 +72,33 @@ public struct UsageEmbedExtras: Sendable, Equatable {
     }
 }
 
+/// Resolve the renderer metadata from the persisted channel binding. The app layer supplies a
+/// best-effort branch resolver because renderer code remains free of process execution.
+public func usageSessionMeta(
+    binding: PersistedSession?,
+    fallbackCwd: String? = nil,
+    fallbackPermMode: String? = nil,
+    gitBranchForCwd: (String) -> String? = { _ in nil }
+) -> UsageSessionMeta {
+    let cwd = binding?.cwd.isEmpty == false ? binding?.cwd : fallbackCwd
+    let branch = cwd.flatMap(gitBranchForCwd)
+    return UsageSessionMeta(
+        cwd: cwd,
+        gitBranch: branch,
+        permMode: binding?.permMode ?? fallbackPermMode,
+        createdAt: binding?.createdAt
+    )
+}
+
+/// Claude and custom stream usage directly through UsageActivityHost; Codex and Grok only
+/// expose their terminal snapshot. Keep each backend on exactly one Discord posting path.
+public func postsUsageAtTurnEnd(for backend: Backend) -> Bool {
+    switch backend {
+    case .claude, .custom: false
+    case .codex, .grok: true
+    }
+}
+
 // Discord embed hard limit for one field value.
 private let fieldValueMax = 1024
 // Top-N tool names shown on the tools line (claude-hud toolsMaxVisible analog).
@@ -215,7 +242,8 @@ private func buildDescription(
     return segments.isEmpty ? nil : segments.joined(separator: " · ")
 }
 
-/// Build the usage embed. Nil when nothing should be shown (no usage, context, tools, or agents).
+/// Build the usage embed. Nil when both usage and context are unavailable (TS parity); tools and
+/// agents enrich an existing panel but never open one on their own.
 public func buildUsageEmbed(
     usage: UsageResult?,
     ctxUsage: ContextUsageInfo?,
@@ -229,8 +257,7 @@ public func buildUsageEmbed(
     let haveUsage = snap != nil
     let tools = extras?.tools ?? []
     let agents = extras?.agents ?? []
-    // Slice4: tools/agents alone can open a panel (turn HUD) even without OAuth/context.
-    if !haveUsage && ctxUsage == nil && tools.isEmpty && agents.isEmpty { return nil }
+    if !haveUsage && ctxUsage == nil { return nil }
 
     let meta = extras?.meta
     var fields: [UsageEmbedField] = []

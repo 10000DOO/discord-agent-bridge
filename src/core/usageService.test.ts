@@ -255,6 +255,26 @@ describe('UsageService', () => {
     expect(joined).not.toContain(NEW_ACCESS_TOKEN);
   });
 
+  it('logs a safe network category when usage fetch throws without serializing the error text', async () => {
+    writeCreds(clock + 3_600_000);
+    const fetchFn = vi.fn(async () => {
+      throw new TypeError(`connection refused ${ACCESS_TOKEN}`);
+    });
+    const { lines, sink } = captureSink();
+    const svc = new UsageService({
+      logger: createLogger('usage', { level: 'debug', sink }),
+      fetchFn: fetchFn as unknown as typeof fetch,
+      credentialsPath: credsPath,
+      now,
+    });
+
+    await expect(svc.getUsage()).resolves.toEqual({ available: false, reason: 'no-credentials' });
+    const joined = lines.join('\n');
+    expect(joined).toContain('usage fetch request failed');
+    expect(joined).toContain('network');
+    expect(joined).not.toContain(ACCESS_TOKEN);
+  });
+
   it('degrades gracefully on a malformed credentials file (no throw, unavailable)', async () => {
     fs.writeFileSync(credsPath, '{ not valid json', 'utf-8');
     const fetchFn = vi.fn();

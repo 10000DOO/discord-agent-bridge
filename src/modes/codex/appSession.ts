@@ -120,7 +120,7 @@ export class CodexAppSession implements ModeSession {
   private toolSeq = 0;
 
   // Latest token-usage snapshot from thread/tokenUsage/updated this turn. Emitted
-  // once as context_usage when the turn completes (result first, then panel).
+  // once as context_usage immediately before the terminal result event.
   private lastTokenUsage: {
     totalTokens: number;
     maxTokens: number;
@@ -210,13 +210,20 @@ export class CodexAppSession implements ModeSession {
           // turn/started clears any stale snapshot so a retry mid-session stays clean.
           if (method === 'turn/started') this.lastTokenUsage = null;
           if (mapped.tokenUsage) this.lastTokenUsage = mapped.tokenUsage;
-          // Emit mapped events first (result / error), then one context_usage at turn end.
-          for (const ev of mapped.events) this.ctx.emit(ev);
+          // Ignore a completed notification for an older turn before it can consume
+          // this turn's retained usage or produce a stale terminal result.
+          if (mapped.turnCompleted && mapped.turnId && mapped.turnId !== turnId) return;
+          // A terminal result is the host's turn boundary. Emit the one retained
+          // context snapshot first, so sidecar-style hosts can finalize the same
+          // turn with its panel data instead of dropping a late event.
           if (mapped.turnCompleted) {
             if (this.lastTokenUsage) {
               this.ctx.emit({ kind: 'context_usage', ...this.lastTokenUsage });
               this.lastTokenUsage = null;
             }
+          }
+          for (const ev of mapped.events) this.ctx.emit(ev);
+          if (mapped.turnCompleted) {
             if (!mapped.turnId || mapped.turnId === turnId) settle();
           }
         });

@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest';
+import { execFile as execFileCallback } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { runServiceCommand } from './index.js';
-import { SERVICE_LABEL, SERVICE_NAME, type CommandResult, type ServiceDeps, type ServiceFs } from './types.js';
+import { buildRunScript } from './runScript.js';
+import {
+  SERVICE_LABEL,
+  SERVICE_NAME,
+  type CommandResult,
+  type ResolvedServiceDeps,
+  type ServiceDeps,
+  type ServiceFs,
+} from './types.js';
+
+const execFile = promisify(execFileCallback);
 
 // An in-memory fs + a recording command runner so a test asserts EXACTLY which files
 // get which content and which OS commands are invoked — no real launchctl/systemctl/
@@ -76,6 +91,11 @@ function harness(overrides: Partial<ServiceDeps> = {}) {
 const BASE = '/home/tester/.discord-agent-bridge';
 const RUN_SH = `${BASE}/run.sh`;
 
+async function writeExecutable(filePath: string, content: string): Promise<void> {
+  await writeFile(filePath, content, 'utf8');
+  await chmod(filePath, 0o755);
+}
+
 describe('runServiceCommand — dispatch', () => {
   it('prints usage and fails on an unknown subcommand', async () => {
     const h = harness({ platform: 'darwin' });
@@ -129,7 +149,11 @@ describe('runServiceCommand — macOS (launchd)', () => {
     const script = h.files.get(RUN_SH);
     expect(script).toBeDefined();
     expect(script?.mode).toBe(0o755);
-    expect(script?.content).toContain('nvm use default');
+    expect(script?.content).toContain('nvm_node="$(nvm which default 2>/dev/null || true)"');
+    expect(script?.content).toContain('if [ ! -x "$nvm_node" ]; then');
+    expect(script?.content).toContain('nvm_node="$(nvm which node 2>/dev/null || true)"');
+    expect(script?.content).toContain('export PATH="$(dirname "$nvm_node"):$PATH"');
+    expect(script?.content).toContain('if [ ! -x "$nvm_node" ] && [ -x "/opt/node/bin/node" ]; then');
     expect(script?.content).toContain('export PATH="/opt/node/bin:$PATH"');
     // Portable user-local CLI bins (grok etc.) — $HOME-relative, no machine path.
     expect(script?.content).toContain('$HOME/.local/bin');
@@ -208,6 +232,41 @@ describe('runServiceCommand — macOS (launchd)', () => {
     expect(calls.some((c) => c.args.join(' ') === `load -w ${PLIST}`)).toBe(true);
     expect(h.logText()).toContain('재시작');
     expect(h.failed).toBe(false);
+  });
+});
+
+describe('buildRunScript', () => {
+  it('prefers its install-time Node when nvm has no alias despite a system Node on PATH', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'dab-run-script-'));
+    const home = path.join(root, 'home');
+    const installBin = path.join(root, 'install-bin');
+    const systemBin = path.join(root, 'system-bin');
+    const runScript = path.join(root, 'run.sh');
+    try {
+      await mkdir(path.join(home, '.nvm'), { recursive: true });
+      await mkdir(installBin);
+      await mkdir(systemBin);
+      await writeFile(
+        path.join(home, '.nvm', 'nvm.sh'),
+        'nvm() { [ "$1" = "which" ] && return 1; }\n',
+        'utf8',
+      );
+      await writeExecutable(path.join(installBin, 'node'), '#!/bin/bash\necho install-node\n');
+      await writeExecutable(path.join(systemBin, 'node'), '#!/bin/bash\necho system-node\n');
+      await writeExecutable(path.join(installBin, 'discord-agent-bridge'), '#!/bin/bash\nnode\n');
+      await writeExecutable(path.join(systemBin, 'discord-agent-bridge'), '#!/bin/bash\nnode\n');
+      await writeExecutable(
+        runScript,
+        buildRunScript({ nodeDir: installBin } as ResolvedServiceDeps),
+      );
+
+      const { stdout } = await execFile('/bin/bash', [runScript], {
+        env: { ...process.env, HOME: home, PATH: `${systemBin}:${process.env.PATH ?? ''}` },
+      });
+      expect(stdout.trim()).toBe('install-node');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

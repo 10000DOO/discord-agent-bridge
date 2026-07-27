@@ -37,6 +37,14 @@ const REFRESH_SKEW_MS = 300_000;
 const BACKOFF_MULTIPLIER = 2;
 const MAX_BACKOFF_MS = 600_000; // 10 min
 
+// Fetch/JSON errors may include request details supplied by a runtime or proxy.
+// Keep diagnostics actionable without ever serializing an arbitrary error string.
+function safeFailureCategory(err: unknown): 'aborted' | 'network' | 'unknown' {
+  if (err instanceof Error && err.name === 'AbortError') return 'aborted';
+  if (err instanceof TypeError) return 'network';
+  return 'unknown';
+}
+
 // ---------------------------------------------------------------------------
 // Public snapshot shape (module-local; consumed by discord/renderers/usageEmbed.ts)
 // ---------------------------------------------------------------------------
@@ -326,11 +334,11 @@ export class UsageService implements UsageProvider {
       try {
         const merged = mergeOauthInto(this.readKeychain(), creds);
         this.writeKeychain(JSON.stringify(merged));
-      } catch (err) {
+      } catch {
         // Do NOT log the error message here: for the Keychain write it can echo the
-        // argv (which contains the token blob). Log only the error name.
+        // argv (which contains the token blob).
         this.logger.warn('failed to persist refreshed usage credentials to keychain', {
-          error: err instanceof Error ? err.name : 'unknown',
+          category: 'keychain-write-failed',
         });
       }
       return;
@@ -344,8 +352,8 @@ export class UsageService implements UsageProvider {
       }
       const merged = mergeOauthInto(existingRaw, creds);
       fs.writeFileSync(this.credentialsPath, JSON.stringify(merged), { encoding: 'utf-8', mode: 0o600 });
-    } catch (err) {
-      this.logger.warn('failed to persist refreshed usage credentials', { error: String(err) });
+    } catch {
+      this.logger.warn('failed to persist refreshed usage credentials', { category: 'file-write-failed' });
     }
   }
 
@@ -365,7 +373,7 @@ export class UsageService implements UsageProvider {
         }),
       });
     } catch (err) {
-      this.logger.warn('usage token refresh request failed', { error: String(err) });
+      this.logger.warn('usage token refresh request failed', { category: safeFailureCategory(err) });
       return null;
     }
     if (!res.ok) {
@@ -375,8 +383,8 @@ export class UsageService implements UsageProvider {
     let body: unknown;
     try {
       body = await res.json();
-    } catch (err) {
-      this.logger.warn('usage token refresh returned invalid JSON', { error: String(err) });
+    } catch {
+      this.logger.warn('usage token refresh returned invalid JSON', { category: 'invalid-json' });
       return null;
     }
     const result = tokenResponseSchema.safeParse(body);
@@ -420,7 +428,7 @@ export class UsageService implements UsageProvider {
         },
       });
     } catch (err) {
-      this.logger.warn('usage fetch request failed', { error: String(err) });
+      this.logger.warn('usage fetch request failed', { category: safeFailureCategory(err) });
       return null;
     }
 
@@ -440,8 +448,8 @@ export class UsageService implements UsageProvider {
     let body: unknown;
     try {
       body = await res.json();
-    } catch (err) {
-      this.logger.warn('usage endpoint returned invalid JSON', { error: String(err) });
+    } catch {
+      this.logger.warn('usage endpoint returned invalid JSON', { category: 'invalid-json' });
       return null;
     }
     const parsed = usageResponseSchema.safeParse(body);

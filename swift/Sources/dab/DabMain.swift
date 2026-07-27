@@ -1,6 +1,7 @@
 import DiscordAgentBridge
 import DiscordBM
 import Foundation
+import Dispatch
 import NIOCore
 
 // C11: name mirrors TS's sole production `createLogger('app', ...)` call (`src/app.ts:124`) —
@@ -2231,14 +2232,17 @@ struct EventHandler: GatewayEventHandler {
                     }
                 )
             }
-            // W11-g slice2/4: usage embed — caps.usagePanel only (TS RendererDispatcher). Shared
-            // with the H10 mid-turn UsageActivityHost notifier (postUsageActivity below).
+            // Claude/custom stream usage and rate limits through UsageActivityHost as the events
+            // occur. Codex/Grok expose terminal snapshots, so they post only on this path.
             var usageSnap: UsageResult? = nil
-            if caps.usagePanel {
+            let shouldPostUsageAtTurnEnd = postsUsageAtTurnEnd(for: backend)
+            if caps.usagePanel && shouldPostUsageAtTurnEnd {
                 let (snap, usageTitle) = await usageSnapshotAndTitle(backend: backend)
                 usageSnap = snap
                 let embedExtras = UsageEmbedExtras(
-                    meta: UsageSessionMeta(permMode: binding?.permMode),
+                    meta: await resolveUsageSessionMeta(
+                        channelId: channelId, fallbackPermMode: binding?.permMode
+                    ),
                     title: usageTitle,
                     tools: turn.tools,
                     agents: turn.agents
@@ -2250,7 +2254,7 @@ struct EventHandler: GatewayEventHandler {
             }
             // W11-g slice2: rate_limit notice (event fields; enrich with usage snapshot if any).
             // Always (not usagePanel-gated) — matches TS RendererDispatcher.rateLimit.
-            if let rl = turn.rateLimit {
+            if let rl = turn.rateLimit, shouldPostUsageAtTurnEnd {
                 await postRateLimitLine(
                     client: client, channelId: payload.channel_id, guildId: guildId,
                     rateLimit: rl, usage: usageSnap
@@ -2532,6 +2536,49 @@ func usageSnapshotAndTitle(backend: Backend) async -> (usage: UsageResult?, titl
     }
 }
 
+/// Session metadata shared by the ordinary turn-end panel and Claude/Custom's mid-turn panel.
+/// The binding is the authority for cwd, creation time, and live permission; a non-repository or
+/// unavailable git executable simply omits the branch segment.
+func resolveUsageSessionMeta(channelId: String, fallbackPermMode: String?) async -> UsageSessionMeta {
+    let binding = await SessionStore.shared.binding(channelId: channelId)
+    let fallbackCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? NSHomeDirectory()
+    return usageSessionMeta(
+        binding: binding,
+        fallbackCwd: fallbackCwd,
+        fallbackPermMode: fallbackPermMode,
+        gitBranchForCwd: bestEffortGitBranch
+    )
+}
+
+private func bestEffortGitBranch(cwd: String) -> String? {
+    guard !cwd.isEmpty else { return nil }
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
+    process.arguments = ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+    do {
+        let terminated = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in terminated.signal() }
+        try process.run()
+        guard terminated.wait(timeout: .now() + .milliseconds(1_000)) == .success else {
+            if process.isRunning { process.terminate() }
+            return nil
+        }
+        guard process.terminationStatus == 0 else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard let branch = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !branch.isEmpty
+        else { return nil }
+        return branch
+    } catch {
+        return nil
+    }
+}
+
 /// Post the usage embed, or the plain context-usage line when the embed has no panel fields.
 /// Shared by turn-end delivery and the H10 real-time notifier.
 func postUsageEmbedOrFallback(
@@ -2584,7 +2631,8 @@ func postUsageActivity(
     case .contextUsage(let ctx, let tools, let agents):
         let (usage, title) = await usageSnapshotAndTitle(backend: backend)
         let extras = UsageEmbedExtras(
-            meta: UsageSessionMeta(permMode: permMode), title: title, tools: tools, agents: agents
+            meta: await resolveUsageSessionMeta(channelId: channelId.rawValue, fallbackPermMode: permMode),
+            title: title, tools: tools, agents: agents
         )
         await postUsageEmbedOrFallback(
             client: client, channelId: channelId, guildId: guildId,
