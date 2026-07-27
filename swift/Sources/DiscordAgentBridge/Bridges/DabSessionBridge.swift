@@ -376,6 +376,7 @@ public actor DabSessionBridge {
         let store = self.store
         let persistBackend = backend
         let persistModel = model
+        let persistGeneration = persisted?.lifecycleGeneration
         // H8: `perm` may have been reassigned from the live profile lookup above — snapshot it
         // (same as `persistModel`) so the escaping onBackendId closure captures an immutable value.
         let persistPerm = perm
@@ -404,7 +405,7 @@ public actor DabSessionBridge {
                             store: store, backend: persistBackend, channelId: channelId,
                             guildId: guildId, ownerId: ownerId, cwd: cwdValue,
                             model: persistModel, effort: effort, permMode: persistPerm,
-                            backendSessionId: backendId
+                            backendSessionId: backendId, lifecycleGeneration: persistGeneration
                         )
                     }
                 },
@@ -423,7 +424,7 @@ public actor DabSessionBridge {
                 store: store, backend: persistBackend, channelId: channelId,
                 guildId: guildId, ownerId: ownerId, cwd: cwdValue,
                 model: persistModel, effort: effort, permMode: persistPerm,
-                backendSessionId: bid
+                backendSessionId: bid, lifecycleGeneration: persistGeneration
             )
         }
         if (stopEpoch[channelId] ?? 0) != epoch {

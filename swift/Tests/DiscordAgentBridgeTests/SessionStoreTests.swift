@@ -22,12 +22,13 @@ struct SessionStoreTests {
         let a = SessionStore(fileURL: url)
         try await a.upsert(channelId: "c1", sample(.codex, "/ws1"))
         try await a.upsert(channelId: "c2", sample(.grok, "/ws2"))
+        let e1 = await a.binding(channelId: "c1")
+        let e2 = await a.binding(channelId: "c2")
 
         let b = SessionStore(fileURL: url)          // fresh instance, same file
         await b.load()
-        // upsert fills createdAt from updatedAt when absent.
-        var e1 = sample(.codex, "/ws1"); e1.createdAt = e1.updatedAt
-        var e2 = sample(.grok, "/ws2"); e2.createdAt = e2.updatedAt
+        // Upsert normalizes createdAt and persists the lifecycle generation, so use the actual
+        // durable source records instead of constructing fresh random-generation fixtures.
         #expect(await b.binding(channelId: "c1") == e1)
         #expect(await b.binding(channelId: "c2") == e2)
         #expect(await b.all().count == 2)
@@ -41,6 +42,25 @@ struct SessionStoreTests {
 
         let s = SessionStore(fileURL: url)
         await s.load()                               // must not throw
+        #expect(await s.all().isEmpty)
+    }
+
+    @Test func corruptFileIsBackedUpBeforeFreshEmptyStoreIsCreated() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corrupt = Data("}{ not json".utf8)
+        try corrupt.write(to: url)
+
+        let s = SessionStore(fileURL: url)
+        await s.load()
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+        let backupName = try #require(names.first { $0.hasPrefix("swift-state.json.corrupt-") })
+        #expect(try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent(backupName)) == corrupt)
+        let fresh = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        #expect(fresh?["version"] as? Int == STATE_VERSION)
+        #expect((fresh?["channels"] as? [String: Any])?.isEmpty == true)
         #expect(await s.all().isEmpty)
     }
 
@@ -419,6 +439,7 @@ struct SessionStoreTests {
                 updatedAt: "T0"
             )
         )
+        let generation = await s.binding(channelId: "c1")!.lifecycleGeneration
         await persistSession(
             store: s,
             backend: .claude,
@@ -429,7 +450,8 @@ struct SessionStoreTests {
             model: "m",
             effort: "high",
             permMode: "default",
-            backendSessionId: "sess-1"
+            backendSessionId: "sess-1",
+            lifecycleGeneration: generation
         )
         let got = await s.binding(channelId: "c1")
         #expect(got?.projectAuth == acl)
@@ -437,5 +459,61 @@ struct SessionStoreTests {
         #expect(got?.backendSessionId == "sess-1")
         #expect(got?.model == "m")
         #expect(got?.createdAt == "C0")
+    }
+
+    @Test func persistSessionKeepsBindingWorkspaceOverBridgeFallback() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let s = SessionStore(fileURL: url)
+        try await s.upsert(
+            channelId: "c1",
+            PersistedSession(backend: .claude, cwd: "/wizard-workspace", guildId: "g1", updatedAt: "T0")
+        )
+
+        let generation = await s.binding(channelId: "c1")!.lifecycleGeneration
+        await persistSession(
+            store: s, backend: .claude, channelId: "c1", guildId: "g1", ownerId: "u1",
+            cwd: "/bridge-fallback", model: nil, effort: nil, permMode: nil, backendSessionId: "new-id",
+            lifecycleGeneration: generation
+        )
+
+        #expect(await s.binding(channelId: "c1")?.cwd == "/wizard-workspace")
+        #expect(await s.binding(channelId: "c1")?.backendSessionId == "new-id")
+    }
+
+    @Test func latePersistCallbackCannotOverwriteReconfiguredOrArchivedBinding() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let s = SessionStore(fileURL: url)
+        let reconfigured = PersistedSession(
+            backend: .claude, backendSessionId: "claude-current", cwd: "/current", guildId: "g1",
+            lifecycleGeneration: "current-generation", updatedAt: "T0"
+        )
+        try await s.upsert(channelId: "changed", reconfigured)
+        let archived = PersistedSession(
+            backend: .claude, backendSessionId: nil, cwd: "/archived", guildId: "g1", updatedAt: "T0", archived: true
+        )
+        try await s.upsert(channelId: "archived", archived)
+
+        // upsert normalizes createdAt, so compare against the durable records that the stale
+        // callback is required to preserve rather than the pre-upsert fixture values.
+        let storedReconfigured = await s.binding(channelId: "changed")
+        let storedArchived = await s.binding(channelId: "archived")
+        #expect(storedReconfigured != nil)
+        #expect(storedArchived != nil)
+
+        await persistSession(
+            store: s, backend: .claude, channelId: "changed", guildId: "g1", ownerId: "u1",
+            cwd: "/stale", model: "old", effort: nil, permMode: nil, backendSessionId: "late-claude-id",
+            lifecycleGeneration: "stale-generation"
+        )
+        await persistSession(
+            store: s, backend: .claude, channelId: "archived", guildId: "g1", ownerId: "u1",
+            cwd: "/stale", model: "old", effort: nil, permMode: nil, backendSessionId: "late-claude-id",
+            lifecycleGeneration: "stale-generation"
+        )
+
+        #expect(await s.binding(channelId: "changed") == storedReconfigured)
+        #expect(await s.binding(channelId: "archived") == storedArchived)
     }
 }

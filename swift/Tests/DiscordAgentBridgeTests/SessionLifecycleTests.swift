@@ -232,6 +232,76 @@ struct SessionLifecycleTests {
         #expect(await life.clearChannel(channelId: "none", actorId: "u", guildId: "g") == false)
     }
 
+    @Test func lifecycleGenerationRejectsLateSameBackendPersistenceAfterClearRebindAndStop() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let original = PersistedSession(
+            backend: .claude, backendSessionId: "old-id", cwd: "/old", guildId: "g",
+            lifecycleGeneration: "old-generation", updatedAt: "T0"
+        )
+        try await store.upsert(channelId: "c1", original)
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude))
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-next" }
+        )
+
+        #expect(await life.clearChannel(channelId: "c1", actorId: "u", guildId: "g"))
+        let afterClear = await store.binding(channelId: "c1")
+        await persistSession(
+            store: store, backend: .claude, channelId: "c1", guildId: "g", ownerId: "u",
+            cwd: "/stale", model: "old", effort: nil, permMode: nil, backendSessionId: "late-id",
+            lifecycleGeneration: "old-generation"
+        )
+        #expect(await store.binding(channelId: "c1") == afterClear)
+
+        #expect(await life.rebindBackend(channelId: "c1", backend: .claude, actorId: "u", guildId: "g"))
+        let afterRebind = await store.binding(channelId: "c1")
+        await persistSession(
+            store: store, backend: .claude, channelId: "c1", guildId: "g", ownerId: "u",
+            cwd: "/stale", model: "old", effort: nil, permMode: nil, backendSessionId: "late-id",
+            lifecycleGeneration: "old-generation"
+        )
+        #expect(await store.binding(channelId: "c1") == afterRebind)
+
+        #expect(await life.stopChannel(channelId: "c1", actorId: "u", guildId: "g"))
+        await persistSession(
+            store: store, backend: .claude, channelId: "c1", guildId: "g", ownerId: "u",
+            cwd: "/stale", model: "old", effort: nil, permMode: nil, backendSessionId: "late-id",
+            lifecycleGeneration: "old-generation"
+        )
+        #expect(await store.binding(channelId: "c1") == nil)
+    }
+
+    @Test func clearDoesNotStopOrRebindWhenDurableSaveFails() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dab-store-fail-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let notDirectory = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: notDirectory)
+
+        let reg = SessionRegistry()
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude, model: "old"))
+        let stopped = LockedBox(0)
+        let life = SessionLifecycle(
+            registry: reg,
+            store: SessionStore(fileURL: notDirectory.appendingPathComponent("state.json")),
+            audit: tempAudit(),
+            stopClaude: { _ in stopped.withLock { $0 += 1 } },
+            stopCodex: { _ in stopped.withLock { $0 += 1 } },
+            stopGrok: { _ in stopped.withLock { $0 += 1 } },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false }
+        )
+
+        #expect(await life.clearChannel(channelId: "c1", actorId: "u", guildId: "g") == false)
+        #expect(stopped.withLock { $0 } == 0)
+        #expect(await reg.binding(channelId: "c1") == SessionConfig(backend: .claude, model: "old"))
+    }
+
     @Test func updateBindingPatchesModelWithoutStopping() async throws {
         let reg = SessionRegistry()
         let store = freshTempStore()
@@ -324,6 +394,80 @@ struct SessionLifecycleTests {
         ) == .ok)
         #expect(live.withLock { $0 } == 0)
         #expect(await store.binding(channelId: "c1")?.model == "gpt-5")
+    }
+
+    @Test func updateBindingKeepsGenerationAndMatchingCallbackOnlyUpdatesBackendSessionId() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let original = PersistedSession(
+            backend: .grok, backendSessionId: "old-id", cwd: "/workspace", guildId: "current-guild",
+            ownerId: "current-owner", model: "old-model", effort: "low", permMode: "read-only",
+            lifecycleGeneration: "live-generation", updatedAt: "T0"
+        )
+        try await store.upsert(channelId: "c1", original)
+        await reg.bind(channelId: "c1", SessionConfig(backend: .grok, model: "old-model", effort: "low", permMode: "read-only"))
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-update" }
+        )
+
+        #expect(await life.updateBinding(
+            channelId: "c1",
+            patch: BindingPatch(model: "current-model", effort: "high", permMode: "workspace-write"),
+            actorId: "u", guildId: "current-guild"
+        ) == .ok)
+        #expect(await store.binding(channelId: "c1")?.lifecycleGeneration == "live-generation")
+
+        await persistSession(
+            store: store, backend: .grok, channelId: "c1", guildId: "stale-guild", ownerId: "stale-owner",
+            cwd: "/stale", model: "stale-model", effort: "low", permMode: "read-only",
+            backendSessionId: "new-backend-id", lifecycleGeneration: "live-generation"
+        )
+
+        let persisted = await store.binding(channelId: "c1")
+        #expect(persisted?.backendSessionId == "new-backend-id")
+        #expect(persisted?.guildId == "current-guild")
+        #expect(persisted?.ownerId == "current-owner")
+        #expect(persisted?.model == "current-model")
+        #expect(persisted?.effort == "high")
+        #expect(persisted?.permMode == "workspace-write")
+    }
+
+    @Test func replaceBindingPersistsThenStopsOldBridgesBeforeRegistryPublish() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let original = PersistedSession(
+            backend: .claude, backendSessionId: "old-id", cwd: "/old", guildId: "g", updatedAt: "T0"
+        )
+        try await store.upsert(channelId: "c1", original)
+        await reg.bind(channelId: "c1", SessionConfig(backend: .claude, model: "old"))
+        let observedDuringStop = LockedBox<(PersistedSession?, SessionConfig?)>((nil, nil))
+        let replacement = PersistedSession(
+            backend: .codex, backendSessionId: nil, cwd: "/new", guildId: "g", model: "new", effort: "high",
+            permMode: "workspace-write", lifecycleGeneration: "replacement-generation", updatedAt: "T1"
+        )
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in
+                let stored = await store.binding(channelId: "c1")
+                let bound = await reg.binding(channelId: "c1")
+                observedDuringStop.withLock { $0 = (stored, bound) }
+            },
+            stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        #expect(await life.replaceBinding(channelId: "c1", with: replacement))
+        let duringStop = observedDuringStop.withLock { $0 }
+        #expect(duringStop.0?.backend == replacement.backend)
+        #expect(duringStop.0?.backendSessionId == nil)
+        #expect(duringStop.0?.lifecycleGeneration != original.lifecycleGeneration)
+        #expect(duringStop.1 == SessionConfig(backend: .claude, model: "old"))
+        #expect(await reg.binding(channelId: "c1") == SessionConfig(
+            backend: .codex, model: "new", effort: "high", permMode: "workspace-write"
+        ))
     }
 
     // C4-a: a failed live setModel must not be persisted — the binding stays at its old

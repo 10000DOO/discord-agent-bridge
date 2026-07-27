@@ -12,6 +12,8 @@ public enum BindingUpdateResult: Sendable, Equatable {
     case invalidEffort
     /// Claude/`.custom` live session declined the model/effort switch — nothing persisted.
     case applyFailed
+    /// The durable binding update failed, so registry/live lifecycle state was left unchanged.
+    case persistFailed
 }
 
 /// Thin orchestration over the three bridges + SessionRegistry + SessionStore for stop /
@@ -95,16 +97,23 @@ public struct SessionLifecycle: Sendable {
         guildId: String,
         roleTier: String = "execute"
     ) async -> Bool {
-        // Always all three — binding/store may name the wrong backend or be empty while a
-        // prefix-spawned process is still live (RV: process leak).
-        await stopAllBridges(channelId: channelId)
-
         let backend = await resolveBackend(channelId: channelId)
         let hadReg = await registry.binding(channelId: channelId) != nil
         let hadStore = await store.binding(channelId: channelId) != nil
         let hadBinding = hadReg || hadStore
+        // Keep a durable binding if the removal cannot be written. Stopping first would make a
+        // transient disk failure look like a completed close while the next boot resurrects it.
+        if hadBinding {
+            do {
+                try await store.remove(channelId: channelId)
+            } catch {
+                return false
+            }
+        }
+        // Always all three — binding/store may name the wrong backend or be empty while a
+        // prefix-spawned process is still live (RV: process leak).
+        await stopAllBridges(channelId: channelId)
         await registry.unbind(channelId: channelId)
-        try? await store.remove(channelId: channelId)
         if hadBinding {
             await audit.record(AuditEntry(
                 actorId: actorId,
@@ -170,7 +179,7 @@ public struct SessionLifecycle: Sendable {
 
     // MARK: - W11-d binding ops
 
-    /// `/clear`: stop live bridges, wipe `backendSessionId`, **keep** registry+store config
+    /// `/clear`: wipe `backendSessionId`, then stop live bridges; **keep** registry+store config
     /// (PLAN §14.6). Next turn fresh-starts with the same model/effort/perm/cwd.
     @discardableResult
     public func clearChannel(
@@ -180,14 +189,19 @@ public struct SessionLifecycle: Sendable {
         roleTier: String = "execute",
         defaultCwd: String = NSHomeDirectory()
     ) async -> Bool {
-        await stopAllBridges(channelId: channelId)
         guard var session = await resolveSession(
             channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
         ) else { return false }
 
         session.backendSessionId = nil
+        session.lifecycleGeneration = UUID().uuidString
         session.updatedAt = now()
-        try? await store.upsert(channelId: channelId, session)
+        do {
+            try await store.upsert(channelId: channelId, session)
+        } catch {
+            return false
+        }
+        await stopAllBridges(channelId: channelId)
         await registry.bind(channelId: channelId, sessionConfig(from: session))
         await audit.record(AuditEntry(
             actorId: actorId,
@@ -201,7 +215,7 @@ public struct SessionLifecycle: Sendable {
         return true
     }
 
-    /// `/mode backend` same-backend: stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.
+    /// `/mode backend` same-backend: persist then stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.
     /// Cross-backend drops model/effort (backend-specific); same-backend keeps them.
     /// Different-backend path from the slash command opens the reconfigure wizard instead (see
     /// `reconfigureBinding` for confirm).
@@ -218,17 +232,21 @@ public struct SessionLifecycle: Sendable {
             channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
         ) else { return false }
 
-        await stopAllBridges(channelId: channelId)
-
         let same = session.backend == backend
         session.backend = backend
         session.backendSessionId = nil
+        session.lifecycleGeneration = UUID().uuidString
         if !same {
             session.model = nil
             session.effort = nil
         }
         session.updatedAt = now()
-        try? await store.upsert(channelId: channelId, session)
+        do {
+            try await store.upsert(channelId: channelId, session)
+        } catch {
+            return false
+        }
+        await stopAllBridges(channelId: channelId)
         await registry.bind(channelId: channelId, sessionConfig(from: session))
         await audit.record(AuditEntry(
             actorId: actorId,
@@ -242,7 +260,7 @@ public struct SessionLifecycle: Sendable {
         return true
     }
 
-    /// Reconfigure confirm (TS `switchSession`): stop live bridges, rebind **same channel** with
+    /// Reconfigure confirm (TS `switchSession`): persist then stop live bridges, rebind **same channel** with
     /// the wizard-chosen backend/model/effort/perm. Keeps cwd/ownerId; clears backendSessionId
     /// (fresh context). Does not create a new channel.
     @discardableResult
@@ -261,15 +279,19 @@ public struct SessionLifecycle: Sendable {
             channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
         ) else { return false }
 
-        await stopAllBridges(channelId: channelId)
-
         session.backend = backend
         session.backendSessionId = nil
+        session.lifecycleGeneration = UUID().uuidString
         session.model = model
         session.effort = effort
         if let permMode { session.permMode = permMode }
         session.updatedAt = now()
-        try? await store.upsert(channelId: channelId, session)
+        do {
+            try await store.upsert(channelId: channelId, session)
+        } catch {
+            return false
+        }
+        await stopAllBridges(channelId: channelId)
         await registry.bind(channelId: channelId, sessionConfig(from: session))
         await audit.record(AuditEntry(
             actorId: actorId,
@@ -322,7 +344,11 @@ public struct SessionLifecycle: Sendable {
 
         // Field patches must not wipe the resume id unless explicitly requested.
         session = applyPatch(to: session, patch, now: now())
-        try? await store.upsert(channelId: channelId, session)
+        do {
+            try await store.upsert(channelId: channelId, session)
+        } catch {
+            return .persistFailed
+        }
         await registry.bind(channelId: channelId, sessionConfig(from: session))
 
         let action: String
@@ -342,6 +368,24 @@ public struct SessionLifecycle: Sendable {
             status: "ok"
         ))
         return .ok
+    }
+
+    /// Replace a channel binding after a wizard has durably saved its new configuration. The
+    /// save happens first so a write failure leaves the current live bridge and registry intact;
+    /// successful replacement always drops every old bridge before publishing the new registry
+    /// binding, preventing old handles from being reused by the new configuration.
+    @discardableResult
+    public func replaceBinding(channelId: String, with session: PersistedSession) async -> Bool {
+        var replacement = session
+        replacement.lifecycleGeneration = UUID().uuidString
+        do {
+            try await store.upsert(channelId: channelId, replacement)
+        } catch {
+            return false
+        }
+        await stopAllBridges(channelId: channelId)
+        await registry.bind(channelId: channelId, sessionConfig(from: replacement))
+        return true
     }
 
     /// `/agent resume`: re-register registry from a non-archived store row (G-P1-05).

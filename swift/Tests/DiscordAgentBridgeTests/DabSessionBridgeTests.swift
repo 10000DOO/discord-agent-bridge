@@ -783,16 +783,17 @@ struct DabSessionBridgeTests {
 @Suite("DabSessionBridge H10 mid-turn UsageActivityHost notify", .serialized)
 struct DabSessionBridgeUsageActivityTests {
     @Test func contextUsageAndRateLimitFireUsageActivityHostDuringTurn() async throws {
+        let usageChannelId = "usage-\(UUID().uuidString)"
         let recorder = LockedBox<[UsageActivityEvent]>([])
-        await UsageActivityHost.shared.setCapabilities(channelId: "c", Capabilities(usagePanel: true))
-        await UsageActivityHost.shared.setNotifyContext(channelId: "c", guildId: "g", backend: .claude, permMode: nil)
+        await UsageActivityHost.shared.setCapabilities(channelId: usageChannelId, Capabilities(usagePanel: true))
+        await UsageActivityHost.shared.setNotifyContext(channelId: usageChannelId, guildId: "g", backend: .claude, permMode: nil)
         await UsageActivityHost.shared.setNotifier { channelId, _, _, _, event in
-            guard channelId == "c" else { return }
+            guard channelId == usageChannelId else { return }
             recorder.withLock { $0.append(event) }
         }
 
         let (bridge, _) = makeDabBridge(emitContextAndRateLimit: true)
-        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let turn = try await bridge.runTurn(channelId: usageChannelId, guildId: "g", ownerId: nil, text: "hi")
 
         // Turn-end value is unaffected by the new real-time push (regression guard).
         #expect(turn.contextUsage?.percentage == 10)
@@ -814,7 +815,7 @@ struct DabSessionBridgeUsageActivityTests {
         #expect(rateLimits.first?.utilization == 50)
 
         // Isolated cleanup (this suite is the only place touching the shared singleton).
-        await UsageActivityHost.shared.dispose(channelId: "c")
+        await UsageActivityHost.shared.dispose(channelId: usageChannelId)
         await UsageActivityHost.shared.setNotifier(nil)
     }
 }

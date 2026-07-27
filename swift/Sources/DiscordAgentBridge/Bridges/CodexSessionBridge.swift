@@ -446,7 +446,7 @@ public actor CodexSessionBridge {
         let channel = Channel(client: client, threadId: threadId)
         channels[channelId] = channel
         // F7: capture the thread id (= backend session) + live context.
-        await persistSession(store: store, backend: .codex, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: threadId)
+        await persistSession(store: store, backend: .codex, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: threadId, lifecycleGeneration: persisted?.lifecycleGeneration)
         // stop during persist → drop the just-published channel.
         if (stopEpoch[channelId] ?? 0) != epoch {
             channels[channelId] = nil

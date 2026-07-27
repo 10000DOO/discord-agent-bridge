@@ -17,20 +17,40 @@ func persistSession(
     model: String?,
     effort: String?,
     permMode: String?,
-    backendSessionId: String?
+    backendSessionId: String?,
+    lifecycleGeneration: String? = nil
 ) async {
     let existing = await store.binding(channelId: channelId)
+    // A backend-id callback can arrive after the channel was reconfigured, closed, or
+    // archived. It belongs to the old live client and must not resurrect/overwrite the
+    // current binding (including its workspace).
+    if let existing, (
+        existing.backend != backend
+            || existing.archived
+            || existing.lifecycleGeneration != lifecycleGeneration
+    ) {
+        return
+    }
+    // A removed binding is a terminal lifecycle state. Only a genuinely unbound first-start
+    // callback (which has no captured generation yet) may create a new record.
+    if existing == nil, lifecycleGeneration != nil { return }
     let record = PersistedSession(
-        backend: backend,
+        // Once a binding exists and its generation matches, this callback is allowed to
+        // publish only the backend session id. The live bridge captured its startup values;
+        // model/effort/permission and guild/owner can have changed in the meantime.
+        backend: existing?.backend ?? backend,
         backendSessionId: backendSessionId,
-        cwd: cwd,
-        guildId: guildId,
-        ownerId: ownerId,
-        model: model,
-        effort: effort,
-        permMode: permMode,
+        // The binding's workspace is authoritative for this channel. Bridge callbacks often
+        // only know the process fallback cwd, so never replace a wizard-selected cwd with it.
+        cwd: existing?.cwd ?? cwd,
+        guildId: existing?.guildId ?? guildId,
+        ownerId: existing?.ownerId ?? ownerId,
+        model: existing?.model ?? model,
+        effort: existing?.effort ?? effort,
+        permMode: existing?.permMode ?? permMode,
         permissionProfile: existing?.permissionProfile,
         projectAuth: existing?.projectAuth,
+        lifecycleGeneration: existing?.lifecycleGeneration ?? UUID().uuidString,
         createdAt: existing?.createdAt,
         updatedAt: iso8601Now(),
         archived: existing?.archived ?? false

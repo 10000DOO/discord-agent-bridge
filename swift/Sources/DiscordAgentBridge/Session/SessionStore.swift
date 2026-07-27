@@ -20,6 +20,9 @@ public struct PersistedSession: Codable, Sendable, Equatable {
     public var permMode: String?
     public var permissionProfile: String?
     public var projectAuth: ProjectAuth?
+    /// Changes whenever a lifecycle operation replaces the binding. A bridge captures this
+    /// value when it starts and its late persistence callback may only update that generation.
+    public var lifecycleGeneration: String
     public var createdAt: String?
     public var updatedAt: String
     public var archived: Bool
@@ -35,6 +38,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         permMode: String? = nil,
         permissionProfile: String? = nil,
         projectAuth: ProjectAuth? = nil,
+        lifecycleGeneration: String = UUID().uuidString,
         createdAt: String? = nil,
         updatedAt: String,
         archived: Bool = false
@@ -49,6 +53,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.permMode = permMode
         self.permissionProfile = permissionProfile
         self.projectAuth = projectAuth
+        self.lifecycleGeneration = lifecycleGeneration
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.archived = archived
@@ -74,6 +79,9 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.permMode = try c.decodeIfPresent(String.self, forKey: .permMode)
         self.permissionProfile = try c.decodeIfPresent(String.self, forKey: .permissionProfile)
         self.projectAuth = try c.decodeIfPresent(ProjectAuth.self, forKey: .projectAuth)
+        // Pre-generation state files remain valid. The loaded instance gets one stable token
+        // for this process; the next write persists it.
+        self.lifecycleGeneration = try c.decodeIfPresent(String.self, forKey: .lifecycleGeneration) ?? UUID().uuidString
         self.createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
         self.updatedAt = try c.decode(String.self, forKey: .updatedAt)
         self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
@@ -92,6 +100,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         try c.encodeIfPresent(permMode, forKey: .permMode)
         try c.encodeIfPresent(permissionProfile, forKey: .permissionProfile)
         try c.encodeIfPresent(projectAuth, forKey: .projectAuth)
+        try c.encode(lifecycleGeneration, forKey: .lifecycleGeneration)
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encode(archived, forKey: .archived)
@@ -99,7 +108,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case backend, backendSessionId, cwd, guildId, ownerId, model, effort, permMode
-        case permissionProfile, projectAuth, createdAt, updatedAt, archived
+        case permissionProfile, projectAuth, lifecycleGeneration, createdAt, updatedAt, archived
     }
 
     /// Map a stored mode/backend string → `Backend` after `normalizeModeId`. `nil` when the
@@ -203,9 +212,13 @@ public actor SessionStore {
 
     // MARK: - Read
 
-    /// Read + migrate + decode into memory. Missing or corrupt file → empty state (never throws).
+    /// Read + migrate + decode into memory. Corrupt state is preserved before a fresh empty
+    /// store is created, so startup stays available without silently discarding recovery data.
     public func load() {
         let file = Self.readFile(fileURL)
+        if file == nil, FileManager.default.fileExists(atPath: fileURL.path) {
+            Self.backupCorruptFileAndReset(fileURL)
+        }
         channels = file?.channels ?? [:]
         autoUpdate = file?.autoUpdate ?? .empty
         presetDrafts = file?.presetDrafts ?? [:]
@@ -375,5 +388,19 @@ public actor SessionStore {
         _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
         // replaceItemAt may not preserve perms on a fresh file — enforce 0600 on the final path.
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func backupCorruptFileAndReset(_ url: URL) {
+        let fm = FileManager.default
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backup = url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.lastPathComponent).corrupt-\(stamp)-\(UUID().uuidString)"
+        )
+        do {
+            try fm.moveItem(at: url, to: backup)
+            try writeFile(url, StoreFile(version: STATE_VERSION, channels: [:], autoUpdate: nil, presetDrafts: nil))
+        } catch {
+            // A failed backup must never be followed by overwriting the source file.
+        }
     }
 }

@@ -301,6 +301,14 @@ public actor GrokSessionBridge {
             var patched = config ?? SessionConfig(backend: .grok)
             patched.permMode = profile.permissionMode
             effectiveConfig = patched
+            // This is an explicit live-profile resolution at session start, not the later backend
+            // id callback. Persist it before the callback so `persistSession` can remain limited
+            // to publishing the backend session id and cannot overwrite a concurrent binding edit.
+            if var current = persisted, current.permMode != profile.permissionMode {
+                current.permMode = profile.permissionMode
+                current.updatedAt = iso8601Now()
+                try? await store.upsert(channelId: channelId, current)
+            }
         }
 
         // W11-c: bypass permMode → `--always-approve` (no handler). Non-bypass → route grok's
@@ -362,7 +370,7 @@ public actor GrokSessionBridge {
         let channel = Channel(client: client)
         channels[channelId] = channel
         // F7: capture the grok session id + live context.
-        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId)
+        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId, lifecycleGeneration: persisted?.lifecycleGeneration)
         if (stopEpoch[channelId] ?? 0) != epoch {
             channels[channelId] = nil
             await client.close()
