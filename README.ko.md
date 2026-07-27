@@ -6,7 +6,7 @@
 
 **Discord 채널 하나에 Claude Code(또는 Codex / Grok)를 붙여 쓰는 셀프호스팅 봇입니다.**
 
-**제품 경로는 Swift(`dab`)** 입니다. Claude Code 공식 Agent SDK가 Node 전용이라 **얇은 Node(TypeScript) 사이드카**는 그대로 둡니다. 예전 npm TypeScript 메인 프로세스는 **레거시 / 참고용**이며 권장 설치 경로가 아닙니다.
+**제품 경로는 Swift(`dab`)** 입니다. Claude Code 공식 Agent SDK가 Node 전용이라 **얇은 Node(TypeScript) 사이드카**는 그대로 둡니다. 예전 npm TypeScript 단독 봇은 이 저장소에서 **삭제되었습니다** — TypeScript는 이제 그 Claude 사이드카 프로세스로만 존재합니다.
 
 ---
 
@@ -194,7 +194,7 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 
 ## Swift vs TypeScript 호환
 
-의도된 상태: **Swift-first 제품**, TS 트리는 참고 + Claude 사이드카용. **~99% 제품 패리티 — 포팅 본선 완료.** 잔여: **W13-b 제품 결정 보류**(bypass 기본 유지 · 미완 아님) · **optional polish**만.
+의도된 상태: **Swift-first 제품**. 레거시 TS 단독 봇은 삭제되었고, TS 트리는 이제 Claude 사이드카만 담고 있습니다. 아래 표의 "레거시 TS 메인" 열은 **삭제 이전** 기준의 역사적 비교입니다. **~99% 제품 패리티 — 포팅 본선 완료.** 잔여: **W13-b 제품 결정 보류**(bypass 기본 유지 · 미완 아님) · **optional polish**만.
 
 | 영역 | Swift (`dab`) | 레거시 TS 메인 |
 |---|---|---|
@@ -221,23 +221,11 @@ Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
 
 ---
 
-## 레거시 TypeScript 런타임 (참고용)
+## 레거시 TypeScript 단독 봇 — 삭제됨
 
-비교·Claude 사이드카 패키지용으로 여전히 동작합니다:
+예전 npm TypeScript 단독 봇(`discord-agent-bridge --setup`, `service install`, in-process Claude 모드 등)은 이 저장소의 소스 트리에서 삭제되었습니다 — 자세한 내용은 [`docs/finish-swift-port-remove-legacy-ts.md`](docs/finish-swift-port-remove-legacy-ts.md) 참고. 더 이상 `bin`/CLI 진입점이 없어 단독으로 설치·실행할 수 없습니다.
 
-```bash
-npm install -g discord-agent-bridge
-discord-agent-bridge --setup
-discord-agent-bridge service install
-```
-
-**TS 메인** 안에서 Claude 사이드카 opt-in:
-
-```bash
-DAB_CLAUDE_SIDECAR=1 npm run dev   # 체크아웃에서
-```
-
-신규 설치는 **Swift**([2단계](#2단계--설치--실행-swift))를 권장합니다. 포팅 본선은 완료(~99%)이며, TS 메인은 참고/사이드카 호스트로 남고 이후 제거될 수 있습니다.
+TypeScript는 이제 Swift `dab`이 자동으로 스폰하는 얇은 Claude 사이드카 프로세스로만 존재합니다 — [하이브리드 Claude 사이드카](#하이브리드-claude-사이드카-중요) 참고. 설치는 **Swift**([2단계](#2단계--설치--실행-swift))를 이용하세요.
 
 ---
 

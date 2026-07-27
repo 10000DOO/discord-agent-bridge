@@ -6,7 +6,7 @@
 
 **A self-hosted Discord bot that puts Claude Code (or Codex / Grok) into a Discord channel, running on your own machine.**
 
-The **product path is Swift** (`dab`). Claude Code still needs a thin **Node (TypeScript) sidecar** because the official Agent SDK is Node-only. The older npm TypeScript main process remains as a **legacy / reference** runtime — not the recommended install.
+The **product path is Swift** (`dab`). Claude Code still needs a thin **Node (TypeScript) sidecar** because the official Agent SDK is Node-only. The old npm TypeScript standalone bot has been **removed from this repo** — TypeScript now exists solely as that Claude sidecar process.
 
 ---
 
@@ -197,7 +197,7 @@ If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge
 
 ## Swift vs TypeScript compatibility
 
-Status is intentional: **Swift-first product**, TS tree kept for reference and the Claude sidecar. **~99% product parity — port mainline complete; P0–P2 gap backlog closed.** Residual: **W13-b product-deferred** (keep bypass default) · intentional **OK-DIFF** · optional polish only. Full gap list: [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
+Status is intentional: **Swift-first product**; the legacy TS standalone bot has been removed, TS tree now holds only the Claude sidecar. Table below reflects the legacy TS main's capability **before removal**, for historical comparison. **~99% product parity — port mainline complete; P0–P2 gap backlog closed.** Residual: **W13-b product-deferred** (keep bypass default) · intentional **OK-DIFF** · optional polish only. Full gap list: [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
 
 | Area | Swift (`dab`) | Legacy TS main |
 |---|---|---|
@@ -224,23 +224,11 @@ Status is intentional: **Swift-first product**, TS tree kept for reference and t
 
 ---
 
-## Legacy TypeScript runtime (reference only)
+## Legacy TypeScript standalone bot — removed
 
-Still works for comparison and for the Claude sidecar package itself:
+The old npm TypeScript standalone bot (`discord-agent-bridge --setup`, `service install`, in-process Claude mode, etc.) has been deleted from this repo's source tree — see [`docs/finish-swift-port-remove-legacy-ts.md`](docs/finish-swift-port-remove-legacy-ts.md). It has no `bin`/CLI entry point anymore and cannot be installed or run standalone.
 
-```bash
-npm install -g discord-agent-bridge
-discord-agent-bridge --setup
-discord-agent-bridge service install
-```
-
-Optional Claude sidecar inside the **TS main**:
-
-```bash
-DAB_CLAUDE_SIDECAR=1 npm run dev   # from a checkout
-```
-
-New installs should prefer **Swift** ([Step 2](#step-2--install--run-swift)). Port mainline is complete (~99%); the TS main remains as reference/sidecar host and may be removed later.
+TypeScript now exists **only** as the thin Claude sidecar process that Swift `dab` spawns automatically — see [Hybrid Claude sidecar](#hybrid-claude-sidecar-important). Install with **Swift** ([Step 2](#step-2--install--run-swift)).
 
 ---
 

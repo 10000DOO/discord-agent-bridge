@@ -14,10 +14,10 @@
 
 | 항목 | 상태 |
 |------|------|
-| **전체 단계** | **포팅 본선 완료.** Phase A~F MVP · G W11 · H W12 · I~L W13–W16 · **S3 Chromium** 전부 `done`. **제품 경로 = Swift `dab`** (TS 메인 = 레거시/참고 + Claude 사이드카) |
+| **전체 단계** | **포팅 본선 완료.** Phase A~F MVP · G W11 · H W12 · I~L W13–W16 · **S3 Chromium** 전부 `done`. **제품 경로 = Swift `dab`** (TS 레거시 메인 삭제됨 — TS는 Claude 사이드카 전용) |
 | **브랜치** | `plan/swift-port` |
-| **TS 기본 경로** | 레거시 in-process Claude (변경 없음). **권장 설치 아님** — README는 Swift-first |
-| **TS 사이드카** | 메인 opt-in `DAB_CLAUDE_SIDECAR=1` · **Swift Claude는 항상 사이드카** |
+| **TS 레거시 삭제** | `done` (2026-07-27) — 레거시 TS 소스 151개 파일 + 부속 파일 삭제, `package.json` npm 배포 표면 정리. 상세: [`docs/finish-swift-port-remove-legacy-ts.md`](./docs/finish-swift-port-remove-legacy-ts.md) |
+| **TS 사이드카** | **Swift Claude는 항상 사이드카** (레거시 메인의 `DAB_CLAUDE_SIDECAR=1` opt-in 스위치는 메인 삭제와 함께 제거됨) |
 | **Swift 봇** | `bash swift/scripts/install.sh` 또는 `swift run --package-path swift dab` · 슬래시+`!claude`/`!codex`/`!grok`/`!custom` |
 | **설정/상태** | `DAB_HOME` 또는 `~/.discord-agent-bridge/` (`config.json`, `servers/`, `swift-state.json`) · 배포 바이너리/시크릿은 `~/.dab/` |
 | **검증** | `swift test --package-path swift --scratch-path /tmp/dab-ci` (수백 테스트; 일부 병렬 플래키 이슈 잔존 §14.4). ⚠️ 그냥 `swift test`는 인덱서 락 hang — **§14.2 필독** |
@@ -66,8 +66,7 @@ bash swift/scripts/install.sh          # 또는 일회:
 export DISCORD_BOT_TOKEN=...
 swift run --package-path swift dab     # repo root
 
-# 레거시 TS 메인 — Claude 사이드카 opt-in (참고용)
-DAB_CLAUDE_SIDECAR=1 npm run dev
+# 레거시 TS 메인은 삭제됨(docs/finish-swift-port-remove-legacy-ts.md) — TS는 Claude 사이드카로만 존재
 
 # 전체 검증 (Swift 전용)
 bash verify.sh
