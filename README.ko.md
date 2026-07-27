@@ -2,9 +2,11 @@
 
 🌐 **한국어** | [English](README.md)
 
-> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, and more — per channel. Role-based access, multi-server, extensible.
+> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and more — per channel. Role-based access, multi-server, extensible.
 
-**Discord 채널 하나에 Claude Code(또는 Codex)를 붙여 쓰는 셀프호스팅 봇입니다.** 봇은 내 PC에서 돌고, npm에 배포되어 있어 `npm install -g` 한 번과 명령 세 줄이면 자동 실행까지 끝납니다.
+**Discord 채널 하나에 Claude Code(또는 Codex / Grok)를 붙여 쓰는 셀프호스팅 봇입니다.**
+
+**제품 경로는 Swift(`dab`)** 입니다. Claude Code 공식 Agent SDK가 Node 전용이라 **얇은 Node(TypeScript) 사이드카**는 그대로 둡니다. 예전 npm TypeScript 단독 봇은 이 저장소에서 **삭제되었습니다** — TypeScript는 이제 그 Claude 사이드카 프로세스로만 존재합니다.
 
 ---
 
@@ -14,18 +16,20 @@
 - 📱 **책상 앞에 없어도 됩니다.** 지하철에서 폰으로 Discord에 지시만 던져 두세요. 스트리밍 응답, 툴 실행 로그, 권한 승인 버튼이 채널에 그대로 뜹니다.
 - 🗂️ **채널 하나 = 프로젝트 하나 = 세션 하나.** 채널마다 작업 폴더 · 백엔드 · 모델 · 권한 모드가 따로 붙습니다.
 - 👥 **팀 관전 친화적.** 같은 채널을 보는 사람은 세션 진행을 그대로 지켜봅니다. 3단계 역할(admin / execute / read-only)로 실제 실행 권한만 통제합니다.
-- 🔀 **Claude ⇄ Codex 즉시 전환.** `/mode` 한 방으로 백엔드를 바꿉니다.
-- ⚙️ **터미널과 동등한 기능.** 프로젝트의 `.claude/`, `.codex/` 설정을 그대로 읽어서 서브에이전트 · 스킬 · 훅 · MCP · 플러그인 명령까지 CLI와 똑같이 동작합니다.
+- 🔀 **Claude ⇄ Codex ⇄ Grok 즉시 전환.** 세션 바인딩 후 `/mode` 등으로 백엔드를 바꿉니다.
+- ⚙️ **터미널과 동등한 기능.** 프로젝트의 `.claude/`, `.codex/` 설정을 그대로 읽어서 서브에이전트 · 스킬 · 훅 · MCP · 플러그인 명령까지 CLI와 같이 동작합니다(Claude는 사이드카 경유).
 
 ---
 
 ## 준비물
 
-- **Node.js 20 이상**
-- 쓰려는 백엔드에 맞춰 CLI가 **설치 + 로그인** 상태:
-  - **Claude 모드** → [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` 로그인 또는 `ANTHROPIC_API_KEY`)
-  - **Codex 모드** → `codex` CLI, 로그인까지
-- **Discord 봇 토큰** (아래 1단계에서 발급)
+| 항목 | 설명 |
+|---|---|
+| **macOS 13+** | Swift 제품 1차 타깃 |
+| **Swift 6.1+** | Xcode 또는 Command Line Tools |
+| **Node.js 20+** | **Claude 전용** — 사이드카 기동에 필요. Codex/Grok에는 불필요 |
+| 백엔드 CLI 설치·로그인 | **Claude Code** (`claude` 로그인 또는 `ANTHROPIC_API_KEY`); **Codex** CLI; 필요 시 **Grok** CLI |
+| **Discord 봇 토큰** | 아래 1단계 |
 
 ---
 
@@ -48,75 +52,198 @@
 
 ---
 
-## 2단계 — 설치 & 실행
+## 2단계 — 설치 & 실행 (Swift)
 
-명령 세 줄이면 설치부터 재부팅 자동 실행까지 끝납니다. `service install` 이 현재 OS에 맞는 자동 실행을 알아서 등록합니다 — **macOS는 launchd, Linux는 systemd, Windows는 작업 스케줄러**.
-
-```bash
-npm install -g discord-agent-bridge      # 설치
-discord-agent-bridge --setup             # 최초 1회 (토큰 등 입력)
-discord-agent-bridge service install     # 자동 실행 등록 + 즉시 시작
-```
-
-관리 명령:
+이 저장소를 클론하세요(Claude 사이드카가 체크아웃 기준 상대 경로를 씁니다). 그다음 바이너리를 사용자 LaunchAgent로 설치합니다:
 
 ```bash
-discord-agent-bridge service status      # 등록/실행 상태
-discord-agent-bridge service restart     # 재시작
-discord-agent-bridge service uninstall   # 등록 해제
+git clone https://github.com/<you>/discord-agent-bridge.git
+cd discord-agent-bridge
+# Claude 사이드카용
+npm install
+
+bash swift/scripts/install.sh
+# 최초 설치 시 swift/deploy/env.example → ~/.dab/env (0600) 복사
+# 토큰 입력 후, 이미 load 했다면 launchd 재로드
 ```
 
-업그레이드:
+시크릿 편집(토큰은 여기만 — plist에 넣지 않음):
 
 ```bash
-npm install -g discord-agent-bridge@latest
-discord-agent-bridge service restart
+$EDITOR ~/.dab/env
+# DISCORD_BOT_TOKEN=...
 ```
 
-> ⚠️ **Windows 참고**: 작업 스케줄러 로그온 트리거로 등록되므로 **로그인 시 자동 시작**됩니다(관리자 권한 불필요). 크래시 시 자동 재시작은 보장하지 않습니다(macOS · Linux는 보장).
+env 수정 후 재로드:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
+```
+
+### 일회 실행 (launchd 없음)
+
+**저장소 루트**에서 (사이드카가 `src/sidecar` / `node_modules`를 찾을 수 있도록):
+
+```bash
+export DISCORD_BOT_TOKEN=your_bot_token
+# 선택: DAB_CWD, DAB_PERM_MODE, DAB_TURN_TIMEOUT_SEC, DAB_DEV_GUILD_ID
+swift run --package-path swift dab
+```
+
+제거(`~/.dab/env`·로그는 유지):
+
+```bash
+bash swift/scripts/uninstall.sh
+```
+
+### 경로 (Swift)
+
+| 경로 | 역할 |
+|---|---|
+| `~/.dab/bin/dab` | 릴리스 바이너리 (install.sh) |
+| `~/.dab/env` | 시크릿·환경변수 (0600) — 토큰, 선택 `DAB_*` |
+| `~/.dab/run.sh` | 런처: PATH + 저장소 루트 `cd` + `dab` 실행 |
+| `~/Library/LaunchAgents/com.discord-agent-bridge.plist` | LaunchAgent (HOME만; 토큰 없음) |
+| `~/.dab/logs/` | stdout / stderr |
+| `~/.discord-agent-bridge/` | **설정·상태** (레거시 TS와 동일 레이아웃; `DAB_HOME`으로 변경 가능) |
+
+설정 디렉터리:
+
+| 파일 | 역할 |
+|---|---|
+| `config.json` | 전역 설정 (역할 인가, 기본값 등) |
+| `servers/<guildId>.json` | 서버별 오버라이드 |
+| `swift-state.json` | Swift 세션 바인딩 (버전 관리) |
+
+상세: [`swift/README.md`](swift/README.md) · 설계: [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md).
+
+### 하이브리드 Claude 사이드카 (중요)
+
+```
+Swift dab  ──stdio JSON-RPC──►  Node Claude 사이드카  ──►  Claude Agent SDK
+Codex / Grok                 ──stdio (네이티브 클라)──►  각 CLI
+```
+
+- **Swift는 항상** Node 사이드카 프로세스를 통해 Claude와 통신합니다(자동 스폰).
+- Claude 모드에는 체크아웃에 **Node + `npm install`** 이 필요합니다. Codex/Grok은 Node 불필요.
+- 스폰 명령 오버라이드: `DAB_CLAUDE_SIDECAR_CMD`.
+- 프로토콜: [`CLAUDE_SIDECAR_PROTOCOL.md`](CLAUDE_SIDECAR_PROTOCOL.md).
+
+> **`DAB_CLAUDE_SIDECAR=1`** 은 **레거시 TypeScript 메인** 전용 스위치입니다(npm 봇 안에서 사이드카 opt-in). Swift 제품은 이 변수를 쓰지 않으며, Claude에는 항상 사이드카를 씁니다.
 
 ---
 
 ## 3단계 — Discord에서 사용하기
 
-봇이 서버에 들어오면 **컨트롤 채널(`#session-generator`), 세션 카테고리, 알림 채널(`#agent-status`)이 자동으로 생성**됩니다(봇에 채널 관리 권한이 있는 한). 이후 흐름: **`/config` → `/agent start`**.
+기본 흐름: **`/setup` → `/config` → `/agent start`**, 이후 세션 채널에서 일반 메시지.
 
-1. **(자동)** 봇 시작 또는 서버 초대 시점에 위 채널 구조가 생깁니다. 관리자가 **`/setup`** 으로 수동 재생성해도 됩니다(기존 채널은 재사용).
-2. **`/config`** (관리자) — 역할 티어와 기본값을 지정합니다. 서버 관리자(Administrator)는 역할 설정 없이도 항상 사용할 수 있습니다.
-3. `#session-generator` 에서 **`/agent start`**. **마법사**가 순서대로 안내합니다: **작업 폴더 → 백엔드(Claude / Codex) → 모델 → 추론 수준 → 권한 모드**. 각 단계는 **"다음" 버튼**으로 넘어갑니다. 폴더 브라우저는 상위/다른 볼륨 이동, 새 폴더 생성, 이전 세션 재개까지 지원합니다. 확인하면 **전용 세션 채널(`proj-<폴더>`)** 이 새로 생기고 그 채널에 바인딩됩니다.
-4. 만들어진 세션 채널에서 **일반 메시지로 그냥 대화**하면 됩니다. Claude 모드는 스트리밍 응답, 툴 실행 스레드, 권한 승인 버튼이 뜹니다.
+1. **`/setup`** (관리자) — 컨트롤 채널 · 세션 카테고리 · 상태 채널 (기존 재사용).
+2. **`/config`** (관리자) — 역할 티어 + 기본값(mode/model/effort/perm, dmPolicy) + 알림 + **이미지/chromium 렌더** 서브패널(켜기 + Chromium 설치).
+3. **`/agent start`** — 마법사: **폴더 → 백엔드 → 모델 → 추론 → 권한**. 폴더 브라우저는 이동/생성/네이티브 선택 지원. 확인 시 `/setup`이 되어 있으면 A4D 세션 채널을 만들고 바인딩.
+4. 바인딩된 채널에서 **일반 메시지**로 대화. 접두사 단축키: `!claude` / `!codex` / `!grok` / `!custom`.
 
-### 주요 명령어
+### 주요 명령어 (Swift)
 
 | 명령어 | 설명 |
 |---|---|
-| `/setup` | (관리자) 컨트롤 채널 + 세션 카테고리 생성 (기존이 있으면 재사용) |
-| `/agent start` | 새 세션 시작 — 마법사 확인 시 전용 세션 채널 생성 |
-| `/agent resume` | 이전 세션 이어하기 |
-| `/agent close` | 세션 종료 + 세션 채널 삭제 |
-| `/agent stats` | 활성 세션 · 세션 통계 · Claude 사용량 (본인에게만 표시) |
-| `/mode <claude\|codex>` | 백엔드 전환 (⚠️ 새 대화로 시작 — 이전 맥락 미승계) |
-| `/mode perm <모드\|프로필>` | 권한 모드/프로필 전환 (세션 유지) |
-| `/stop` | 현재 세션 즉시 중단 (킬 스위치) |
-| `/stop-all` | (관리자) 모든 세션 중단 |
-| `/config` | (관리자) 역할 티어 + 기본값(백엔드 · 모델 · 권한 모드 · 언어 · Codex 경로) 설정 |
+| `/setup` | (관리자) 컨트롤 + 세션 카테고리 + 상태 채널 프로비저닝 |
+| `/agent start` | 마법사: 백엔드·모델·추론·권한(+폴더) 바인딩 |
+| `/agent resume` | 이전 세션 재개 (바인딩 레이어) |
+| `/agent close` | 세션 종료 (백엔드 stop) |
+| `/agent stats` | 세션 통계 + Claude/Grok 사용량(가능 시) |
+| `/mode` · `/model` · `/effort` · `/mode perm` | 라이브 바인딩 갱신 |
+| `/clear` | 동일 설정으로 새 대화 |
+| `/stop` · `/stop-all` | 현재/전체 중단 (stop-all은 관리자) |
+| `/config` | (관리자) 역할 티어 + 핵심 기본값 |
+| `/doc` | 작업 공간 마크다운을 스레드로 공유 |
+| `/update` | (관리자) npm 레지스트리 새 버전 확인 |
 
-### 권한 모드
+권한 모드: `default` · `acceptEdits` · `plan` · `bypassPermissions`(및 카탈로그된 백엔드별 프로필). 스모크 기본이 `bypassPermissions`일 수 있음 — Allow/Deny UI 사용 시 `default` 권장.
 
-- `default` — 툴을 실행할 때마다 **Allow/Deny 버튼**으로 물어봅니다 (가장 안전)
-- `acceptEdits` — 파일 수정은 자동 수락
-- `plan` — 계획만 세우고 실행은 보류
-- `bypassPermissions` — 전부 자동 (신뢰하는 프로젝트에서만)
+> **패리티 안내:** Swift가 제품 경로이며 **~99% 제품 패리티(포팅 본선 완료)**. 잔여는 **W13-b 제품 결정 보류**(bypass 기본 유지 · 미완 아님) + optional polish. [호환 매트릭스](#swift-vs-typescript-호환)와 [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0을 보세요.
 
-Codex는 자신의 승인/샌드박스 모드로 매핑합니다.
+---
 
-### 이벤트 알림 (`#agent-status`)
+## npm TypeScript → Swift `dab` 마이그레이션
 
-여러 세션의 **작업 완료와 에러**를 `#agent-status` 채널 한 곳에 요약해 알려줍니다. `/config` → **🔔 알림 설정** 에서 켜기/끄기와 대상 채널을 바꿀 수 있습니다.
+이미 `npm install -g discord-agent-bridge` / `discord-agent-bridge service install` 로 돌리고 있다면:
 
-### 문서 공유
+1. **레거시 서비스 중지** (같은 토큰으로 봇 둘 띄우지 않기):
+   ```bash
+   discord-agent-bridge service uninstall   # 또는 먼저 stop/status
+   ```
+2. **설정 유지** — `~/.discord-agent-bridge/` (또는 `DAB_HOME`). Swift는 **같은 디렉터리와 `config.json` / `servers/*.json` 레이아웃**을 씁니다.
+3. **세션 상태는 별도:** TS는 `state.json`, Swift는 `swift-state.json`(버전 관리). 바인딩은 1:1 자동 이관되지 않으므로 전환 후 `/agent start`(또는 Swift resume 경로)로 다시 잡습니다.
+4. **Swift 설치** — Claude용 Node 의존성이 있는 **전체 체크아웃**에서 `bash swift/scripts/install.sh`.
+5. **환경 변수 대응**
 
-세션 채널에서 `/doc path:docs/foo.md` 를 실행하면 작업 디렉터리의 마크다운 파일이 `📄` 스레드에 게시됩니다 — 원본 `.md` 첨부는 항상, 본문은 설정에 따라(렌더링이 켜져 있으면 표/mermaid는 이미지). 에이전트에게 "공유해줘"라고 요청하는 방법도 있습니다(`share_document` 도구). 자세한 사용법과 설정: [docs/document-share-usage.md](docs/document-share-usage.md)
+   | 항목 | 레거시 TS | Swift |
+   |---|---|---|
+   | 토큰 | 마법사 / 서비스 env | `~/.dab/env` → `DISCORD_BOT_TOKEN` |
+   | 설정 루트 | `DAB_HOME` 또는 `~/.discord-agent-bridge` | **동일** |
+   | 자동 시작 | `discord-agent-bridge service install` | `swift/scripts/install.sh` · `install-linux.sh` · `install-windows.ps1` |
+   | Claude 프로세스 | in-process **또는** `DAB_CLAUDE_SIDECAR=1` | **항상 사이드카** |
+   | 사이드카 스폰 오버라이드 | (사이드카 경로) | `DAB_CLAUDE_SIDECAR_CMD` |
+   | 작업 디렉터리 기본 | config / 마법사 | `DAB_CWD` env + 마법사 폴더 스텝 |
+   | 바이너리·로그(배포) | 서비스 홈 하위 | `~/.dab/` |
+
+6. **메인 프로세스 둘을 한 봇 토큰에 동시에 돌리지 마세요.** Swift가 띄우는 사이드카만 있는 구성은 정상입니다.
+
+---
+
+## Swift vs TypeScript 호환
+
+의도된 상태: **Swift-first 제품**. 레거시 TS 단독 봇은 삭제되었고, TS 트리는 이제 Claude 사이드카만 담고 있습니다. 아래 표의 "레거시 TS 메인" 열은 **삭제 이전** 기준의 역사적 비교입니다. **~99% 제품 패리티 — 포팅 본선 완료.** 잔여: **W13-b 제품 결정 보류**(bypass 기본 유지 · 미완 아님) · **optional polish**만.
+
+| 영역 | Swift (`dab`) | 레거시 TS 메인 |
+|---|---|---|
+| Discord 게이트웨이 + 슬래시 | ✅ DiscordBM | ✅ discord.js |
+| Claude 턴 | ✅ **Node 사이드카**(항상) | ✅ in-process 기본; 사이드카 opt-in `DAB_CLAUDE_SIDECAR=1` |
+| Codex / Grok | ✅ 네이티브 stdio 클라 | ✅ |
+| Custom 백엔드 + shell env | ✅ | ✅ |
+| 세션 바인드 / 재시작 재연결 | ✅ `SessionStore` + lazy resume | ✅ 오케스트레이터 |
+| 역할 인가 / 감사 / 경로 confinement | ✅ (W13-b 툴 allowlist는 기본이 `bypassPermissions`인 동안 **제품 결정 보류**) | ✅ |
+| 3계층 config | ✅ global → server → binding | ✅ |
+| `/agent start` 폴더 마법사 | ✅ folder · resume · reconfigure · A4D · preset | ✅ 풀 |
+| 라이브 슬래시 model/effort/mode/clear/stop | ✅ 바인딩 + Claude 라이브 `setModel`/`setEffort` RPC + displayName 재해석 | ✅ |
+| 사용량 / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD + 라이브 스트림 상태 임베드 | ✅ 더 풍부한 패널 |
+| 도구 스레드 / diff / 상태 임베드 / notifier | ✅ Claude/Codex/Grok mid-turn tool + pin(best-effort) | ✅ |
+| `/config` 패널 | ✅ 역할·mode/model/effort/perm·dm·알림·locale·**이미지 렌더(S3)** | ✅ 더 넓은 UI |
+| `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
+| Auto-update | ✅ 레지스트리 체크 + Yes/No + **install.sh·launchctl 재시작** | ✅ npm 재설치 경로 |
+| Chromium 표/mermaid 렌더 | ✅ **headless Chrome CLI** (시스템 Chrome 또는 프로비저닝; puppeteer-in-Swift 아님) | ✅ puppeteer |
+| Host file Discord 첨부 | ✅ 감금 업로드 (`host.file.attach`) | ✅ (사이드카 경로) |
+| Linux/Windows 서비스 | ✅ launchd / systemd / schtasks 스크립트 | ✅ launchd / systemd / schtasks |
+| npm global 설치 | ❌ (체크아웃 + 빌드) | ✅ |
+
+**잔여(본선 미완 아님):** **W13-b** 제품 결정 보류(기본 perm이 bypass를 떠날 때 allowlist) · **optional polish**(주석 다이어트·플래키·UX) — [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0.
+
+---
+
+## 레거시 TypeScript 단독 봇 — 삭제됨
+
+예전 npm TypeScript 단독 봇(`discord-agent-bridge --setup`, `service install`, in-process Claude 모드 등)은 이 저장소의 소스 트리에서 삭제되었습니다 — 자세한 내용은 [`docs/finish-swift-port-remove-legacy-ts.md`](docs/finish-swift-port-remove-legacy-ts.md) 참고. 더 이상 `bin`/CLI 진입점이 없어 단독으로 설치·실행할 수 없습니다.
+
+TypeScript는 이제 Swift `dab`이 자동으로 스폰하는 얇은 Claude 사이드카 프로세스로만 존재합니다 — [하이브리드 Claude 사이드카](#하이브리드-claude-사이드카-중요) 참고. 설치는 **Swift**([2단계](#2단계--설치--실행-swift))를 이용하세요.
+
+---
+
+## 개발
+
+```bash
+bash verify.sh
+```
+
+게이트(필수): `swift/` 빌드 + 테스트. 백엔드 스모크(`sidecar` / `codex` / `grok`)는 best-effort이며 CLI 부재 시 깨끗이 스킵합니다.
+
+⚠️ 패키지 `.build` 인덱서 락으로 `swift test`가 hang 하면 격리 scratch 경로를 쓰세요:
+
+```bash
+swift test --package-path swift --scratch-path /tmp/dab-ci
+```
+
+포팅 추적: [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md). 패키지 노트: [`swift/README.md`](swift/README.md).
 
 ---
 

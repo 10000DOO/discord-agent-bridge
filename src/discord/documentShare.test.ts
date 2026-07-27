@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { shareDocument, threadAsChannel, type DocumentShareOptions } from './documentShare.js';
 import type { EditableMessage, MessageChannel, MessageThread, OutgoingMessage } from './ports.js';
 import type { ImageRenderer } from './render/segment.js';
+
+const require = createRequire(import.meta.url);
 
 // A channel whose startThread is counted and whose thread records every send. The
 // channel's own send throws — the core must post the body INSIDE the thread (via the
@@ -102,6 +105,104 @@ describe('shareDocument', () => {
     expect(starts()).toBe(1);
     expect(sends[0].content).toContain(absPath);
     expect(sends[0].files?.[0]).toMatchObject({ name: 'abs.md', path: absPath });
+  });
+
+  it('trims Unicode whitespace around an absolute path outside the session folder', async () => {
+    const absPath = path.join(outside, 'space.md');
+    fs.writeFileSync(absPath, 'outside absolute');
+    const { channel } = fakeChannel();
+
+    const res = await shareDocument({
+      channel,
+      cwd,
+      path: `\u00a0${absPath}\u2003`,
+      options: opts({ bodyMode: 'attachment_only' }),
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.path).toBe(absPath);
+  });
+
+  it('unwraps one matched outer wrapper around an absolute path outside the session folder', async () => {
+    const absPath = path.join(outside, 'inline-code.md');
+    fs.writeFileSync(absPath, 'outside absolute');
+    for (const wrapper of ['`', "'", '"']) {
+      const { channel } = fakeChannel();
+      const res = await shareDocument({
+        channel,
+        cwd,
+        path: `  ${wrapper}${absPath}${wrapper}  `,
+        options: opts({ bodyMode: 'attachment_only' }),
+      });
+
+      expect(res.ok).toBe(true);
+      expect(res.path).toBe(absPath);
+    }
+  });
+
+  it('preserves wrapper inner text and only removes one matched pair', async () => {
+    const absPath = path.join(outside, 'wrapper.md');
+    fs.writeFileSync(absPath, 'outside absolute');
+    for (const input of ['`', `\`${absPath}`, `'${absPath}"`, `\`\`${absPath}\`\``, `\` ${absPath} \``]) {
+      const { channel } = fakeChannel();
+      const res = await shareDocument({ channel, cwd, path: input, options: opts({ bodyMode: 'attachment_only' }) });
+      expect(res).toEqual({ ok: false, code: 'notFound' });
+    }
+  });
+
+  it('preserves quotes that are part of a filename', async () => {
+    const name = "'quoted'.md";
+    fs.writeFileSync(path.join(cwd, name), 'body');
+    const { channel } = fakeChannel();
+    const res = await shareDocument({ channel, cwd, path: name, options: opts({ bodyMode: 'attachment_only' }) });
+    expect(res.ok).toBe(true);
+    expect(res.path).toBe(name);
+  });
+
+  it('matches ECMAScript whitespace policy for FEFF and NEL', async () => {
+    fs.writeFileSync(path.join(cwd, 'feff.md'), 'body');
+    const feff = await shareDocument({
+      channel: fakeChannel().channel,
+      cwd,
+      path: '\uFEFFfeff.md\uFEFF',
+      options: opts({ bodyMode: 'attachment_only' }),
+    });
+    expect(feff.ok).toBe(true);
+
+    const nelDirectory = '\u0085nel-dir';
+    fs.mkdirSync(path.join(cwd, nelDirectory));
+    fs.writeFileSync(path.join(cwd, nelDirectory, 'nel.md'), 'body');
+    const nel = await shareDocument({
+      channel: fakeChannel().channel,
+      cwd,
+      path: `${nelDirectory}/nel.md`,
+      options: opts({ bodyMode: 'attachment_only' }),
+    });
+    expect(nel.ok).toBe(true);
+    expect(nel.path).toBe(`${nelDirectory}/nel.md`);
+  });
+
+  it('maps an ENOENT read after a successful stat to notFound', async () => {
+    const absPath = path.join(outside, 'race.md');
+    fs.writeFileSync(absPath, 'body');
+    const mutableFs = require('node:fs') as typeof fs;
+    const originalRead = mutableFs.readFileSync;
+    mutableFs.readFileSync = (() => {
+      throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    }) as typeof fs.readFileSync;
+    syncBuiltinESMExports();
+    try {
+      const res = await shareDocument({
+        channel: fakeChannel().channel,
+        cwd,
+        path: absPath,
+        options: opts({ bodyMode: 'attachment_only' }),
+      });
+      expect(res).toEqual({ ok: false, code: 'notFound' });
+    } finally {
+      mutableFs.readFileSync = originalRead;
+      syncBuiltinESMExports();
+    }
   });
 
   it('allows a symlink inside cwd that points outside (realpath) when the target is valid markdown', async () => {
