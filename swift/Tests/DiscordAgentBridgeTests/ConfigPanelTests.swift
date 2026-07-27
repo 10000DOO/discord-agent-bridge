@@ -100,7 +100,7 @@ struct ConfigPanelTests {
         let panel = try await makePanel(store: store)
         let view = panel.render()
 
-        #expect(view.title == "Bot config")
+        #expect(view.title == "역할·기본값 설정")
         #expect(view.description.contains("effort="))
         #expect(view.description.contains("locale="))
         #expect(view.roleRows.count == 4)
@@ -308,6 +308,20 @@ struct ConfigPanelTests {
         #expect(global.locale == "ko")
     }
 
+    @Test func viewTitleFollowsActiveLocale() async throws {
+        let prevLocale = I18n.getLocale()
+        defer { I18n.setLocale(prevLocale) }
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await seedGlobal(store)
+        let panel = try await makePanel(store: store)
+
+        I18n.setLocale(.ko)
+        #expect(panel.render().title == "역할·기본값 설정")
+        I18n.setLocale(.en)
+        #expect(panel.render().title == "Roles & defaults settings")
+    }
+
     @Test func localeLabelKoEn() {
         #expect(localeLabel("ko") == "한국어 (ko)")
         #expect(localeLabel("en") == "English (en)")
@@ -380,7 +394,7 @@ struct ConfigPanelTests {
             Issue.record("expected notifPanel, got \(r)")
             return
         }
-        #expect(sub.title.contains("notification") || sub.title.contains("Event"))
+        #expect(sub.title == I18n.t("config.notif.title"))
         #expect(sub.description.contains("on") || sub.description.contains("off"))
         let comps = sub.rows.flatMap(\.components)
         #expect(comps.contains {

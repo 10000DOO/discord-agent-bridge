@@ -503,10 +503,12 @@ struct EventHandler: GatewayEventHandler {
             guard let sub = cmd.options?.first else { return }
             switch sub.name {
             case "backend":
-                guard let raw = try? sub.requireOption(named: "backend").requireString(),
-                      let backend = Backend(rawValue: raw)
-                else {
+                guard let raw = try? sub.requireOption(named: "backend").requireString() else {
                     try await respondEphemeral(payload, "알 수 없는 backend")
+                    return
+                }
+                guard let backend = Backend(rawValue: raw) else {
+                    try await respondEphemeral(payload, I18n.t("cmd.mode.unavailable", ["backend": raw]))
                     return
                 }
                 // Require an existing binding (no cwd/owner to carry over otherwise).

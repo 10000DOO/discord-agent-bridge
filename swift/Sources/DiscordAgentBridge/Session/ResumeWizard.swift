@@ -163,7 +163,8 @@ public final class ResumeWizard: @unchecked Sendable {
     }
 
     public func render() -> WizardView {
-        let title = "세션 시작"
+        // TS `resumeWizard.ts`: every non-done step shares the generic 'wizard.title'.
+        let title = I18n.t("wizard.title")
         switch step {
         case .backend:
             let selected = pendingBackend ?? selectedBackend
@@ -176,18 +177,18 @@ public final class ResumeWizard: @unchecked Sendable {
             }
             return WizardView(
                 title: title,
-                description: "재개할 백엔드를 선택하고 \"다음\"을 누르세요.",
+                description: I18n.t("resume.step.backend"),
                 rows: [
                     WizardRow(components: [
                         .select(
                             customId: "resume.backend",
-                            placeholder: "재개할 백엔드를 선택하고 \"다음\"을 누르세요.",
+                            placeholder: I18n.t("resume.step.backend"),
                             options: capSelectOptions(options)
                         ),
                     ]),
                     WizardRow(components: [
-                        .button(customId: "resume.backend.next", label: "다음", style: .primary, disabled: false),
-                        .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
+                        .button(customId: "resume.backend.next", label: I18n.t("wizard.next"), style: .primary, disabled: false),
+                        .button(customId: "cancel", label: I18n.t("wizard.cancel"), style: .secondary, disabled: false),
                     ]),
                 ]
             )
@@ -201,26 +202,32 @@ public final class ResumeWizard: @unchecked Sendable {
             }
             return WizardView(
                 title: title,
-                description: "재개할 세션을 선택하세요.",
+                description: I18n.t("resume.step.pick"),
                 rows: [
                     WizardRow(components: [
                         .select(
                             customId: "resume.pick",
-                            placeholder: "세션 선택…",
+                            placeholder: I18n.t("resume.select.placeholder"),
                             options: capSelectOptions(Array(pickOptions))
                         ),
                     ]),
                     WizardRow(components: [
-                        .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
+                        .button(customId: "cancel", label: I18n.t("wizard.cancel"), style: .secondary, disabled: false),
                     ]),
                 ]
             )
         case .empty:
-            return WizardView(title: title, description: "재개할 세션이 없습니다.", rows: [])
+            return WizardView(title: title, description: I18n.t("resume.none"), rows: [])
         case .done:
-            return WizardView(title: "세션 재개됨", description: "세션 재개됨", rows: [])
+            // TS renders this with an always-blank {channel} (the real bound-channel
+            // confirmation is posted separately by the router — DabMain.swift:1250).
+            return WizardView(
+                title: I18n.t("resume.status.title"),
+                description: I18n.t("resume.done", ["channel": ""]),
+                rows: []
+            )
         case .cancelled:
-            return WizardView(title: title, description: "세션 시작을 취소했어요.", rows: [])
+            return WizardView(title: title, description: I18n.t("wizard.cancelled"), rows: [])
         }
     }
 }
@@ -242,12 +249,12 @@ public func resumeRelativeTime(
     }
     guard let then else { return "" }
     let seconds = max(0, Int(now.timeIntervalSince(then)))
-    if seconds < 60 { return "방금" }
+    if seconds < 60 { return I18n.t("resume.time.now") }
     let minutes = seconds / 60
-    if minutes < 60 { return "\(minutes)분 전" }
+    if minutes < 60 { return I18n.t("resume.time.min", ["n": "\(minutes)"]) }
     let hours = minutes / 60
-    if hours < 24 { return "\(hours)시간 전" }
-    return "\(hours / 24)일 전"
+    if hours < 24 { return I18n.t("resume.time.hour", ["n": "\(hours)"]) }
+    return I18n.t("resume.time.day", ["n": "\(hours / 24)"])
 }
 
 // MARK: Store-backed list (Codex/Grok best-effort)

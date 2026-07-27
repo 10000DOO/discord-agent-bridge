@@ -343,32 +343,32 @@ public final class ConfigPanel: @unchecked Sendable {
         let d = defaults
         let admin = roleSelect(
             ConfigPanelIds.roleAdmin,
-            placeholder: "Admin roles",
+            placeholder: I18n.t("config.role.admin.placeholder"),
             defaultRoleIds: pending.adminRoleIds ?? d.adminRoleIds
         )
         let exec = roleSelect(
             ConfigPanelIds.roleExecute,
-            placeholder: "Execute roles",
+            placeholder: I18n.t("config.role.execute.placeholder"),
             defaultRoleIds: pending.executeRoleIds ?? d.executeRoleIds
         )
         let read = roleSelect(
             ConfigPanelIds.roleReadOnly,
-            placeholder: "Read-only roles",
+            placeholder: I18n.t("config.role.readOnly.placeholder"),
             defaultRoleIds: pending.readOnlyRoleIds ?? d.readOnlyRoleIds
         )
         let save = ConfigPanelComponent.button(
             customId: ConfigPanelIds.save,
-            label: "Save roles",
+            label: I18n.t("config.save"),
             style: .success
         )
         let notif = ConfigPanelComponent.button(
             customId: ConfigPanelIds.notifOpen,
-            label: "🔔 Notifications",
+            label: I18n.t("config.notif.button"),
             style: .secondary
         )
         let renderBtn = ConfigPanelComponent.button(
             customId: ConfigPanelIds.renderOpen,
-            label: "🖼 Image render",
+            label: I18n.t("config.render.button"),
             style: .secondary
         )
         let accessBtn = ConfigPanelComponent.button(
@@ -379,7 +379,7 @@ public final class ConfigPanel: @unchecked Sendable {
 
         let backendSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.backend,
-            placeholder: "Default backend",
+            placeholder: I18n.t("config.default.backend.placeholder"),
             options: backends.map {
                 WizardSelectOption(label: $0, value: $0, isDefault: $0 == d.backend)
             }
@@ -387,32 +387,32 @@ public final class ConfigPanel: @unchecked Sendable {
         let modelOptions = selectOptions(from: models, selected: d.model, fallbackLabel: "model")
         let modelSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.model,
-            placeholder: "Default model",
+            placeholder: I18n.t("config.default.model.placeholder"),
             options: modelOptions
         )
         let effortOptions = selectOptions(from: efforts, selected: d.effort, fallbackLabel: "effort")
         let effortSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.effort,
-            placeholder: "Default effort",
+            placeholder: I18n.t("config.default.effort.placeholder"),
             options: effortOptions
         )
         let permSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.permMode,
-            placeholder: "Default permission mode",
+            placeholder: I18n.t("config.default.permMode.placeholder"),
             options: permModes.map {
                 WizardSelectOption(label: $0.label, value: $0.value, isDefault: $0.value == d.permMode)
             }
         )
         let localeSelect = ConfigPanelComponent.select(
             customId: ConfigPanelIds.locale,
-            placeholder: "Bot language (global)",
+            placeholder: I18n.t("config.default.locale.placeholder"),
             options: CONFIG_LOCALES.map {
                 WizardSelectOption(label: localeLabel($0), value: $0, isDefault: $0 == d.locale)
             }
         )
 
         return ConfigPanelView(
-            title: "Bot config",
+            title: I18n.t("config.title"),
             description: buildDescription(),
             roleRows: [
                 ConfigPanelRow(components: [admin]),
@@ -723,7 +723,7 @@ public final class ConfigPanel: @unchecked Sendable {
             maxValues: 1
         )
         return ConfigPanelSubView(
-            title: "Event notifications",
+            title: I18n.t("config.notif.title"),
             description: """
             Forward session result/error summaries to a status channel.
             State: **\(state)** · channel: \(channelLine)
@@ -774,12 +774,14 @@ public final class ConfigPanel: @unchecked Sendable {
         )
         let install = ConfigPanelComponent.button(
             customId: ConfigPanelIds.renderInstall,
-            label: "Install Chromium",
+            label: I18n.t("config.render.install"),
             style: .primary
         )
+        // No TS counterpart button exists here (TS's render sub-panel has only
+        // toggle+install) — reuse the closest existing "decline/later" wording.
         let decline = ConfigPanelComponent.button(
             customId: ConfigPanelIds.renderDecline,
-            label: "Decline",
+            label: I18n.t("render.setup.decline"),
             style: .secondary
         )
         return ConfigPanelSubView(

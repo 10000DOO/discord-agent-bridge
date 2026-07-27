@@ -12,8 +12,12 @@ import Darwin
 /// Default host-picker timeout (TS `folderPanelTimeoutMs` = 120s).
 public let folderPanelTimeoutMs: Int = 120_000
 
-/// Finder panel prompt (TS `dir.panel.prompt`).
-public let folderPanelPrompt = "Discord 세션 프로젝트 폴더 선택"
+/// Finder panel prompt (TS `dir.panel.prompt`). A computed property, not a stored
+/// constant — a top-level `let` in Swift is lazily computed ONCE and cached forever,
+/// which would freeze this at whatever locale was active on first access and never
+/// follow a later `I18n.setLocale` (it is read as a default parameter value in
+/// `openMacFolderPanel`, e.g. `DabMain.swift`'s native-panel call site).
+public var folderPanelPrompt: String { I18n.t("dir.panel.prompt") }
 
 public enum FolderPanelError: Error, Equatable, Sendable {
     case timeout

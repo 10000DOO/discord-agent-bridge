@@ -613,24 +613,18 @@ public final class ChannelWizard: @unchecked Sendable {
 
     private func titleText() -> String {
         kind == .reconfigure
-            ? "에이전트 전환 — \(selection.backend.rawValue)"
-            : "에이전트 세션 시작"
+            ? I18n.t("wizard.recfg.title", ["backend": selection.backend.rawValue])
+            : I18n.t("wizard.title")
     }
 
     private func stepDescription(_ step: WizardStep) -> String {
         switch step {
         case .model:
-            return kind == .reconfigure
-                ? "1/3단계 · 모델을 선택하고 \"다음\"을 누르세요."
-                : "모델을 선택하세요 (\(selection.backend.rawValue))"
+            return I18n.t(kind == .reconfigure ? "wizard.recfg.step.model" : "wizard.step.model")
         case .effort:
-            return kind == .reconfigure
-                ? "2/3단계 · 추론 수준을 선택하고 \"다음\"을 누르세요."
-                : "추론 강도를 선택하세요"
+            return I18n.t(kind == .reconfigure ? "wizard.recfg.step.effort" : "wizard.step.effort")
         case .perm:
-            return kind == .reconfigure
-                ? "3/3단계 · 권한을 선택하고 \"✅ 전환\"을 누르세요."
-                : "권한 모드를 선택하고 시작하세요"
+            return I18n.t(kind == .reconfigure ? "wizard.recfg.step.perm" : "wizard.step.perm")
         default:
             return ""
         }
@@ -651,7 +645,7 @@ public final class ChannelWizard: @unchecked Sendable {
         case .backend:
             return choiceStep(
                 title: title,
-                description: "백엔드를 선택하세요",
+                description: I18n.t("wizard.step.backend"),
                 selectId: "backend",
                 options: options.backends.map { b in
                     WizardSelectOption(
@@ -662,7 +656,7 @@ public final class ChannelWizard: @unchecked Sendable {
                     )
                 },
                 confirmId: "backend.next",
-                confirmLabel: "다음",
+                confirmLabel: I18n.t("wizard.next"),
                 showBack: showBackButton()
             )
         case .model:
@@ -675,7 +669,7 @@ public final class ChannelWizard: @unchecked Sendable {
                     WizardSelectOption(label: m.label, value: m.value, isDefault: m.value == selected)
                 },
                 confirmId: "model.next",
-                confirmLabel: "다음",
+                confirmLabel: I18n.t("wizard.next"),
                 showBack: showBackButton()
             )
         case .effort:
@@ -688,7 +682,7 @@ public final class ChannelWizard: @unchecked Sendable {
                     WizardSelectOption(label: e.label, value: e.value, isDefault: e.value == selected)
                 },
                 confirmId: "effort.next",
-                confirmLabel: "다음",
+                confirmLabel: I18n.t("wizard.next"),
                 showBack: showBackButton()
             )
         case .perm:
@@ -701,29 +695,27 @@ public final class ChannelWizard: @unchecked Sendable {
             var rows: [WizardRow] = []
             if !modeOpts.isEmpty {
                 rows.append(WizardRow(components: [
-                    .select(customId: "perm.mode", placeholder: "권한 모드", options: modeOpts),
+                    .select(customId: "perm.mode", placeholder: I18n.t("status.permMode"), options: modeOpts),
                 ]))
             }
-            let startLabel = kind == .reconfigure ? "✅ 전환" : "시작"
+            let startLabel = kind == .reconfigure ? I18n.t("wizard.recfg.start") : I18n.t("wizard.start")
             var buttons: [WizardComponent] = [
                 .button(customId: "perm.start", label: startLabel, style: .success, disabled: false),
             ]
             if showBackButton() {
-                buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false))
+                buttons.append(.button(customId: "wizard.back", label: I18n.t("wizard.back"), style: .secondary, disabled: false))
             }
-            buttons.append(.button(customId: "cancel", label: "취소", style: .secondary, disabled: false))
+            buttons.append(.button(customId: "cancel", label: I18n.t("wizard.cancel"), style: .secondary, disabled: false))
             rows.append(WizardRow(components: buttons))
             return WizardView(title: title, description: stepDescription(.perm), rows: rows)
         case .done:
             return WizardView(
                 title: title,
-                description: "시작됨: \(selection.backend.rawValue) · \(selection.cwd)",
+                description: I18n.t("wizard.started", ["backend": selection.backend.rawValue, "cwd": selection.cwd]),
                 rows: []
             )
         case .cancelled:
-            let cancelled = kind == .reconfigure
-                ? "에이전트 전환을 취소했어요."
-                : "취소되었습니다."
+            let cancelled = I18n.t(kind == .reconfigure ? "wizard.recfg.cancelled" : "wizard.cancelled")
             return WizardView(title: title, description: cancelled, rows: [])
         }
     }
@@ -741,23 +733,23 @@ public final class ChannelWizard: @unchecked Sendable {
                     description: summarize(p)
                 )
             }
-            let placeholder = presetDeleteMode ? "삭제할 프리셋을 선택하세요." : "프리셋 선택…"
+            let placeholder = presetDeleteMode ? I18n.t("preset.delete.active") : I18n.t("preset.pick.placeholder")
             rows.append(WizardRow(components: [
                 .select(customId: "preset.pick", placeholder: placeholder, options: Array(opts)),
             ]))
         }
         var buttons: [WizardComponent] = [
-            .button(customId: "preset.direct", label: "🆕 직접 설정", style: .primary, disabled: false),
-            .button(customId: "preset.delete", label: "🗑 삭제", style: .secondary, disabled: false),
+            .button(customId: "preset.direct", label: I18n.t("preset.direct"), style: .primary, disabled: false),
+            .button(customId: "preset.delete", label: I18n.t("preset.delete.button"), style: .secondary, disabled: false),
         ]
         if showBackButton() {
-            buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false))
+            buttons.append(.button(customId: "wizard.back", label: I18n.t("wizard.back"), style: .secondary, disabled: false))
         }
-        buttons.append(.button(customId: "cancel", label: "취소", style: .secondary, disabled: false))
+        buttons.append(.button(customId: "cancel", label: I18n.t("wizard.cancel"), style: .secondary, disabled: false))
         rows.append(WizardRow(components: buttons))
-        var base = presetDeleteMode ? "삭제할 프리셋을 선택하세요." : "프리셋을 선택하세요."
+        var base = presetDeleteMode ? I18n.t("preset.delete.active") : I18n.t("preset.step.pick")
         if let unavailable = presetUnavailable {
-            base += "\n이 프리셋의 백엔드(\(unavailable))를 지금은 쓸 수 없어요."
+            base += "\n" + I18n.t("preset.backend.unavailable", ["backend": unavailable])
         }
         return WizardView(title: title, description: base, rows: rows)
     }
@@ -782,9 +774,9 @@ public final class ChannelWizard: @unchecked Sendable {
             .button(customId: confirmId, label: confirmLabel, style: .primary, disabled: false),
         ]
         if showBack {
-            buttons.append(.button(customId: "wizard.back", label: "이전", style: .secondary, disabled: false))
+            buttons.append(.button(customId: "wizard.back", label: I18n.t("wizard.back"), style: .secondary, disabled: false))
         }
-        buttons.append(.button(customId: "cancel", label: "취소", style: .secondary, disabled: false))
+        buttons.append(.button(customId: "cancel", label: I18n.t("wizard.cancel"), style: .secondary, disabled: false))
         rows.append(WizardRow(components: buttons))
         return WizardView(title: title, description: description, rows: rows)
     }

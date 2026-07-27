@@ -126,6 +126,20 @@ struct ResumeWizardTests {
         #expect(step == .empty)
     }
 
+    @Test func renderFollowsActiveLocale() {
+        let prevLocale = I18n.getLocale()
+        defer { I18n.setLocale(prevLocale) }
+        let w = makeFlow()
+
+        I18n.setLocale(.ko)
+        #expect(w.render().title == "세션 시작")
+        #expect(w.render().description == "재개할 백엔드를 선택하고 \"다음\"을 누르세요.")
+
+        I18n.setLocale(.en)
+        #expect(w.render().title == "Start session")
+        #expect(w.render().description == "Pick the backend to resume and press \"Next\".")
+    }
+
     @Test func recognizesResumeCustomIds() {
         let resume = isResumeWizardCustomId("dir:resume")
         let backend = isResumeWizardCustomId("resume.backend")

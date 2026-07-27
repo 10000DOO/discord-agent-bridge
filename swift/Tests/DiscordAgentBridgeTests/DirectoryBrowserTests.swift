@@ -313,6 +313,22 @@ struct DirectoryBrowserTests {
         #expect(buttonIds.contains("dir:here"))
         #expect(buttonIds.contains("dir:create"))
     }
+
+    @Test func renderFollowsActiveLocale() throws {
+        let root = try makeTempTree()
+        defer { cleanup(root) }
+        let prevLocale = I18n.getLocale()
+        defer { I18n.setLocale(prevLocale) }
+        let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
+
+        I18n.setLocale(.ko)
+        #expect(b.render().title == "1/5단계 · 폴더")
+        #expect(b.render().description.contains("현재 위치"))
+
+        I18n.setLocale(.en)
+        #expect(b.render().title == "Step 1/5 · Folder")
+        #expect(b.render().description.contains("Current location"))
+    }
 }
 
 // MARK: - G-P1-06 browseRoots(fromFavorites:)

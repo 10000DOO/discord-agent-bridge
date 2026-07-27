@@ -153,13 +153,13 @@ public final class DirectoryBrowser: @unchecked Sendable {
     /// Folder-step UI (select + up/here/create/cancel + manual/[panel]). Pure data → DiscordBM.
     public func render() -> WizardView {
         let children = listChildren()
-        let title = "폴더 선택"
-        let description =
-            "세션 작업 폴더를 고르세요. 하위 폴더를 선택하거나 ⬆ 상위 · ✅ 이 폴더로 시작.\n\n현재: `\(current)`"
+        let title = I18n.t("wizard.step.folder")
+        // TS `directoryBrowser.ts:render()`: guide text + current-location label + path.
+        let description = I18n.t("dir.guide") + "\n\n" + I18n.t("dir.current") + ": `\(current)`"
 
         let options: [WizardSelectOption]
         if children.isEmpty {
-            options = [WizardSelectOption(label: "(하위 폴더 없음)", value: "__none__")]
+            options = [WizardSelectOption(label: I18n.t("dir.empty"), value: "__none__")]
         } else {
             options = children.map {
                 WizardSelectOption(label: Self.clip($0, maxLabelLength), value: $0)
@@ -168,7 +168,7 @@ public final class DirectoryBrowser: @unchecked Sendable {
         let selectRow = WizardRow(components: [
             .select(
                 customId: "dir:into",
-                placeholder: children.isEmpty ? "(하위 폴더 없음)" : "하위 폴더로 이동",
+                placeholder: children.isEmpty ? I18n.t("dir.empty") : I18n.t("dir.select"),
                 options: options
             ),
         ])
@@ -176,21 +176,21 @@ public final class DirectoryBrowser: @unchecked Sendable {
         let actionButtons: [WizardComponent] = [
             .button(
                 customId: "dir:up",
-                label: "⬆ 상위",
+                label: I18n.t("dir.up"),
                 style: .secondary,
                 disabled: !canGoUp()
             ),
-            .button(customId: "dir:here", label: "✅ 이 폴더로 시작", style: .success, disabled: false),
-            .button(customId: "dir:resume", label: "세션 재개", style: .primary, disabled: false),
-            .button(customId: "dir:create", label: "📁 폴더 만들기", style: .secondary, disabled: false),
-            .button(customId: "cancel", label: "취소", style: .secondary, disabled: false),
+            .button(customId: "dir:here", label: I18n.t("dir.here"), style: .success, disabled: false),
+            .button(customId: "dir:resume", label: I18n.t("dir.resume"), style: .primary, disabled: false),
+            .button(customId: "dir:create", label: I18n.t("dir.create"), style: .secondary, disabled: false),
+            .button(customId: "cancel", label: I18n.t("wizard.cancel"), style: .secondary, disabled: false),
         ]
         var pathButtons: [WizardComponent] = [
-            .button(customId: "dir:manual", label: "📝 경로 직접 입력", style: .secondary, disabled: false),
+            .button(customId: "dir:manual", label: I18n.t("dir.manual"), style: .secondary, disabled: false),
         ]
         if nativePanel {
             pathButtons.append(
-                .button(customId: "dir:panel", label: "🖥️ Mac에서 폴더 선택", style: .secondary, disabled: false)
+                .button(customId: "dir:panel", label: I18n.t("dir.panel"), style: .secondary, disabled: false)
             )
         }
         return WizardView(title: title, description: description, rows: [

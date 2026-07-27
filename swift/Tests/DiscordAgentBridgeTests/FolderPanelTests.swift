@@ -117,6 +117,15 @@ struct FolderPanelTests {
         }
     }
 
+    @Test func folderPanelPromptFollowsActiveLocale() {
+        let prevLocale = I18n.getLocale()
+        defer { I18n.setLocale(prevLocale) }
+        I18n.setLocale(.ko)
+        #expect(folderPanelPrompt == "Discord 세션 프로젝트 폴더 선택")
+        I18n.setLocale(.en)
+        #expect(folderPanelPrompt == "Choose the project folder for the Discord session")
+    }
+
     @Test func folderPanelBusyIsOneAtATime() async {
         let busy = FolderPanelBusy()
         #expect(await busy.tryBegin("c1") == true)
