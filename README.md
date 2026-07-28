@@ -90,6 +90,16 @@ brew services stop dab       # stop
 
 Logs: `$(brew --prefix)/var/log/dab.log` / `dab.error.log`.
 
+Update:
+
+```bash
+brew update
+brew upgrade 10000DOO/discord-agent-bridge/dab
+brew services restart dab   # only needed if running as a service — brew upgrade alone doesn't restart it
+```
+
+The in-Discord `/update` command (see Features → Auto-update below) does **not** work for a Homebrew install — it looks for a `swift/scripts/install.sh` checkout, which a Homebrew install doesn't have. Always use `brew upgrade` for this install method.
+
 > ⚠️ **Don't run two instances with the same bot token at the same time.** `dab` (foreground, `brew services`, or the manual/from-source install below) all read the same `DISCORD_BOT_TOKEN`. Starting a second instance with that token opens a second gateway connection to the same bot account — it won't crash, it'll just run alongside the first one and cause duplicate/conflicting replies. Pick exactly one install method per bot token.
 
 ### macOS (manual — from source)
@@ -126,6 +136,14 @@ dab service status    # or: ~/.dab/bin/dab service status
 dab service restart
 ```
 
+Update: from Discord, `/update` checks the release registry and rebuilds/restarts automatically (Features → Auto-update below). To do it manually instead:
+
+```bash
+cd discord-agent-bridge   # repo root
+git pull
+bash swift/scripts/install.sh   # rebuild + reload the LaunchAgent
+```
+
 Uninstall (keeps `~/.dab/env` and logs):
 
 ```bash
@@ -141,6 +159,8 @@ systemctl --user restart discord-agent-bridge
 systemctl --user status discord-agent-bridge
 ```
 
+Update: `git pull && bash swift/scripts/install-linux.sh` (or `/update` from Discord).
+
 Uninstall: `bash swift/scripts/uninstall-linux.sh`
 
 ### Windows (Task Scheduler / onlogon)
@@ -150,6 +170,8 @@ powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
 # edit %USERPROFILE%\.dab\env
 schtasks /Run /TN discord-agent-bridge
 ```
+
+Update: `git pull` then re-run `install-windows.ps1` (or `/update` from Discord).
 
 Uninstall: `install-windows.ps1 -Uninstall`
 
@@ -252,7 +274,7 @@ Env overrides: `DAB_RENDER=0|1`, `DAB_MERMAID_JS`, `DAB_CHROMIUM_CACHE`, `PUPPET
 
 ### Auto-update
 
-`/update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config.
+`/update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config. **Needs a full repo checkout** (the manual/from-source install above) — it does not work for a Homebrew install; use `brew upgrade` instead (see Homebrew install steps above).
 
 ---
 

@@ -90,6 +90,16 @@ brew services stop dab       # 중지
 
 로그: `$(brew --prefix)/var/log/dab.log` / `dab.error.log`
 
+업데이트:
+
+```bash
+brew update
+brew upgrade 10000DOO/discord-agent-bridge/dab
+brew services restart dab   # 서비스로 켜둔 경우에만 필요 — brew upgrade만으로는 재시작 안 됨
+```
+
+디스코드 안의 `/update` 명령(아래 Features → Auto-update 참고)은 Homebrew 설치에서는 **동작하지 않습니다** — `swift/scripts/install.sh`가 있는 저장소 체크아웃을 찾는 방식이라, Homebrew 설치엔 그게 없기 때문입니다. 이 설치 방식에서는 항상 `brew upgrade`를 쓰세요.
+
 > ⚠️ **같은 봇 토큰으로 두 개를 동시에 켜지 마세요.** 포그라운드 실행, `brew services`, 아래 수동(소스 빌드) 설치 전부 같은 `DISCORD_BOT_TOKEN`을 읽습니다. 같은 토큰으로 두 번째 인스턴스를 켜면 같은 봇 계정에 게이트웨이 연결이 하나 더 생깁니다 — 에러 없이 그냥 둘 다 떠 있으면서 응답이 중복되거나 꼬입니다. 봇 토큰 하나당 설치 방식은 하나만 쓰세요.
 
 ### macOS (수동 — 소스 빌드)
@@ -126,6 +136,14 @@ dab service status    # 또는: ~/.dab/bin/dab service status
 dab service restart
 ```
 
+업데이트: 디스코드에서 `/update`를 치면 릴리스 레지스트리를 확인해서 자동으로 다시 빌드하고 재시작합니다(아래 Features → Auto-update 참고). 수동으로 하려면:
+
+```bash
+cd discord-agent-bridge   # 저장소 루트
+git pull
+bash swift/scripts/install.sh   # 다시 빌드 + LaunchAgent 재로드
+```
+
 제거(`~/.dab/env`·로그는 유지):
 
 ```bash
@@ -141,6 +159,8 @@ systemctl --user restart discord-agent-bridge
 systemctl --user status discord-agent-bridge
 ```
 
+업데이트: `git pull && bash swift/scripts/install-linux.sh` (또는 디스코드에서 `/update`).
+
 제거: `bash swift/scripts/uninstall-linux.sh`
 
 ### Windows (작업 스케줄러 / 로그온 시)
@@ -150,6 +170,8 @@ powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
 # %USERPROFILE%\.dab\env 편집
 schtasks /Run /TN discord-agent-bridge
 ```
+
+업데이트: `git pull` 후 `install-windows.ps1` 다시 실행 (또는 디스코드에서 `/update`).
 
 제거: `install-windows.ps1 -Uninstall`
 
@@ -252,7 +274,7 @@ GFM 표와 fenced `mermaid` 블록을 PNG 첨부로 올릴 수 있습니다. 조
 
 ### 자동 업데이트
 
-`/update`가 릴리스 레지스트리를 확인하고, 승인 시 플랫폼 설치 경로 실행 후 서비스를 재시작합니다(macOS: `install.sh` + launchctl). config의 `autoUpdate.enabled`로 끌 수 있습니다.
+`/update`가 릴리스 레지스트리를 확인하고, 승인 시 플랫폼 설치 경로 실행 후 서비스를 재시작합니다(macOS: `install.sh` + launchctl). config의 `autoUpdate.enabled`로 끌 수 있습니다. **저장소 체크아웃이 있어야 동작합니다**(위 수동/소스 빌드 설치) — Homebrew 설치에서는 동작하지 않으니 `brew upgrade`를 쓰세요(위 Homebrew 설치 절 참고).
 
 ---
 
