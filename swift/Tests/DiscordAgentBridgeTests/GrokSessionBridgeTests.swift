@@ -12,14 +12,22 @@ private actor GateableGrokServer {
     private let fixedChunks: [String]?
     private let backendIdCapture: LockedBox<[String]>?   // records "new" / "load:<sessionId>"
     private let promptResultMeta: JSONValue?             // C7: session/prompt response `_meta`
+    private let cwdCapture: LockedBox<[String]>?          // WO-1: records the cwd sent on session/new + session/load
+    // WO-2 regression: push `activityCount` non-terminal `agent_thought_chunk` updates,
+    // `activityIntervalNs` apart, before completing the turn — simulates a slow-but-alive turn.
+    private let activityIntervalNs: UInt64?
+    private let activityCount: Int
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, fixedChunks: [String]? = nil, backendIdCapture: LockedBox<[String]>? = nil, promptResultMeta: JSONValue? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, fixedChunks: [String]? = nil, backendIdCapture: LockedBox<[String]>? = nil, promptResultMeta: JSONValue? = nil, cwdCapture: LockedBox<[String]>? = nil, activityIntervalNs: UInt64? = nil, activityCount: Int = 0) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
         self.fixedChunks = fixedChunks
         self.backendIdCapture = backendIdCapture
         self.promptResultMeta = promptResultMeta
+        self.cwdCapture = cwdCapture
+        self.activityIntervalNs = activityIntervalNs
+        self.activityCount = activityCount
     }
 
     func run() async {
@@ -42,14 +50,24 @@ private actor GateableGrokServer {
             }
         case "session/new":
             backendIdCapture?.withLock { $0.append("new") }
+            if let c = msg["params"]?["cwd"]?.stringValue { cwdCapture?.withLock { $0.append(c) } }
             await writeResult(id, .object(["sessionId": .string("s1")]))
         case "session/load":
             let sid = msg["params"]?["sessionId"]?.stringValue ?? "?"
             backendIdCapture?.withLock { $0.append("load:\(sid)") }
+            if let c = msg["params"]?["cwd"]?.stringValue { cwdCapture?.withLock { $0.append(c) } }
             await writeResult(id, .object([:]))
         case "session/prompt":
             let text = msg["params"]?["prompt"]?.arrayValue?.first?["text"]?.stringValue ?? ""
-            Task { await self.completeTurn(id: id, text: text) }   // non-blocking
+            Task {   // non-blocking
+                if let activityIntervalNs, activityCount > 0 {
+                    for _ in 0..<activityCount {
+                        try? await Task.sleep(nanoseconds: activityIntervalNs)
+                        await self.pushThought("tick")
+                    }
+                }
+                await self.completeTurn(id: id, text: text)
+            }
         default:
             await writeError(id, "method not found: \(method)")
         }
@@ -72,6 +90,14 @@ private actor GateableGrokServer {
     private func pushUpdate(_ text: String) async {
         await write(["method": .string("session/update"), "params": .object(["update": .object([
             "sessionUpdate": .string("agent_message_chunk"),
+            "content": .object(["type": .string("text"), "text": .string(text)]),
+        ])])])
+    }
+    /// WO-2 activity marker: `agent_thought_chunk` maps to `.thinking`, not the reply buffer, so it
+    /// exercises the timeout-reset path without perturbing the expected `ok:<text>` result.
+    private func pushThought(_ text: String) async {
+        await write(["method": .string("session/update"), "params": .object(["update": .object([
+            "sessionUpdate": .string("agent_thought_chunk"),
             "content": .object(["type": .string("text"), "text": .string(text)]),
         ])])])
     }
@@ -99,10 +125,13 @@ private func makeGrokBridge(
     store: SessionStore? = nil,
     configStore: ConfigStore? = nil,
     backendIdCapture: LockedBox<[String]>? = nil,
+    cwdCapture: LockedBox<[String]>? = nil,
     attachGateway: any GrokAttachGatewayProviding = NoopAttachGateway(),
     mcpServersSpy: LockedBox<[[AcpMcpServerConfig]]>? = nil,
     promptResultMeta: JSONValue? = nil,
-    configSource: GrokConfigSource? = nil
+    configSource: GrokConfigSource? = nil,
+    activityIntervalNs: UInt64? = nil,
+    activityCount: Int = 0
 ) -> (GrokSessionBridge, MadeClients<GrokAcpClient>) {
     let made = MadeClients<GrokAcpClient>()
     let bridge = GrokSessionBridge(makeClient: { cfg, onPermission, mcpServers in
@@ -110,7 +139,7 @@ private func makeGrokBridge(
         onPermissionSpy?.withLock { $0.append(onPermission) }
         mcpServersSpy?.withLock { $0.append(mcpServers) }
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture, promptResultMeta: promptResultMeta)
+        let server = GateableGrokServer(transport: pair.sidecar, gate: gate, initFails: initFails, fixedChunks: fixedChunks, backendIdCapture: backendIdCapture, promptResultMeta: promptResultMeta, cwdCapture: cwdCapture, activityIntervalNs: activityIntervalNs, activityCount: activityCount)
         Task { await server.run() }
         // Control timeout only; turn budget is bridge turnTimeoutOverrideNs / DAB_TURN_TIMEOUT_SEC.
         return made.record(GrokAcpClient(transport: pair.host, requestTimeoutMs: reqTimeoutMs, onPermission: onPermission))
@@ -138,6 +167,19 @@ struct GrokSessionBridgeTests {
         let (bridge, _) = makeGrokBridge()
         let reply = try await bridge.runTurn(channelId: "c", text: "hi")
         #expect(reply.text == "ok:hi")
+    }
+
+    // WO-1: a channel-bound cwd must reach session/new instead of the global cwd fallback.
+    @Test func persistedCwdReachesSessionNew() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .grok, cwd: "/persisted/project", guildId: "g", updatedAt: "t"
+        ))
+        let cwdCapture = LockedBox<[String]>([])
+        let (bridge, _) = makeGrokBridge(store: store, cwdCapture: cwdCapture)
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi")
+        #expect(reply.text == "ok:hi")
+        #expect(cwdCapture.withLock { $0 } == ["/persisted/project"])
     }
 
     @Test func multiChunkSyncFold() async throws {
@@ -210,6 +252,23 @@ struct GrokSessionBridgeTests {
         } catch let e as AcpClientError {
             #expect(e.message.contains("timed out"))
         }
+    }
+
+    // WO-2 regression: activity (any notification — here `agent_thought_chunk`) pushes the
+    // hang-timeout window back out on every event, so a turn whose total wall-clock time is many
+    // multiples of a short override still completes normally as long as SOME notification keeps
+    // arriving before each window elapses. Complements `turnTimeoutThrows` above (zero activity →
+    // times out exactly).
+    @Test func activityResetsTimeoutWindow() async throws {
+        // Wide margin between the per-tick interval and the timeout window (20ms vs. 400ms):
+        // short fixed sleeps flake under a CPU-saturated parallel `swift test` run — a single
+        // delayed tick must not eat the whole window.
+        let (bridge, _) = makeGrokBridge(turnTimeoutOverrideNs: 400_000_000, activityIntervalNs: 20_000_000, activityCount: 30)
+        let start = Date()
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi")
+        let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(reply.text == "ok:hi")
+        #expect(elapsedNs > 500_000_000)   // outlived the 400ms window
     }
 
     // M7 (security regression): no bound permMode is a safe default (approval required), not

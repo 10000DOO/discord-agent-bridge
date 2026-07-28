@@ -122,6 +122,7 @@ public actor CodexSessionBridge {
     private struct Channel {
         let client: CodexAppServerClient
         let threadId: String
+        let cwd: String
     }
 
     /// channelId (snowflake string) → codex client + thread
@@ -185,8 +186,20 @@ public actor CodexSessionBridge {
         // C2: config.codexTimeoutMs (ms) wins over the env-var/default fallback (TS
         // appSession.ts:60,156 — `ctx.config.codexTimeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS`).
         if let codexTimeoutMs, codexTimeoutMs > 0 { return UInt64(codexTimeoutMs) * 1_000_000 }
-        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 1_800
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 10_800
         return UInt64(max(5, sec)) * 1_000_000_000
+    }
+
+    /// (Re)arm this turn's hang-timeout watchdog — see DabSessionBridge.armTimeoutTask (WO-2).
+    /// Called once when the turn starts (`executeTurn`) and again on every notification
+    /// (`onNotification`, any method) so a live turn's fixed window keeps getting pushed out.
+    private func armTimeoutTask(channelId: String) -> Task<Void, Never> {
+        let timeoutNs = turnTimeoutNs
+        return Task {
+            try? await Task.sleep(nanoseconds: timeoutNs)
+            guard !Task.isCancelled else { return }
+            self.finishTurn(channelId: channelId, error: nil, timeoutFallback: true)
+        }
     }
 
     /// Send user text for a Discord channel; wait for accumulated text + completion (or timeout).
@@ -231,20 +244,14 @@ public actor CodexSessionBridge {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
         // Multimodal: images → `localImage` input items; everything else → text hint.
         let inputItems = buildCodexTurnItems(text: text, files: files)
-        let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
-            let timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: timeoutNs)
-                guard !Task.isCancelled else { return }
-                self.finishTurn(channelId: channelId, error: nil, timeoutFallback: true)
-            }
             turns[channelId] = TurnBox(
                 text: "",
                 usage: nil,
                 contextModel: config?.model,
                 done: false,
                 continuation: cont,
-                timeoutTask: timeoutTask
+                timeoutTask: armTimeoutTask(channelId: channelId)
             )
 
             // W11-b1: model/effort from the bound session config. permMode → approvalPolicy/sandbox
@@ -321,6 +328,7 @@ public actor CodexSessionBridge {
         }
         let epoch = stopEpoch[channelId] ?? 0
         let persisted = await store.binding(channelId: channelId)
+        let cwdValue = persisted?.cwd ?? cwd
 
         // H8: re-resolve permissionMode from the CURRENT config.profiles on every session start
         // instead of trusting a possibly-stale persisted value (mirrors DabSessionBridge's
@@ -385,7 +393,7 @@ public actor CodexSessionBridge {
         }
 
         var startParams: [String: JSONValue] = [
-            "cwd": .string(cwd),
+            "cwd": .string(cwdValue),
             "approvalPolicy": .string(policy.approvalPolicy),
             "sandbox": .string(policy.sandbox),
         ]
@@ -448,10 +456,10 @@ public actor CodexSessionBridge {
                 chains[channelId] = next
             }
         }
-        let channel = Channel(client: client, threadId: threadId)
+        let channel = Channel(client: client, threadId: threadId, cwd: cwdValue)
         channels[channelId] = channel
         // F7: capture the thread id (= backend session) + live context.
-        await persistSession(store: store, backend: .codex, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: threadId, lifecycleGeneration: persisted?.lifecycleGeneration, contextGenerationStartedAt: startedFresh ? iso8601Now() : nil)
+        await persistSession(store: store, backend: .codex, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: config?.model, effort: config?.effort, permMode: config?.permMode, backendSessionId: threadId, lifecycleGeneration: persisted?.lifecycleGeneration, contextGenerationStartedAt: startedFresh ? iso8601Now() : nil)
         // stop during persist → drop the just-published channel.
         if (stopEpoch[channelId] ?? 0) != epoch {
             channels[channelId] = nil
@@ -464,6 +472,10 @@ public actor CodexSessionBridge {
 
     private func onNotification(channelId: String, method: String, params: JSONValue?) {
         guard var box = turns[channelId], !box.done else { return }
+        // WO-2: any notification (any method) pushes the hang-timeout window back out.
+        box.timeoutTask?.cancel()
+        box.timeoutTask = armTimeoutTask(channelId: channelId)
+        turns[channelId] = box
 
         // C2: thread/tokenUsage/updated → keep the latest context_usage snapshot; makeTurnResult
         // surfaces it once via TurnResult.contextUsage at turn end (TS appSession.ts:211-219,
@@ -581,7 +593,7 @@ public actor CodexSessionBridge {
 
         let host = fileAttachHost
         let result = await attachFileConfined(
-            workspaceRoot: cwd,
+            workspaceRoot: channels[channelId]?.cwd ?? cwd,
             sendFile: { abs, name in try await host.attach(channelId: channelId, path: abs, name: name) },
             requestedPath: requestedPath,
             filename: filename

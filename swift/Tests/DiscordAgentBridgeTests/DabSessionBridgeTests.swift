@@ -23,10 +23,15 @@ private actor GateableSidecar {
     private var emitToolsAndSubagentOnce: Bool          // W11-g slice4: one turn of tool/subagent events
     private let skipResultEvent: Bool                   // regression: turn_complete arrives with no .result at all
     private let skipTurnCompleteEvent: Bool             // WO-4 regression: .result arrives but turn_complete never does
+    // WO-2 regression: emit `activityCount` non-terminal `.progress` events, `activityIntervalNs`
+    // apart, before completing the turn — simulates a slow-but-alive turn so the test can assert
+    // the hang-timeout window is pushed out by activity instead of firing on the fixed countdown.
+    private let activityIntervalNs: UInt64?
+    private let activityCount: Int
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil, skipResultEvent: Bool = false, skipTurnCompleteEvent: Bool = false) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil, skipResultEvent: Bool = false, skipTurnCompleteEvent: Bool = false, activityIntervalNs: UInt64? = nil, activityCount: Int = 0) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -44,6 +49,8 @@ private actor GateableSidecar {
         self.closeHostAfterTerminalResult = closeHostAfterTerminalResult
         self.skipResultEvent = skipResultEvent
         self.skipTurnCompleteEvent = skipTurnCompleteEvent
+        self.activityIntervalNs = activityIntervalNs
+        self.activityCount = activityCount
     }
 
     func run() async {
@@ -64,6 +71,7 @@ private actor GateableSidecar {
             if let m = env.params?["model"]?.stringValue { capture?.withLock { $0["model"] = m } }
             if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
             if let p = env.params?["permMode"]?.stringValue { capture?.withLock { $0["permMode"] = p } }
+            if let c = env.params?["cwd"]?.stringValue { capture?.withLock { $0["cwd"] = c } }
             // C9: session.start/resume config.{allowedTools,autoAllowClaudeTools,permissionTimeoutSec}
             if let cfg = env.params?["config"]?.objectValue {
                 if let allowed = cfg["allowedTools"]?.arrayValue {
@@ -151,6 +159,12 @@ private actor GateableSidecar {
         if let closeHostAfterSendAck {
             await closeHostAfterSendAck.close()
             return
+        }
+        if let activityIntervalNs, activityCount > 0 {
+            for i in 0..<activityCount {
+                try? await Task.sleep(nanoseconds: activityIntervalNs)
+                await emit(session: session, event: .progress(label: "tick-\(i)", detail: nil))
+            }
         }
         if emitsPermission {
             await writeEnv(res(id: id, method: "session.send", result: .object(["ok": .bool(true)]), session: session))
@@ -260,7 +274,9 @@ private func makeDabBridge(
     closeAfterTerminalResult: Bool = false,
     resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil,
     skipResultEvent: Bool = false,
-    skipTurnCompleteEvent: Bool = false
+    skipTurnCompleteEvent: Bool = false,
+    activityIntervalNs: UInt64? = nil,
+    activityCount: Int = 0
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
     let made = MadeClients<ClaudeSidecarClient>()
     let bridge = DabSessionBridge(
@@ -276,7 +292,9 @@ private func makeDabBridge(
                 emitToolsAndSubagent: emitToolsAndSubagent,
                 closeHostAfterTerminalResult: closeAfterTerminalResult ? pair.host : nil,
                 skipResultEvent: skipResultEvent,
-                skipTurnCompleteEvent: skipTurnCompleteEvent
+                skipTurnCompleteEvent: skipTurnCompleteEvent,
+                activityIntervalNs: activityIntervalNs,
+                activityCount: activityCount
             )
             Task { await server.run() }
             return made.record(ClaudeSidecarClient(transport: pair.host, requestTimeoutMs: 5_000))
@@ -474,6 +492,23 @@ struct DabSessionBridgeTests {
         } catch let e as SidecarRpcError {
             #expect(e.message == "boom")
         }
+    }
+
+    // WO-2 regression: activity (of any kind — here `.progress`) pushes the hang-timeout window
+    // back out on every event, so a turn whose total wall-clock time is many multiples of a short
+    // override still completes normally as long as SOME event keeps arriving before each window
+    // elapses. Complements `turnTimeoutThrows` below (zero activity → times out exactly).
+    @Test func activityResetsTimeoutWindow() async throws {
+        // Wide margin between the per-tick interval and the timeout window (20ms vs. 400ms):
+        // short fixed sleeps flake under a CPU-saturated parallel `swift test` run (see
+        // `waitUntil` doc comment above) — a single delayed tick must not eat the whole window.
+        let (bridge, _) = makeDabBridge(timeoutNs: 400_000_000, activityIntervalNs: 20_000_000, activityCount: 30)
+        let start = Date()
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(reply.text == "ok:hi")
+        #expect(!reply.text.contains("(timeout)"))
+        #expect(elapsedNs > 500_000_000)   // outlived the 400ms window
     }
 
     @Test func turnTimeoutThrows() async throws {
@@ -723,6 +758,21 @@ struct DabSessionBridgeTests {
         let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
         #expect(reply.text == "ok:hi")
         #expect(capture.withLock { $0["permMode"] } == "plan")
+    }
+
+    // WO-1: a channel-bound cwd (set via the project-folder wizard) must be used to start the
+    // session instead of the global `cwd` computed property (DAB_CWD/home fallback) — same
+    // persisted-value-wins pattern already covered above for model/effort/permMode.
+    @Test func persistedCwdOverridesGlobalDefault() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .claude, cwd: "/persisted/project", guildId: "g", updatedAt: "t"
+        ))
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeDabBridge(capture: capture, store: store)
+        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
+        #expect(reply.text == "ok:hi")
+        #expect(capture.withLock { $0["cwd"] } == "/persisted/project")
     }
 
     // T1 (core): backend id captured on notify → persisted → a fresh bridge sharing the store RESUMES

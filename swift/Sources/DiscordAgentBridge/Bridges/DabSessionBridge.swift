@@ -101,8 +101,22 @@ public actor DabSessionBridge {
 
     private var turnTimeoutNs: UInt64 {
         if let turnTimeoutOverrideNs { return turnTimeoutOverrideNs }
-        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 10_800
         return UInt64(max(5, sec)) * 1_000_000_000
+    }
+
+    /// (Re)arm this turn's hang-timeout watchdog: fires `finishTurn(timeoutFallback:)` after
+    /// `turnTimeoutNs` unless cancelled first. Called once when the turn starts (`executeTurn`)
+    /// and again on every received event (`onEvent`, any kind) so a live turn's fixed window keeps
+    /// getting pushed out by activity — only a turn with zero events for the full window ever
+    /// hits the fallback (the "completely hung session" safety net stays intact).
+    private func armTimeoutTask(handle: String) -> Task<Void, Never> {
+        let timeoutNs = turnTimeoutNs
+        return Task {
+            try? await Task.sleep(nanoseconds: timeoutNs)
+            guard !Task.isCancelled else { return }
+            self.finishTurn(handle: handle, error: nil, timeoutFallback: true)
+        }
     }
 
     func ensureClient() async throws -> ClaudeSidecarClient {
@@ -263,19 +277,13 @@ public actor DabSessionBridge {
                 return o
             }
 
-        let timeoutNs = turnTimeoutNs
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
-            let timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: timeoutNs)
-                guard !Task.isCancelled else { return }
-                self.finishTurn(handle: handle, error: nil, timeoutFallback: true)
-            }
             turns[handle] = TurnBox(
                 text: "",
                 usage: nil,
                 done: false,
                 continuation: cont,
-                timeoutTask: timeoutTask
+                timeoutTask: armTimeoutTask(handle: handle)
             )
 
             Task {
@@ -311,7 +319,7 @@ public actor DabSessionBridge {
         var model = persisted?.model ?? config?.model
         let effort = persisted?.effort ?? config?.effort
         var perm = persisted?.permMode ?? config?.permMode ?? permMode
-        let cwdValue = cwd
+        let cwdValue = persisted?.cwd ?? cwd
 
         // W16-f: prepareSession for custom — merge process env + allow-listed dotfile keys;
         // prefer ANTHROPIC_MODEL over wizard/ctx model (TS prepareCustomSession).
@@ -477,6 +485,10 @@ public actor DabSessionBridge {
 
     private func onEvent(handle: String, event: AgentEvent) {
         guard var box = turns[handle], !box.done else { return }
+        // WO-2: any activity (any event kind) pushes the hang-timeout window back out.
+        box.timeoutTask?.cancel()
+        box.timeoutTask = armTimeoutTask(handle: handle)
+        turns[handle] = box
         // H2: confirm whether/when .result and .turn_complete actually arrive per turn (see
         // docs/claude-turn-timeout-delay.md WO-3). warn level — info is lost to stdout buffering
         // under launchd (docs/log-buffering-lost-info-logs.md).

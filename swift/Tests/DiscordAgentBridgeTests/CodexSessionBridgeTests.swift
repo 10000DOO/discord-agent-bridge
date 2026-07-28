@@ -15,8 +15,12 @@ private actor GateableCodexServer {
     private let capture: LockedBox<[String: String]>?   // records thread/start + turn/start params
     private let backendIdCapture: LockedBox<[String]>?  // records "start" / "resume:<threadId>"
     private let responseCapture: LockedBox<[JSONValue]>?  // C3: client's responses (id+result/error, no method)
+    // WO-2 regression: push `activityCount` non-terminal `turn/started` notifications,
+    // `activityIntervalNs` apart, before completing the turn — simulates a slow-but-alive turn.
+    private let activityIntervalNs: UInt64?
+    private let activityCount: Int
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil, backendIdCapture: LockedBox<[String]>? = nil, responseCapture: LockedBox<[JSONValue]>? = nil) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, initFails: Bool = false, completion: Completion = .delta, capture: LockedBox<[String: String]>? = nil, backendIdCapture: LockedBox<[String]>? = nil, responseCapture: LockedBox<[JSONValue]>? = nil, activityIntervalNs: UInt64? = nil, activityCount: Int = 0) {
         self.transport = transport
         self.gate = gate
         self.initFails = initFails
@@ -24,6 +28,8 @@ private actor GateableCodexServer {
         self.capture = capture
         self.backendIdCapture = backendIdCapture
         self.responseCapture = responseCapture
+        self.activityIntervalNs = activityIntervalNs
+        self.activityCount = activityCount
     }
 
     func run() async {
@@ -53,6 +59,7 @@ private actor GateableCodexServer {
             }
         case "thread/start":
             if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["threadModel"] = m } }
+            if let c = msg["params"]?["cwd"]?.stringValue { capture?.withLock { $0["cwd"] = c } }
             if let a = msg["params"]?["approvalPolicy"]?.stringValue { capture?.withLock { $0["approvalPolicy"] = a } }
             if let s = msg["params"]?["sandbox"]?.stringValue { capture?.withLock { $0["sandbox"] = s } }
             if let names = msg["params"]?["dynamicTools"]?.arrayValue?.compactMap({ $0["name"]?.stringValue }) {
@@ -69,7 +76,15 @@ private actor GateableCodexServer {
             if let e = msg["params"]?["effort"]?.stringValue { capture?.withLock { $0["turnEffort"] = e } }
             if let m = msg["params"]?["model"]?.stringValue { capture?.withLock { $0["turnModel"] = m } }
             await writeResult(id, .object(["turn": .object(["id": .string("u1")])]))
-            Task { await self.completeTurn(text: text) }   // non-blocking: read loop keeps counting
+            Task {   // non-blocking: read loop keeps counting
+                if let activityIntervalNs, activityCount > 0 {
+                    for _ in 0..<activityCount {
+                        try? await Task.sleep(nanoseconds: activityIntervalNs)
+                        await self.pushNotification("turn/started", .object([:]))
+                    }
+                }
+                await self.completeTurn(text: text)
+            }
         case "turn/interrupt":
             if let tid = msg["params"]?["threadId"]?.stringValue { capture?.withLock { $0["interruptThread"] = tid } }
             if let uid = msg["params"]?["turnId"]?.stringValue { capture?.withLock { $0["interruptTurn"] = uid } }
@@ -155,13 +170,15 @@ private func makeCodexBridge(
     responseCapture: LockedBox<[JSONValue]>? = nil,
     fileAttachHost: FileAttachHost = FileAttachHost(),
     documentShareHost: DocumentShareHost = DocumentShareHost(),
-    serverBox: LockedBox<GateableCodexServer?>? = nil
+    serverBox: LockedBox<GateableCodexServer?>? = nil,
+    activityIntervalNs: UInt64? = nil,
+    activityCount: Int = 0
 ) -> (CodexSessionBridge, MadeClients<CodexAppServerClient>) {
     let made = MadeClients<CodexAppServerClient>()
     let bridge = CodexSessionBridge(makeClient: { onApproval in
         onApprovalSpy?.withLock { $0.append(onApproval) }
         let pair = InMemorySidecarTransport.makePair()
-        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture, backendIdCapture: backendIdCapture, responseCapture: responseCapture)
+        let server = GateableCodexServer(transport: pair.sidecar, gate: gate, initFails: initFails, completion: completion, capture: capture, backendIdCapture: backendIdCapture, responseCapture: responseCapture, activityIntervalNs: activityIntervalNs, activityCount: activityCount)
         serverBox?.withLock { $0 = server }
         Task { await server.run() }
         return made.record(CodexAppServerClient(transport: pair.host, requestTimeoutMs: 5_000, onApproval: onApproval))
@@ -243,6 +260,22 @@ struct CodexSessionBridgeTests {
         await #expect(throws: (any Error).self) { _ = try await t.value }
     }
 
+    // WO-2 regression: activity (any notification — here `turn/started`) pushes the hang-timeout
+    // window back out on every event, so a turn whose total wall-clock time is many multiples of a
+    // short override still completes normally as long as SOME notification keeps arriving before
+    // each window elapses. Complements `turnTimeoutThrows` above (zero activity → times out exactly).
+    @Test func activityResetsTimeoutWindow() async throws {
+        // Wide margin between the per-tick interval and the timeout window (20ms vs. 400ms):
+        // short fixed sleeps flake under a CPU-saturated parallel `swift test` run — a single
+        // delayed tick must not eat the whole window.
+        let (bridge, _) = makeCodexBridge(timeoutNs: 400_000_000, activityIntervalNs: 20_000_000, activityCount: 30)
+        let start = Date()
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi")
+        let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(reply.text == "ok:hi")
+        #expect(elapsedNs > 500_000_000)   // outlived the 400ms window
+    }
+
     // W11-c: bypass permMode → auto policy (never/danger) + NO approval handler.
     @Test func autoPolicyInstallsNoApprovalHandler() async throws {
         let capture = LockedBox<[String: String]>([:])
@@ -280,6 +313,19 @@ struct CodexSessionBridgeTests {
         #expect(await gate.resolve(reqKey: prompts.withLock { $0[0].reqKey }, action: .allow, byUserId: "owner-1") == true)
         _ = await t.value
         #expect(decision.withLock { $0 } == .accept)
+    }
+
+    // WO-1: a channel-bound cwd must reach thread/start instead of the global cwd fallback.
+    @Test func persistedCwdReachesThreadStartParams() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "c", PersistedSession(
+            backend: .codex, cwd: "/persisted/project", guildId: "g", updatedAt: "t"
+        ))
+        let capture = LockedBox<[String: String]>([:])
+        let (bridge, _) = makeCodexBridge(capture: capture, store: store)
+        let reply = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .codex))
+        #expect(reply.text == "ok:hi")
+        #expect(capture.withLock { $0["cwd"] } == "/persisted/project")
     }
 
     // T2 (Codex): first turn persists threadId; a fresh bridge sharing the store thread/resume-s it.

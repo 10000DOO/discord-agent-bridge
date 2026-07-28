@@ -102,7 +102,7 @@ public actor GrokSessionBridge {
 
     private var turnTimeoutNs: UInt64 {
         if let turnTimeoutOverrideNs { return turnTimeoutOverrideNs }
-        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 120
+        let sec = Int(ProcessInfo.processInfo.environment["DAB_TURN_TIMEOUT_SEC"] ?? "") ?? 10_800
         return UInt64(max(5, sec)) * 1_000_000_000
     }
 
@@ -155,7 +155,31 @@ public actor GrokSessionBridge {
         let buf = LockedBox("")
         let statsBox = LockedBox(TurnToolStatsAggregator())
         let idSeq = LockedBox(0)
+
+        // WO-2: hang-timeout watchdog, rearmed on every notification (any kind) instead of a fixed
+        // countdown from turn start. `scheduleTimeout()` cancels any pending timer and starts a
+        // fresh one of the same length; firing just closes the client, which unblocks the awaited
+        // `sessionPrompt` below with an error — no separate racing task needed (unlike the old
+        // `withThrowingTaskGroup` race against a one-shot sleep).
+        let timeoutNs = turnTimeoutNs
+        let timeoutSec = Int(timeoutNs / 1_000_000_000)
+        let timedOut = LockedBox(false)
+        let client = channel.client
+        let timeoutTaskBox = LockedBox<Task<Void, Never>?>(nil)
+        let scheduleTimeout: @Sendable () -> Void = {
+            let next = Task {
+                try? await Task.sleep(nanoseconds: timeoutNs)
+                guard !Task.isCancelled else { return }
+                timedOut.withLock { $0 = true }
+                await client.close()
+            }
+            timeoutTaskBox.withLock { $0?.cancel(); $0 = next }
+        }
+        defer { timeoutTaskBox.withLock { $0?.cancel() } }
+        scheduleTimeout()
+
         let unsub = channel.client.onNotification { method, params in
+            scheduleTimeout()
             if case .appendText(let delta) = grokUpdateStep(method: method, params: params) {
                 buf.withLock { $0 += delta }
                 // W11-g residual: live stream text.
@@ -197,46 +221,19 @@ public actor GrokSessionBridge {
         }
         defer { unsub() }
 
-        // Bridge owns the turn budget: race sessionPrompt (no client timer) vs sleep; on expiry
-        // close the child so the prompt unblocks (TS interrupt = dropClient).
-        let timeoutNs = turnTimeoutNs
-        let client = channel.client
-        let timeoutSec = Int(timeoutNs / 1_000_000_000)
-        let timedOut = LockedBox(false)
+        // Bridge owns the turn budget (`scheduleTimeout` above). A timeout closes the client,
+        // which unblocks this await with a "client was closed" error — translate that into the
+        // same timeout error message the old racing implementation threw.
         let promptResult: JSONValue
         do {
-            promptResult = try await withThrowingTaskGroup(of: JSONValue.self) { group in
-                group.addTask {
-                    try await client.sessionPrompt(blocks: promptBlocks)
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: timeoutNs)
-                    try Task.checkCancellation()
-                    timedOut.withLock { $0 = true }
-                    await client.close()
-                    throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
-                }
-                defer { group.cancelAll() }
-                while let outcome = await group.nextResult() {
-                    switch outcome {
-                    case .success(let value):
-                        return value
-                    case .failure(let error):
-                        if error is CancellationError { continue }
-                        if timedOut.withLock({ $0 }) {
-                            throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
-                        }
-                        throw error
-                    }
-                }
-                throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
-            }
+            promptResult = try await client.sessionPrompt(blocks: promptBlocks)
         } catch {
             if timedOut.withLock({ $0 }) {
                 // Drop closed client so the next turn respawns cleanly.
                 if let held = channels[channelId], held.client === client {
                     channels[channelId] = nil
                 }
+                throw AcpClientError("grok turn timed out after \(timeoutSec)s.")
             }
             throw error
         }
@@ -285,6 +282,7 @@ public actor GrokSessionBridge {
         // ponytail: model/effort/bypass are baked at spawn from the FIRST turn's config (TS parity —
         // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
         let persisted = await store.binding(channelId: channelId)
+        let cwdValue = persisted?.cwd ?? cwd
         var startedFresh = persisted?.backendSessionId == nil
 
         // H8: a profile name persisted on the binding is the source of truth for permissionMode —
@@ -342,7 +340,7 @@ public actor GrokSessionBridge {
         }
         // C5: fresh attach_file/share_document MCP registration for this (re)spawn only —
         // the early-return-if-live path above never rebuilds it (TS ensureClient parity).
-        let mcpServers = try await buildMcpServers(channelId: channelId)
+        let mcpServers = try await buildMcpServers(channelId: channelId, cwd: cwdValue)
         let client = try makeClient(effectiveConfig, onPermission, mcpServers)
 
         do {
@@ -350,16 +348,16 @@ public actor GrokSessionBridge {
             // W11-f2: load the stored session if any; on failure start a fresh one (F5).
             if let resumeId = persisted?.backendSessionId {
                 do {
-                    try await client.sessionLoad(sessionId: resumeId, cwd: cwd)
+                    try await client.sessionLoad(sessionId: resumeId, cwd: cwdValue)
                     log.info("session/load channel=\(channelId) sid=\(resumeId)")
                 } catch {
                     fallbackNotice[channelId] = sessionFallbackNotice
-                    _ = try await client.sessionNew(cwd: cwd)
+                    _ = try await client.sessionNew(cwd: cwdValue)
                     startedFresh = true
                     log.warn("load failed (\(error)) → session/new channel=\(channelId)")
                 }
             } else {
-                _ = try await client.sessionNew(cwd: cwd)
+                _ = try await client.sessionNew(cwd: cwdValue)
             }
         } catch {
             // Init failed: close the spawned child so it does not leak as an orphan.
@@ -375,7 +373,7 @@ public actor GrokSessionBridge {
         let channel = Channel(client: client)
         channels[channelId] = channel
         // F7: capture the grok session id + live context.
-        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwd, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId, lifecycleGeneration: persisted?.lifecycleGeneration, contextGenerationStartedAt: startedFresh ? iso8601Now() : nil)
+        await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId, lifecycleGeneration: persisted?.lifecycleGeneration, contextGenerationStartedAt: startedFresh ? iso8601Now() : nil)
         if (stopEpoch[channelId] ?? 0) != epoch {
             channels[channelId] = nil
             await client.close()
@@ -391,7 +389,7 @@ public actor GrokSessionBridge {
     /// MCP server config Grok should be told to launch (mirrors TS acpSession.ts buildMcpServers
     /// 1:1). The subprocess is `dab` itself, re-invoked with the hidden `attach-mcp` subcommand
     /// (DabMain dispatches it before the bot-boot path) — no second compiled binary, no Node.
-    private func buildMcpServers(channelId: String) async throws -> [AcpMcpServerConfig] {
+    private func buildMcpServers(channelId: String, cwd: String) async throws -> [AcpMcpServerConfig] {
         try await attachGateway.whenReady()
         // Fresh token per spawn so a re-init after interrupt still has a live registration; the
         // stale one from the previous spawn (if any) is dropped first.
