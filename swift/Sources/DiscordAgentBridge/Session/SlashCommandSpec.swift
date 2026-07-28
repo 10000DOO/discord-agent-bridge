@@ -213,6 +213,14 @@ public func updateCommandSpec() -> SlashCommandSpec {
     )
 }
 
+/// `/orchestration` — install global issue-orchestration rules, skills, and subagents for Claude/Codex/Grok.
+public func orchestrationCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "orchestration",
+        description: "이슈 오케스트레이션 규칙·스킬·서브에이전트를 Claude/Codex/Grok 전역에 설치합니다"
+    )
+}
+
 /// Every slash command the bot registers (W11-d + lifecycle + W16-c/d/b/h /setup /doc /config /update).
 public func allSlashCommandSpecs() -> [SlashCommandSpec] {
     [
@@ -227,6 +235,7 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         docCommandSpec(),
         configCommandSpec(),
         updateCommandSpec(),
+        orchestrationCommandSpec(),
     ]
 }
 

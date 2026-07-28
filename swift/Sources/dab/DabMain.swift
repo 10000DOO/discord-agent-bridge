@@ -1123,6 +1123,24 @@ struct EventHandler: GatewayEventHandler {
                 )
             }
 
+        case "orchestration":
+            // Install global CLAUDE.md/AGENTS.md block + skills + subagents for Claude/Codex/Grok.
+            // Filesystem work can take a moment — defer ephemeral first (3s window).
+            let orchDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard orchDeferred != nil else { return }
+            let report = OrchestrationInstaller.install(homes: .standard())
+            let body = report.summaryMarkdown
+            let clipped = body.count > 1900 ? String(body.prefix(1900)) + "\n…" : body
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: clipped)
+            )
+
         default:
             return
         }
