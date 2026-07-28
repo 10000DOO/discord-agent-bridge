@@ -8,6 +8,21 @@ import NIOCore
 // DabMain.swift is Swift's rough equivalent of app.ts's boot sequence + event handlers.
 private let log = Logger(name: "app")
 
+// TEMP-DIAG3: unbuffered direct-to-file diagnostic, bypassing whatever buffering `log` has.
+private func tempDiagWrite(_ s: String) {
+    let path = "/tmp/redmine-diag.log"
+    if !FileManager.default.fileExists(atPath: path) {
+        FileManager.default.createFile(atPath: path, contents: nil)
+    }
+    if let fh = FileHandle(forWritingAtPath: path) {
+        fh.seekToEndOfFile()
+        if let data = "\(Date()) \(s)\n".data(using: .utf8) {
+            fh.write(data)
+        }
+        try? fh.close()
+    }
+}
+
 @main
 struct DabMain {
     static func main() async {
@@ -68,6 +83,17 @@ struct DabMain {
         guard let token else {
             fputs(DiscordToken.usage + "\n", stderr)
             exit(1)
+        }
+
+        // Redmine API-key cipher secret: reuse env/file, or generate into ~/.dab/env once.
+        // Best-effort — boot continues on failure; encrypt/decrypt stays fail-secure later.
+        do {
+            let ensured = try RedmineKeySecret.ensure()
+            if ensured.generated {
+                log.info("redmine: generated DAB_REDMINE_KEY_SECRET into ~/.dab/env")
+            }
+        } catch {
+            log.warn("redmine: failed to ensure DAB_REDMINE_KEY_SECRET: \(error)")
         }
 
         let bot = await BotGatewayManager(
@@ -229,6 +255,8 @@ struct EventHandler: GatewayEventHandler {
         )
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
         await startAutoUpdater(client: client)
+        // WO-10: resume per-guild Redmine pollers for guilds that already have a saved config.
+        await restoreRedminePollers(client: client)
     }
 
     /// G-P1-07: auto-provision channel structure on every guild the bot is in (fires after Ready
@@ -429,6 +457,24 @@ struct EventHandler: GatewayEventHandler {
             // Not owner-bound (ephemeral message is only visible to the driver).
             if comp.custom_id == "preset.save" {
                 try await handlePresetSaveButton(payload)
+                return
+            }
+            // (A2c) redmine:issue-select dropdown (WO-13, R10) — standalone flow, unrelated to
+            // WizardRegistry ownership like redmine:config (modal submit dispatch above).
+            if comp.custom_id == "redmine:issue-select" {
+                try await handleRedmineIssueSelectComponent(payload, comp: comp)
+                return
+            }
+            // (A2d) Redmine issue start/cancel buttons (WO-14, R7/R8) on the card posted by
+            // the poller (R6) or redmine:issue-select (R10).
+            if isRedmineIssueCustomId(comp.custom_id), let redmineIssue = parseRedmineIssueId(comp.custom_id) {
+                try await handleRedmineIssueComponent(
+                    payload,
+                    comp: comp,
+                    action: redmineIssue.action,
+                    issueId: redmineIssue.issueId,
+                    targetChannelId: redmineIssue.targetChannelId
+                )
                 return
             }
             // (A2) W11-b2 wizard components (folder browser + select steps; owner-gated).
@@ -771,44 +817,9 @@ struct EventHandler: GatewayEventHandler {
                     payload: .deferredChannelMessageWithSource(isEphemeral: true)
                 )
                 guard deferred != nil else { return }
-                // W11-b2: folder → [preset if any] → backend→model→effort→perm.
-                // G-P1-06: config.favorites → browseRoots/allowedRoots; empty → unbounded (TS Fix 1).
-                // Browser starts at DAB_CWD else home (clamped to first root when bounded).
-                // nativePanel: package is macOS-only → always wire host picker (dir:panel).
-                let ownerId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-                let optionSource = await loadWizardOptionSource()
-                let globalConfig = try? await ConfigStore.shared.load()
-                let favorites = globalConfig?.favorites ?? []
-                // C3: registered permission profile names for the perm step's quick-select.
-                let profileNames = Array((globalConfig?.profiles ?? [:]).keys)
-                let roots = browseRoots(fromFavorites: favorites)
-                let browser = DirectoryBrowser(
-                    allowedRoots: roots,
-                    startPath: stubCwd,
-                    nativePanel: true
-                )
-                let serverPresets = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.presets ?? []
-                let guildForPresets = guildId
-                let wizard = ChannelWizard(
-                    guildId: guildId,
-                    channelId: channelId,
-                    ownerId: ownerId,
-                    browser: browser,
-                    options: optionSource,
-                    presets: serverPresets,
-                    profileNames: profileNames,
-                    onDeletePreset: { name in
-                        _ = try? await ConfigStore.shared.removeServerPreset(guildId: guildForPresets, name: name)
-                        return await ConfigStore.shared.loadServerConfig(guildId: guildForPresets)?.presets ?? []
-                    },
-                    backendAvailable: { Backend(rawValue: $0) != nil }
-                )
-                await WizardRegistry.shared.put(wizard, channelId: channelId)
-                let (embeds, components) = discordPayload(from: wizard.render())
-                _ = try? await client.updateOriginalInteractionResponse(
-                    appId: payload.application_id,
-                    token: payload.token,
-                    payload: .init(embeds: embeds, components: components)
+                try await presentAgentStartWizard(
+                    client: client, payload: payload, guildId: guildId, channelId: channelId,
+                    actorId: actorId, stubCwd: stubCwd
                 )
             case "close":
                 // Stopping the live bridge can be slow; ack before it starts (same reason as /clear).
@@ -1141,9 +1152,115 @@ struct EventHandler: GatewayEventHandler {
                 payload: .init(content: clipped)
             )
 
+        case "redmine":
+            // WO-12: opens the 3-field config modal. showModal is this interaction's only ack —
+            // must NOT be preceded by any defer (8장/dir:create precedent, DabMain.swift:1600).
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .modal(.init(
+                    custom_id: "redmine:config",
+                    title: "레드마인 연동 설정",
+                    textInputs: [
+                        .init(
+                            custom_id: "url",
+                            style: .short,
+                            label: "레드마인 주소",
+                            required: true,
+                            placeholder: "https://redmine.example.com"
+                        ),
+                        .init(
+                            custom_id: "apiKey",
+                            style: .short,
+                            label: "API 키",
+                            required: true
+                        ),
+                        .init(
+                            custom_id: "project",
+                            style: .short,
+                            label: "프로젝트(선택, 비우면 전체)",
+                            required: false
+                        ),
+                    ]
+                ))
+            )
+
+        case "redmine-issue-select":
+            // WO-13: R9 dropdown — same status/assignee filter as the poller (R5), but `since`
+            // is nil (D5, WO-5) since this command has no "last checked" concept.
+            guard let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine else {
+                try await respondEphemeral(payload, "먼저 `/redmine`으로 설정하세요.")
+                return
+            }
+            do {
+                let apiKey = try RedmineApiKeyCipher.decrypt(redmine.apiKeyEncrypted)
+                let redmineClient = RedmineClient()
+                let issues = try await redmineClient.fetchIssues(
+                    baseURL: redmine.url,
+                    apiKey: apiKey,
+                    projectId: redmine.projectId
+                )
+                let statuses = try await redmineClient.fetchStatuses(baseURL: redmine.url, apiKey: apiKey)
+                // Same status policy as the 5-minute poller: 신규 | New | 진행 | Doing (+ bilingual forms).
+                let resolvedStatusIds = RedmineStatusResolver.resolveTargetIds(statuses: statuses)
+                let matched = RedmineIssueFilter.match(issues: issues, resolvedStatusIds: resolvedStatusIds, since: nil)
+                guard !matched.isEmpty else {
+                    try await respondEphemeral(payload, "조건에 맞는 이슈가 없습니다.")
+                    return
+                }
+                // WO-13b (9장 Q6): Discord select menus cap options at 25 — split into several
+                // messages instead of silently truncating so every matched issue stays selectable.
+                let chunks = RedmineIssueChunker.chunk(matched)
+                let firstBatch: (index: Int, total: Int)? = chunks.count > 1 ? (1, chunks.count) : nil
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: "레드마인 이슈를 선택하세요.",
+                        flags: [.ephemeral],
+                        components: [Interaction.ActionRow(components: [
+                            .stringSelect(redmineIssueSelectMenu(for: chunks[0], batch: firstBatch)),
+                        ])]
+                    ))
+                )
+                // NOT ephemeral on the overflow pages (unlike the first page above, which acks via
+                // createInteractionResponse and is unaffected) — DiscordBM's `ExecuteWebhook.validate()`
+                // rejects `.ephemeral` in `createFollowupMessage` client-side (found live; same issue
+                // fixed in `handleRedmineConfigModal`/`handleRedmineIssueComponent`).
+                for (offset, chunk) in chunks.dropFirst().enumerated() {
+                    let menu = redmineIssueSelectMenu(for: chunk, batch: (offset + 2, chunks.count))
+                    _ = try? await client.createFollowupMessage(
+                        appId: payload.application_id,
+                        token: payload.token,
+                        payload: .init(
+                            content: "레드마인 이슈를 선택하세요.",
+                            components: [Interaction.ActionRow(components: [.stringSelect(menu)])]
+                        )
+                    )
+                }
+            } catch {
+                try await respondEphemeral(payload, "레드마인 이슈 조회에 실패했어요: \(error)")
+            }
+
         default:
             return
         }
+    }
+
+    /// One select-menu message-worth of chunked issue options (WO-13b, 9장 Q6). `batch` is nil for
+    /// the common case (<=25 matched issues, single dropdown, placeholder unchanged from WO-13) and
+    /// `(index, total)` when the caller has split the results across multiple messages.
+    private func redmineIssueSelectMenu(
+        for issues: [RedmineIssueDTO],
+        batch: (index: Int, total: Int)?
+    ) -> Interaction.ActionRow.StringSelectMenu {
+        let options = issues.map {
+            Interaction.ActionRow.StringSelectMenu.Option(label: "#\($0.id) \($0.subject)", value: String($0.id))
+        }
+        let placeholder = batch.map { "이슈 목록 (\($0.index)/\($0.total))" } ?? "이슈 선택"
+        return Interaction.ActionRow.StringSelectMenu(
+            custom_id: "redmine:issue-select",
+            options: options,
+            placeholder: placeholder
+        )
     }
 
     /// First-admin bootstrap follow-up: commits the /setup actor as this guild's first admin.
@@ -1817,6 +1934,50 @@ struct EventHandler: GatewayEventHandler {
                         content: sessionStatusIntroContent,
                         embed: statusEmbed
                     )
+                    // redmine-issue-session-start.md WO-11: fires only for a wizard opened from the
+                    // Redmine session-pick dropdown's "new session" branch — a plain /agent start
+                    // wizard never has an entry here, so get(channelId:) is nil and this is a no-op.
+                    if let issueId = await PendingRedmineStartRegistry.shared.get(channelId: bindChannelId) {
+                        await PendingRedmineStartRegistry.shared.remove(channelId: bindChannelId)
+                        // RedmineClient has no single-issue lookup (list-only), so mirror
+                        // handleRedmineIssueSelectComponent's fetch-all-then-filter pattern.
+                        if let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine {
+                            do {
+                                let apiKey = try RedmineApiKeyCipher.decrypt(redmine.apiKeyEncrypted)
+                                let issues = try await RedmineClient().fetchIssues(
+                                    baseURL: redmine.url,
+                                    apiKey: apiKey,
+                                    projectId: redmine.projectId
+                                )
+                                if let issue = issues.first(where: { $0.id == issueId }) {
+                                    // Fire-and-forget: wizard interaction is already settled;
+                                    // don't block the handler on the kickoff turn.
+                                    let kickClient = client
+                                    let kickChannel = bindChannelId
+                                    let kickGuild = guildId
+                                    let kickBackend = p.backend
+                                    let kickActor = clicker
+                                    Task {
+                                        await runRedmineKickoffPrompt(
+                                            client: kickClient,
+                                            channelId: kickChannel,
+                                            guildId: kickGuild,
+                                            backend: kickBackend,
+                                            issue: issue,
+                                            actorId: kickActor,
+                                            roleTier: "execute"
+                                        )
+                                    }
+                                } else {
+                                    log.info("redmine kickoff skipped: issue not found id=\(issueId) channel=\(bindChannelId)")
+                                }
+                            } catch {
+                                log.error("redmine kickoff issue refetch failed id=\(issueId) channel=\(bindChannelId) err=\(error)")
+                            }
+                        } else {
+                            log.info("redmine kickoff skipped: no redmine config guild=\(guildId) issue=\(issueId)")
+                        }
+                    }
                 } else {
                     _ = try? await client.updateOriginalInteractionResponse(
                         appId: payload.application_id, token: payload.token,
@@ -1970,6 +2131,13 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
+        // redmine:config (WO-12): standalone /redmine command modal, unrelated to WizardRegistry
+        // ownership — must not fall through to the wizard-owner gate below.
+        if modal.custom_id == "redmine:config" {
+            try await handleRedmineConfigModal(payload, modal: modal)
+            return
+        }
+
         guard let wizard = await WizardRegistry.shared.get(channelId: channelId),
               wizard.ownerId == clicker
         else {
@@ -2053,6 +2221,450 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(content: "알 수 없는 모달입니다.", flags: [.ephemeral]))
+            )
+        }
+    }
+
+    /// redmine:config modal submit (WO-12c): extract the 3 fields → ack immediately (channel
+    /// creation + config save can cross Discord's 3s window, same reason as /update/doc — a
+    /// slow remote fetch/write must not eat it) → encrypt the API key (fail-secure — R11/8장) →
+    /// ensure `#redmine-report` → persist `RedmineSection` → (re)start this guild's poller →
+    /// report the outcome (success or failure) via createFollowupMessage. Unrelated to
+    /// WizardRegistry, so it responds directly rather than via the queued-job path
+    /// `handleWizardModal`'s other cases use.
+    private func handleRedmineConfigModal(_ payload: Interaction, modal: Interaction.ModalSubmit) async throws {
+        tempDiagWrite("handleRedmineConfigModal ENTERED")
+        let guildId = payload.guild_id?.rawValue ?? ""
+        // Trailing "/" would double up when RedmineClient appends "/issues.json" etc. — normalize
+        // here so it never reaches storage either with or without one.
+        var url = (try? modal.components.requireComponent(customId: "url").requireTextInput().value)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        while url.hasSuffix("/") { url.removeLast() }
+        let apiKey = (try? modal.components.requireComponent(customId: "apiKey").requireTextInput().value)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let project = (try? modal.components.requireComponent(customId: "project").requireTextInput().value)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        tempDiagWrite("fields extracted url=\(url) apiKeyLen=\(apiKey.count)")
+
+        let redmineConfigDeferred = try? await client.createInteractionResponse(
+            id: payload.id,
+            token: payload.token,
+            payload: .deferredChannelMessageWithSource(isEphemeral: true)
+        )
+        tempDiagWrite("defer result=\(redmineConfigDeferred != nil)")
+        guard redmineConfigDeferred != nil else {
+            tempDiagWrite("RETURNING EARLY: defer was nil")
+            return
+        }
+
+        let apiKeyEncrypted: Data
+        do {
+            apiKeyEncrypted = try RedmineApiKeyCipher.encrypt(apiKey)
+            tempDiagWrite("encrypt ok")
+        } catch {
+            tempDiagWrite("encrypt failed: \(error)")
+            // Fail-secure (WO-1 금지 사항, 8장): never fall back to storing the plaintext key.
+            // Edits the original deferred (already-ephemeral) response — createFollowupMessage's
+            // ExecuteWebhook model rejects an explicit `.ephemeral` flag client-side (found live:
+            // DiscordBM ValidationError "flags: Can only contain suppressEmbeds/.../isComponentsV2"),
+            // so this mirrors /stop's/​/clear's updateOriginalInteractionResponse pattern instead.
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(
+                    content: "레드마인 연동을 저장할 수 없어요: 서버에 `DAB_REDMINE_KEY_SECRET`이 설정되지 않았습니다. 운영자에게 문의하세요."
+                )
+            )
+            return
+        }
+
+        do {
+            let provisioner = resolveGuildProvisioner(client: client, guildId: guildId)
+            tempDiagWrite("ensuring channel...")
+            let channel = try await ensureRedmineReportChannel(provisioner: provisioner, configStore: .shared)
+            tempDiagWrite("channel ok id=\(channel.id)")
+            try await ConfigStore.shared.saveRedmineConfig(
+                guildId: guildId,
+                section: RedmineSection(
+                    url: url,
+                    apiKeyEncrypted: apiKeyEncrypted,
+                    projectId: project.isEmpty ? nil : project,
+                    reportChannelId: channel.id,
+                    lastCheckedAt: nil
+                )
+            )
+            tempDiagWrite("config saved, starting poller...")
+            await startRedminePoller(client: client, guildId: guildId)
+            tempDiagWrite("poller started, sending followup... appId=\(payload.application_id) tokenLen=\(payload.token.count)")
+            do {
+                let resp = try await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(
+                        content: "레드마인 연동 설정이 완료됐어요. `#\(channel.name)` 채널에서 알림을 확인하세요."
+                    )
+                )
+                tempDiagWrite("followup HTTP response: \(resp)")
+            } catch {
+                tempDiagWrite("followup send THREW: \(error)")
+            }
+            tempDiagWrite("DONE")
+        } catch {
+            tempDiagWrite("step failed: \(error)")
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: "레드마인 연동 설정에 실패했어요: \(error)")
+            )
+        }
+    }
+
+    /// redmine:issue-select dropdown callback (WO-13, R10). No get-issue-by-id endpoint exists
+    /// (WO-3 only lists), so the chosen issue is found by re-running the same fetchIssues query
+    /// used to build the dropdown. Responding with a non-ephemeral channelMessageWithSource both
+    /// acks the click and posts the card as a normal, publicly-visible message in one step — the
+    /// same shape R6/the poller uses, so its start/cancel buttons (WO-14) work identically after.
+    private func handleRedmineIssueSelectComponent(
+        _ payload: Interaction,
+        comp: Interaction.MessageComponent
+    ) async throws {
+        guard let issueIdString = comp.values?.first, let issueId = Int(issueIdString) else { return }
+        let guildId = payload.guild_id?.rawValue ?? ""
+        guard let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine else {
+            try await respondEphemeral(payload, "레드마인 설정을 찾을 수 없어요. `/redmine`으로 먼저 설정하세요.")
+            return
+        }
+        do {
+            let apiKey = try RedmineApiKeyCipher.decrypt(redmine.apiKeyEncrypted)
+            let issues = try await RedmineClient().fetchIssues(
+                baseURL: redmine.url,
+                apiKey: apiKey,
+                projectId: redmine.projectId
+            )
+            guard let issue = issues.first(where: { $0.id == issueId }) else {
+                try await respondEphemeral(payload, "선택한 이슈를 더 이상 찾을 수 없어요.")
+                return
+            }
+            let embed = discordEmbed(from: buildRedmineIssueEmbed(issue))
+            let components = discordActionRows(from: [buildRedmineIssueButtons(issueId: issue.id)])
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(embeds: [embed], components: components))
+            )
+        } catch {
+            try await respondEphemeral(payload, "이슈 조회에 실패했어요: \(error)")
+        }
+    }
+
+    /// 착수/취소 button callback (WO-14/WO-9, R7/R8) on a redmine issue card (poller R6 or
+    /// redmine:issue-select R10). `.cancel` keeps its original defer-ack → decidedRow shape (no
+    /// auth — 2장 Out). `.start` (3-3 D5) checks the `.drive` gate BEFORE any ack, mirroring
+    /// handleUpdateComponent's check-then-ack order (1265-1276행) — a denial must not touch the
+    /// card at all (not even deferredUpdateMessage), so other users can still click it.
+    ///
+    /// Existing-session pick → confirm/abort (docs/redmine-session-confirm-kickoff.md):
+    /// `.sessionPick` only shows the confirm UI; kickoff runs on `.sessionConfirm` in the background.
+    private func handleRedmineIssueComponent(
+        _ payload: Interaction,
+        comp: Interaction.MessageComponent,
+        action: RedmineIssueAction,
+        issueId: Int,
+        targetChannelId: String? = nil
+    ) async throws {
+        switch action {
+        case .cancel:
+            // R8: never touch the Redmine-side issue — only disable both buttons on this card.
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            let decidedRow = discordActionRows(from: [buildRedmineIssueDecidedRow(action: .cancel)])
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(components: decidedRow)
+            )
+        case .start:
+            // WO-9 (3-3 D5): gate first, before touching the card.
+            let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+            let guildId = payload.guild_id?.rawValue ?? ""
+            let isAdmin = await hasDiscordAdministrator(payload, guildId: payload.guild_id?.rawValue, userId: actorId)
+            let decision = await Authorizer(config: .shared).authorize(
+                AuthInput(
+                    userId: actorId,
+                    roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                    action: .drive,
+                    guildId: payload.guild_id?.rawValue,
+                    channelId: nil,
+                    isAdministrator: isAdmin
+                ),
+                projectAuth: nil
+            )
+            guard decision.allowed else {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]),
+                        flags: [.ephemeral]
+                    ))
+                )
+                return
+            }
+            // Read title/description off the card's own embed (no extra Redmine round-trip
+            // needed just to log this).
+            let embed = payload.message?.embeds.first
+            log.info(
+                "redmine issue start requested id=\(issueId) title=\(embed?.title ?? "-") description=\(embed?.description?.prefix(200) ?? "-")"
+            )
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            let decidedRow = discordActionRows(from: [buildRedmineIssueDecidedRow(action: .start)])
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(components: decidedRow)
+            )
+            // R1/R6/R7: every active session in this guild + a trailing "신규 세션" sentinel,
+            // chunked to Discord's 25-option cap — posted as separate followups (the card itself
+            // was already disabled above, not replaced). NOT ephemeral — found live: DiscordBM's
+            // `ExecuteWebhook.validate()` hard-codes flags to {suppressEmbeds, suppressNotifications,
+            // isComponentsV2} only, so `.ephemeral` here throws a client-side ValidationError that a
+            // bare `try?` swallowed silently (the modal-submit completion message hit the exact same
+            // wall — fixed there via `updateOriginalInteractionResponse` instead, which isn't
+            // possible here since there can be >1 page of new messages).
+            let sessions = await redmineSessionSelectOptions(client: client, guildId: guildId)
+            let menus = buildRedmineSessionSelectMenus(sessions: sessions, issueId: issueId)
+            for menu in menus {
+                _ = try? await client.createFollowupMessage(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(
+                        content: "세션을 선택하세요.",
+                        components: [Interaction.ActionRow(components: [.stringSelect(menu)])]
+                    )
+                )
+            }
+        case .sessionPick:
+            // WO-10 (R2/R3/R4/R5): comp.values carries the picked option — either
+            // newSessionSentinel ("__new__", WO-5) or an existing session's channelId.
+            guard let selection = comp.values?.first else { return }
+            let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+            let guildId = payload.guild_id?.rawValue ?? ""
+            let cardChannelId = payload.channel_id?.rawValue ?? ""
+            let isAdmin = await hasDiscordAdministrator(payload, guildId: payload.guild_id?.rawValue, userId: actorId)
+
+            if selection == newSessionSentinel {
+                // "신규 세션" (3-2 시퀀스②): the card's channel isn't a session channel yet, so
+                // projectAuth stays nil — same shape as the .start gate above (3-3 D5).
+                let decision = await Authorizer(config: .shared).authorize(
+                    AuthInput(
+                        userId: actorId,
+                        roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                        action: .drive,
+                        guildId: payload.guild_id?.rawValue,
+                        channelId: nil,
+                        isAdministrator: isAdmin
+                    ),
+                    projectAuth: nil
+                )
+                guard decision.allowed else {
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .channelMessageWithSource(.init(
+                            content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]),
+                            flags: [.ephemeral]
+                        ))
+                    )
+                    return
+                }
+                // Mirrors /agent start's owner-transfer guard (772-779행) — the card's channel is
+                // never a session channel itself, so this binding is almost always nil and the
+                // check trivially passes, but it must stay (WO-10 금지 — don't drop it just
+                // because it's usually a no-op here).
+                if let owner = await SessionStore.shared.binding(channelId: cardChannelId)?.ownerId,
+                   !owner.isEmpty,
+                   owner != actorId,
+                   decision.tier != .admin
+                {
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .channelMessageWithSource(.init(
+                            content: "이 채널 세션의 소유자 또는 관리자만 새 세션으로 바꿀 수 있어요.",
+                            flags: [.ephemeral]
+                        ))
+                    )
+                    return
+                }
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .deferredUpdateMessage()
+                )
+                await PendingRedmineStartRegistry.shared.put(issueId, channelId: cardChannelId)
+                let stubCwd = ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
+                try await presentAgentStartWizard(
+                    client: client,
+                    payload: payload,
+                    guildId: guildId,
+                    channelId: cardChannelId,
+                    actorId: actorId,
+                    stubCwd: stubCwd
+                )
+            } else {
+                // Existing session: authorize + show confirm UI only (kickoff waits for .sessionConfirm).
+                // docs/redmine-session-confirm-kickoff.md — replaces the dropdown message in place.
+                let chosenChannelId = selection
+                let targetProjectAuth = await SessionStore.shared.binding(channelId: chosenChannelId)?.projectAuth
+                let decision = await Authorizer(config: .shared).authorize(
+                    AuthInput(
+                        userId: actorId,
+                        roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                        action: .drive,
+                        guildId: payload.guild_id?.rawValue,
+                        channelId: chosenChannelId,
+                        isAdministrator: isAdmin
+                    ),
+                    projectAuth: targetProjectAuth
+                )
+                guard decision.allowed else {
+                    _ = try? await client.createInteractionResponse(
+                        id: payload.id, token: payload.token,
+                        payload: .channelMessageWithSource(.init(
+                            content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]),
+                            flags: [.ephemeral]
+                        ))
+                    )
+                    return
+                }
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .deferredUpdateMessage()
+                )
+                guard await SessionStore.shared.binding(channelId: chosenChannelId) != nil else {
+                    _ = try? await client.updateOriginalInteractionResponse(
+                        appId: payload.application_id,
+                        token: payload.token,
+                        payload: .init(content: "세션을 찾을 수 없어요.", components: [])
+                    )
+                    return
+                }
+                let confirmRows = discordActionRows(
+                    from: [buildRedmineSessionConfirmRow(issueId: issueId, targetChannelId: chosenChannelId)]
+                )
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(
+                        content: "이슈 #\(issueId) → <#\(chosenChannelId)> 에 전달할까요?",
+                        components: confirmRows
+                    )
+                )
+            }
+        case .sessionConfirm:
+            // Confirm after existing-session pick: ack immediately, kickoff in background.
+            guard let chosenChannelId = targetChannelId, !chosenChannelId.isEmpty else { return }
+            let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+            let guildId = payload.guild_id?.rawValue ?? ""
+            let isAdmin = await hasDiscordAdministrator(payload, guildId: payload.guild_id?.rawValue, userId: actorId)
+            let targetProjectAuth = await SessionStore.shared.binding(channelId: chosenChannelId)?.projectAuth
+            let decision = await Authorizer(config: .shared).authorize(
+                AuthInput(
+                    userId: actorId,
+                    roleIds: payload.member?.roles.map(\.rawValue) ?? [],
+                    action: .drive,
+                    guildId: payload.guild_id?.rawValue,
+                    channelId: chosenChannelId,
+                    isAdministrator: isAdmin
+                ),
+                projectAuth: targetProjectAuth
+            )
+            guard decision.allowed else {
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .channelMessageWithSource(.init(
+                        content: I18n.t("auth.denied", ["reason": decision.reason ?? "unauthorized"]),
+                        flags: [.ephemeral]
+                    ))
+                )
+                return
+            }
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            guard let targetBackend = await SessionStore.shared.binding(channelId: chosenChannelId)?.backend else {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: "세션을 찾을 수 없어요.", components: [])
+                )
+                return
+            }
+            guard let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine else {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: "레드마인 설정을 찾을 수 없어요. `/redmine`으로 먼저 설정하세요.", components: [])
+                )
+                return
+            }
+            // Resolve the interaction before the (potentially long) turn so Discord doesn't
+            // look hung and the user sees "요청했어요" right away.
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: "요청했어요: <#\(chosenChannelId)>", components: [])
+            )
+            let roleTier = decision.tier?.rawValue ?? "execute"
+            let appClient = client
+            Task {
+                do {
+                    let apiKey = try RedmineApiKeyCipher.decrypt(redmine.apiKeyEncrypted)
+                    let issues = try await RedmineClient().fetchIssues(
+                        baseURL: redmine.url,
+                        apiKey: apiKey,
+                        projectId: redmine.projectId
+                    )
+                    guard let issue = issues.first(where: { $0.id == issueId }) else {
+                        log.info("redmine kickoff skipped: issue not found id=\(issueId) channel=\(chosenChannelId)")
+                        _ = await createMessageWithRetry(
+                            client: appClient,
+                            channelId: ChannelSnowflake(chosenChannelId),
+                            payload: .init(content: "⚠️ 선택한 이슈(#\(issueId))를 더 이상 찾을 수 없어요."),
+                            onGone: nil
+                        )
+                        return
+                    }
+                    await runRedmineKickoffPrompt(
+                        client: appClient,
+                        channelId: chosenChannelId,
+                        guildId: guildId,
+                        backend: targetBackend,
+                        issue: issue,
+                        actorId: actorId,
+                        roleTier: roleTier
+                    )
+                } catch {
+                    log.error("redmine kickoff issue refetch failed id=\(issueId) channel=\(chosenChannelId) err=\(error)")
+                    _ = await createMessageWithRetry(
+                        client: appClient,
+                        channelId: ChannelSnowflake(chosenChannelId),
+                        payload: .init(content: "⚠️ 이슈 조회에 실패했어요: \(error)"),
+                        onGone: nil
+                    )
+                }
+            }
+        case .sessionAbort:
+            // Cancel confirm step — no auth required (mirrors card .cancel: local UI only).
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredUpdateMessage()
+            )
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: "전달을 취소했어요.", components: [])
             )
         }
     }

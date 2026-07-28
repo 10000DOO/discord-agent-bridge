@@ -244,6 +244,11 @@ public actor SessionStore {
         channels.filter { !$0.value.archived }
     }
 
+    /// Non-archived bindings for a single guild — Redmine session dropdown consumer (R6).
+    public func active(guildId: String) -> [String: PersistedSession] {
+        channels.filter { !$0.value.archived && $0.value.guildId == guildId }
+    }
+
     // MARK: - Auto-update meta (TS stateStore.getUpdateMeta / setUpdateMeta)
 
     public func getUpdateMeta() -> AutoUpdateMeta { autoUpdate }

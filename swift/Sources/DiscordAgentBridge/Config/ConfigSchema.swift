@@ -450,6 +450,28 @@ public struct NotificationsSection: Codable, Sendable, Equatable {
     }
 }
 
+public struct RedmineSection: Codable, Sendable, Equatable {
+    public var url: String
+    public var apiKeyEncrypted: Data
+    public var projectId: String?
+    public var reportChannelId: String?
+    /// Epoch milliseconds of the last poll (mirrors `AutoUpdateMeta.lastCheckAt`); nil before first poll.
+    public var lastCheckedAt: Int?
+    public init(
+        url: String,
+        apiKeyEncrypted: Data,
+        projectId: String? = nil,
+        reportChannelId: String? = nil,
+        lastCheckedAt: Int? = nil
+    ) {
+        self.url = url
+        self.apiKeyEncrypted = apiKeyEncrypted
+        self.projectId = projectId
+        self.reportChannelId = reportChannelId
+        self.lastCheckedAt = lastCheckedAt
+    }
+}
+
 public struct ServerConfig: Codable, Sendable, Equatable {
     public var version: Int
     public var guildId: String
@@ -464,6 +486,7 @@ public struct ServerConfig: Codable, Sendable, Equatable {
     public var notifications: NotificationsSection?
     /// Per-guild render-capability overrides (merged over global; under DAB_CAPS).
     public var capabilities: CapabilitiesPartial?
+    public var redmine: RedmineSection?
 
     public init(
         version: Int = CONFIG_VERSION,
@@ -477,7 +500,8 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         presets: [Preset]? = nil,
         channels: ServerChannels? = nil,
         notifications: NotificationsSection? = nil,
-        capabilities: CapabilitiesPartial? = nil
+        capabilities: CapabilitiesPartial? = nil,
+        redmine: RedmineSection? = nil
     ) {
         self.version = version
         self.guildId = guildId
@@ -491,6 +515,7 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         self.channels = channels
         self.notifications = notifications
         self.capabilities = capabilities
+        self.redmine = redmine
     }
 }
 

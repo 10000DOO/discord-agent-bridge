@@ -138,6 +138,23 @@ struct GuildChannelsEnsureTests {
         #expect(saved?.channels == channels)
     }
 
+    // WO-8b regression: persistChannels must not clobber redmine/capabilities.
+    @Test func ensureGuildChannelsPreservesRedmineAndCapabilities() async throws {
+        let store = try await tempStore()
+        let redmine = RedmineSection(url: "https://redmine.example.com", apiKeyEncrypted: Data("cipher".utf8))
+        let capabilities = CapabilitiesPartial(usagePanel: false)
+        try await store.saveServerConfig(ServerConfig(
+            guildId: "g1",
+            capabilities: capabilities,
+            redmine: redmine
+        ))
+        let prov = FakeProvisioner()
+        _ = try await ensureGuildChannels(provisioner: prov, configStore: store)
+        let loaded = await store.loadServerConfig(guildId: "g1")
+        #expect(loaded?.redmine == redmine)
+        #expect(loaded?.capabilities == capabilities)
+    }
+
     @Test func idempotentSecondRunCreatesNothing() async throws {
         let store = try await tempStore()
         let prov = FakeProvisioner()

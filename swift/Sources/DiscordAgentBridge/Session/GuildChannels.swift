@@ -41,6 +41,7 @@ public enum GuildChannelNames {
     public static let controlChannel = "session-generator"
     public static let statusChannel = "agent-status"
     public static let sessionsCategory = "Agent - Sessions"
+    public static let redmineReportChannel = "redmine-report"
 }
 
 // MARK: - alreadyDone (pure)
@@ -139,6 +140,29 @@ public func autoProvisionGuild(
         log?("warn", "auto-provision failed guild=\(provisioner.guildId) err=\(error)")
         return nil
     }
+}
+
+// MARK: - Redmine report channel
+
+/// Reuse the stored `#redmine-report` channel when it still exists, else create it under the
+/// `🤖 Agent` control category (reusing that category's id if already provisioned, else creating
+/// it) so it sits alongside `session-generator`/`agent-status` instead of floating uncategorized.
+public func ensureRedmineReportChannel(
+    provisioner: any GuildChannelProvisioner,
+    configStore: ConfigStore
+) async throws -> ProvisionedChannel {
+    let server = await configStore.loadServerConfig(guildId: provisioner.guildId)
+    if let existingId = server?.redmine?.reportChannelId, await provisioner.channelExists(existingId) {
+        return ProvisionedChannel(id: existingId, name: GuildChannelNames.redmineReportChannel)
+    }
+    let controlCategory = try await provisioner.ensureCategory(
+        name: GuildChannelNames.controlCategory,
+        existingId: await reuseId(server?.channels?.categoryId, provisioner: provisioner)
+    )
+    return try await provisioner.createTextChannel(
+        name: GuildChannelNames.redmineReportChannel,
+        parentId: controlCategory.id
+    )
 }
 
 // MARK: - Session channel
@@ -267,19 +291,10 @@ private func persistChannels(
     existing: ServerConfig?,
     channels: ServerChannels
 ) async throws {
-    let next = ServerConfig(
-        version: existing?.version ?? 1,
-        guildId: guildId,
-        auth: existing?.auth,
-        defaults: existing?.defaults,
-        limits: existing?.limits,
-        locale: existing?.locale,
-        auditChannelId: existing?.auditChannelId,
-        favorites: existing?.favorites,
-        presets: existing?.presets,
-        channels: channels,
-        notifications: existing?.notifications
-    )
+    var next = existing ?? ServerConfig(guildId: guildId)
+    next.version = existing?.version ?? 1
+    next.guildId = guildId
+    next.channels = channels
     try await configStore.saveServerConfig(next)
 }
 

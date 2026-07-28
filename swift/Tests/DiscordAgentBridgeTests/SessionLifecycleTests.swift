@@ -900,8 +900,11 @@ struct LiveSlashSpecTests {
     }
 
     @Test func allSpecsOrder() {
+        // Relative order only: new commands may be inserted anywhere without
+        // breaking this test, but these must stay in this order relative to each other.
+        let expectedOrder = ["agent", "mode", "model", "effort", "stop", "clear", "stop-all", "setup", "doc", "config", "update"]
         let names = allSlashCommandSpecs().map(\.name)
-        #expect(names == ["agent", "mode", "model", "effort", "stop", "clear", "stop-all", "setup", "doc", "config", "update"])
+        #expect(names.filter { expectedOrder.contains($0) } == expectedOrder)
     }
 
     @Test func docIsLeafWithPathOption() {

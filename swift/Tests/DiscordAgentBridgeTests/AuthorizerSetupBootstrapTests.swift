@@ -90,6 +90,23 @@ struct AuthorizerSetupBootstrapTests {
         #expect(loaded?.locale == "en")
     }
 
+    // WO-8b regression: redmine/capabilities must survive partial-reconstruction saves.
+    @Test func addServerAdminUserIdPreservesRedmineAndCapabilities() async throws {
+        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let redmine = RedmineSection(url: "https://redmine.example.com", apiKeyEncrypted: Data("cipher".utf8))
+        let capabilities = CapabilitiesPartial(fileDiff: false)
+        try await store(dir).saveServerConfig(ServerConfig(
+            guildId: "g1",
+            capabilities: capabilities,
+            redmine: redmine
+        ))
+        try await store(dir).addServerAdminUserId(guildId: "g1", userId: "u1")
+        let loaded = await store(dir).loadServerConfig(guildId: "g1")
+        #expect(loaded?.auth?.adminUserIds == ["u1"])
+        #expect(loaded?.redmine == redmine)
+        #expect(loaded?.capabilities == capabilities)
+    }
+
     /// End-to-end: DabMain.swift wires exactly this sequence around /setup (the executable `dab`
     /// target has no test target of its own — WO-1/WO-2 test the library calls it wires up the
     /// same way). An unauthorized actor on a never-bootstrapped guild bypasses the gate, /setup

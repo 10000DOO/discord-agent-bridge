@@ -246,6 +246,17 @@ func discordEmbed(from spec: StatusEmbedSpec) -> Embed {
     )
 }
 
+/// Map pure `RedmineIssueEmbedSpec` to DiscordBM `Embed` (WO-8).
+func discordEmbed(from spec: RedmineIssueEmbedSpec) -> Embed {
+    Embed(
+        title: spec.title,
+        description: spec.description,
+        url: spec.url,
+        color: DiscordColor(value: DiscordColors.idle),
+        fields: spec.fields.map { Embed.Field(name: $0.name, value: $0.value, inline: $0.inline) }
+    )
+}
+
 /// Best-effort pin of a channel message (W16-g residual). Missing Manage Messages / pin
 /// permission or channel pin-cap failures are ignored — intro still stays in the channel.
 func pinMessageBestEffort(

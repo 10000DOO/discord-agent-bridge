@@ -310,6 +310,44 @@ struct ConfigStoreTests {
         #expect(try await store.removeServerPreset(guildId: "gMissing", name: "p1") == false)
     }
 
+    // MARK: - WO-8b regression: redmine/capabilities must survive partial-reconstruction saves
+
+    @Test func addServerPresetPreservesRedmineAndCapabilities() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        let redmine = RedmineSection(url: "https://redmine.example.com", apiKeyEncrypted: Data("cipher".utf8))
+        let capabilities = CapabilitiesPartial(toolThreads: false, usagePanel: false)
+        try await store.saveServerConfig(ServerConfig(
+            version: CONFIG_VERSION,
+            guildId: "g1",
+            capabilities: capabilities,
+            redmine: redmine
+        ))
+        try await store.addServerPreset(guildId: "g1", preset: Preset(name: "p1", backend: "claude"))
+        let loaded = await store.loadServerConfig(guildId: "g1")
+        #expect(loaded?.redmine == redmine)
+        #expect(loaded?.capabilities == capabilities)
+    }
+
+    @Test func removeServerPresetPreservesRedmineAndCapabilities() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.addServerPreset(guildId: "g1", preset: Preset(name: "p1", backend: "claude"))
+        let redmine = RedmineSection(url: "https://redmine.example.com", apiKeyEncrypted: Data("cipher".utf8))
+        let capabilities = CapabilitiesPartial(streaming: false)
+        guard var existing = await store.loadServerConfig(guildId: "g1") else {
+            Issue.record("expected server config"); return
+        }
+        existing.redmine = redmine
+        existing.capabilities = capabilities
+        try await store.saveServerConfig(existing)
+
+        #expect(try await store.removeServerPreset(guildId: "g1", name: "p1") == true)
+        let loaded = await store.loadServerConfig(guildId: "g1")
+        #expect(loaded?.redmine == redmine)
+        #expect(loaded?.capabilities == capabilities)
+    }
+
     @Test func presetsSurviveUnrelatedSaveServerConfig() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)

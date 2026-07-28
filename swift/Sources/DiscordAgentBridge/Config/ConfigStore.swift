@@ -155,20 +155,10 @@ public actor ConfigStore {
     public func addServerPreset(guildId: String, preset: Preset) throws {
         let existing = loadServerConfig(guildId: guildId)
         let others = (existing?.presets ?? []).filter { $0.name != preset.name }
-        let next = ServerConfig(
-            version: existing?.version ?? CONFIG_VERSION,
-            guildId: guildId,
-            auth: existing?.auth,
-            defaults: existing?.defaults,
-            limits: existing?.limits,
-            locale: existing?.locale,
-            auditChannelId: existing?.auditChannelId,
-            favorites: existing?.favorites,
-            presets: others + [preset],
-            channels: existing?.channels,
-            notifications: existing?.notifications,
-            capabilities: existing?.capabilities
-        )
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.presets = others + [preset]
         var lastErr: Error?
         for _ in 0..<3 {
             do {
@@ -194,6 +184,20 @@ public actor ConfigStore {
         let existing = loadServerConfig(guildId: guildId)
         let presets = existing?.presets ?? []
         guard presets.contains(where: { $0.name == name }) else { return false }
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.presets = presets.filter { $0.name != name }
+        try saveServerConfig(next)
+        return true
+    }
+
+    // MARK: - Redmine config (WO-2)
+
+    /// Replace the per-guild `redmine` section (read-modify-write, preserves all other fields).
+    /// Write + read-after-write, up to 3 immediate retries (mirrors addServerPreset).
+    public func saveRedmineConfig(guildId: String, section: RedmineSection) throws {
+        let existing = loadServerConfig(guildId: guildId)
         let next = ServerConfig(
             version: existing?.version ?? CONFIG_VERSION,
             guildId: guildId,
@@ -203,13 +207,29 @@ public actor ConfigStore {
             locale: existing?.locale,
             auditChannelId: existing?.auditChannelId,
             favorites: existing?.favorites,
-            presets: presets.filter { $0.name != name },
+            presets: existing?.presets,
             channels: existing?.channels,
             notifications: existing?.notifications,
-            capabilities: existing?.capabilities
+            capabilities: existing?.capabilities,
+            redmine: section
         )
-        try saveServerConfig(next)
-        return true
+        var lastErr: Error?
+        for _ in 0..<3 {
+            do {
+                try saveServerConfig(next)
+                let reloaded = loadServerConfig(guildId: guildId)
+                if reloaded?.redmine == section {
+                    return
+                }
+                lastErr = ConfigStoreError.validation(
+                    "redmine config not found after save (read-after-write verification failed)"
+                )
+            } catch {
+                lastErr = error
+            }
+        }
+        throw lastErr
+            ?? ConfigStoreError.validation("redmine config save verification failed for guild \(guildId)")
     }
 
     /// Register `userId` as a server-scoped admin (auth.adminUserIds) for `guildId`. Used by the
@@ -223,20 +243,10 @@ public actor ConfigStore {
         ids.append(userId)
         var auth = existing?.auth ?? ServerAuthPartial()
         auth.adminUserIds = ids
-        let next = ServerConfig(
-            version: existing?.version ?? CONFIG_VERSION,
-            guildId: guildId,
-            auth: auth,
-            defaults: existing?.defaults,
-            limits: existing?.limits,
-            locale: existing?.locale,
-            auditChannelId: existing?.auditChannelId,
-            favorites: existing?.favorites,
-            presets: existing?.presets,
-            channels: existing?.channels,
-            notifications: existing?.notifications,
-            capabilities: existing?.capabilities
-        )
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.auth = auth
         var lastErr: Error?
         for _ in 0..<3 {
             do {
@@ -404,7 +414,7 @@ public actor ConfigStore {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         try rejectNulls(
             in: root,
-            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities"],
+            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities", "redmine"],
             allowing: ["auditChannelId"]
         )
 
@@ -428,6 +438,9 @@ public actor ConfigStore {
         }
         if let capabilities = root["capabilities"] as? [String: Any] {
             try rejectNulls(in: capabilities, checking: ["streaming", "toolThreads", "fileDiff", "usagePanel"], allowing: [])
+        }
+        if let redmine = root["redmine"] as? [String: Any] {
+            try rejectNulls(in: redmine, checking: ["url", "apiKeyEncrypted", "projectId", "reportChannelId", "lastCheckedAt"], allowing: ["projectId", "reportChannelId", "lastCheckedAt"])
         }
         if let presets = root["presets"] as? [[String: Any]] {
             for preset in presets {

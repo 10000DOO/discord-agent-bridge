@@ -18,11 +18,12 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/DiscordBM/DiscordBM", from: "1.16.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.1"),
     ],
     targets: [
         .target(
             name: "DiscordAgentBridge",
-            dependencies: [],
+            dependencies: [.product(name: "Crypto", package: "swift-crypto")],
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .executableTarget(

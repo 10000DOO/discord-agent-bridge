@@ -213,6 +213,16 @@ public func updateCommandSpec() -> SlashCommandSpec {
     )
 }
 
+/// `/redmine` — configure Redmine notification integration (drive tier; anyone can run, D7).
+public func redmineCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(name: "redmine", description: "레드마인 알림 연동을 설정합니다")
+}
+
+/// `/redmine-issue-select` — pick a matching Redmine issue from a dropdown (drive tier; anyone can run, D7).
+public func redmineIssueSelectCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(name: "redmine-issue-select", description: "조건에 맞는 레드마인 이슈를 선택합니다")
+}
+
 /// `/orchestration` — install global issue-orchestration rules, skills, and subagents for Claude/Codex/Grok.
 public func orchestrationCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
@@ -235,6 +245,8 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         docCommandSpec(),
         configCommandSpec(),
         updateCommandSpec(),
+        redmineCommandSpec(),
+        redmineIssueSelectCommandSpec(),
         orchestrationCommandSpec(),
     ]
 }

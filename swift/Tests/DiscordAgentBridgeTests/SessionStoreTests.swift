@@ -189,6 +189,28 @@ struct SessionStoreTests {
         #expect(await reloaded.active().isEmpty)
     }
 
+    // WO-1 (redmine-issue-session-start.md): guild-scoped active() must only return
+    // non-archived bindings for the requested guild.
+    @Test func activeFiltersByGuildAndExcludesArchived() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        try await s.upsert(channelId: "c1", PersistedSession(
+            backend: .claude, cwd: "/ws1", guildId: "g1", updatedAt: "T0"
+        ))
+        try await s.upsert(channelId: "c2", PersistedSession(
+            backend: .codex, cwd: "/ws2", guildId: "g1", updatedAt: "T0"
+        ))
+        try await s.upsert(channelId: "c3", PersistedSession(
+            backend: .grok, cwd: "/ws3", guildId: "g2", updatedAt: "T0"
+        ))
+        _ = try await s.markArchived(channelId: "c2")   // same guild (g1) as c1, but archived
+
+        #expect(await s.active(guildId: "g1").keys.sorted() == ["c1"])
+        #expect(await s.active(guildId: "g2").keys.sorted() == ["c3"])
+    }
+
     @Test func autoUpdateMetaDefaultsAndPersists() async throws {
         let url = tempStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
