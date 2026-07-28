@@ -5,7 +5,7 @@ import Foundation
 // Install+restart are DI ports — production wires `installLatestSelfUpdate` + `performRestart`
 // (install.sh + launchctl; no in-process binary mmap replace).
 
-public let updateDefaultIntervalMs = 24 * 60 * 60 * 1000
+public let updateDefaultIntervalMs = 1 * 60 * 60 * 1000
 
 public struct AutoUpdateMeta: Codable, Sendable, Equatable {
     public var lastCheckAt: Int

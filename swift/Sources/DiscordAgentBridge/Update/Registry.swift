@@ -1,9 +1,9 @@
 import Foundation
 
-// npm registry probe for the latest published version (TS `src/update/registry.ts`).
+// GitHub Releases probe for the latest published version (TS `src/update/registry.ts`).
 // Injected fetch; NEVER throws — any failure resolves to nil so the caller silently skips.
 
-public let updateRegistryURL = URL(string: "https://registry.npmjs.org/discord-agent-bridge/latest")!
+public let updateRegistryURL = URL(string: "https://api.github.com/repos/10000DOO/discord-agent-bridge/releases/latest")!
 public let updateRegistryDefaultTimeoutMs = 5000
 
 /// Injectable HTTP GET: returns body data + HTTP status (or throws).
@@ -40,7 +40,7 @@ public struct FetchLatestOptions: Sendable {
 
 /// Resolve the latest published version string, or nil on ANY failure.
 public func fetchLatestVersion(opts: FetchLatestOptions = FetchLatestOptions()) async -> String? {
-    var headers: [String: String] = ["Accept": "application/json"]
+    var headers: [String: String] = ["Accept": "application/vnd.github+json"]
     if let ua = opts.userAgent, !ua.isEmpty {
         headers["User-Agent"] = ua
     }
@@ -54,8 +54,8 @@ public func fetchLatestVersion(opts: FetchLatestOptions = FetchLatestOptions()) 
     }
     guard status >= 200, status < 300 else { return nil }
     guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let version = obj["version"] as? String,
-          !version.isEmpty
+          let tag = obj["tag_name"] as? String,
+          !tag.isEmpty
     else { return nil }
-    return version
+    return tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
 }
