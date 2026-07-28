@@ -122,10 +122,14 @@ struct AutoUpdaterDecisionTests {
 
     @Test func approveDelegatesToHomebrewTriggerAndSkipsInstall() async {
         let triggerCallsBox = LockedBox<[(String, String)]>([])
-        let h = UpdateHarness(withInstall: true, homebrewTrigger: { appId, token in
-            triggerCallsBox.withLock { $0.append((appId, token)) }
-            return true
-        })
+        let h = UpdateHarness(
+            withInstall: true,
+            homebrewTrigger: { appId, token in
+                triggerCallsBox.withLock { $0.append((appId, token)) }
+                return true
+            },
+            isHomebrewInstall: true
+        )
         let ctx = DecisionProbe()
         await h.updater.approve("1.1.0", ctx: ctx.asCtx())
         #expect(triggerCallsBox.withLock { $0 }.count == 1)
@@ -138,16 +142,47 @@ struct AutoUpdaterDecisionTests {
         #expect(h.announcesBox.withLock { $0 }.isEmpty)
     }
 
-    @Test func approveFallsBackToInstallWhenHomebrewTriggerReturnsFalse() async {
-        let h = UpdateHarness(withInstall: true, homebrewTrigger: { _, _ in false })
+    /// Dual-path block: Homebrew + trigger fail must never fall through to git/install.sh.
+    @Test func approveBlocksInProcessWhenHomebrewTriggerFails() async {
+        let h = UpdateHarness(
+            withInstall: true,
+            homebrewTrigger: { _, _ in false },
+            isHomebrewInstall: true
+        )
         let ctx = DecisionProbe()
         await h.updater.approve("1.1.0", ctx: ctx.asCtx())
         #expect(ctx.disabled == 1)
+        #expect(ctx.acks == [UpdateLabels.homebrewUnavailable])
+        #expect(h.installCallsBox.withLock { $0 } == 0)
+        #expect(h.restartCallsBox.withLock { $0 } == 0)
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+    }
+
+    @Test func approveBlocksInProcessWhenHomebrewButNoTriggerPort() async {
+        let h = UpdateHarness(withInstall: true, isHomebrewInstall: true)
+        let ctx = DecisionProbe()
+        await h.updater.approve("1.1.0", ctx: ctx.asCtx())
+        #expect(ctx.acks == [UpdateLabels.homebrewUnavailable])
+        #expect(h.installCallsBox.withLock { $0 } == 0)
+        #expect(h.restartCallsBox.withLock { $0 } == 0)
+    }
+
+    @Test func sourceInstallIgnoresHomebrewTriggerWhenNotHomebrew() async {
+        let triggerCallsBox = LockedBox(0)
+        let h = UpdateHarness(
+            withInstall: true,
+            homebrewTrigger: { _, _ in
+                triggerCallsBox.withLock { $0 += 1 }
+                return true
+            },
+            isHomebrewInstall: false
+        )
+        let ctx = DecisionProbe()
+        await h.updater.approve("1.1.0", ctx: ctx.asCtx())
+        #expect(triggerCallsBox.withLock { $0 } == 0)
         #expect(h.installCallsBox.withLock { $0 } == 1)
         #expect(h.restartCallsBox.withLock { $0 } == 1)
-        #expect(h.announcesBox.withLock { $0 }.isEmpty)
         #expect(ctx.acks.contains(UpdateLabels.restartRequested))
-        #expect(ctx.acks.contains(UpdateLabels.restartConfirmed))
     }
 
     @Test func dismissPersistsAndAcks() async {
@@ -265,7 +300,8 @@ private final class UpdateHarness: @unchecked Sendable {
         postPromptAvailable: Bool = true,
         intervalMs: Int = updateDefaultIntervalMs,
         fetchLatest: (@Sendable () async -> String?)? = nil,
-        homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil
+        homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil,
+        isHomebrewInstall: Bool = false
     ) {
         let metaBox = LockedBox(AutoUpdateMeta())
         let postsBox = LockedBox<[String]>([])
@@ -320,6 +356,7 @@ private final class UpdateHarness: @unchecked Sendable {
                 return restartResult
             },
             homebrewTrigger: homebrewTrigger,
+            isHomebrewInstall: { isHomebrewInstall },
             messages: .korean,
             onLog: { _ in }
         )

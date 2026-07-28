@@ -595,10 +595,10 @@ public func launchctlKickstart(label: String = "com.discord-agent-bridge") -> Bo
     relaunchSupervisedService(label: label)
 }
 
-/// Shared shell helpers for logging, Discord webhook notify, cleanup.
+/// Shared shell helpers: log, webhook with retries, self-delete.
 private let supervisedRelaunchShellPreamble = #"""
 set -u
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:$PATH"
 LOG_DIR="${HOME}/.dab/logs"
 LOG_FILE="${LOG_DIR}/supervised-relaunch.log"
 mkdir -p "$LOG_DIR"
@@ -610,6 +610,7 @@ json_escape() {
   s="${s//$'\n'/\\n}"
   printf '%s' "$s"
 }
+# Discord interaction followup webhook — retry on transient/404 (token propagation).
 notify() {
   local msg="$1"
   log "notify: $msg"
@@ -619,42 +620,64 @@ notify() {
     log "webhook skipped (no app id/token)"
     return 0
   fi
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-    "https://discord.com/api/v10/webhooks/${app}/${tok}" \
-    -H "Content-Type: application/json" \
-    -d "{\"content\": \"$(json_escape "$msg")\"}")" || code="curl-fail"
-  log "webhook POST -> HTTP $code"
+  local try code body
+  for try in 1 2 3 4 5; do
+    body="$(mktemp)"
+    code="$(curl -sS -o "$body" -w '%{http_code}' -X POST \
+      "https://discord.com/api/v10/webhooks/${app}/${tok}?wait=true" \
+      -H "Content-Type: application/json" \
+      -d "{\"content\": \"$(json_escape "$msg")\"}" 2>>"$LOG_FILE")" || code="curl-fail"
+    log "webhook try=${try} HTTP=${code} body=$(head -c 200 "$body" 2>/dev/null | tr '\n' ' ')"
+    rm -f "$body"
+    case "$code" in
+      200|204) return 0 ;;
+    esac
+    sleep $((try * 2))
+  done
+  log "webhook FAILED after retries"
+  return 1
 }
 cleanup() { rm -f "$0" 2>/dev/null || true; }
 trap cleanup EXIT
-log "=== relaunch start ==="
+log "=== relaunch start pid=$$ ==="
 """#
 
 private func supervisedRelaunchScriptBrew() -> String {
+    // stop → start with retries; if still down, try start again (rollback of service state).
     supervisedRelaunchShellPreamble + #"""
 sleep 2
-log "brew services restart dab"
-if ! brew services restart dab >>"$LOG_FILE" 2>&1; then
-  log "FAILED: brew services restart"
-  notify "⚠️ 설치는 완료됐지만 서비스 재기동에 실패했어요 (\`brew services restart dab\`). 로그: \`~/.dab/logs/supervised-relaunch.log\`"
-  exit 1
-fi
+brew_dab_started() {
+  brew services list 2>/dev/null | awk '$1=="dab" && $2=="started" {found=1} END{exit !found}'
+}
+attempt_restart() {
+  local n="$1"
+  log "brew services restart dab (attempt $n)"
+  brew services stop dab >>"$LOG_FILE" 2>&1 || true
+  sleep 1
+  brew services start dab >>"$LOG_FILE" 2>&1 || brew services restart dab >>"$LOG_FILE" 2>&1 || return 1
+  local i
+  for i in $(seq 1 30); do
+    if brew_dab_started; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
 ok=0
-for i in $(seq 1 45); do
-  if brew services list 2>/dev/null | awk '$1=="dab" && $2=="started" {found=1} END{exit !found}'; then
+for attempt in 1 2 3; do
+  if attempt_restart "$attempt"; then
     ok=1
     break
   fi
-  sleep 1
+  log "attempt $attempt failed; retrying"
+  sleep 2
 done
 if [ "$ok" -eq 1 ]; then
   log "brew service started"
   notify "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요."
   exit 0
 fi
-log "FAILED: brew service not started within timeout"
-notify "⚠️ 설치는 완료됐지만 기동 확인에 실패했어요. \`brew services\`를 확인해 주세요. 로그: \`~/.dab/logs/supervised-relaunch.log\`"
+log "FAILED: brew service not started after retries"
+notify "⚠️ 설치는 완료됐지만 서비스 재기동/기동 확인에 실패했어요. \`brew services restart dab\` 를 수동 실행해 주세요. 로그: \`~/.dab/logs/supervised-relaunch.log\`"
 exit 1
 """#
 }
@@ -662,53 +685,68 @@ exit 1
 private func supervisedRelaunchScriptLaunchd(label: String, home: String) -> String {
     let plist = launchdPlistPath(home: home)
     let uid = getuid()
-    // Escape for embedding in shell double-quotes not needed — we use single-quoted heredoc via #""" and inject paths carefully.
     let safePlist = plist.replacingOccurrences(of: "'", with: "'\\''")
     let safeLabel = label.replacingOccurrences(of: "'", with: "'\\''")
+    // Full stop (bootout/unload) then start (bootstrap/load) with retries + final load recovery.
     return supervisedRelaunchShellPreamble + """
 PLIST='\(safePlist)'
 DOMAIN='gui/\(uid)'
 LABEL='\(safeLabel)'
 BIN="${HOME}/.dab/bin/dab"
-sleep 2
-log "stop service DOMAIN=$DOMAIN LABEL=$LABEL PLIST=$PLIST"
-/bin/launchctl bootout "$DOMAIN/$LABEL" 2>>"$LOG_FILE" \\
-  || /bin/launchctl unload "$PLIST" 2>>"$LOG_FILE" \\
-  || true
-sleep 1
-log "start service"
-started=0
-if /bin/launchctl bootstrap "$DOMAIN" "$PLIST" 2>>"$LOG_FILE"; then
-  /bin/launchctl enable "$DOMAIN/$LABEL" 2>>"$LOG_FILE" || true
-  /bin/launchctl kickstart -k "$DOMAIN/$LABEL" 2>>"$LOG_FILE" || true
-  started=1
-elif /bin/launchctl load -w "$PLIST" 2>>"$LOG_FILE"; then
-  started=1
-fi
-if [ "$started" -ne 1 ]; then
-  log "FAILED: could not load/bootstrap service"
-  notify "⚠️ 설치는 완료됐지만 서비스 재등록에 실패했어요. 수동으로 launchctl load 해 주세요. 로그: \\`~/.dab/logs/supervised-relaunch.log\\`"
-  exit 1
-fi
-ok=0
-for i in $(seq 1 45); do
-  if [ -x "$BIN" ] && pgrep -f "$BIN" >/dev/null 2>&1; then
-    ok=1
-    break
-  fi
-  if /bin/launchctl print "$DOMAIN/$LABEL" 2>/dev/null | grep -q "state = running"; then
-    ok=1
-    break
-  fi
+service_running() {
+  if [ -x "$BIN" ] && pgrep -f "$BIN" >/dev/null 2>&1; then return 0; fi
+  if /bin/launchctl print "$DOMAIN/$LABEL" 2>/dev/null | grep -q "state = running"; then return 0; fi
+  return 1
+}
+stop_service() {
+  log "stop service DOMAIN=$DOMAIN LABEL=$LABEL"
+  /bin/launchctl bootout "$DOMAIN/$LABEL" 2>>"$LOG_FILE" \\
+    || /bin/launchctl unload "$PLIST" 2>>"$LOG_FILE" \\
+    || true
   sleep 1
+}
+start_service() {
+  log "start service"
+  if /bin/launchctl bootstrap "$DOMAIN" "$PLIST" 2>>"$LOG_FILE"; then
+    /bin/launchctl enable "$DOMAIN/$LABEL" 2>>"$LOG_FILE" || true
+    /bin/launchctl kickstart -k "$DOMAIN/$LABEL" 2>>"$LOG_FILE" || true
+    return 0
+  fi
+  /bin/launchctl load -w "$PLIST" 2>>"$LOG_FILE"
+}
+wait_running() {
+  local i
+  for i in $(seq 1 30); do
+    if service_running; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+sleep 2
+ok=0
+for attempt in 1 2 3; do
+  log "relaunch attempt $attempt"
+  stop_service
+  if start_service && wait_running; then
+    ok=1
+    break
+  fi
+  log "attempt $attempt failed"
+  sleep 2
 done
+# Recovery: one more load without stop (in case bootout left job missing).
+if [ "$ok" -ne 1 ]; then
+  log "recovery: final load -w"
+  /bin/launchctl load -w "$PLIST" 2>>"$LOG_FILE" || true
+  if wait_running; then ok=1; fi
+fi
 if [ "$ok" -eq 1 ]; then
   log "process/service running"
   notify "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요."
   exit 0
 fi
-log "FAILED: process not observed within timeout"
-notify "⚠️ 설치는 완료됐지만 기동 확인에 실패했어요. 수동 재시작이 필요할 수 있어요. 로그: \\`~/.dab/logs/supervised-relaunch.log\\`"
+log "FAILED: service down after stop+start retries"
+notify "⚠️ 설치는 완료됐지만 서비스 재기동에 실패했어요(봇이 내려가 있을 수 있음). 수동: launchctl load -w $PLIST 또는 install.sh. 로그: ~/.dab/logs/supervised-relaunch.log"
 exit 1
 """
 }
@@ -748,12 +786,11 @@ public func spawnDetachedDab(path: String, args: [String] = [], environment: [St
     }
 }
 
-/// Homebrew installs restart via `brew services restart dab` — the command that would trigger the
-/// restart is issued from inside the very process launchd is about to kill, so install → verify →
-/// rollback cannot run here; a fully detached script (installed by the tap) must own that sequence
-/// and report the outcome to Discord itself. Returns false (caller falls back to the in-process
-/// install path) unless both `DAB_INSTALL_METHOD=homebrew` and `DAB_HOMEBREW_UPDATE_SCRIPT` are set;
-/// true once the script has been spawned (never waits for it).
+/// Homebrew installs restart via `brew services` from a detached tap script — the process
+/// being replaced cannot safely own upgrade → verify → rollback. Returns true once the script
+/// has been spawned (never waits for it). Returns false when env is incomplete or spawn fails;
+/// callers that detect Homebrew (`DAB_INSTALL_METHOD=homebrew`) must **not** fall through to the
+/// source install path (dual-path block in `AutoUpdater.approve`).
 public func triggerHomebrewSelfUpdateIfConfigured(
     applicationId: String,
     interactionToken: String,
@@ -764,6 +801,11 @@ public func triggerHomebrewSelfUpdateIfConfigured(
 ) -> Bool {
     guard env["DAB_INSTALL_METHOD"] == "homebrew" else { return false }
     guard let script = env["DAB_HOMEBREW_UPDATE_SCRIPT"], !script.isEmpty else { return false }
+    // Refuse dual path early when the tap script is missing or not executable.
+    var isDir: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: script, isDirectory: &isDir), !isDir.boolValue else {
+        return false
+    }
     return spawnDetached(script, [applicationId, interactionToken], [:])
 }
 

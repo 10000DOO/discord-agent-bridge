@@ -92,8 +92,8 @@ func startAutoUpdater(client: any DiscordClient) async {
                 return .manualRestartRequired
             }
             let strategy = detectRestartStrategy(RestartDetectDeps())
-            // Homebrew installs should use homebrewTrigger (self-update.sh) when configured.
-            // Only fall through here when not homebrew, or trigger returned false (missing script).
+            // Source/install.sh path only. Homebrew installs never reach here: approve blocks
+            // dual path when DAB_INSTALL_METHOD=homebrew (self-update.sh owns install+restart).
             return await performRestart(
                 RestartPerformDeps(
                     strategy: strategy,

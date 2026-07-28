@@ -45,6 +45,8 @@ public struct UpdateMessages: Sendable, Equatable {
     /// Approve delegated to a Homebrew tap's detached self-update script (install/restart/result
     /// all happen outside this process).
     public var homebrewInProgress: String
+    /// Homebrew install but self-update script unavailable — do not fall through to source install.
+    public var homebrewUnavailable: String
 
     public init(
         busy: String,
@@ -54,7 +56,8 @@ public struct UpdateMessages: Sendable, Equatable {
         dismissed: String,
         manualOnly: String,
         restartFailed: String,
-        homebrewInProgress: String
+        homebrewInProgress: String,
+        homebrewUnavailable: String
     ) {
         self.busy = busy
         self.restartRequested = restartRequested
@@ -64,6 +67,7 @@ public struct UpdateMessages: Sendable, Equatable {
         self.manualOnly = manualOnly
         self.restartFailed = restartFailed
         self.homebrewInProgress = homebrewInProgress
+        self.homebrewUnavailable = homebrewUnavailable
     }
 
     public static let korean = UpdateMessages(
@@ -74,7 +78,8 @@ public struct UpdateMessages: Sendable, Equatable {
         dismissed: UpdateLabels.dismissed,
         manualOnly: UpdateLabels.manualOnly,
         restartFailed: UpdateLabels.restartFailed,
-        homebrewInProgress: UpdateLabels.homebrewInProgress
+        homebrewInProgress: UpdateLabels.homebrewInProgress,
+        homebrewUnavailable: UpdateLabels.homebrewUnavailable
     )
 }
 
@@ -159,6 +164,9 @@ public struct AutoUpdaterDeps: Sendable {
     /// When present and it returns true, `approve` skips the in-process install/restart entirely —
     /// a detached script owns install → verify → rollback and announces the result itself.
     public var homebrewTrigger: (@Sendable (String, String) -> Bool)?
+    /// True when this process is a Homebrew install (`DAB_INSTALL_METHOD=homebrew`).
+    /// When true, in-process git/install.sh + brew restart is **never** used (blocks dual path).
+    public var isHomebrewInstall: @Sendable () -> Bool
     public var messages: UpdateMessages
     public var onLog: @Sendable (String) -> Void
 
@@ -175,6 +183,9 @@ public struct AutoUpdaterDeps: Sendable {
         install: (@Sendable () async -> UpdateInstallResult)? = nil,
         restart: (@Sendable (RestartRequest) async -> RestartResult)? = nil,
         homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil,
+        isHomebrewInstall: @escaping @Sendable () -> Bool = {
+            ProcessInfo.processInfo.environment["DAB_INSTALL_METHOD"] == "homebrew"
+        },
         messages: UpdateMessages = .korean,
         onLog: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -190,6 +201,7 @@ public struct AutoUpdaterDeps: Sendable {
         self.install = install
         self.restart = restart
         self.homebrewTrigger = homebrewTrigger
+        self.isHomebrewInstall = isHomebrewInstall
         self.messages = messages
         self.onLog = onLog
     }
@@ -324,11 +336,18 @@ public actor AutoUpdater {
         }
         await ctx.disableButtons()
 
-        if let homebrewTrigger = deps.homebrewTrigger,
-           homebrewTrigger(ctx.applicationId, ctx.interactionToken)
-        {
-            await ctx.ack(deps.messages.homebrewInProgress)
-            deps.onLog("auto-update: approve \(version) — delegated to Homebrew self-update script")
+        // Homebrew: exclusive path — never fall through to git pull + install.sh + brew restart
+        // (that dual path caused double restarts / wrong install root).
+        if deps.isHomebrewInstall() {
+            if let homebrewTrigger = deps.homebrewTrigger,
+               homebrewTrigger(ctx.applicationId, ctx.interactionToken)
+            {
+                await ctx.ack(deps.messages.homebrewInProgress)
+                deps.onLog("auto-update: approve \(version) — delegated to Homebrew self-update script")
+                return
+            }
+            await ctx.ack(deps.messages.homebrewUnavailable)
+            deps.onLog("auto-update: approve \(version) — homebrew install but self-update script unavailable; blocked in-process path")
             return
         }
 
@@ -356,7 +375,7 @@ public actor AutoUpdater {
             updating = false
             return
         }
-        // "재시작 요청" is distinct from final "기동 확인" (supervised path confirms via webhook).
+        // "재시작 요청" ≠ "기동 확인". Spawn of helper only means the request was accepted.
         await ctx.ack(deps.messages.restartRequested)
         let restartResult = await restart(RestartRequest(
             applicationId: ctx.applicationId,
@@ -364,8 +383,9 @@ public actor AutoUpdater {
             notify: { text in await ctx.ack(text) }
         ))
         if restartResult == .manualRestartRequired {
+            // Helper failed to *spawn* — service was not torn down yet.
             await ctx.ack(deps.messages.restartFailed)
-            deps.onLog("auto-update: install ok for \(version) — relaunch failed to start")
+            deps.onLog("auto-update: install ok for \(version) — relaunch helper failed to spawn")
         }
         // If restart returns (tests / dry-run / spawn-only), release guard.
         // Production supervised path typically exits the process after spawning the helper.

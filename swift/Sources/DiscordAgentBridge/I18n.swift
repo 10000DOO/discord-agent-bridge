@@ -331,6 +331,8 @@ public enum I18n {
             "⚠️ 설치는 완료됐지만 서비스 재기동에 실패했어요. `launchctl`/`brew services`로 수동 재시작해 주세요. 로그: `~/.dab/logs/supervised-relaunch.log`",
         "update.homebrewInProgress":
             "설치를 시작했어요. 몇 분 안에 재시작 결과를 별도로 알려드릴게요.",
+        "update.homebrewUnavailable":
+            "이 설치는 Homebrew인데 자동 업데이트 스크립트를 찾지 못했어요. 소스 설치 경로는 쓰지 않습니다. 터미널에서 `brew update && brew upgrade dab && brew services restart dab` 를 실행해 주세요.",
         "update.upToDate": "최신 버전이에요.",
         "update.checkFailed": "버전 확인에 실패했어요 (네트워크/레지스트리).",
         "update.disabled": "자동 업데이트가 꺼져 있어요 (`autoUpdate.enabled=false`).",
@@ -654,6 +656,8 @@ public enum I18n {
             "⚠️ Installed, but service relaunch failed. Restart manually via launchctl/brew services. Log: `~/.dab/logs/supervised-relaunch.log`",
         "update.homebrewInProgress":
             "Installation started. I’ll let you know the restart result separately in a few minutes.",
+        "update.homebrewUnavailable":
+            "This install is Homebrew but the self-update script was not found. The source-install path will not run. Run `brew update && brew upgrade dab && brew services restart dab` in a terminal.",
         "update.upToDate": "Already up to date.",
         "update.checkFailed": "Version check failed (network/registry).",
         "update.disabled": "Auto-update is off (`autoUpdate.enabled=false`).",

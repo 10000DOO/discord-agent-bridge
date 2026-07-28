@@ -72,6 +72,8 @@ public enum UpdateLabels {
     public static var manualRestartRequired: String { restartFailed }
     /// Approve path delegated to a Homebrew tap's detached self-update script.
     public static var homebrewInProgress: String { I18n.t("update.homebrewInProgress") }
+    /// `DAB_INSTALL_METHOD=homebrew` but self-update script missing — refuse in-process dual path.
+    public static var homebrewUnavailable: String { I18n.t("update.homebrewUnavailable") }
     public static var upToDate: String { I18n.t("update.upToDate") }
     public static var checkFailed: String { I18n.t("update.checkFailed") }
     public static var disabled: String { I18n.t("update.disabled") }

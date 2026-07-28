@@ -330,12 +330,22 @@ struct RestartStrategyTests {
 
 @Suite("triggerHomebrewSelfUpdateIfConfigured")
 struct TriggerHomebrewSelfUpdateTests {
-    @Test func spawnsDetachedScriptWhenBothEnvVarsSet() {
+    private func tempExecutableScript() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-hb-self-update-\(UUID().uuidString).sh")
+        try "#!/bin/bash\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    @Test func spawnsDetachedScriptWhenBothEnvVarsSet() throws {
+        let script = try tempExecutableScript()
+        defer { try? FileManager.default.removeItem(at: script) }
         let spawnCalls = LockedBox<[(String, [String], [String: String])]>([])
         let handled = triggerHomebrewSelfUpdateIfConfigured(
             applicationId: "app-1",
             interactionToken: "token-1",
-            env: ["DAB_INSTALL_METHOD": "homebrew", "DAB_HOMEBREW_UPDATE_SCRIPT": "/opt/homebrew/opt/dab/self-update.sh"],
+            env: ["DAB_INSTALL_METHOD": "homebrew", "DAB_HOMEBREW_UPDATE_SCRIPT": script.path],
             spawnDetached: { path, args, environment in
                 spawnCalls.withLock { $0.append((path, args, environment)) }
                 return true
@@ -344,16 +354,33 @@ struct TriggerHomebrewSelfUpdateTests {
         #expect(handled)
         let calls = spawnCalls.withLock { $0 }
         #expect(calls.count == 1)
-        #expect(calls[0].0 == "/opt/homebrew/opt/dab/self-update.sh")
+        #expect(calls[0].0 == script.path)
         #expect(calls[0].1 == ["app-1", "token-1"])
     }
 
-    @Test func returnsFalseWhenNotInstalledViaHomebrew() {
+    @Test func returnsFalseWhenScriptFileMissing() {
         let spawnCalls = LockedBox(0)
         let handled = triggerHomebrewSelfUpdateIfConfigured(
             applicationId: "app-1",
             interactionToken: "token-1",
-            env: ["DAB_HOMEBREW_UPDATE_SCRIPT": "/opt/homebrew/opt/dab/self-update.sh"],
+            env: [
+                "DAB_INSTALL_METHOD": "homebrew",
+                "DAB_HOMEBREW_UPDATE_SCRIPT": "/tmp/dab-missing-self-update-\(UUID().uuidString).sh",
+            ],
+            spawnDetached: { _, _, _ in spawnCalls.withLock { $0 += 1 }; return true }
+        )
+        #expect(!handled)
+        #expect(spawnCalls.withLock { $0 } == 0)
+    }
+
+    @Test func returnsFalseWhenNotInstalledViaHomebrew() throws {
+        let script = try tempExecutableScript()
+        defer { try? FileManager.default.removeItem(at: script) }
+        let spawnCalls = LockedBox(0)
+        let handled = triggerHomebrewSelfUpdateIfConfigured(
+            applicationId: "app-1",
+            interactionToken: "token-1",
+            env: ["DAB_HOMEBREW_UPDATE_SCRIPT": script.path],
             spawnDetached: { _, _, _ in spawnCalls.withLock { $0 += 1 }; return true }
         )
         #expect(!handled)
@@ -382,6 +409,75 @@ struct TriggerHomebrewSelfUpdateTests {
         )
         #expect(!handled)
         #expect(spawnCalls.withLock { $0 } == 0)
+    }
+}
+
+/// E2E-ish: capture generated supervised relaunch scripts and assert recovery/webhook contracts.
+@Suite("supervised relaunch script contracts")
+struct SupervisedRelaunchScriptContractTests {
+    private func captureScript(
+        env: [String: String],
+        applicationId: String = "app-e2e",
+        interactionToken: String = "tok-e2e"
+    ) -> (ok: Bool, path: String, args: [String], extra: [String: String], body: String) {
+        let captured = LockedBox<(String, [String], [String: String], String)>(("", [], [:], ""))
+        let ok = relaunchSupervisedService(
+            label: "com.discord-agent-bridge.test",
+            home: "/tmp/dab-e2e-home",
+            env: env,
+            applicationId: applicationId,
+            interactionToken: interactionToken,
+            spawnDetached: { path, args, extra in
+                var body = ""
+                if let scriptPath = args.first,
+                   let text = try? String(contentsOfFile: scriptPath, encoding: .utf8)
+                {
+                    body = text
+                    // Clean up temp script so the suite does not litter /tmp.
+                    try? FileManager.default.removeItem(atPath: scriptPath)
+                }
+                captured.withLock { $0 = (path, args, extra, body) }
+                return true
+            }
+        )
+        let snap = captured.withLock { $0 }
+        return (ok, snap.0, snap.1, snap.2, snap.3)
+    }
+
+    @Test func launchdScriptHasWebhookRetriesAndLoadRecovery() {
+        let r = captureScript(env: [:])
+        #expect(r.ok)
+        #expect(r.path == "/bin/bash")
+        #expect(r.args.count == 1)
+        #expect(r.extra["DAB_RELAUNCH_APP_ID"] == "app-e2e")
+        #expect(r.extra["DAB_RELAUNCH_TOKEN"] == "tok-e2e")
+        #expect(!r.body.isEmpty)
+        #expect(r.body.contains("wait=true"))
+        #expect(r.body.contains("for try in 1 2 3 4 5"))
+        #expect(r.body.contains("recovery: final load -w"))
+        #expect(r.body.contains("launchctl load -w"))
+        #expect(r.body.contains("bootout"))
+        #expect(r.body.contains("for attempt in 1 2 3"))
+        #expect(r.body.contains("trap cleanup EXIT"))
+        #expect(r.body.contains("json_escape"))
+    }
+
+    @Test func brewScriptHasStopStartRetriesAndWebhookRetries() {
+        let r = captureScript(env: ["DAB_INSTALL_METHOD": "homebrew"])
+        #expect(r.ok)
+        #expect(!r.body.isEmpty)
+        #expect(r.body.contains("wait=true"))
+        #expect(r.body.contains("for try in 1 2 3 4 5"))
+        #expect(r.body.contains("brew services stop dab"))
+        #expect(r.body.contains("brew services start dab"))
+        #expect(r.body.contains("for attempt in 1 2 3"))
+        #expect(r.body.contains("brew_dab_started"))
+    }
+
+    @Test func webhookSkippedWhenTokenEmptyStillSpawns() {
+        let r = captureScript(env: [:], applicationId: "", interactionToken: "")
+        #expect(r.ok)
+        #expect(r.body.contains("webhook skipped (no app id/token)"))
     }
 }
 
