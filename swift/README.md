@@ -3,7 +3,7 @@
 SwiftPM package for **discord-agent-bridge** — product binary `dab` and library `DiscordAgentBridge`.
 
 - **User guide:** [`../README.md`](../README.md) · [`../README.ko.md`](../README.ko.md)
-- **Claude sidecar protocol:** [`../CLAUDE_SIDECAR_PROTOCOL.md`](../CLAUDE_SIDECAR_PROTOCOL.md)
+- **Claude sidecar protocol:** [`../docs/CLAUDE_SIDECAR_PROTOCOL.md`](../docs/CLAUDE_SIDECAR_PROTOCOL.md) (local `docs/`, gitignored)
 - **Discord library:** [DiscordBM](https://github.com/DiscordBM/DiscordBM) (executable `dab` only)
 - **Library target:** Foundation + sqlite3 (Claude sidecar client, Codex app-server, Grok ACP) — no DiscordBM
 

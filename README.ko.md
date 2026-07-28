@@ -346,7 +346,7 @@ Discord  ◄──►  dab (Swift / DiscordBM)
 
 - **Claude**는 항상 Node 사이드카를 거칩니다(자동 스폰). Claude를 쓰면 체크아웃에 `npm install`이 필요합니다.
 - **Codex / Grok**은 Swift 네이티브 클라이언트이며, 해당 CLI만 `PATH`에 있으면 됩니다.
-- Claude 사이드카 프로토콜: [`CLAUDE_SIDECAR_PROTOCOL.md`](CLAUDE_SIDECAR_PROTOCOL.md).
+- Claude 사이드카 프로토콜: [`docs/CLAUDE_SIDECAR_PROTOCOL.md`](docs/CLAUDE_SIDECAR_PROTOCOL.md) (로컬 `docs/`, gitignore).
 
 패키지 구조: [`swift/README.md`](swift/README.md).
 

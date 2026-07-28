@@ -346,7 +346,7 @@ Discord  ◄──►  dab (Swift / DiscordBM)
 
 - **Claude** always goes through the Node sidecar (spawned automatically). Keep a full checkout with `npm install` if you use Claude.
 - **Codex / Grok** use native Swift clients; only the matching CLI on `PATH` is required.
-- Protocol notes for the Claude sidecar: [`CLAUDE_SIDECAR_PROTOCOL.md`](CLAUDE_SIDECAR_PROTOCOL.md).
+- Protocol notes for the Claude sidecar: [`docs/CLAUDE_SIDECAR_PROTOCOL.md`](docs/CLAUDE_SIDECAR_PROTOCOL.md) (local `docs/`, gitignored).
 
 Package layout: [`swift/README.md`](swift/README.md).
 
