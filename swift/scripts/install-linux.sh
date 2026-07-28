@@ -67,6 +67,7 @@ Type=simple
 ExecStart=/bin/bash $RUN_SCRIPT
 Restart=always
 RestartSec=5
+KillMode=process
 StandardOutput=append:$OUT_LOG
 StandardError=append:$ERR_LOG
 

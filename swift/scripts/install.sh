@@ -132,6 +132,8 @@ gen_plist() {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>AbandonProcessGroup</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>$OUT_LOG</string>
   <key>StandardErrorPath</key>
