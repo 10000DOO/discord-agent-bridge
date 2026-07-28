@@ -323,6 +323,8 @@ public enum I18n {
             "자동 설치 경로를 찾지 못했어요. 전체 체크아웃에서 `bash swift/scripts/install.sh`로 수동 업데이트하세요.",
         "update.manualRestartRequired":
             "✅ 설치는 완료됐지만 안전한 자동 재시작을 확인할 수 없어요. 현재 서비스를 수동으로 재시작해 주세요.",
+        "update.homebrewInProgress":
+            "설치를 시작했어요. 몇 분 안에 재시작 결과를 별도로 알려드릴게요.",
         "update.upToDate": "최신 버전이에요.",
         "update.checkFailed": "버전 확인에 실패했어요 (네트워크/레지스트리).",
         "update.disabled": "자동 업데이트가 꺼져 있어요 (`autoUpdate.enabled=false`).",
@@ -638,6 +640,8 @@ public enum I18n {
             "Could not find an auto-install path. From a full checkout run `bash swift/scripts/install.sh` to update manually.",
         "update.manualRestartRequired":
             "✅ Installation completed, but a safe automatic restart could not be confirmed. Restart the current service manually.",
+        "update.homebrewInProgress":
+            "Installation started. I’ll let you know the restart result separately in a few minutes.",
         "update.upToDate": "Already up to date.",
         "update.checkFailed": "Version check failed (network/registry).",
         "update.disabled": "Auto-update is off (`autoUpdate.enabled=false`).",

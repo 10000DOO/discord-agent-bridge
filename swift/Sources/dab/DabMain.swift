@@ -1178,6 +1178,8 @@ struct EventHandler: GatewayEventHandler {
             actorId: actorId,
             guildId: guildId,
             channelId: channelId,
+            applicationId: payload.application_id.rawValue,
+            interactionToken: payload.token,
             ack: { [client] text in
                 _ = try? await client.createFollowupMessage(
                     appId: payload.application_id,

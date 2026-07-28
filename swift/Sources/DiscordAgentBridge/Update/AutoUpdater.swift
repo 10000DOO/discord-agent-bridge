@@ -39,6 +39,9 @@ public struct UpdateMessages: Sendable, Equatable {
     public var manualOnly: String
     /// Install succeeded but no verified process handoff was possible.
     public var manualRestartRequired: String
+    /// Approve delegated to a Homebrew tap's detached self-update script (install/restart/result
+    /// all happen outside this process).
+    public var homebrewInProgress: String
 
     public init(
         busy: String,
@@ -46,7 +49,8 @@ public struct UpdateMessages: Sendable, Equatable {
         installFailed: String,
         dismissed: String,
         manualOnly: String,
-        manualRestartRequired: String
+        manualRestartRequired: String,
+        homebrewInProgress: String
     ) {
         self.busy = busy
         self.installed = installed
@@ -54,6 +58,7 @@ public struct UpdateMessages: Sendable, Equatable {
         self.dismissed = dismissed
         self.manualOnly = manualOnly
         self.manualRestartRequired = manualRestartRequired
+        self.homebrewInProgress = homebrewInProgress
     }
 
     public static let korean = UpdateMessages(
@@ -62,7 +67,8 @@ public struct UpdateMessages: Sendable, Equatable {
         installFailed: UpdateLabels.installFailed,
         dismissed: UpdateLabels.dismissed,
         manualOnly: UpdateLabels.manualOnly,
-        manualRestartRequired: UpdateLabels.manualRestartRequired
+        manualRestartRequired: UpdateLabels.manualRestartRequired,
+        homebrewInProgress: UpdateLabels.homebrewInProgress
     )
 }
 
@@ -70,6 +76,11 @@ public struct UpdateDecisionCtx: Sendable {
     public var actorId: String
     public var guildId: String
     public var channelId: String
+    /// Discord application id — forwarded to a Homebrew self-update script so it can announce
+    /// its result via that interaction's followup webhook, without this bot process involved.
+    public var applicationId: String
+    /// Interaction token for the same followup webhook.
+    public var interactionToken: String
     public var ack: @Sendable (String) async -> Void
     public var disableButtons: @Sendable () async -> Void
 
@@ -77,12 +88,16 @@ public struct UpdateDecisionCtx: Sendable {
         actorId: String,
         guildId: String,
         channelId: String,
+        applicationId: String,
+        interactionToken: String,
         ack: @escaping @Sendable (String) async -> Void,
         disableButtons: @escaping @Sendable () async -> Void
     ) {
         self.actorId = actorId
         self.guildId = guildId
         self.channelId = channelId
+        self.applicationId = applicationId
+        self.interactionToken = interactionToken
         self.ack = ack
         self.disableButtons = disableButtons
     }
@@ -116,6 +131,10 @@ public struct AutoUpdaterDeps: Sendable {
     /// The callback is invoked only after a successor has reached READY and immediately before
     /// the old process exits. A deferred/failed handoff returns `.manualRestartRequired` instead.
     public var restart: (@Sendable (@escaping @Sendable () async -> Void) async -> RestartResult)?
+    /// Optional Homebrew self-update delegate `(applicationId, interactionToken) -> handled`.
+    /// When present and it returns true, `approve` skips the in-process install/restart entirely —
+    /// a detached script owns install → verify → rollback and announces the result itself.
+    public var homebrewTrigger: (@Sendable (String, String) -> Bool)?
     public var messages: UpdateMessages
     public var onLog: @Sendable (String) -> Void
 
@@ -131,6 +150,7 @@ public struct AutoUpdaterDeps: Sendable {
         announce: @escaping @Sendable (String) async -> Void = { _ in },
         install: (@Sendable () async -> UpdateInstallResult)? = nil,
         restart: (@Sendable (@escaping @Sendable () async -> Void) async -> RestartResult)? = nil,
+        homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil,
         messages: UpdateMessages = .korean,
         onLog: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -145,6 +165,7 @@ public struct AutoUpdaterDeps: Sendable {
         self.announce = announce
         self.install = install
         self.restart = restart
+        self.homebrewTrigger = homebrewTrigger
         self.messages = messages
         self.onLog = onLog
     }
@@ -277,8 +298,17 @@ public actor AutoUpdater {
             await ctx.ack(deps.messages.busy)
             return
         }
-        updating = true
         await ctx.disableButtons()
+
+        if let homebrewTrigger = deps.homebrewTrigger,
+           homebrewTrigger(ctx.applicationId, ctx.interactionToken)
+        {
+            await ctx.ack(deps.messages.homebrewInProgress)
+            deps.onLog("auto-update: approve \(version) — delegated to Homebrew self-update script")
+            return
+        }
+
+        updating = true
 
         guard let install = deps.install else {
             await ctx.ack(deps.messages.manualOnly)

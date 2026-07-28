@@ -64,6 +64,8 @@ public enum UpdateLabels {
     public static var manualOnly: String { I18n.t("update.manualOnly") }
     /// Install succeeded but the current process could not prove a safe replacement handoff.
     public static var manualRestartRequired: String { I18n.t("update.manualRestartRequired") }
+    /// Approve path delegated to a Homebrew tap's detached self-update script.
+    public static var homebrewInProgress: String { I18n.t("update.homebrewInProgress") }
     public static var upToDate: String { I18n.t("update.upToDate") }
     public static var checkFailed: String { I18n.t("update.checkFailed") }
     public static var disabled: String { I18n.t("update.disabled") }

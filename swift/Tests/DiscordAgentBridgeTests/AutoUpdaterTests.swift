@@ -114,6 +114,34 @@ struct AutoUpdaterDecisionTests {
         #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.manualRestartRequired])
     }
 
+    @Test func approveDelegatesToHomebrewTriggerAndSkipsInstall() async {
+        let triggerCallsBox = LockedBox<[(String, String)]>([])
+        let h = UpdateHarness(withInstall: true, homebrewTrigger: { appId, token in
+            triggerCallsBox.withLock { $0.append((appId, token)) }
+            return true
+        })
+        let ctx = DecisionProbe()
+        await h.updater.approve("1.1.0", ctx: ctx.asCtx())
+        #expect(triggerCallsBox.withLock { $0 }.count == 1)
+        #expect(triggerCallsBox.withLock { $0 }[0].0 == "app-1")
+        #expect(triggerCallsBox.withLock { $0 }[0].1 == "token-1")
+        #expect(ctx.disabled == 1)
+        #expect(ctx.acks == [UpdateLabels.homebrewInProgress])
+        #expect(h.installCallsBox.withLock { $0 } == 0)
+        #expect(h.restartCallsBox.withLock { $0 } == 0)
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+    }
+
+    @Test func approveFallsBackToInstallWhenHomebrewTriggerReturnsFalse() async {
+        let h = UpdateHarness(withInstall: true, homebrewTrigger: { _, _ in false })
+        let ctx = DecisionProbe()
+        await h.updater.approve("1.1.0", ctx: ctx.asCtx())
+        #expect(ctx.disabled == 1)
+        #expect(h.installCallsBox.withLock { $0 } == 1)
+        #expect(h.restartCallsBox.withLock { $0 } == 1)
+        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installed])
+    }
+
     @Test func dismissPersistsAndAcks() async {
         let h = UpdateHarness()
         let ctx = DecisionProbe()
@@ -202,6 +230,8 @@ private final class DecisionProbe: @unchecked Sendable {
             actorId: "admin-1",
             guildId: "g1",
             channelId: "c1",
+            applicationId: "app-1",
+            interactionToken: "token-1",
             ack: { [acksBox] t in acksBox.withLock { $0.append(t) } },
             disableButtons: { [disabledBox] in disabledBox.withLock { $0 += 1 } }
         )
@@ -226,7 +256,8 @@ private final class UpdateHarness: @unchecked Sendable {
         restartResult: RestartResult = .handedOff,
         postPromptAvailable: Bool = true,
         intervalMs: Int = updateDefaultIntervalMs,
-        fetchLatest: (@Sendable () async -> String?)? = nil
+        fetchLatest: (@Sendable () async -> String?)? = nil,
+        homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil
     ) {
         let metaBox = LockedBox(AutoUpdateMeta())
         let postsBox = LockedBox<[String]>([])
@@ -277,6 +308,7 @@ private final class UpdateHarness: @unchecked Sendable {
                 if restartResult == .handedOff { await onHandoff() }
                 return restartResult
             },
+            homebrewTrigger: homebrewTrigger,
             messages: .korean,
             onLog: { _ in }
         )

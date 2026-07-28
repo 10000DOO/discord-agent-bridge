@@ -311,6 +311,63 @@ struct RestartStrategyTests {
     }
 }
 
+@Suite("triggerHomebrewSelfUpdateIfConfigured")
+struct TriggerHomebrewSelfUpdateTests {
+    @Test func spawnsDetachedScriptWhenBothEnvVarsSet() {
+        let spawnCalls = LockedBox<[(String, [String], [String: String])]>([])
+        let handled = triggerHomebrewSelfUpdateIfConfigured(
+            applicationId: "app-1",
+            interactionToken: "token-1",
+            env: ["DAB_INSTALL_METHOD": "homebrew", "DAB_HOMEBREW_UPDATE_SCRIPT": "/opt/homebrew/opt/dab/self-update.sh"],
+            spawnDetached: { path, args, environment in
+                spawnCalls.withLock { $0.append((path, args, environment)) }
+                return true
+            }
+        )
+        #expect(handled)
+        let calls = spawnCalls.withLock { $0 }
+        #expect(calls.count == 1)
+        #expect(calls[0].0 == "/opt/homebrew/opt/dab/self-update.sh")
+        #expect(calls[0].1 == ["app-1", "token-1"])
+    }
+
+    @Test func returnsFalseWhenNotInstalledViaHomebrew() {
+        let spawnCalls = LockedBox(0)
+        let handled = triggerHomebrewSelfUpdateIfConfigured(
+            applicationId: "app-1",
+            interactionToken: "token-1",
+            env: ["DAB_HOMEBREW_UPDATE_SCRIPT": "/opt/homebrew/opt/dab/self-update.sh"],
+            spawnDetached: { _, _, _ in spawnCalls.withLock { $0 += 1 }; return true }
+        )
+        #expect(!handled)
+        #expect(spawnCalls.withLock { $0 } == 0)
+    }
+
+    @Test func returnsFalseWhenScriptEnvMissing() {
+        let spawnCalls = LockedBox(0)
+        let handled = triggerHomebrewSelfUpdateIfConfigured(
+            applicationId: "app-1",
+            interactionToken: "token-1",
+            env: ["DAB_INSTALL_METHOD": "homebrew"],
+            spawnDetached: { _, _, _ in spawnCalls.withLock { $0 += 1 }; return true }
+        )
+        #expect(!handled)
+        #expect(spawnCalls.withLock { $0 } == 0)
+    }
+
+    @Test func returnsFalseWhenScriptEnvEmpty() {
+        let spawnCalls = LockedBox(0)
+        let handled = triggerHomebrewSelfUpdateIfConfigured(
+            applicationId: "app-1",
+            interactionToken: "token-1",
+            env: ["DAB_INSTALL_METHOD": "homebrew", "DAB_HOMEBREW_UPDATE_SCRIPT": ""],
+            spawnDetached: { _, _, _ in spawnCalls.withLock { $0 += 1 }; return true }
+        )
+        #expect(!handled)
+        #expect(spawnCalls.withLock { $0 } == 0)
+    }
+}
+
 @Suite("PID file (H17)")
 struct PidFileTests {
     private func tempDir() -> URL {

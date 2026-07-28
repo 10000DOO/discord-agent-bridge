@@ -103,6 +103,9 @@ func startAutoUpdater(client: any DiscordClient) async {
                 onHandoff: onHandoff
             )
         },
+        homebrewTrigger: { applicationId, interactionToken in
+            triggerHomebrewSelfUpdateIfConfigured(applicationId: applicationId, interactionToken: interactionToken)
+        },
         messages: .korean,
         onLog: { msg in log.info(msg) }
     ))

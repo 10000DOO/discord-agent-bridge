@@ -583,6 +583,25 @@ public func spawnDetachedDab(path: String, args: [String] = [], environment: [St
     }
 }
 
+/// Homebrew installs restart via `brew services restart dab` — the command that would trigger the
+/// restart is issued from inside the very process launchd is about to kill, so install → verify →
+/// rollback cannot run here; a fully detached script (installed by the tap) must own that sequence
+/// and report the outcome to Discord itself. Returns false (caller falls back to the in-process
+/// install path) unless both `DAB_INSTALL_METHOD=homebrew` and `DAB_HOMEBREW_UPDATE_SCRIPT` are set;
+/// true once the script has been spawned (never waits for it).
+public func triggerHomebrewSelfUpdateIfConfigured(
+    applicationId: String,
+    interactionToken: String,
+    env: [String: String] = ProcessInfo.processInfo.environment,
+    spawnDetached: @escaping @Sendable (String, [String], [String: String]) -> Bool = { path, args, environment in
+        spawnDetachedDab(path: path, args: args, environment: environment)
+    }
+) -> Bool {
+    guard env["DAB_INSTALL_METHOD"] == "homebrew" else { return false }
+    guard let script = env["DAB_HOMEBREW_UPDATE_SCRIPT"], !script.isEmpty else { return false }
+    return spawnDetached(script, [applicationId, interactionToken], [:])
+}
+
 /// A respawned foreground bot writes this only after Discord's gateway emits READY. The old
 /// process waits for it before exiting, permitting the user-approved brief overlap safely.
 public func signalSuccessorReadyIfRequested(env: [String: String] = ProcessInfo.processInfo.environment) {
