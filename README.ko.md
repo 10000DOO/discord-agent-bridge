@@ -65,14 +65,32 @@ brew install 10000DOO/discord-agent-bridge/dab
 
 소스에서 `dab`을 빌드하고 Claude 사이드카까지 같이 npm install 해줍니다 — 따로 `npm install`을 돌릴 필요 없습니다. Node.js 20+ / Swift 6.1+ 가 이미 `PATH`에 있어야 합니다(위 준비물 참고) — Formula는 확인만 하고 설치·업그레이드는 해주지 않습니다.
 
-토큰을 설정하고 실행하세요:
+시크릿(`DISCORD_BOT_TOKEN` 등)은 아래 수동 설치와 동일하게 `~/.dab/env`(0600 권한) 파일에 넣습니다:
 
 ```bash
-export DISCORD_BOT_TOKEN=your_bot_token
+mkdir -p ~/.dab && touch ~/.dab/env && chmod 600 ~/.dab/env
+$EDITOR ~/.dab/env
+# DISCORD_BOT_TOKEN=...
+```
+
+한 번 실행(포그라운드):
+
+```bash
 dab
 ```
 
-이번 릴리스는 실행 파일만 설치합니다 — `brew services`는 아직 연결돼 있지 않습니다. 재부팅에도 살아남는 백그라운드 서비스가 필요하면 아래 수동(소스 빌드) 설치를 대신 쓰세요.
+또는 꺼져도(크래시·재부팅) 자동으로 다시 살아나는 백그라운드 서비스로 실행(`brew services`, launchd 기반):
+
+```bash
+brew services start dab      # 시작
+brew services list           # 상태 확인
+brew services restart dab    # ~/.dab/env 수정 후 재시작
+brew services stop dab       # 중지
+```
+
+로그: `$(brew --prefix)/var/log/dab.log` / `dab.error.log`
+
+> ⚠️ **같은 봇 토큰으로 두 개를 동시에 켜지 마세요.** 포그라운드 실행, `brew services`, 아래 수동(소스 빌드) 설치 전부 같은 `DISCORD_BOT_TOKEN`을 읽습니다. 같은 토큰으로 두 번째 인스턴스를 켜면 같은 봇 계정에 게이트웨이 연결이 하나 더 생깁니다 — 에러 없이 그냥 둘 다 떠 있으면서 응답이 중복되거나 꼬입니다. 봇 토큰 하나당 설치 방식은 하나만 쓰세요.
 
 ### macOS (수동 — 소스 빌드)
 

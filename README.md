@@ -65,14 +65,32 @@ brew install 10000DOO/discord-agent-bridge/dab
 
 Builds `dab` from source and npm-installs the Claude sidecar alongside it — no separate `npm install` step. Needs Node.js 20+ and Swift 6.1+ already on `PATH` (see Prerequisites above); the formula only checks for them, it won't install or upgrade either.
 
-Set the token, then run:
+Secrets (`DISCORD_BOT_TOKEN` etc.) live in `~/.dab/env` (0600) — same file the manual install below uses:
 
 ```bash
-export DISCORD_BOT_TOKEN=your_bot_token
+mkdir -p ~/.dab && touch ~/.dab/env && chmod 600 ~/.dab/env
+$EDITOR ~/.dab/env
+# DISCORD_BOT_TOKEN=...
+```
+
+Run once in the foreground:
+
+```bash
 dab
 ```
 
-This release only installs the binary — `brew services` isn't wired up yet. For a background service that survives reboots, use the manual (from-source) install below instead.
+Or run as a background service that auto-restarts on crash/reboot (launchd, via `brew services`):
+
+```bash
+brew services start dab      # start
+brew services list           # check status
+brew services restart dab    # after editing ~/.dab/env
+brew services stop dab       # stop
+```
+
+Logs: `$(brew --prefix)/var/log/dab.log` / `dab.error.log`.
+
+> ⚠️ **Don't run two instances with the same bot token at the same time.** `dab` (foreground, `brew services`, or the manual/from-source install below) all read the same `DISCORD_BOT_TOKEN`. Starting a second instance with that token opens a second gateway connection to the same bot account — it won't crash, it'll just run alongside the first one and cause duplicate/conflicting replies. Pick exactly one install method per bot token.
 
 ### macOS (manual — from source)
 
