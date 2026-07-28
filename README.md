@@ -2,22 +2,24 @@
 
 🌐 [한국어](README.ko.md) | **English**
 
-> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and more — per channel. Role-based access, multi-server, extensible.
+> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and custom backends — per channel. Role-based access, multi-server, extensible.
 
-**A self-hosted Discord bot that puts Claude Code (or Codex / Grok) into a Discord channel, running on your own machine.**
+**A self-hosted Discord bot that puts Claude Code, Codex, or Grok into a Discord channel, running on your own machine.**
 
-The **product path is Swift** (`dab`). Claude Code still needs a thin **Node (TypeScript) sidecar** because the official Agent SDK is Node-only. The old npm TypeScript standalone bot has been **removed from this repo** — TypeScript now exists solely as that Claude sidecar process.
+The product is a **Swift** binary (`dab`). Claude Code still uses a thin **Node sidecar** (official Agent SDK is Node-only). Codex and Grok talk to their CLIs natively over stdio — no Node required for those backends.
 
 ---
 
 ## Why this?
 
-- 🏠 **Fully self-hosted.** The bot runs on your PC. Your code, your sessions, and your CLI tokens never leave your machine.
-- 📱 **You don't need to be at your desk.** Fire off a task from Discord on your phone — streaming output, tool-run logs, and permission prompts all show up in the channel.
-- 🗂️ **One channel = one project = one session.** Each channel is bound to its own folder, backend, model, and permission mode. Isolated by design.
-- 👥 **Team-friendly by default.** Anyone in the channel can watch the session unfold. A 3-tier role system (admin / execute / read-only) controls who can actually run things.
-- 🔀 **Claude ⇄ Codex ⇄ Grok on the fly.** Switch backends with `/mode` (when the session is bound).
-- ⚙️ **Same power as the terminal.** Reads your project's `.claude/` and `.codex/` configs as-is — subagents, skills, hooks, MCP, and plugin commands work like they do in the CLI (Claude path via sidecar).
+- 🏠 **Fully self-hosted.** The bot runs on your PC. Code, sessions, and CLI tokens stay on your machine.
+- 📱 **Not tied to your desk.** Start a task from Discord on your phone — streaming output, tool logs, and permission prompts land in the channel.
+- 🗂️ **One channel = one project = one session.** Each channel binds its own folder, backend, model, effort, and permission mode.
+- 👥 **Team-friendly.** Anyone in the channel can watch the session. A 3-tier role system (admin / execute / read-only) controls who can run things.
+- 🔀 **Claude ⇄ Codex ⇄ Grok (and custom) on the fly.** Switch backends with `/mode` when a session is bound.
+- ⚙️ **Same power as the terminal.** Project `.claude/` / `.codex/` configs are used as-is — subagents, skills, hooks, MCP, and plugin commands behave like the CLI.
+- 💾 **Session presets.** Save backend/model/effort/perm combos per guild and restart sessions in two steps (folder → preset).
+- 🖼 **Rich answers.** GFM tables and Mermaid diagrams can render as PNG; tool runs open work threads with diffs; usage panels show Claude / Codex / Grok limits.
 
 ---
 
@@ -25,9 +27,9 @@ The **product path is Swift** (`dab`). Claude Code still needs a thin **Node (Ty
 
 | Requirement | Notes |
 |---|---|
-| **macOS 13+** | Primary target for the Swift product |
-| **Swift 6.1+** | Xcode or Command Line Tools |
-| **Node.js 20+** | **Claude only** — required to spawn the sidecar; not used for Codex/Grok |
+| **macOS 13+** (primary), or Linux / Windows with Swift | Product binary is SwiftPM `dab` |
+| **Swift 6.1+** | Xcode or Command Line Tools (Windows: Swift toolchain) |
+| **Node.js 20+** | **Claude only** — spawns the Claude sidecar; not needed for Codex/Grok |
 | Backend CLIs, installed & logged in | **Claude Code** (`claude` login or `ANTHROPIC_API_KEY`); **Codex** CLI; **Grok** CLI as needed |
 | **Discord bot token** | Step 1 below |
 
@@ -35,39 +37,39 @@ The **product path is Swift** (`dab`). Claude Code still needs a thin **Node (Ty
 
 ## Step 1 — Create a Discord bot
 
-You need your own bot. About 5 minutes.
+About 5 minutes.
 
-1. Open the **[Discord Developer Portal](https://discord.com/developers/applications)** → top-right **New Application** → give it a name (e.g. `my-agent-bot`) → **Create**.
-2. Left sidebar **Bot** tab → **Reset Token** → **copy the token** and stash it somewhere safe.
-   - ⚠️ This token is a password. If it leaks, hit **Reset Token** immediately.
-3. Still on the **Bot** tab, under **Privileged Gateway Intents**:
-   - ✅ **MESSAGE CONTENT INTENT** — **required** (the bot has to read message content)
-   - ✅ **SERVER MEMBERS INTENT** — recommended (used for role checks)
-   - Enable and **Save Changes**.
-4. Left sidebar **OAuth2** tab → copy the **Client ID (Application ID)**.
-5. **Build an invite link** — OAuth2 → **URL Generator**:
+1. Open the **[Discord Developer Portal](https://discord.com/developers/applications)** → **New Application** → name it (e.g. `my-agent-bot`) → **Create**.
+2. **Bot** tab → **Reset Token** → copy the token and store it safely.
+   - ⚠️ The token is a password. If it leaks, **Reset Token** immediately.
+3. Same **Bot** tab, under **Privileged Gateway Intents**:
+   - ✅ **MESSAGE CONTENT INTENT** — **required**
+   - ✅ **SERVER MEMBERS INTENT** — recommended (role checks)
+   - Save Changes.
+4. **OAuth2** → copy **Client ID (Application ID)**.
+5. **OAuth2 → URL Generator**:
    - **Scopes**: `bot`, `applications.commands`
    - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`
-   - Paste the generated URL into your browser and **invite it to your server**.
+   - Open the generated URL and invite the bot to your server.
 
 ---
 
-## Step 2 — Install & run (Swift)
+## Step 2 — Install & run
 
-Clone this repo (the Claude sidecar still resolves paths relative to the checkout), then install the binary as a per-user LaunchAgent:
+### macOS (recommended — LaunchAgent)
 
 ```bash
-git clone https://github.com/<you>/discord-agent-bridge.git
+git clone https://github.com/10000DOO/discord-agent-bridge.git
 cd discord-agent-bridge
-# Node deps only needed for Claude sidecar
+
+# Claude sidecar deps (skip if you only use Codex/Grok)
 npm install
 
 bash swift/scripts/install.sh
 # first install copies swift/deploy/env.example → ~/.dab/env (0600)
-# edit the token, then reload launchd if you already loaded once
 ```
 
-Edit secrets (token lives only here — never in the plist):
+Edit secrets (token lives **only** here — never in the plist):
 
 ```bash
 $EDITOR ~/.dab/env
@@ -81,14 +83,11 @@ launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist
 launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
 ```
 
-### One-shot (no launchd)
-
-From the **repo root** (so the sidecar can find `src/sidecar` / `node_modules`):
+Service helpers (after install):
 
 ```bash
-export DISCORD_BOT_TOKEN=your_bot_token
-# optional: DAB_CWD, DAB_PERM_MODE, DAB_TURN_TIMEOUT_SEC, DAB_DEV_GUILD_ID
-swift run --package-path swift dab
+dab service status    # or: ~/.dab/bin/dab service status
+dab service restart
 ```
 
 Uninstall (keeps `~/.dab/env` and logs):
@@ -97,157 +96,227 @@ Uninstall (keeps `~/.dab/env` and logs):
 bash swift/scripts/uninstall.sh
 ```
 
-### Paths (Swift)
+### Linux (systemd --user)
 
-| Path | Role |
-|---|---|
-| `~/.dab/bin/dab` | Release binary (install.sh) |
-| `~/.dab/env` | Secrets + env (0600) — token, optional `DAB_*` |
-| `~/.dab/run.sh` | Launcher: PATH + `cd` repo root + exec `dab` |
-| `~/Library/LaunchAgents/com.discord-agent-bridge.plist` | LaunchAgent (HOME only; no tokens) |
-| `~/.dab/logs/` | stdout / stderr |
-| `~/.discord-agent-bridge/` | **Config & state** (same layout as the legacy TS bot; override with `DAB_HOME`) |
-
-Config dir layout:
-
-| File | Role |
-|---|---|
-| `config.json` | Global config (auth roles, defaults, …) |
-| `servers/<guildId>.json` | Per-server overrides |
-| `swift-state.json` | Swift session bindings (versioned) |
-
-More detail: [`swift/README.md`](swift/README.md) · design: [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md).
-
-### Hybrid Claude sidecar (important)
-
-```
-Swift dab  ──stdio JSON-RPC──►  Node Claude sidecar  ──►  Claude Agent SDK
-Codex / Grok                 ──stdio (native clients)──►  their CLIs
+```bash
+bash swift/scripts/install-linux.sh
+# edit ~/.dab/env, then:
+systemctl --user restart discord-agent-bridge
+systemctl --user status discord-agent-bridge
 ```
 
-- **Swift always** talks to Claude through the Node sidecar process (spawned automatically).
-- You still need **Node + `npm install` in the checkout** for Claude mode; Codex/Grok do not need Node.
-- Override spawn with `DAB_CLAUDE_SIDECAR_CMD` if needed.
-- Protocol: [`CLAUDE_SIDECAR_PROTOCOL.md`](CLAUDE_SIDECAR_PROTOCOL.md).
+Uninstall: `bash swift/scripts/uninstall-linux.sh`
 
-> **`DAB_CLAUDE_SIDECAR=1`** is a **legacy TypeScript-main** switch only (opt-in sidecar inside the npm bot). The Swift product does not use that env var — it always uses the sidecar for Claude.
+### Windows (Task Scheduler / onlogon)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
+# edit %USERPROFILE%\.dab\env
+schtasks /Run /TN discord-agent-bridge
+```
+
+Uninstall: `install-windows.ps1 -Uninstall`
+
+### One-shot (no service)
+
+From the **repo root** (Claude sidecar resolves paths relative to the checkout):
+
+```bash
+export DISCORD_BOT_TOKEN=your_bot_token
+# optional: DAB_CWD, DAB_PERM_MODE, DAB_TURN_TIMEOUT_SEC, DAB_DEV_GUILD_ID
+swift run --package-path swift dab
+```
+
+On success:
+
+```text
+ready: username=<bot> id=<snowflake> app=<application id>
+```
 
 ---
 
-## Step 3 — Using it in Discord
+## Step 3 — Use it in Discord
 
 Typical flow: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel.
 
 1. **`/setup`** (admin) — control channel, sessions category, status channel (reuses existing).
-2. **`/config`** (admin) — role tiers + defaults (mode/model/effort/perm, dmPolicy) + notifications + **image/chromium render** sub-panels (enable + Install Chromium).
-3. **`/agent start`** — wizard: **folder → backend → model → effort → permission**. Folder browser supports navigate / create / native pick. On confirm, creates an A4D session channel when `/setup` has run, then binds it.
-4. In a bound channel, **send normal messages**. Prefix shortcuts still work: `!claude` / `!codex` / `!grok` / `!custom`.
+2. **`/config`** (admin) — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides.
+3. **`/agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/setup`, can create an A4D `proj-<folder>` channel under the sessions category and bind it.
+4. In a bound channel, **send normal messages**. Prefix shortcuts also work without the full wizard:
 
-### Key commands (Swift)
+```text
+!claude what files are in the current directory?
+!codex summarize the last commit
+!grok explain this error
+!custom <prompt>
+```
 
-| Command | Description |
-|---|---|
-| `/setup` | (admin) Provision control + sessions category + status |
-| `/agent start` | Wizard: bind backend / model / effort / perm (+ folder) |
-| `/agent resume` | Resume a previous session (binding layer) |
-| `/agent close` | End session (backend stop) |
-| `/agent stats` | Session stats + Claude/Grok usage where available |
-| `/mode` · `/model` · `/effort` · `/mode perm` | Live binding updates |
-| `/clear` | Fresh conversation, same config |
-| `/stop` · `/stop-all` | Interrupt current / all (admin) |
-| `/config` | (admin) Role tiers + core defaults |
-| `/doc` | Share a workspace markdown into a thread |
-| `/update` | (admin) Check npm registry for newer package version |
+### Slash commands
 
-Permission modes: `default` · `acceptEdits` · `plan` · `bypassPermissions` (and backend-specific profiles where catalogued). Default smoke path may still use `bypassPermissions` — prefer `default` when using the Allow/Deny UI.
-
-> **Parity note:** Swift is the product path at **~99% product parity** (port mainline complete; **P0–P2 gap backlog closed**). Residual is **W13-b product-deferred** (keep `bypassPermissions` default) and intentional **OK-DIFF** only — not incomplete mainline work. See [Compatibility matrix](#swift-vs-typescript-compatibility), [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0, and [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
-
----
-
-## Migrating from npm TypeScript → Swift `dab`
-
-If you already run `npm install -g discord-agent-bridge` / `discord-agent-bridge service install`:
-
-1. **Stop the legacy service** so two bots do not share the same token:
-   ```bash
-   discord-agent-bridge service uninstall   # or stop/status first
-   ```
-2. **Keep config** under `~/.discord-agent-bridge/` (or your `DAB_HOME`). Swift uses the **same directory and `config.json` / `servers/*.json` layout** for auth and defaults.
-3. **Session state is separate:** TS used `state.json`; Swift uses `swift-state.json` (versioned). Bindings are not auto-imported one-to-one — re-run `/agent start` (or restore via Swift resume paths) after switching.
-4. **Install Swift** with `bash swift/scripts/install.sh` from a full checkout that still has Node deps for Claude.
-5. **Env mapping**
-
-   | Concern | Legacy TS | Swift |
-   |---|---|---|
-   | Token | wizard / service env | `~/.dab/env` → `DISCORD_BOT_TOKEN` |
-   | First-time guild structure | `discord-agent-bridge --setup` | Discord **`/setup`** (admin) |
-   | Config root | `DAB_HOME` or `~/.discord-agent-bridge` | **same** |
-   | Auto-start | `discord-agent-bridge service install` | `swift/scripts/install.sh` · `install-linux.sh` · `install-windows.ps1` |
-   | Service uninstall | `service uninstall` | `uninstall.sh` / `uninstall-linux.sh` / `install-windows.ps1 -Uninstall` |
-   | Claude process | in-process **or** `DAB_CLAUDE_SIDECAR=1` | **always sidecar** |
-   | Sidecar spawn override | (sidecar path) | `DAB_CLAUDE_SIDECAR_CMD` |
-   | Working dir default | config / wizard | `DAB_CWD` env + wizard folder step |
-   | Binary / logs (deploy) | under service home | `~/.dab/` |
-   | Full npm CLI | `discord-agent-bridge …` | not reimplemented — scripts + `/setup` + env (see [`swift/README.md`](swift/README.md#cli--service-equivalents-ts-npm--swift)) |
-
-6. **Do not run both mains** against one bot token. Sidecar alone is fine (spawned by Swift).
-
----
-
-## Swift vs TypeScript compatibility
-
-Status is intentional: **Swift-first product**; the legacy TS standalone bot has been removed, TS tree now holds only the Claude sidecar. Table below reflects the legacy TS main's capability **before removal**, for historical comparison. **~99% product parity — port mainline complete; P0–P2 gap backlog closed.** Residual: **W13-b product-deferred** (keep bypass default) · intentional **OK-DIFF** · optional polish only. Full gap list: [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
-
-| Area | Swift (`dab`) | Legacy TS main |
+| Command | Who | Description |
 |---|---|---|
-| Discord gateway + slash | ✅ DiscordBM | ✅ discord.js |
-| Claude turns | ✅ via **Node sidecar** (always) | ✅ in-process default; sidecar opt-in `DAB_CLAUDE_SIDECAR=1` |
-| Codex / Grok | ✅ native stdio clients | ✅ |
-| Custom backend + shell env | ✅ | ✅ |
-| Session bind / restart reconnect | ✅ `SessionStore` + lazy resume | ✅ orchestrator |
-| Auth roles / audit / path confinement | ✅ (W13-b tool allowlist **product-deferred** while default stays `bypassPermissions`) | ✅ |
-| 3-layer config | ✅ global → server → binding | ✅ |
-| `/agent start` folder wizard | ✅ folder · resume · reconfigure · A4D · preset | ✅ full |
-| Live slash model/effort/mode/clear/stop | ✅ binding + Claude live `setModel`/`setEffort` RPC + displayName re-resolve | ✅ |
-| Usage / HUD | ✅ stats + Claude/Grok usage + tools/subagent HUD + live stream status embed | ✅ richer panels |
-| Tool thread / diff / status embed / notifier | ✅ Claude/Codex/Grok mid-turn tool path + pin (best-effort) | ✅ |
-| `/config` panel | ✅ roles·mode/model/effort/perm·dm·notif·locale·**image render (S3)** | ✅ fuller UI |
-| `/setup` · `/doc` · Always-Allow | ✅ | ✅ |
-| Auto-update | ✅ registry check + Yes/No + **install.sh + launchctl restart** | ✅ npm reinstall path |
-| Chromium table/mermaid render | ✅ **headless Chrome CLI** (system Chrome or provisioned; not puppeteer-in-Swift) | ✅ puppeteer |
-| Host file attach to Discord | ✅ confined upload (`host.file.attach`) | ✅ (sidecar path) |
-| Linux/Windows service | ✅ launchd / systemd / schtasks scripts | ✅ launchd / systemd / schtasks |
-| npm global install | ❌ (checkout + build) | ✅ |
+| `/setup` | Admin | Provision control + sessions category + status channel |
+| `/config` | Admin | Roles, defaults, locale, notifications, render, access panel |
+| `/agent start` | Execute+ | Wizard: bind folder / backend / model / effort / perm (+ presets) |
+| `/agent resume` | Execute+ | Re-bind stored session, post status, soft reconnect |
+| `/agent close` | Execute+ | Stop backend and unbind this channel |
+| `/agent stats` | Execute+ | Active bindings + Claude / Codex / Grok usage when available |
+| `/mode backend` | Execute+ | Switch backend (fresh context) |
+| `/mode perm` | Execute+ | Switch permission mode (session kept) |
+| `/model` | Execute+ | Switch model (autocomplete from provider catalog) |
+| `/effort` | Execute+ | Switch reasoning effort (autocomplete) |
+| `/clear` | Execute+ | Fresh conversation, same folder/settings |
+| `/stop` | Execute+ | Hard-stop this channel’s session |
+| `/stop-all` | Admin | Hard-stop every bound session |
+| `/doc path:` | Execute+ | Share a workspace markdown file into a document thread |
+| `/update` | Admin | Check for a newer release and offer install / restart |
 
-**Residual (not mainline incomplete work):** **W13-b** product-deferred (allowlist when default perm moves off bypass) · **OK-DIFF** (sidecar always, Chromium CLI, etc.) · **optional polish** — see [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md) §0 and [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md).
+### Permission modes
+
+`default` · `acceptEdits` · `plan` · `bypassPermissions` (plus backend-specific profiles when catalogued).
+
+When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons. Prefer `default` for real use; `bypassPermissions` skips the UI (trusted machines only). Mid-turn **Interrupt (stop)** stops the running turn without unbinding the channel.
 
 ---
 
-## Legacy TypeScript standalone bot — removed
+## Features
 
-The old npm TypeScript standalone bot (`discord-agent-bridge --setup`, `service install`, in-process Claude mode, etc.) has been deleted from this repo's source tree — see [`docs/finish-swift-port-remove-legacy-ts.md`](docs/finish-swift-port-remove-legacy-ts.md). It has no `bin`/CLI entry point anymore and cannot be installed or run standalone.
+### Session wizard & presets
 
-TypeScript now exists **only** as the thin Claude sidecar process that Swift `dab` spawns automatically — see [Hybrid Claude sidecar](#hybrid-claude-sidecar-important). Install with **Swift** ([Step 2](#step-2--install--run-swift)).
+- Folder browser: navigate, create folders, favorites roots (`config.favorites`), native pick where available.
+- **Presets** (per guild): after a normal start, save backend/model/effort/perm as a named preset. Next `/agent start` can pick a preset then only choose the folder.
+- **Resume** and **reconfigure** paths from the start flow / slash commands.
+- Bot restart restores bindings from `swift-state.json` (optional one-time import from older `state.json` if present).
+
+### Live session UX
+
+- Streaming status embed (text / tool progress).
+- Tool activity → Discord work threads with formatted tool output and **diff** views.
+- Status-channel notifications for key events (configurable in `/config`).
+- Usage embeds (Claude OAuth, Codex rate limits, Grok weekly) from `/agent stats`.
+- Idle watchdog notice if a turn goes quiet for a few minutes.
+- Host file attach / document share from the agent (`host.file.attach` / share) into the channel, path-confined.
+
+### Image render (tables & Mermaid)
+
+GFM tables and fenced `mermaid` blocks become PNG attachments when:
+
+1. Render is enabled (`/config` → 🖼 render, default on), and  
+2. A browser is available: system Chrome/Edge/Chromium, or provisioned under `~/.dab/chromium` (Install Chromium from `/config` or post-`/setup` prompt; needs Node for the download helper).
+
+Implementation: **headless Chrome CLI** screenshots of local HTML (not an in-process browser runtime). Failures fall back to raw markdown. Caps: ~15s timeout, size/cell limits, limited concurrency.
+
+Env overrides: `DAB_RENDER=0|1`, `DAB_MERMAID_JS`, `DAB_CHROMIUM_CACHE`, `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH`.
+
+### Auth & multi-server
+
+- Global config + per-guild `servers/<guildId>.json` overrides (3-layer: global → server → channel binding).
+- Role tiers and optional **user-id** tier grants; member default tier + per-member exceptions in `/config` Access.
+- DM policy, audit log channel, path confinement for file ops.
+
+### Auto-update
+
+`/update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config.
+
+---
+
+## Paths & configuration
+
+### Deploy layout (`~/.dab` / `%USERPROFILE%\.dab`)
+
+| Path | Role |
+|---|---|
+| `bin/dab` (`.exe` on Windows) | Release binary |
+| `env` (0600 on Unix) | Secrets + `DAB_*` (from `swift/deploy/env.example` on first install) |
+| `run.sh` / `run.cmd` | Launcher: PATH + `cd` repo root + exec binary |
+| `logs/agent.{out,err}.log` | stdout / stderr |
+| `chromium/` | Optional provisioned Chrome for Testing |
+
+### Config & state (`~/.discord-agent-bridge/`, override with `DAB_HOME`)
+
+| Path | Role |
+|---|---|
+| `config.json` | Global config (token optional here, roles defaults, favorites, locale, render, autoUpdate, …) |
+| `servers/<guildId>.json` | Per-server auth, defaults, presets, notifications |
+| `swift-state.json` | Session bindings (versioned) |
+
+Prefer putting the Discord token in **`~/.dab/env`** for service installs. First-run can also use env / argv only until config exists.
+
+### Environment variables
+
+| Env | Default | Notes |
+|---|---|---|
+| `DISCORD_BOT_TOKEN` / `DISCORD_TOKEN` | — | Required for gateway |
+| `DAB_CWD` | home | Default session working directory |
+| `DAB_PERM_MODE` | `bypassPermissions` | Prefer `default` with permission UI |
+| `DAB_TURN_TIMEOUT_SEC` | `120` | Wait for turn result |
+| `DAB_DEV_GUILD_ID` | — | Instant guild slash registration (else global, up to ~1h) |
+| `DAB_CLAUDE_SIDECAR_CMD` | auto | Override Claude sidecar spawn command |
+| `DAB_RENDER` | (config) | `0` force off PNG; `1` prefer on when Chrome present |
+| `DAB_MERMAID_JS` | auto | Path to `mermaid.min.js` |
+| `DAB_CHROMIUM_CACHE` | `~/.dab/chromium` | Provisioned browser cache |
+| `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | system scan | Override Chrome binary |
+| `CODEX_CMD` | `codex` | Codex CLI override (smokes / discovery) |
+
+### CLI surface (`dab`)
+
+```bash
+dab                     # run the bot (token from env / config)
+dab --version
+dab --setup             # print first-time setup guidance
+dab service status      # macOS launchd status
+dab service restart     # macOS launchd restart
+dab sidecar-smoke       # Claude sidecar protocol handshake
+dab codex-smoke         # Codex app-server initialize (exit 0 if CLI missing)
+dab grok-smoke          # Grok ACP smoke (exit 0 if CLI missing)
+```
+
+Install / uninstall remain shell/PowerShell scripts under `swift/scripts/`.
+
+---
+
+## Architecture
+
+```text
+Discord  ◄──►  dab (Swift / DiscordBM)
+                 │
+                 ├─ Claude  ──stdio JSON-RPC──►  Node sidecar  ──►  Claude Agent SDK
+                 ├─ Codex   ──stdio JSON-RPC──►  codex app-server
+                 ├─ Grok    ──stdio ACP───────►  grok CLI
+                 └─ custom  ──shell env / spawn──►  configured command
+```
+
+- **Claude** always goes through the Node sidecar (spawned automatically). Keep a full checkout with `npm install` if you use Claude.
+- **Codex / Grok** use native Swift clients; only the matching CLI on `PATH` is required.
+- Protocol notes for the Claude sidecar: [`CLAUDE_SIDECAR_PROTOCOL.md`](CLAUDE_SIDECAR_PROTOCOL.md).
+
+Package layout: [`swift/README.md`](swift/README.md).
 
 ---
 
 ## Development
 
 ```bash
+# from repo root
 bash verify.sh
+# or:
+swift build --package-path swift
+swift test --package-path swift
 ```
 
-Gate (must pass): Swift build + Swift tests under `swift/`. Backend smokes (`sidecar` / `codex` / `grok`) are best-effort and skip cleanly when a CLI is missing.
-
-⚠️ Prefer an isolated scratch path if `swift test` hangs on the package `.build` indexer lock:
+If `swift test` hangs on a SourceKit / `.build` lock, use an isolated scratch path:
 
 ```bash
 swift test --package-path swift --scratch-path /tmp/dab-ci
+swift build --package-path swift --scratch-path /tmp/dab-ci
 ```
 
-Port tracking: [`SWIFT_PORT_PLAN.md`](SWIFT_PORT_PLAN.md). Parity gaps (closed): [`SWIFT_TS_PARITY_GAPS.md`](SWIFT_TS_PARITY_GAPS.md). Package notes: [`swift/README.md`](swift/README.md).
+Backend smokes (`sidecar` / `codex` / `grok`) are best-effort and skip cleanly when a CLI is missing.
+
+Live Discord token is **not** required for build/test. Gateway connect and real agent runs need credentials and are manual.
 
 ---
 
-License: MIT
+## License
+
+MIT — see [LICENSE](LICENSE).
