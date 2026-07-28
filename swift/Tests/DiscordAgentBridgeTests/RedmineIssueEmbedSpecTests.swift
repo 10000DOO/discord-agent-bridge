@@ -102,11 +102,20 @@ struct RedmineIssueButtonsTests {
     }
 
     @Test func decidedRowDisabled() {
-        for action: RedmineIssueAction in [.start, .cancel] {
-            let row = buildRedmineIssueDecidedRow(action: action)
-            #expect(row.components.count == 1)
-            #expect(row.components[0].disabled)
-            #expect(parseRedmineIssueId(row.components[0].customId) == nil)
-        }
+        let row = buildRedmineIssueDecidedRow(action: .cancel, issueId: 42)
+        #expect(row.components.count == 1)
+        #expect(row.components[0].disabled)
+        #expect(parseRedmineIssueId(row.components[0].customId) == nil)
+    }
+
+    @Test func decidedRowStartAddsEnabledRestartButton() {
+        let row = buildRedmineIssueDecidedRow(action: .start, issueId: 42)
+        #expect(row.components.count == 2)
+        #expect(row.components[0].disabled)
+        #expect(parseRedmineIssueId(row.components[0].customId) == nil)
+        #expect(!row.components[1].disabled)
+        let parsed = parseRedmineIssueId(row.components[1].customId)
+        #expect(parsed?.action == .start)
+        #expect(parsed?.issueId == 42)
     }
 }

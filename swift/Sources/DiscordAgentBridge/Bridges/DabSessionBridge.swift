@@ -610,6 +610,19 @@ public actor DabSessionBridge {
         }
         if timeoutFallback {
             if box.text.isEmpty {
+                // 응답이 전혀 없는 완전 먹통 타임아웃 — 이 handle의 사이드카 세션은 죽은 것으로 간주하고
+                // sessions[channelId] 매핑을 지운다. 안 지우면 다음 turn도 같은 죽은 handle을 계속
+                // 재사용해서 영원히 같은 타임아웃을 반복한다 (redmine 착수 재발 버그의 실제 원인).
+                let channelId = sessionMeta[handle]?.channelId
+                let stderrTail = client?.stderrBuffer.suffix(2000) ?? ""
+                log.warn("[DAB-DIAG-SIDECAR-STDERR] handle=\(handle) channel=\(channelId ?? "?") tail=\(stderrTail)")
+                if let channelId, sessions[channelId] == handle {
+                    sessions[channelId] = nil
+                }
+                sessionMeta[handle] = nil
+                client?.unregisterSessionHandlers(handle: handle)
+                let deadClient = client
+                Task { try? await deadClient?.sessionStop(session: handle) }
                 finishTurnUnlocked(
                     handle: handle,
                     result: nil,

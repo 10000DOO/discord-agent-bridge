@@ -193,18 +193,72 @@ public func buildRedmineSessionConfirmRow(issueId: Int, targetChannelId: String)
     ])
 }
 
-/// Single DISABLED button row after a decision (mirrors buildUpdateDecidedRow above).
-public func buildRedmineIssueDecidedRow(action: RedmineIssueAction) -> UpdateComponentRow {
+/// Single DISABLED button row after a decision (mirrors buildUpdateDecidedRow above). `.start`
+/// gets a second, always-enabled "재착수" button next to the disabled placeholder — its
+/// custom_id is identical to the original start button's, so the existing `.start` handling in
+/// `handleRedmineIssueComponent` re-runs unchanged and lets the same issue be started again.
+public func buildRedmineIssueDecidedRow(action: RedmineIssueAction, issueId: Int) -> UpdateComponentRow {
     let label: String
     switch action {
     case .start: label = "착수함"
     case .cancel: label = "취소함"
     default: label = "완료"
     }
-    return UpdateComponentRow(components: [
+    let placeholder = UpdateButtonSpec(
+        customId: "\(redmineIssueCustomIdPrefix):decided",
+        label: label,
+        style: .secondary,
+        disabled: true
+    )
+    if action == .start {
+        let restart = UpdateButtonSpec(
+            customId: buildRedmineIssueId(action: .start, issueId: issueId),
+            label: "재착수",
+            style: .secondary
+        )
+        return UpdateComponentRow(components: [placeholder, restart])
+    }
+    return UpdateComponentRow(components: [placeholder])
+}
+
+// Turn-timeout retry prompt buttons — reuses UpdateComponentRow/UpdateButtonSpec above.
+// custom_id scheme: `dab-turn-timeout:<confirm|dismiss>` — no dynamic id needed, the button's
+// effect (announce only) is scoped to whatever channel the interaction arrives on.
+
+public let turnTimeoutCustomIdPrefix = "dab-turn-timeout"
+
+public enum TurnTimeoutAction: String, Sendable, Equatable {
+    case confirm
+    case dismiss
+}
+
+public func buildTurnTimeoutId(action: TurnTimeoutAction) -> String {
+    "\(turnTimeoutCustomIdPrefix):\(action.rawValue)"
+}
+
+public func parseTurnTimeoutId(_ customId: String) -> TurnTimeoutAction? {
+    let parts = customId.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+    guard parts.count == 2, parts[0] == turnTimeoutCustomIdPrefix else { return nil }
+    return TurnTimeoutAction(rawValue: parts[1])
+}
+
+public func isTurnTimeoutCustomId(_ customId: String) -> Bool {
+    customId.hasPrefix("\(turnTimeoutCustomIdPrefix):")
+}
+
+public func buildTurnTimeoutRetryRow() -> UpdateComponentRow {
+    UpdateComponentRow(components: [
+        UpdateButtonSpec(customId: buildTurnTimeoutId(action: .confirm), label: "예", style: .success),
+        UpdateButtonSpec(customId: buildTurnTimeoutId(action: .dismiss), label: "아니오", style: .secondary),
+    ])
+}
+
+/// Single DISABLED button row after a decision (mirrors buildUpdateDecidedRow/buildRedmineIssueDecidedRow).
+public func buildTurnTimeoutDecidedRow(action: TurnTimeoutAction) -> UpdateComponentRow {
+    UpdateComponentRow(components: [
         UpdateButtonSpec(
-            customId: "\(redmineIssueCustomIdPrefix):decided",
-            label: label,
+            customId: "\(turnTimeoutCustomIdPrefix):decided",
+            label: action == .confirm ? "확인함" : "아니오",
             style: .secondary,
             disabled: true
         ),

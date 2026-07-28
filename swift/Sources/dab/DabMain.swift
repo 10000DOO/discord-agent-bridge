@@ -111,6 +111,24 @@ struct DabMain {
             log.warn("failed to write pid file: \(error)")
         }
 
+        // [DAB-DIAG-PROC-EXIT]: tell an external kill (launchd/SIGTERM/SIGINT) apart from the
+        // process exiting on its own — restart-storm diagnosis found no crash report, so the
+        // next occurrence needs this in the log (docs/log-buffering-lost-info-logs.md).
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGINT, SIG_IGN)
+        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigtermSource.setEventHandler {
+            log.warn("[DAB-DIAG-PROC-EXIT] received SIGTERM — exiting")
+            exit(0)
+        }
+        sigtermSource.resume()
+        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        sigintSource.setEventHandler {
+            log.warn("[DAB-DIAG-PROC-EXIT] received SIGINT — exiting")
+            exit(0)
+        }
+        sigintSource.resume()
+
         log.info("connecting to Discord gateway…")
         log.info("!claude <prompt> → Claude sidecar (DAB_CWD / DAB_PERM_MODE)")
 
@@ -190,6 +208,7 @@ struct DabMain {
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 await bot.connect()
+                log.warn("[DAB-DIAG-PROC-EXIT] bot.connect() returned")
             }
             group.addTask {
                 for await event in await bot.events {
@@ -208,8 +227,10 @@ struct DabMain {
                         await EventHandler(event: event, client: bot.client).handleAsync()
                     }
                 }
+                log.warn("[DAB-DIAG-PROC-EXIT] event stream ended")
             }
         }
+        log.warn("[DAB-DIAG-PROC-EXIT] main task group drained — process exiting")
     }
 }
 
@@ -490,6 +511,12 @@ struct EventHandler: GatewayEventHandler {
             // (A4) W16-h auto-update Yes/No buttons (admin gate).
             if let updateTarget = parseUpdateId(comp.custom_id) {
                 try await handleUpdateComponent(payload, action: updateTarget.action, version: updateTarget.version)
+                return
+            }
+            // (A4b) Turn-timeout retry prompt Yes/No (posted alongside the "turn timeout (no
+            // terminal result)" error text; anyone may act on it — no owner/permission gate).
+            if let timeoutAction = parseTurnTimeoutId(comp.custom_id) {
+                try await handleTurnTimeoutComponent(payload, action: timeoutAction)
                 return
             }
             // (A5) Interrupt "stop" button: interrupt:<guildId>:<channelId> (drive; does NOT unbind).
@@ -1339,6 +1366,33 @@ struct EventHandler: GatewayEventHandler {
         }
     }
 
+    /// Turn-timeout retry prompt Yes/No: only disables the buttons (+ confirm gets a follow-up
+    /// notice). No auth gate (anyone may click), no auto-resend — the channel's session binding
+    /// was already invalidated by `DabSessionBridge.finishTurn` when this prompt was posted, so
+    /// the user's next message alone starts a fresh session.
+    private func handleTurnTimeoutComponent(
+        _ payload: Interaction,
+        action: TurnTimeoutAction
+    ) async throws {
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
+        let decidedRow = discordActionRows(from: [buildTurnTimeoutDecidedRow(action: action)])
+        _ = try? await client.updateOriginalInteractionResponse(
+            appId: payload.application_id,
+            token: payload.token,
+            payload: .init(components: decidedRow)
+        )
+        if action == .confirm, let channelId = payload.channel_id {
+            _ = await createMessageWithRetry(
+                client: client,
+                channelId: channelId,
+                payload: .init(content: "새 세션이 준비됐어요. 메시지를 다시 보내주시면 새 세션으로 시작돼요.")
+            )
+        }
+    }
+
     /// W14-b: guild channel delete → same hard-stop path as `/stop` (skip DMs; no binding → no-op).
     func onChannelDelete(_ payload: DiscordChannel) async throws {
         // Guild channels only (DM channels host no session) — TS client.ts isDMBased skip.
@@ -1937,8 +1991,11 @@ struct EventHandler: GatewayEventHandler {
                     // redmine-issue-session-start.md WO-11: fires only for a wizard opened from the
                     // Redmine session-pick dropdown's "new session" branch — a plain /agent start
                     // wizard never has an entry here, so get(channelId:) is nil and this is a no-op.
-                    if let issueId = await PendingRedmineStartRegistry.shared.get(channelId: bindChannelId) {
-                        await PendingRedmineStartRegistry.shared.remove(channelId: bindChannelId)
+                    // Lookup key is the wizard's original channel (channelId), not the freshly
+                    // created session channel (bindChannelId) — the registry entry was written
+                    // keyed on the channel where the 착수 button was clicked.
+                    if let issueId = await PendingRedmineStartRegistry.shared.get(channelId: channelId) {
+                        await PendingRedmineStartRegistry.shared.remove(channelId: channelId)
                         // RedmineClient has no single-issue lookup (list-only), so mirror
                         // handleRedmineIssueSelectComponent's fetch-all-then-filter pattern.
                         if let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine {
@@ -2378,7 +2435,7 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id, token: payload.token,
                 payload: .deferredUpdateMessage()
             )
-            let decidedRow = discordActionRows(from: [buildRedmineIssueDecidedRow(action: .cancel)])
+            let decidedRow = discordActionRows(from: [buildRedmineIssueDecidedRow(action: .cancel, issueId: issueId)])
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
@@ -2420,7 +2477,7 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id, token: payload.token,
                 payload: .deferredUpdateMessage()
             )
-            let decidedRow = discordActionRows(from: [buildRedmineIssueDecidedRow(action: .start)])
+            let decidedRow = discordActionRows(from: [buildRedmineIssueDecidedRow(action: .start, issueId: issueId)])
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
@@ -3060,6 +3117,19 @@ struct EventHandler: GatewayEventHandler {
                             channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
                         )
                     }
+                )
+            }
+            // "turn timeout (no terminal result)" (DabSessionBridge.finishTurn) already
+            // invalidated this channel's session binding — offer a retry-prompt so the user
+            // knows the next message starts a fresh session, without resending anything here.
+            if let rpcErr = error as? SidecarRpcError, rpcErr.code == "internal", rpcErr.message == "turn timeout (no terminal result)" {
+                _ = await createMessageWithRetry(
+                    client: client,
+                    channelId: payload.channel_id,
+                    payload: .init(
+                        content: "다시 시작할까요?",
+                        components: discordActionRows(from: [buildTurnTimeoutRetryRow()])
+                    )
                 )
             }
             // W16-g: status-channel error notification.

@@ -9,8 +9,10 @@ private let log = Logger(name: "redmine-kickoff")
 /// either way the channel is already bound by the time this runs.
 ///
 /// Kickoff prompt text (3-3 D8) — explicitly a "light skim" request, not a deep-analysis one.
+/// Sends only the issue number + link, not the full description (2026-07-28 user directive) —
+/// a session with the Redmine MCP tool can look the issue up itself; otherwise the link suffices.
 func redmineKickoffPromptText(issue: RedmineIssueDTO) -> String {
-    "레드마인 이슈 #\(issue.id) \"\(issue.subject)\"의 내용을 가볍게 파악해줘. 깊은 분석은 필요 없고, 무슨 이슈인지 정도만 파악하면 돼.\n\n내용:\n\(issue.description)\n\n(원본: \(issue.url))"
+    "#\(issue.id) \(issue.url) 내용을 가볍게 파악해줘. 깊은 분석은 필요 없고, 무슨 이슈인지 정도만 파악하면 돼."
 }
 
 /// Posts the kickoff prompt as a plain channel message, runs one turn on `backend`, and delivers
@@ -31,20 +33,24 @@ func runRedmineKickoffPrompt(
 ) async {
     let chId = ChannelSnowflake(channelId)
     let text = redmineKickoffPromptText(issue: issue)
-    let posted = await createMessageWithRetry(
-        client: client,
-        channelId: chId,
-        payload: .init(content: text),
-        onGone: {
-            await SessionLifecycle.shared.stopChannel(
-                channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-            )
+    // Discord's own client wraps long messages at 2000 chars, but this auto-post path bypasses
+    // that, so chunk here — the full `text` still goes to the backend turn below unsplit.
+    var promptMessageId: MessageSnowflake?
+    for chunk in DiscordText.chunkMessage(text) {
+        let posted = await createMessageWithRetry(
+            client: client,
+            channelId: chId,
+            payload: .init(content: chunk),
+            onGone: {
+                await SessionLifecycle.shared.stopChannel(
+                    channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
+                )
+            }
+        )
+        if let posted, let id = try? posted.decode().id {
+            promptMessageId = id
         }
-    )
-    let promptMessageId: MessageSnowflake? = {
-        guard let posted else { return nil }
-        return try? posted.decode().id
-    }()
+    }
     if promptMessageId == nil {
         log.error("redmine kickoff prompt post failed channel=\(channelId) issue=\(issue.id)")
     }
@@ -173,6 +179,19 @@ func runRedmineKickoffPrompt(
                         channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
                     )
                 }
+            )
+        }
+        // Same retry-prompt as runAndReply's catch block (DabMain.swift) — only for the exact
+        // "turn timeout (no terminal result)" case, since the session binding is already
+        // invalidated by then and only needs an announcement, not a resend.
+        if let rpcErr = error as? SidecarRpcError, rpcErr.code == "internal", rpcErr.message == "turn timeout (no terminal result)" {
+            _ = await createMessageWithRetry(
+                client: client,
+                channelId: chId,
+                payload: .init(
+                    content: "다시 시작할까요?",
+                    components: discordActionRows(from: [buildTurnTimeoutRetryRow()])
+                )
             )
         }
         await AuditLog.shared.record(AuditEntry(

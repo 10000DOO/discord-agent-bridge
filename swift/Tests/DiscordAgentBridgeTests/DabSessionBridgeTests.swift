@@ -489,6 +489,32 @@ struct DabSessionBridgeTests {
         }
     }
 
+    // Regression: a complete-blackout timeout (no text at all) must invalidate sessions[channelId]
+    // so the NEXT turn on the same channel starts a fresh sidecar session instead of resending to
+    // the same dead handle forever (the real mechanism behind the redmine-kickoff repeat-timeout
+    // bug — same handle/channel timing out again and again with no process restart in between).
+    @Test func timeoutWithEmptyTextInvalidatesSessionForNextTurn() async throws {
+        let gate = TurnGate()
+        let reqs = LockedBox<[String]>([])
+        let (bridge, _) = makeDabBridge(gate: gate, timeoutNs: 100_000_000, reqCapture: reqs)   // 100ms
+        let t = Task { try await run(bridge, "x") }
+        await gate.waitReceived(1)                  // held, no terminal event → TurnBox timeout → throw
+        do {
+            _ = try await t.value
+            Issue.record("expected timeout")
+        } catch let error as SidecarRpcError {
+            #expect(error.message == "turn timeout (no terminal result)")
+        }
+        #expect(await bridge.isLive(channelId: "c") == false)   // dead handle's mapping cleared
+
+        await gate.release()                        // unstick the dead handle's stuck fake-side (harmless: unregistered)
+        let t2 = Task { try await run(bridge, "y") }
+        await gate.waitReceived(2)                   // 2nd submit() proves the 2nd turn reached the fake as a NEW session
+        await gate.release()
+        #expect(try await t2.value == "ok:y")
+        #expect(reqs.withLock { $0.filter { $0 == "start" }.count } == 2)   // fresh session.start, not the reused dead handle
+    }
+
     @Test func eofAfterSendAckFailsTurnAndRespawnsClient() async throws {
         let calls = LockedBox(0)
         let made = MadeClients<ClaudeSidecarClient>()

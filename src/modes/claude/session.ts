@@ -214,11 +214,16 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
   private async consume(): Promise<void> {
     try {
       for await (const msg of this.query) {
+        this.ctx.logger.warn('[DAB-DIAG-SIDECAR-EVENT-SEQ] type=' + msg.type);
         await this.mapMessage(msg);
       }
+      this.ctx.logger.warn('[DAB-DIAG-SIDECAR] consume loop ended (query iterator exhausted, no error)');
     } catch (err) {
       // An abort (from stop()) is expected shutdown, not a failure to surface.
       if (this.closed || this.abortController.signal.aborted) return;
+      this.ctx.logger.error('[DAB-DIAG-SIDECAR] consume loop crashed', {
+        err: err instanceof Error ? (err.stack ?? err.message) : String(err),
+      });
       this.ctx.emit({
         kind: 'error',
         message: err instanceof Error ? err.message : String(err),

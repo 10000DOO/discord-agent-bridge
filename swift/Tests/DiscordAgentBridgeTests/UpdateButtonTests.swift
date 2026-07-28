@@ -49,3 +49,43 @@ struct UpdatePromptTests {
         }
     }
 }
+
+@Suite("buildTurnTimeoutId / parseTurnTimeoutId")
+struct TurnTimeoutIdTests {
+    @Test func roundTrips() {
+        #expect(parseTurnTimeoutId(buildTurnTimeoutId(action: .confirm)) == .confirm)
+        #expect(parseTurnTimeoutId(buildTurnTimeoutId(action: .dismiss)) == .dismiss)
+    }
+
+    @Test func foreignPrefixNil() {
+        #expect(parseTurnTimeoutId("dab-update:approve:1.2.3") == nil)
+        #expect(parseTurnTimeoutId("perm:abc:allow") == nil)
+    }
+
+    @Test func malformedNil() {
+        #expect(parseTurnTimeoutId("dab-turn-timeout") == nil)
+        #expect(parseTurnTimeoutId("dab-turn-timeout:confirm:extra") == nil)
+        #expect(parseTurnTimeoutId("dab-turn-timeout:unknown") == nil)
+        #expect(parseTurnTimeoutId("dab-turn-timeout:decided") == nil)
+    }
+}
+
+@Suite("buildTurnTimeoutRetryRow / buildTurnTimeoutDecidedRow")
+struct TurnTimeoutPromptTests {
+    @Test func retryRowYesNo() {
+        let row = buildTurnTimeoutRetryRow()
+        #expect(row.components.count == 2)
+        #expect(row.components.map(\.customId) == ["dab-turn-timeout:confirm", "dab-turn-timeout:dismiss"])
+        #expect(row.components.map(\.style) == [.success, .secondary])
+        #expect(row.components.allSatisfy { !$0.disabled })
+    }
+
+    @Test func decidedRowDisabled() {
+        for action: TurnTimeoutAction in [.confirm, .dismiss] {
+            let row = buildTurnTimeoutDecidedRow(action: action)
+            #expect(row.components.count == 1)
+            #expect(row.components[0].disabled)
+            #expect(parseTurnTimeoutId(row.components[0].customId) == nil)
+        }
+    }
+}

@@ -35,7 +35,7 @@ let package = Package(
         ),
         .testTarget(
             name: "DiscordAgentBridgeTests",
-            dependencies: ["DiscordAgentBridge"]
+            dependencies: ["DiscordAgentBridge", "dab"]
         ),
     ]
 )

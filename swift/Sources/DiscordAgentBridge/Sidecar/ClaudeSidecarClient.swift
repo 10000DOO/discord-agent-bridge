@@ -86,6 +86,11 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         state.withLock { $0.closed }
     }
 
+    /// Bounded stderr capture forwarded from the transport (empty for in-memory test transports).
+    public var stderrBuffer: String {
+        transport.stderrBuffer
+    }
+
     private func nextId() -> String {
         let seq = state.withLock { s -> Int in
             s.reqSeq += 1
