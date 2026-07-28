@@ -1199,10 +1199,11 @@ struct EventHandler: GatewayEventHandler {
             applicationId: payload.application_id.rawValue,
             interactionToken: payload.token,
             ack: { [client] text in
+                // Public channel followup — update status is operator-visible (not ephemeral).
                 _ = try? await client.createFollowupMessage(
                     appId: payload.application_id,
                     token: payload.token,
-                    payload: .init(content: text, flags: [.ephemeral])
+                    payload: .init(content: text)
                 )
             },
             disableButtons: { [client] in

@@ -93,8 +93,11 @@ struct AutoUpdaterDecisionTests {
         #expect(ctx.disabled == 1)
         #expect(h.installCallsBox.withLock { $0 } == 1)
         #expect(h.restartCallsBox.withLock { $0 } == 1)
-        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installed])
+        // Outcomes go to the interaction channel (ctx.ack), not control-channel announce.
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
         #expect(ctx.acks.contains { $0.contains("시작") })
+        #expect(ctx.acks.contains(UpdateLabels.restartRequested))
+        #expect(ctx.acks.contains(UpdateLabels.restartConfirmed))
     }
 
     @Test func installFailureDoesNotRestart() async {
@@ -103,15 +106,18 @@ struct AutoUpdaterDecisionTests {
         await h.updater.approve("1.1.0", ctx: ctx.asCtx())
         #expect(h.restartCallsBox.withLock { $0 } == 0)
         #expect(h.installCallsBox.withLock { $0 } == 1)
-        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installFailed])
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+        #expect(ctx.acks.contains(UpdateLabels.installFailed))
     }
 
-    @Test func installSuccessWithDeferredRestartAnnouncesManualRestartRequired() async {
+    @Test func installSuccessWithRelaunchFailureAcksRestartFailed() async {
         let h = UpdateHarness(withInstall: true, restartResult: .manualRestartRequired)
         let ctx = DecisionProbe()
         await h.updater.approve("1.1.0", ctx: ctx.asCtx())
         #expect(h.restartCallsBox.withLock { $0 } == 1)
-        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.manualRestartRequired])
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+        #expect(ctx.acks.contains(UpdateLabels.restartRequested))
+        #expect(ctx.acks.contains(UpdateLabels.restartFailed))
     }
 
     @Test func approveDelegatesToHomebrewTriggerAndSkipsInstall() async {
@@ -139,7 +145,9 @@ struct AutoUpdaterDecisionTests {
         #expect(ctx.disabled == 1)
         #expect(h.installCallsBox.withLock { $0 } == 1)
         #expect(h.restartCallsBox.withLock { $0 } == 1)
-        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.installed])
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+        #expect(ctx.acks.contains(UpdateLabels.restartRequested))
+        #expect(ctx.acks.contains(UpdateLabels.restartConfirmed))
     }
 
     @Test func dismissPersistsAndAcks() async {
@@ -303,9 +311,12 @@ private final class UpdateHarness: @unchecked Sendable {
             },
             announce: { t in announcesBox.withLock { $0.append(t) } },
             install: install,
-            restart: { onHandoff in
+            restart: { request in
                 restartCallsBox.withLock { $0 += 1 }
-                if restartResult == .handedOff { await onHandoff() }
+                // Simulate respawn READY confirm path when handoff succeeds.
+                if restartResult == .handedOff {
+                    await request.notify(UpdateLabels.restartConfirmed)
+                }
                 return restartResult
             },
             homebrewTrigger: homebrewTrigger,

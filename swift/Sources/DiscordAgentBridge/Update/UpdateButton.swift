@@ -56,14 +56,20 @@ public enum UpdateLabels {
     public static var busy: String { I18n.t("update.busy") }
     public static var dismissed: String { I18n.t("update.dismissed") }
     public static var denied: String { I18n.t("update.denied") }
-    /// Install succeeded — about to restart into the new binary.
-    public static var installed: String { I18n.t("update.installed") }
+    /// Install succeeded — service relaunch is being requested (not yet confirmed running).
+    public static var restartRequested: String { I18n.t("update.restartRequested") }
+    /// Alias kept for older call sites/tests.
+    public static var installed: String { restartRequested }
+    /// New process confirmed up (READY marker or relaunch script verify).
+    public static var restartConfirmed: String { I18n.t("update.restartConfirmed") }
     /// Install failed — process stays on the old binary; operator path.
     public static var installFailed: String { I18n.t("update.installFailed") }
     /// Approve path when install port / plan is unavailable.
     public static var manualOnly: String { I18n.t("update.manualOnly") }
-    /// Install succeeded but the current process could not prove a safe replacement handoff.
-    public static var manualRestartRequired: String { I18n.t("update.manualRestartRequired") }
+    /// Install ok but relaunch could not be started or verified.
+    public static var restartFailed: String { I18n.t("update.restartFailed") }
+    /// Alias kept for older call sites/tests.
+    public static var manualRestartRequired: String { restartFailed }
     /// Approve path delegated to a Homebrew tap's detached self-update script.
     public static var homebrewInProgress: String { I18n.t("update.homebrewInProgress") }
     public static var upToDate: String { I18n.t("update.upToDate") }

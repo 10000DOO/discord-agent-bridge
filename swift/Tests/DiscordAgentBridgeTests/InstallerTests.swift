@@ -223,31 +223,46 @@ struct RestartStrategyTests {
         #expect(s == .supervised)
     }
 
-    @Test func performRestartSupervisedKeepsCurrentBotWithoutReadyHandoff() async {
-        let kick = LockedBox(0)
+    @Test func performRestartSupervisedRelaunchesAndExits() async {
+        let relaunch = LockedBox(0)
         let exits = LockedBox<[Int32]>([])
-        let spawn = LockedBox(0)
+        let confirmed = LockedBox(0)
         let result = await performRestart(
             RestartPerformDeps(
                 strategy: .supervised,
                 platformIsDarwin: true,
                 home: "/h",
                 fileExists: { $0 == launchdPlistPath(home: "/h") },
-                runKickstart: { kick.withLock { $0 += 1 }; return true },
-                spawnDetached: { _, _, _ in spawn.withLock { $0 += 1 }; return true },
+                runKickstart: { relaunch.withLock { $0 += 1 }; return true },
+                spawnDetached: { _, _, _ in true },
                 exitProcess: { code in exits.withLock { $0.append(code) } }
+            ),
+            onConfirmed: { confirmed.withLock { $0 += 1 } }
+        )
+        // Confirmed comes from detached webhook, not onConfirmed, for supervised.
+        #expect(confirmed.withLock { $0 } == 0)
+        #expect(relaunch.withLock { $0 } == 1)
+        #expect(exits.withLock { $0 } == [0])
+        #expect(result == .handedOff)
+    }
+
+    @Test func performRestartSupervisedRelaunchFailureIsManual() async {
+        let result = await performRestart(
+            RestartPerformDeps(
+                strategy: .supervised,
+                platformIsDarwin: true,
+                home: "/h",
+                runKickstart: { false },
+                exitProcess: { _ in }
             )
         )
-        #expect(kick.withLock { $0 } == 0)
-        #expect(spawn.withLock { $0 } == 0)
-        #expect(exits.withLock { $0 }.isEmpty)
         #expect(result == .manualRestartRequired)
     }
 
     @Test func performRestartRespawnSpawnsBinary() async {
         let spawn = LockedBox<[(String, [String])]>([])
         let exits = LockedBox<[Int32]>([])
-        let handoffs = LockedBox(0)
+        let confirmed = LockedBox(0)
         let result = await performRestart(
             RestartPerformDeps(
                 strategy: .respawn,
@@ -264,31 +279,33 @@ struct RestartStrategyTests {
                 waitForReadyMarker: { _ in true },
                 exitProcess: { code in exits.withLock { $0.append(code) } }
             ),
-            onHandoff: { handoffs.withLock { $0 += 1 } }
+            onConfirmed: { confirmed.withLock { $0 += 1 } }
         )
         #expect(spawn.withLock { $0.map(\.0) } == ["/h/.dab/bin/dab"])
-        #expect(handoffs.withLock { $0 } == 1)
+        #expect(confirmed.withLock { $0 } == 1)
         #expect(exits.withLock { $0 } == [0])
         #expect(result == .handedOff)
     }
 
-    @Test func performRestartRespawnLaunchdFallbackKeepsCurrentBot() async {
-        let kick = LockedBox(0)
+    @Test func performRestartRespawnWithLaunchdPlistUsesServiceRelaunch() async {
+        let relaunch = LockedBox(0)
         let exits = LockedBox<[Int32]>([])
+        let confirmed = LockedBox(0)
         let result = await performRestart(
             RestartPerformDeps(
                 strategy: .respawn,
                 platformIsDarwin: true,
                 home: "/h",
                 fileExists: { $0 == launchdPlistPath(home: "/h") },
-                runKickstart: { kick.withLock { $0 += 1 }; return true },
-                exitProcess: { code in exits.withLock { $0.append(code) }
-                }
-            )
+                runKickstart: { relaunch.withLock { $0 += 1 }; return true },
+                exitProcess: { code in exits.withLock { $0.append(code) } }
+            ),
+            onConfirmed: { confirmed.withLock { $0 += 1 } }
         )
-        #expect(kick.withLock { $0 } == 0)
-        #expect(exits.withLock { $0 }.isEmpty)
-        #expect(result == .manualRestartRequired)
+        #expect(confirmed.withLock { $0 } == 0)
+        #expect(relaunch.withLock { $0 } == 1)
+        #expect(exits.withLock { $0 } == [0])
+        #expect(result == .handedOff)
     }
 
     @Test func performRestartKeepsCurrentBotWhenSuccessorNeverBecomesReady() async {

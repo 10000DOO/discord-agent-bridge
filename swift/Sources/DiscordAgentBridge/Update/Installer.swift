@@ -500,25 +500,23 @@ public struct RestartPerformDeps: Sendable {
     }
 }
 
-/// Perform post-install restart. launchd/systemd own one service slot, so `kickstart -k` first
-/// terminates the old process and cannot prove a successor gateway READY marker. Keep the old bot
-/// alive on every supervised path until a supervisor-level handoff protocol exists. A successful
-/// foreground successor invokes `onHandoff` before the old process exits so its caller can publish
-/// the installed status without claiming success for a deferred restart.
+/// Perform post-install restart.
+/// - **supervised**: fully stop then start via launchd/brew (detached helper verifies + webhooks).
+/// - **respawn** (foreground): spawn successor with READY marker, then exit.
 public func performRestart(
     _ d: RestartPerformDeps,
     onLog: @Sendable (String) -> Void = { _ in },
-    onHandoff: @escaping @Sendable () async -> Void = {}
+    /// Called after successor READY (respawn) or not used for supervised (webhook confirms).
+    onConfirmed: @escaping @Sendable () async -> Void = {}
 ) async -> RestartResult {
     switch d.strategy {
     case .supervised:
-        onLog("auto-update: supervised restart deferred; READY handoff is unavailable, current bot remains running")
-        return .manualRestartRequired
+        return await supervisedServiceRelaunch(d, onLog: onLog)
 
     case .respawn:
         if d.platformIsDarwin, d.fileExists(launchdPlistPath(home: d.home)) {
-            onLog("auto-update: launchd respawn deferred; READY handoff is unavailable, current bot remains running")
-            return .manualRestartRequired
+            onLog("auto-update: launchd plist present — supervised stop+start path")
+            return await supervisedServiceRelaunch(d, onLog: onLog)
         }
         if d.fileExists(d.dabBinaryPath) {
             guard let marker = d.makeReadyMarker() else {
@@ -540,28 +538,195 @@ public func performRestart(
             onLog("auto-update: respawn aborted (binary missing at \(d.dabBinaryPath)); current bot remains running")
             return .manualRestartRequired
         }
-        await onHandoff()
+        await onConfirmed()
         d.exitProcess(0)
         return .handedOff
     }
 }
 
-/// Production kickstart: `launchctl kickstart -k gui/<uid>/com.discord-agent-bridge`.
+/// Spawn detached stop+start helper, then exit. Final confirm/fail is webhook from the helper.
+private func supervisedServiceRelaunch(
+    _ d: RestartPerformDeps,
+    onLog: @Sendable (String) -> Void
+) async -> RestartResult {
+    onLog("auto-update: supervised — full service stop+start via detached helper")
+    guard d.runKickstart() else {
+        onLog("auto-update: supervised relaunch spawn failed; current bot remains running")
+        return .manualRestartRequired
+    }
+    onLog("auto-update: supervised relaunch helper spawned; exiting")
+    d.exitProcess(0)
+    return .handedOff
+}
+
+/// Production: fully stop then start the supervised service (detached).
+/// - When `DAB_INSTALL_METHOD=homebrew`: `brew services restart dab` (only if not already using
+///   `homebrewTrigger` — that path never reaches here).
+/// - Else: launchd bootout/unload then bootstrap/load for the install.sh plist.
+/// Optional Discord interaction token → webhook for final confirmed/failed (public channel).
+public func relaunchSupervisedService(
+    label: String = "com.discord-agent-bridge",
+    home: String = NSHomeDirectory(),
+    env: [String: String] = ProcessInfo.processInfo.environment,
+    applicationId: String = "",
+    interactionToken: String = "",
+    spawnDetached: @escaping @Sendable (String, [String], [String: String]) -> Bool = { path, args, environment in
+        spawnDetachedDab(path: path, args: args, environment: environment)
+    }
+) -> Bool {
+    let extraEnv: [String: String] = [
+        "DAB_RELAUNCH_APP_ID": applicationId,
+        "DAB_RELAUNCH_TOKEN": interactionToken,
+        "DAB_RELAUNCH_HOME": home,
+        "DAB_RELAUNCH_LABEL": label,
+    ]
+    if env["DAB_INSTALL_METHOD"] == "homebrew" {
+        return spawnTempBash(supervisedRelaunchScriptBrew(), extraEnv: extraEnv, spawnDetached: spawnDetached)
+    }
+    return spawnTempBash(
+        supervisedRelaunchScriptLaunchd(label: label, home: home),
+        extraEnv: extraEnv,
+        spawnDetached: spawnDetached
+    )
+}
+
+/// Backward-compatible name — full stop+start relaunch.
 public func launchctlKickstart(label: String = "com.discord-agent-bridge") -> Bool {
+    relaunchSupervisedService(label: label)
+}
+
+/// Shared shell helpers for logging, Discord webhook notify, cleanup.
+private let supervisedRelaunchShellPreamble = #"""
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+LOG_DIR="${HOME}/.dab/logs"
+LOG_FILE="${LOG_DIR}/supervised-relaunch.log"
+mkdir -p "$LOG_DIR"
+log() { printf '%s [supervised-relaunch] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
+}
+notify() {
+  local msg="$1"
+  log "notify: $msg"
+  local app="${DAB_RELAUNCH_APP_ID:-}"
+  local tok="${DAB_RELAUNCH_TOKEN:-}"
+  if [ -z "$app" ] || [ -z "$tok" ]; then
+    log "webhook skipped (no app id/token)"
+    return 0
+  fi
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    "https://discord.com/api/v10/webhooks/${app}/${tok}" \
+    -H "Content-Type: application/json" \
+    -d "{\"content\": \"$(json_escape "$msg")\"}")" || code="curl-fail"
+  log "webhook POST -> HTTP $code"
+}
+cleanup() { rm -f "$0" 2>/dev/null || true; }
+trap cleanup EXIT
+log "=== relaunch start ==="
+"""#
+
+private func supervisedRelaunchScriptBrew() -> String {
+    supervisedRelaunchShellPreamble + #"""
+sleep 2
+log "brew services restart dab"
+if ! brew services restart dab >>"$LOG_FILE" 2>&1; then
+  log "FAILED: brew services restart"
+  notify "⚠️ 설치는 완료됐지만 서비스 재기동에 실패했어요 (\`brew services restart dab\`). 로그: \`~/.dab/logs/supervised-relaunch.log\`"
+  exit 1
+fi
+ok=0
+for i in $(seq 1 45); do
+  if brew services list 2>/dev/null | awk '$1=="dab" && $2=="started" {found=1} END{exit !found}'; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ok" -eq 1 ]; then
+  log "brew service started"
+  notify "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요."
+  exit 0
+fi
+log "FAILED: brew service not started within timeout"
+notify "⚠️ 설치는 완료됐지만 기동 확인에 실패했어요. \`brew services\`를 확인해 주세요. 로그: \`~/.dab/logs/supervised-relaunch.log\`"
+exit 1
+"""#
+}
+
+private func supervisedRelaunchScriptLaunchd(label: String, home: String) -> String {
+    let plist = launchdPlistPath(home: home)
     let uid = getuid()
-    let target = "gui/\(uid)/\(label)"
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-    p.arguments = ["kickstart", "-k", target]
-    p.standardOutput = FileHandle.nullDevice
-    p.standardError = FileHandle.nullDevice
+    // Escape for embedding in shell double-quotes not needed — we use single-quoted heredoc via #""" and inject paths carefully.
+    let safePlist = plist.replacingOccurrences(of: "'", with: "'\\''")
+    let safeLabel = label.replacingOccurrences(of: "'", with: "'\\''")
+    return supervisedRelaunchShellPreamble + """
+PLIST='\(safePlist)'
+DOMAIN='gui/\(uid)'
+LABEL='\(safeLabel)'
+BIN="${HOME}/.dab/bin/dab"
+sleep 2
+log "stop service DOMAIN=$DOMAIN LABEL=$LABEL PLIST=$PLIST"
+/bin/launchctl bootout "$DOMAIN/$LABEL" 2>>"$LOG_FILE" \\
+  || /bin/launchctl unload "$PLIST" 2>>"$LOG_FILE" \\
+  || true
+sleep 1
+log "start service"
+started=0
+if /bin/launchctl bootstrap "$DOMAIN" "$PLIST" 2>>"$LOG_FILE"; then
+  /bin/launchctl enable "$DOMAIN/$LABEL" 2>>"$LOG_FILE" || true
+  /bin/launchctl kickstart -k "$DOMAIN/$LABEL" 2>>"$LOG_FILE" || true
+  started=1
+elif /bin/launchctl load -w "$PLIST" 2>>"$LOG_FILE"; then
+  started=1
+fi
+if [ "$started" -ne 1 ]; then
+  log "FAILED: could not load/bootstrap service"
+  notify "⚠️ 설치는 완료됐지만 서비스 재등록에 실패했어요. 수동으로 launchctl load 해 주세요. 로그: \\`~/.dab/logs/supervised-relaunch.log\\`"
+  exit 1
+fi
+ok=0
+for i in $(seq 1 45); do
+  if [ -x "$BIN" ] && pgrep -f "$BIN" >/dev/null 2>&1; then
+    ok=1
+    break
+  fi
+  if /bin/launchctl print "$DOMAIN/$LABEL" 2>/dev/null | grep -q "state = running"; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ok" -eq 1 ]; then
+  log "process/service running"
+  notify "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요."
+  exit 0
+fi
+log "FAILED: process not observed within timeout"
+notify "⚠️ 설치는 완료됐지만 기동 확인에 실패했어요. 수동 재시작이 필요할 수 있어요. 로그: \\`~/.dab/logs/supervised-relaunch.log\\`"
+exit 1
+"""
+}
+
+private func spawnTempBash(
+    _ script: String,
+    extraEnv: [String: String] = [:],
+    spawnDetached: @escaping @Sendable (String, [String], [String: String]) -> Bool
+) -> Bool {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dab-supervised-relaunch-\(UUID().uuidString).sh")
     do {
-        try p.run()
-        p.waitUntilExit()
-        return p.terminationStatus == 0
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
     } catch {
         return false
     }
+    return spawnDetached("/bin/bash", [url.path], extraEnv)
 }
 
 /// Detached re-exec of the installed dab binary (foreground / unsupervised runs).

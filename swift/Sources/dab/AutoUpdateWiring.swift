@@ -86,24 +86,36 @@ func startAutoUpdater(client: any DiscordClient) async {
                 }
             )
         },
-        restart: { onHandoff in
+        restart: { request in
             if dryRun {
                 log.info("auto-update dry-run — skip restart")
                 return .manualRestartRequired
             }
             let strategy = detectRestartStrategy(RestartDetectDeps())
+            // Homebrew installs should use homebrewTrigger (self-update.sh) when configured.
+            // Only fall through here when not homebrew, or trigger returned false (missing script).
             return await performRestart(
                 RestartPerformDeps(
                     strategy: strategy,
-                    runKickstart: { launchctlKickstart() },
-                    spawnDetached: { path, args, environment in spawnDetachedDab(path: path, args: args, environment: environment) },
+                    runKickstart: {
+                        relaunchSupervisedService(
+                            applicationId: request.applicationId,
+                            interactionToken: request.interactionToken
+                        )
+                    },
+                    spawnDetached: { path, args, environment in
+                        spawnDetachedDab(path: path, args: args, environment: environment)
+                    },
                     exitProcess: { code in Foundation.exit(code) }
                 ),
                 onLog: { log.info($0) },
-                onHandoff: onHandoff
+                onConfirmed: {
+                    await request.notify(UpdateLabels.restartConfirmed)
+                }
             )
         },
         homebrewTrigger: { applicationId, interactionToken in
+            // Exclusive Homebrew path: install+restart owned by tap script (avoids double restart).
             triggerHomebrewSelfUpdateIfConfigured(applicationId: applicationId, interactionToken: interactionToken)
         },
         messages: .korean,

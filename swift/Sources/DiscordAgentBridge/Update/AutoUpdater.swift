@@ -32,44 +32,68 @@ public struct AutoUpdateMetaPatch: Sendable, Equatable {
 
 public struct UpdateMessages: Sendable, Equatable {
     public var busy: String
-    public var installed: String
+    /// Install done; service relaunch requested (not yet verified running).
+    public var restartRequested: String
+    /// New process verified up.
+    public var restartConfirmed: String
     public var installFailed: String
     public var dismissed: String
     /// Used when the install port is nil (no self-update path wired).
     public var manualOnly: String
-    /// Install succeeded but no verified process handoff was possible.
-    public var manualRestartRequired: String
+    /// Install ok but relaunch could not be started or verified.
+    public var restartFailed: String
     /// Approve delegated to a Homebrew tap's detached self-update script (install/restart/result
     /// all happen outside this process).
     public var homebrewInProgress: String
 
     public init(
         busy: String,
-        installed: String,
+        restartRequested: String,
+        restartConfirmed: String,
         installFailed: String,
         dismissed: String,
         manualOnly: String,
-        manualRestartRequired: String,
+        restartFailed: String,
         homebrewInProgress: String
     ) {
         self.busy = busy
-        self.installed = installed
+        self.restartRequested = restartRequested
+        self.restartConfirmed = restartConfirmed
         self.installFailed = installFailed
         self.dismissed = dismissed
         self.manualOnly = manualOnly
-        self.manualRestartRequired = manualRestartRequired
+        self.restartFailed = restartFailed
         self.homebrewInProgress = homebrewInProgress
     }
 
     public static let korean = UpdateMessages(
         busy: UpdateLabels.busy,
-        installed: UpdateLabels.installed,
+        restartRequested: UpdateLabels.restartRequested,
+        restartConfirmed: UpdateLabels.restartConfirmed,
         installFailed: UpdateLabels.installFailed,
         dismissed: UpdateLabels.dismissed,
         manualOnly: UpdateLabels.manualOnly,
-        manualRestartRequired: UpdateLabels.manualRestartRequired,
+        restartFailed: UpdateLabels.restartFailed,
         homebrewInProgress: UpdateLabels.homebrewInProgress
     )
+}
+
+/// Context for the restart port after a successful install.
+public struct RestartRequest: Sendable {
+    public var applicationId: String
+    public var interactionToken: String
+    /// Public channel notify (interaction followup).
+    public var notify: @Sendable (String) async -> Void
+
+    public init(
+        applicationId: String,
+        interactionToken: String,
+        notify: @escaping @Sendable (String) async -> Void
+    ) {
+        self.applicationId = applicationId
+        self.interactionToken = interactionToken
+        self.notify = notify
+    }
 }
 
 public struct UpdateDecisionCtx: Sendable {
@@ -128,9 +152,9 @@ public struct AutoUpdaterDeps: Sendable {
     public var announce: @Sendable (String) async -> Void
     /// Optional install port. nil → approve acks `manualOnly` (no restart).
     public var install: (@Sendable () async -> UpdateInstallResult)?
-    /// The callback is invoked only after a successor has reached READY and immediately before
-    /// the old process exits. A deferred/failed handoff returns `.manualRestartRequired` instead.
-    public var restart: (@Sendable (@escaping @Sendable () async -> Void) async -> RestartResult)?
+    /// After install succeeds: relaunch service (or spawn successor). Returns whether handoff
+    /// was started; final "running" confirm may arrive later via webhook for supervised path.
+    public var restart: (@Sendable (RestartRequest) async -> RestartResult)?
     /// Optional Homebrew self-update delegate `(applicationId, interactionToken) -> handled`.
     /// When present and it returns true, `approve` skips the in-process install/restart entirely —
     /// a detached script owns install → verify → rollback and announces the result itself.
@@ -149,7 +173,7 @@ public struct AutoUpdaterDeps: Sendable {
         postPrompt: @escaping @Sendable (String) async throws -> Bool,
         announce: @escaping @Sendable (String) async -> Void = { _ in },
         install: (@Sendable () async -> UpdateInstallResult)? = nil,
-        restart: (@Sendable (@escaping @Sendable () async -> Void) async -> RestartResult)? = nil,
+        restart: (@Sendable (RestartRequest) async -> RestartResult)? = nil,
         homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil,
         messages: UpdateMessages = .korean,
         onLog: @escaping @Sendable (String) -> Void = { _ in }
@@ -321,24 +345,30 @@ public actor AutoUpdater {
         let result = await install()
         if !result.ok {
             deps.onLog("auto-update: install failed code=\(result.code) stderr=\(result.stderr.prefix(200))")
-            await deps.announce(deps.messages.installFailed)
+            // Reply on the interaction channel (where the user clicked), not the control channel.
+            await ctx.ack(deps.messages.installFailed)
             updating = false
             return
         }
         guard let restart = deps.restart else {
-            await deps.announce(deps.messages.manualRestartRequired)
+            await ctx.ack(deps.messages.restartFailed)
             deps.onLog("auto-update: install ok for \(version) — restart path unavailable")
             updating = false
             return
         }
-        let restartResult = await restart {
-            await self.deps.announce(self.deps.messages.installed)
-        }
+        // "재시작 요청" is distinct from final "기동 확인" (supervised path confirms via webhook).
+        await ctx.ack(deps.messages.restartRequested)
+        let restartResult = await restart(RestartRequest(
+            applicationId: ctx.applicationId,
+            interactionToken: ctx.interactionToken,
+            notify: { text in await ctx.ack(text) }
+        ))
         if restartResult == .manualRestartRequired {
-            await deps.announce(deps.messages.manualRestartRequired)
-            deps.onLog("auto-update: install ok for \(version) — manual restart required")
+            await ctx.ack(deps.messages.restartFailed)
+            deps.onLog("auto-update: install ok for \(version) — relaunch failed to start")
         }
-        // If restart returns (tests / dry-run), release guard.
+        // If restart returns (tests / dry-run / spawn-only), release guard.
+        // Production supervised path typically exits the process after spawning the helper.
         updating = false
     }
 

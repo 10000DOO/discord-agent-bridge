@@ -314,15 +314,21 @@ public enum I18n {
         "update.decided.approved": "업데이트 진행 중…",
         "update.decided.dismissed": "이 버전 건너뜀",
         "update.busy": "이미 업데이트가 진행 중이에요.",
-        "update.installed": "✅ 설치 완료. 새 버전으로 재시작합니다…",
+        "update.restartRequested":
+            "✅ 설치 완료. 서비스를 재시작하는 중이에요 (잠시 후 결과 메시지가 옵니다)…",
+        "update.installed":
+            "✅ 설치 완료. 서비스를 재시작하는 중이에요 (잠시 후 결과 메시지가 옵니다)…",
+        "update.restartConfirmed": "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요.",
         "update.installFailed":
             "❌ 자동 업데이트 설치에 실패했어요. 수동으로 `bash swift/scripts/install.sh` 후 재시작해 주세요.",
         "update.dismissed": "이 버전 알림을 껐어요. 더 새 버전이 나오면 다시 알려드릴게요.",
         "update.denied": "자동 업데이트는 서버 관리자(Administrator) 또는 admin 티어만 결정할 수 있어요.",
         "update.manualOnly":
             "자동 설치 경로를 찾지 못했어요. 전체 체크아웃에서 `bash swift/scripts/install.sh`로 수동 업데이트하세요.",
+        "update.restartFailed":
+            "⚠️ 설치는 완료됐지만 서비스 재기동에 실패했어요. `launchctl`/`brew services`로 수동 재시작해 주세요. 로그: `~/.dab/logs/supervised-relaunch.log`",
         "update.manualRestartRequired":
-            "✅ 설치는 완료됐지만 안전한 자동 재시작을 확인할 수 없어요. 현재 서비스를 수동으로 재시작해 주세요.",
+            "⚠️ 설치는 완료됐지만 서비스 재기동에 실패했어요. `launchctl`/`brew services`로 수동 재시작해 주세요. 로그: `~/.dab/logs/supervised-relaunch.log`",
         "update.homebrewInProgress":
             "설치를 시작했어요. 몇 분 안에 재시작 결과를 별도로 알려드릴게요.",
         "update.upToDate": "최신 버전이에요.",
@@ -631,15 +637,21 @@ public enum I18n {
         "update.decided.approved": "Updating…",
         "update.decided.dismissed": "Version skipped",
         "update.busy": "An update is already in progress.",
-        "update.installed": "✅ Installed. Restarting into the new version…",
+        "update.restartRequested":
+            "✅ Installed. Restarting the service (a result message will follow)…",
+        "update.installed":
+            "✅ Installed. Restarting the service (a result message will follow)…",
+        "update.restartConfirmed": "✅ Update complete. The new version is running.",
         "update.installFailed":
             "❌ Auto-update failed to install. Run `bash swift/scripts/install.sh` manually, then restart.",
         "update.dismissed": "Muted this version. I’ll notify you again when a newer one ships.",
         "update.denied": "Only a server Administrator or the admin tier can decide auto-updates.",
         "update.manualOnly":
             "Could not find an auto-install path. From a full checkout run `bash swift/scripts/install.sh` to update manually.",
+        "update.restartFailed":
+            "⚠️ Installed, but service relaunch failed. Restart manually via launchctl/brew services. Log: `~/.dab/logs/supervised-relaunch.log`",
         "update.manualRestartRequired":
-            "✅ Installation completed, but a safe automatic restart could not be confirmed. Restart the current service manually.",
+            "⚠️ Installed, but service relaunch failed. Restart manually via launchctl/brew services. Log: `~/.dab/logs/supervised-relaunch.log`",
         "update.homebrewInProgress":
             "Installation started. I’ll let you know the restart result separately in a few minutes.",
         "update.upToDate": "Already up to date.",
