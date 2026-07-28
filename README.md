@@ -56,7 +56,25 @@ About 5 minutes.
 
 ## Step 2 — Install & run
 
-### macOS (recommended — LaunchAgent)
+### macOS (recommended — Homebrew)
+
+```bash
+brew tap 10000DOO/discord-agent-bridge
+brew install 10000DOO/discord-agent-bridge/dab
+```
+
+Builds `dab` from source and npm-installs the Claude sidecar alongside it — no separate `npm install` step. Needs Node.js 20+ and Swift 6.1+ already on `PATH` (see Prerequisites above); the formula only checks for them, it won't install or upgrade either.
+
+Set the token, then run:
+
+```bash
+export DISCORD_BOT_TOKEN=your_bot_token
+dab
+```
+
+This release only installs the binary — `brew services` isn't wired up yet. For a background service that survives reboots, use the manual (from-source) install below instead.
+
+### macOS (manual — from source)
 
 ```bash
 git clone https://github.com/10000DOO/discord-agent-bridge.git

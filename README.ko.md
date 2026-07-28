@@ -56,7 +56,25 @@
 
 ## 2단계 — 설치 & 실행
 
-### macOS (권장 — LaunchAgent)
+### macOS (권장 — Homebrew)
+
+```bash
+brew tap 10000DOO/discord-agent-bridge
+brew install 10000DOO/discord-agent-bridge/dab
+```
+
+소스에서 `dab`을 빌드하고 Claude 사이드카까지 같이 npm install 해줍니다 — 따로 `npm install`을 돌릴 필요 없습니다. Node.js 20+ / Swift 6.1+ 가 이미 `PATH`에 있어야 합니다(위 준비물 참고) — Formula는 확인만 하고 설치·업그레이드는 해주지 않습니다.
+
+토큰을 설정하고 실행하세요:
+
+```bash
+export DISCORD_BOT_TOKEN=your_bot_token
+dab
+```
+
+이번 릴리스는 실행 파일만 설치합니다 — `brew services`는 아직 연결돼 있지 않습니다. 재부팅에도 살아남는 백그라운드 서비스가 필요하면 아래 수동(소스 빌드) 설치를 대신 쓰세요.
+
+### macOS (수동 — 소스 빌드)
 
 ```bash
 git clone https://github.com/10000DOO/discord-agent-bridge.git
