@@ -80,20 +80,47 @@ func runRedmineKickoffPrompt(
     }
     await IdleWatchdog.shared.arm(channelId: channelId)
 
+    // WO-5 (docs/claude-turn-timeout-delay.md): same push-based pipeline as DabMain, via the
+    // shared TurnDelivery functions — dedups what used to be a smaller hand-copied pipeline here.
+    // `announceExtras: false` keeps this path's intentionally trimmed UX (no mention/rate-limit
+    // line/usage panel/status-channel notifications) exactly as before.
+    let pushCtx = TurnDeliveryContext(
+        client: client, channelId: chId, guildId: guildId, backend: backend,
+        caps: caps, actorId: actorId, roleTier: roleTier, permMode: sessionConfig?.permMode,
+        announceExtras: false
+    )
+    let pushChain = LockedBox<Task<Void, Never>?>(nil)
+    // RV follow-up (docs/claude-turn-timeout-delay.md 10장): same failure/tool-count tracking as
+    // DabMain.handleMessageCreate — kept in sync since this mirrors its push pipeline.
+    let pushFailed = LockedBox<Bool>(false)
+    let lastToolCount = LockedBox<Int>(0)
+    let onAnswer: @Sendable (TurnResult) -> Void = { turn in
+        lastToolCount.withLock { $0 = turn.tools.reduce(0) { $0 + $1.count } }
+        pushChain.withLock { prev in
+            let previous = prev
+            prev = Task {
+                _ = await previous?.value
+                if await !deliverTurnPush(turn, ctx: pushCtx) {
+                    pushFailed.withLock { $0 = true }
+                }
+            }
+        }
+    }
+
     do {
-        let turn: TurnResult
         switch backend {
         case .claude, .custom:
-            turn = try await DabSessionBridge.shared.runTurn(
+            try await DabSessionBridge.shared.runTurn(
                 channelId: channelId,
                 guildId: guildId,
                 ownerId: actorId,
                 text: text,
                 config: sessionConfig ?? SessionConfig(backend: backend),
-                files: []
+                files: [],
+                onAnswer: onAnswer
             )
         case .codex:
-            turn = try await CodexSessionBridge.shared.runTurn(
+            let turn = try await CodexSessionBridge.shared.runTurn(
                 channelId: channelId,
                 ownerId: actorId,
                 guildId: guildId,
@@ -101,8 +128,10 @@ func runRedmineKickoffPrompt(
                 config: sessionConfig,
                 files: []
             )
+            lastToolCount.withLock { $0 = turn.tools.reduce(0) { $0 + $1.count } }
+            if await !deliverTurnPush(turn, ctx: pushCtx) { pushFailed.withLock { $0 = true } }
         case .grok:
-            turn = try await GrokSessionBridge.shared.runTurn(
+            let turn = try await GrokSessionBridge.shared.runTurn(
                 channelId: channelId,
                 ownerId: actorId,
                 guildId: guildId,
@@ -110,62 +139,21 @@ func runRedmineKickoffPrompt(
                 config: sessionConfig,
                 files: []
             )
+            lastToolCount.withLock { $0 = turn.tools.reduce(0) { $0 + $1.count } }
+            if await !deliverTurnPush(turn, ctx: pushCtx) { pushFailed.withLock { $0 = true } }
         }
-        await IdleWatchdog.shared.stop(channelId: channelId)
-        if let promptMessageId {
-            await completeTurnReaction(
-                client: client,
-                channelId: chId,
-                messageId: promptMessageId,
-                terminal: TurnReactions.done
-            )
-        }
-        await StreamStatusHost.shared.end(channelId: channelId)
-        let toolCount = turn.tools.reduce(0) { $0 + $1.count }
-        await finalizeInterruptControlMessage(
-            client: client, channelId: chId, messageId: controlMsgId,
-            guildId: guildId, toolCount: toolCount
+        await pushChain.withLock { $0 }?.value
+        await finalizeTurnCompletion(
+            client: client, channelId: chId, messageId: promptMessageId,
+            controlMsgId: controlMsgId, guildId: guildId, ok: !(pushFailed.withLock { $0 }),
+            toolCount: lastToolCount.withLock { $0 }
         )
-        let body = turn.text.isEmpty ? "(no text)" : turn.text
-        let renderFn = await ImageRenderHost.shared.resolveRenderFn()
-        try await deliverAnswer(
-            body,
-            options: DeliverOptions(
-                renderImage: renderFn,
-                emit: { out in
-                    try await emitDeliverPayload(client: client, channelId: chId, payload: out)
-                }
-            )
-        )
-        if let usage = turn.usage, let line = buildResultLine(usage) {
-            _ = await createMessageWithRetry(
-                client: client,
-                channelId: chId,
-                payload: .init(content: line),
-                onGone: {
-                    await SessionLifecycle.shared.stopChannel(
-                        channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-                    )
-                }
-            )
-        }
-        await AuditLog.shared.record(AuditEntry(
-            actorId: actorId, roleTier: roleTier, guildId: guildId, channelId: channelId,
-            action: "turn", mode: backend.rawValue, status: "ok"
-        ))
     } catch {
-        await IdleWatchdog.shared.stop(channelId: channelId)
-        if let promptMessageId {
-            await completeTurnReaction(
-                client: client,
-                channelId: chId,
-                messageId: promptMessageId,
-                terminal: TurnReactions.error
-            )
-        }
-        await StreamStatusHost.shared.end(channelId: channelId)
-        await finalizeInterruptControlMessage(
-            client: client, channelId: chId, messageId: controlMsgId, guildId: guildId
+        await pushChain.withLock { $0 }?.value
+        await finalizeTurnCompletion(
+            client: client, channelId: chId, messageId: promptMessageId,
+            controlMsgId: controlMsgId, guildId: guildId, ok: false,
+            toolCount: lastToolCount.withLock { $0 }
         )
         log.error("redmine kickoff turn failed channel=\(channelId) err=\(error)")
         let msg = "⚠️ \(error.localizedDescription)"

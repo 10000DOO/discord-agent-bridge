@@ -23,6 +23,10 @@ private actor GateableSidecar {
     private var emitToolsAndSubagentOnce: Bool          // W11-g slice4: one turn of tool/subagent events
     private let skipResultEvent: Bool                   // regression: turn_complete arrives with no .result at all
     private let skipTurnCompleteEvent: Bool             // WO-4 regression: .result arrives but turn_complete never does
+    // WO-5 regression (docs/claude-turn-timeout-delay.md): after the normal text/result/turnComplete
+    // sequence, fire a SECOND `.text` + `.result` on the SAME handle after this delay — simulating a
+    // background-subagent-triggered follow-up answer arriving after `runTurn` has already returned.
+    private let emitSecondResultAfterNs: UInt64?
     // WO-2 regression: emit `activityCount` non-terminal `.progress` events, `activityIntervalNs`
     // apart, before completing the turn — simulates a slow-but-alive turn so the test can assert
     // the hang-timeout window is pushed out by activity instead of firing on the fixed countdown.
@@ -31,7 +35,7 @@ private actor GateableSidecar {
     private var counter = 0
     private var lastText = ""
 
-    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil, skipResultEvent: Bool = false, skipTurnCompleteEvent: Bool = false, activityIntervalNs: UInt64? = nil, activityCount: Int = 0) {
+    init(transport: InMemorySidecarTransport, gate: TurnGate?, resultEchoesText: Bool = false, capture: LockedBox<[String: String]>? = nil, emitsPermission: Bool = false, capturePerm: LockedBox<[String: String]>? = nil, emitsBackendId: String? = nil, reqCapture: LockedBox<[String]>? = nil, resumeFails: Bool = false, emitContextAndRateLimit: Bool = false, emitRateLimitAfterResult: Bool = false, postResultRateDelayNs: UInt64 = 0, emitToolsAndSubagent: Bool = false, closeHostAfterSendAck: InMemorySidecarTransport? = nil, closeHostAfterTerminalResult: InMemorySidecarTransport? = nil, skipResultEvent: Bool = false, skipTurnCompleteEvent: Bool = false, emitSecondResultAfterNs: UInt64? = nil, activityIntervalNs: UInt64? = nil, activityCount: Int = 0) {
         self.transport = transport
         self.gate = gate
         self.resultEchoesText = resultEchoesText
@@ -49,6 +53,7 @@ private actor GateableSidecar {
         self.closeHostAfterTerminalResult = closeHostAfterTerminalResult
         self.skipResultEvent = skipResultEvent
         self.skipTurnCompleteEvent = skipTurnCompleteEvent
+        self.emitSecondResultAfterNs = emitSecondResultAfterNs
         self.activityIntervalNs = activityIntervalNs
         self.activityCount = activityCount
     }
@@ -242,6 +247,16 @@ private actor GateableSidecar {
         if !skipTurnCompleteEvent {
             await emit(session: session, event: .turnComplete)
         }
+        // WO-5 regression fixture: a background subagent finishing well after this `session.send`
+        // RPC has already been ack'd — fires a SECOND `.text` + `.result` on the same handle, with
+        // no further user turn in between.
+        if let delay = emitSecondResultAfterNs {
+            Task {
+                try? await Task.sleep(nanoseconds: delay)
+                await self.emit(session: session, event: .text(text: "follow-up:\(text)", delta: true))
+                await self.emit(session: session, event: .result(text: nil, costUsd: nil, tokensIn: nil, tokensOut: nil, durationMs: nil))
+            }
+        }
     }
 
     private func emit(session: String, event: AgentEvent) async {
@@ -275,6 +290,7 @@ private func makeDabBridge(
     resolveCustomEnvFn: (@Sendable () -> CustomEnvResult)? = nil,
     skipResultEvent: Bool = false,
     skipTurnCompleteEvent: Bool = false,
+    emitSecondResultAfterNs: UInt64? = nil,
     activityIntervalNs: UInt64? = nil,
     activityCount: Int = 0
 ) -> (DabSessionBridge, MadeClients<ClaudeSidecarClient>) {
@@ -293,6 +309,7 @@ private func makeDabBridge(
                 closeHostAfterTerminalResult: closeAfterTerminalResult ? pair.host : nil,
                 skipResultEvent: skipResultEvent,
                 skipTurnCompleteEvent: skipTurnCompleteEvent,
+                emitSecondResultAfterNs: emitSecondResultAfterNs,
                 activityIntervalNs: activityIntervalNs,
                 activityCount: activityCount
             )
@@ -322,8 +339,24 @@ private func freshTempConfigStore(autoAllow: [String] = ["Read", "Glob", "Grep"]
     return store
 }
 
+// WO-5 (docs/claude-turn-timeout-delay.md): `runTurn` no longer returns a single `TurnResult` — it
+// takes an `onAnswer` callback fired once per `.result` (possibly more than once per turn) and
+// itself returns `Void` once the first one has fired. These two helpers capture every push in
+// order so existing single-result-per-turn tests can keep asserting on "the" reply (`.last`).
+private func runPushes(
+    _ b: DabSessionBridge, channelId: String = "c", guildId: String = "g", ownerId: String? = nil,
+    text: String, config: SessionConfig? = nil, files: [TurnFile] = []
+) async throws -> [TurnResult] {
+    let pushes = LockedBox<[TurnResult]>([])
+    try await b.runTurn(
+        channelId: channelId, guildId: guildId, ownerId: ownerId, text: text, config: config, files: files,
+        onAnswer: { r in pushes.withLock { $0.append(r) } }
+    )
+    return pushes.withLock { $0 }
+}
+
 private func run(_ b: DabSessionBridge, _ text: String, channel: String = "c") async throws -> String {
-    try await b.runTurn(channelId: channel, guildId: "g", ownerId: nil, text: text).text
+    try await runPushes(b, channelId: channel, text: text).last?.text ?? ""
 }
 
 @Suite("DabSessionBridge")
@@ -336,63 +369,60 @@ struct DabSessionBridgeTests {
     @Test func runTurnForwardsFilesToSessionSend() async throws {
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture)
-        let turn = try await bridge.runTurn(
-            channelId: "c",
-            guildId: "g",
-            ownerId: nil,
-            text: "see file",
+        let turn = try await runPushes(
+            bridge, text: "see file",
             files: [TurnFile(path: "/tmp/ws/.dab-attachments/note.txt", mime: "text/plain")]
-        )
-        #expect(turn.text == "ok:see file")
+        ).last
+        #expect(turn?.text == "ok:see file")
         #expect(capture.withLock { $0["files.paths"] } == "/tmp/ws/.dab-attachments/note.txt")
         #expect(capture.withLock { $0["files.mimes"] } == "text/plain")
     }
 
     @Test func capturesContextUsageAndRateLimitOnTurn() async throws {
         let (bridge, _) = makeDabBridge(emitContextAndRateLimit: true)
-        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
-        #expect(turn.text == "ok:hi")
-        #expect(turn.contextUsage?.percentage == 10)
-        #expect(turn.contextUsage?.model == "claude-x")
+        let turn = try await runPushes(bridge, text: "hi").last
+        #expect(turn?.text == "ok:hi")
+        #expect(turn?.contextUsage?.percentage == 10)
+        #expect(turn?.contextUsage?.model == "claude-x")
         // G-P1-10 usage HUD extras latched onto TurnResult.
-        #expect(turn.contextUsage?.modelDisplayName == "Claude X")
-        #expect(turn.contextUsage?.clearableTokens == 207_600)
-        #expect(turn.contextUsage?.memoryFileCount == 1)
-        #expect(turn.contextUsage?.mcpServerCount == 2)
-        #expect(turn.rateLimit?.rateLimitType == "five_hour")
-        #expect(turn.rateLimit?.utilization == 50)
+        #expect(turn?.contextUsage?.modelDisplayName == "Claude X")
+        #expect(turn?.contextUsage?.clearableTokens == 207_600)
+        #expect(turn?.contextUsage?.memoryFileCount == 1)
+        #expect(turn?.contextUsage?.mcpServerCount == 2)
+        #expect(turn?.rateLimit?.rateLimitType == "five_hour")
+        #expect(turn?.rateLimit?.utilization == 50)
     }
 
-    // WO-4 (docs/claude-turn-timeout-delay.md, §8 known trade-off, user-confirmed): the turn now
-    // finishes on `.result` instead of waiting for `.turnComplete`, so a `rate_limit` event that
-    // arrives after `.result` lands after the turn is already `done` and is dropped by the
-    // `!box.done` guard at the top of `onEvent`. Accepted regression — before WO-4 this was
-    // already lost 100% of the time in production because `.turnComplete` never arrived at all.
+    // WO-5 (docs/claude-turn-timeout-delay.md): pushes are gating-free now (no more "is this the
+    // last result" judgment), but each push still only carries what's known AT THAT MOMENT — a
+    // `rate_limit` that arrives after the only `.result` in the turn has nothing left to attach it
+    // to (no further push to carry it out), so it is still not shown. Different mechanism from the
+    // old WO-4 `box.done` gate, same observable outcome.
     @Test func rateLimitAfterResultIsNotCapturedByDesign() async throws {
         let (bridge, _) = makeDabBridge(emitRateLimitAfterResult: true, postResultRateDelayNs: 30_000_000)
-        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
-        #expect(turn.text == "ok:hi")
-        #expect(turn.rateLimit == nil)
+        let turn = try await runPushes(bridge, text: "hi").last
+        #expect(turn?.text == "ok:hi")
+        #expect(turn?.rateLimit == nil)
     }
 
     @Test func aggregatesToolsAndSubagentOnTurn() async throws {
         let (bridge, _) = makeDabBridge(emitToolsAndSubagent: true)
-        let turn = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
-        #expect(turn.text == "ok:hi")
-        let byName = Dictionary(uniqueKeysWithValues: turn.tools.map { ($0.name, $0) })
+        let turn = try await runPushes(bridge, text: "hi").last
+        #expect(turn?.text == "ok:hi")
+        let byName = Dictionary(uniqueKeysWithValues: (turn?.tools ?? []).map { ($0.name, $0) })
         #expect(byName["Bash"]?.count == 2)
         #expect(byName["Bash"]?.failed == 1)
         #expect(byName["Task"]?.count == 1)
         #expect(byName["Task"]?.failed == 0)
-        #expect(turn.agents.count == 1)
-        #expect(turn.agents[0].status == .completed)
-        #expect(turn.agents[0].type == "developer")
-        #expect(turn.agents[0].description == "Fix bug")
-        #expect(turn.agents[0].durationMs == 12_000)
+        #expect(turn?.agents.count == 1)
+        #expect(turn?.agents[0].status == .completed)
+        #expect(turn?.agents[0].type == "developer")
+        #expect(turn?.agents[0].description == "Fix bug")
+        #expect(turn?.agents[0].durationMs == 12_000)
         // Next turn resets aggregates (no tools emitted → empty).
-        let turn2 = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "again")
-        #expect(turn2.tools.isEmpty)
-        #expect(turn2.agents.isEmpty)
+        let turn2 = try await runPushes(bridge, text: "again").last
+        #expect(turn2?.tools.isEmpty == true)
+        #expect(turn2?.agents.isEmpty == true)
     }
 
     @Test func resultTextDedup() async throws {
@@ -409,8 +439,10 @@ struct DabSessionBridgeTests {
         let timeoutNs: UInt64 = 3_000_000_000   // generous timeout the fix must never need to hit
         let (bridge, _) = makeDabBridge(timeoutNs: timeoutNs, skipResultEvent: true)
         let start = Date()
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let pushes = try await runPushes(bridge, text: "hi")
         let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(pushes.count == 1)
+        let reply = pushes[0]
         #expect(reply.text == "ok:hi")
         #expect(!reply.text.contains("(timeout)"))
         #expect(reply.usage == nil)               // no `.result` → no usage/cost captured (by design)
@@ -425,11 +457,33 @@ struct DabSessionBridgeTests {
         let timeoutNs: UInt64 = 3_000_000_000   // generous timeout the fix must never need to hit
         let (bridge, _) = makeDabBridge(resultEchoesText: true, timeoutNs: timeoutNs, skipTurnCompleteEvent: true)
         let start = Date()
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let pushes = try await runPushes(bridge, text: "hi")
         let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
+        #expect(pushes.count == 1)
+        let reply = pushes[0]
         #expect(reply.text == "ok:hi")
         #expect(!reply.text.contains("(timeout)"))
         #expect(elapsedNs < timeoutNs / 2)         // finished well before the timeout fallback could fire
+    }
+
+    // WO-5 regression (docs/claude-turn-timeout-delay.md): the actual production bug this WO
+    // fixes — a background-subagent-triggered follow-up `.result` on the SAME handle, arriving well
+    // after `runTurn` has already returned from the FIRST result, must still reach `onAnswer`. Under
+    // the old `!box.done` gate this second push was silently dropped; there is no gating left at
+    // all now, so it fires exactly like any other push.
+    @Test func subagentTriggeredFollowUpResultStillPushesAfterRunTurnReturns() async throws {
+        let (bridge, _) = makeDabBridge(emitSecondResultAfterNs: 20_000_000)   // 20ms after the first
+        let pushes = LockedBox<[TurnResult]>([])
+        try await bridge.runTurn(
+            channelId: "c", guildId: "g", ownerId: nil, text: "hi",
+            onAnswer: { r in pushes.withLock { $0.append(r) } }
+        )
+        // runTurn already returned after the FIRST push — the second one arrives on its own,
+        // independent of anyone still awaiting the call.
+        #expect(await waitUntil { pushes.withLock { $0.count } == 2 })
+        let all = pushes.withLock { $0 }
+        #expect(all[0].text == "ok:hi")
+        #expect(all[1].text == "follow-up:hi")
     }
 
     @Test func serializationReentrancyIsolation() async throws {
@@ -504,10 +558,10 @@ struct DabSessionBridgeTests {
         // `waitUntil` doc comment above) — a single delayed tick must not eat the whole window.
         let (bridge, _) = makeDabBridge(timeoutNs: 400_000_000, activityIntervalNs: 20_000_000, activityCount: 30)
         let start = Date()
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi")
+        let reply = try await runPushes(bridge, text: "hi").last
         let elapsedNs = UInt64(max(0, -start.timeIntervalSinceNow) * 1_000_000_000)
-        #expect(reply.text == "ok:hi")
-        #expect(!reply.text.contains("(timeout)"))
+        #expect(reply?.text == "ok:hi")
+        #expect(reply?.text.contains("(timeout)") == false)
         #expect(elapsedNs > 500_000_000)   // outlived the 400ms window
     }
 
@@ -598,8 +652,9 @@ struct DabSessionBridgeTests {
         let capturePerm = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(permGate: gate, emitsPermission: true, capturePerm: capturePerm)
 
-        let t = Task { try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
-                                                config: SessionConfig(backend: .claude, permMode: "plan")) }
+        let t = Task {
+            try await runPushes(bridge, ownerId: "owner-1", text: "hi", config: SessionConfig(backend: .claude, permMode: "plan"))
+        }
         while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
         let prompt = prompts.withLock { $0[0] }
         #expect(prompt.toolName == "Bash")
@@ -609,8 +664,8 @@ struct DabSessionBridgeTests {
         #expect(prompt.detail == "```json\n{\n  \"command\" : \"ls\"\n}\n```")
         // Owner approves → sidecar receives behavior "allow" → turn completes.
         #expect(await gate.resolve(reqKey: prompt.reqKey, action: .allow, byUserId: "owner-1") == true)
-        let reply = try await t.value
-        #expect(reply.text == "ok:hi")
+        let reply = try await t.value.last
+        #expect(reply?.text == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")
     }
 
@@ -622,15 +677,16 @@ struct DabSessionBridgeTests {
         let capturePerm = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(permGate: gate, emitsPermission: true, capturePerm: capturePerm)
 
-        let t = Task { try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
-                                                config: SessionConfig(backend: .claude, permMode: "plan")) }
+        let t = Task {
+            try await runPushes(bridge, ownerId: "owner-1", text: "hi", config: SessionConfig(backend: .claude, permMode: "plan"))
+        }
         while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
         let key = prompts.withLock { $0[0].reqKey }
         #expect(await gate.resolve(reqKey: key, action: .allow, byUserId: "intruder") == false)   // ignored
         #expect(capturePerm.withLock { $0["behavior"] } == nil)                                   // not answered yet
         #expect(await gate.resolve(reqKey: key, action: .deny, byUserId: "owner-1") == true)       // owner decides
-        let reply = try await t.value
-        #expect(reply.text == "ok:hi")
+        let reply = try await t.value.last
+        #expect(reply?.text == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "deny")
     }
 
@@ -642,14 +698,15 @@ struct DabSessionBridgeTests {
         let capturePerm = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(permGate: gate, emitsPermission: true, capturePerm: capturePerm)
 
-        let t = Task { try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
-                                                config: SessionConfig(backend: .claude, permMode: "plan")) }
+        let t = Task {
+            try await runPushes(bridge, ownerId: "owner-1", text: "hi", config: SessionConfig(backend: .claude, permMode: "plan"))
+        }
         while prompts.withLock({ $0.isEmpty }) { await Task.yield() }
         let prompt = prompts.withLock { $0[0] }
         #expect(prompt.toolName == "Bash")
         #expect(await gate.resolve(reqKey: prompt.reqKey, action: .always, byUserId: "owner-1") == true)
-        let reply = try await t.value
-        #expect(reply.text == "ok:hi")
+        let reply = try await t.value.last
+        #expect(reply?.text == "ok:hi")
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")   // always → allow for sidecar
     }
 
@@ -665,11 +722,10 @@ struct DabSessionBridgeTests {
             permGate: gate, emitsPermission: true, capturePerm: capturePerm, configStore: cfg
         )
 
-        let reply = try await bridge.runTurn(
-            channelId: "c", guildId: "g", ownerId: "owner-1", text: "hi",
-            config: SessionConfig(backend: .claude, permMode: "plan")
-        )
-        #expect(reply.text == "ok:hi")
+        let reply = try await runPushes(
+            bridge, ownerId: "owner-1", text: "hi", config: SessionConfig(backend: .claude, permMode: "plan")
+        ).last
+        #expect(reply?.text == "ok:hi")
         #expect(prompts.withLock { $0.isEmpty })                    // no button prompt
         #expect(capturePerm.withLock { $0["behavior"] } == "allow")
     }
@@ -691,8 +747,8 @@ struct DabSessionBridgeTests {
         ))
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture, store: store, configStore: cfg)
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
-        #expect(reply.text == "ok:hi")
+        let reply = try await runPushes(bridge, ownerId: "o", text: "hi").last
+        #expect(reply?.text == "ok:hi")
         let got = capture.withLock { $0 }
         #expect(got["config.allowedTools"] == "Read,Glob")
         #expect(got["config.autoAllowClaudeTools"] == "Read,Glob")   // profile replaces global autoAllow, not merged
@@ -704,8 +760,8 @@ struct DabSessionBridgeTests {
         let cfg = try await freshTempConfigStore(autoAllow: ["Read", "Glob", "Grep"])
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture, configStore: cfg)
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
-        #expect(reply.text == "ok:hi")
+        let reply = try await runPushes(bridge, ownerId: "o", text: "hi").last
+        #expect(reply?.text == "ok:hi")
         #expect(capture.withLock { $0["config.allowedTools"] } == "Read,Glob,Grep")
         #expect(capture.withLock { $0["config.autoAllowClaudeTools"] } == "Read,Glob,Grep")
     }
@@ -728,7 +784,7 @@ struct DabSessionBridgeTests {
         ))
         let (bridge, _) = makeDabBridge(store: store, configStore: cfg)
         do {
-            _ = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
+            _ = try await runPushes(bridge, ownerId: "o", text: "hi")
             Issue.record("expected unknown profile error")
         } catch let e as SidecarRpcError {
             #expect(e.code == "unknown_profile")
@@ -755,8 +811,8 @@ struct DabSessionBridgeTests {
         ))
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture, store: store, configStore: cfg)
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")
-        #expect(reply.text == "ok:hi")
+        let reply = try await runPushes(bridge, ownerId: "o", text: "hi").last
+        #expect(reply?.text == "ok:hi")
         #expect(capture.withLock { $0["permMode"] } == "plan")
     }
 
@@ -770,8 +826,8 @@ struct DabSessionBridgeTests {
         ))
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture, store: store)
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
-        #expect(reply.text == "ok:hi")
+        let reply = try await runPushes(bridge, ownerId: "o", text: "hi", config: SessionConfig(backend: .claude)).last
+        #expect(reply?.text == "ok:hi")
         #expect(capture.withLock { $0["cwd"] } == "/persisted/project")
     }
 
@@ -780,13 +836,13 @@ struct DabSessionBridgeTests {
     @Test func t1_reconnectResumesSameSession() async throws {
         let store = freshTempStore()
         let (b1, _) = makeDabBridge(store: store, emitsBackendId: "B-123")
-        _ = try await b1.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
+        _ = try await runPushes(b1, ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
         while await store.binding(channelId: "c")?.backendSessionId == nil { await Task.yield() }
         #expect(await store.binding(channelId: "c")?.backendSessionId == "B-123")
 
         let reqs = LockedBox<[String]>([])
         let (b2, _) = makeDabBridge(store: store, reqCapture: reqs)   // restart
-        _ = try await b2.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "again", config: SessionConfig(backend: .claude))
+        _ = try await runPushes(b2, ownerId: "o", text: "again", config: SessionConfig(backend: .claude))
         #expect(reqs.withLock { $0 }.contains("resume:B-123"))
         #expect(!reqs.withLock { $0 }.contains("start"))
     }
@@ -830,7 +886,7 @@ struct DabSessionBridgeTests {
     @Test func t3_noRecordWithoutBackendId() async throws {
         let store = freshTempStore()
         let (b, _) = makeDabBridge(store: store)   // emitsBackendId nil → no notify
-        _ = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
+        _ = try await runPushes(b, ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
         #expect(await store.binding(channelId: "c") == nil)
     }
 
@@ -840,9 +896,9 @@ struct DabSessionBridgeTests {
         try await store.upsert(channelId: "c", PersistedSession(backend: .claude, backendSessionId: "STALE", cwd: "/x", guildId: "g", updatedAt: "t"))
         let reqs = LockedBox<[String]>([])
         let (b, _) = makeDabBridge(store: store, reqCapture: reqs, resumeFails: true)
-        let reply = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi", config: SessionConfig(backend: .claude))
-        #expect(reply.text.contains("이전 세션 복구 실패"))
-        #expect(reply.text.hasSuffix("ok:hi"))
+        let reply = try await runPushes(b, ownerId: "o", text: "hi", config: SessionConfig(backend: .claude)).last
+        #expect(reply?.text.contains("이전 세션 복구 실패") == true)
+        #expect(reply?.text.hasSuffix("ok:hi") == true)
         #expect(reqs.withLock { $0 }.contains("resume-fail"))
         #expect(reqs.withLock { $0 }.contains("start"))   // fell back to a fresh start
     }
@@ -853,7 +909,7 @@ struct DabSessionBridgeTests {
         try await store.upsert(channelId: "c", PersistedSession(backend: .claude, backendSessionId: "B-7", cwd: "/x", guildId: "g", model: "claude-x", effort: "high", updatedAt: "t"))
         let cap = LockedBox<[String: String]>([:])
         let (b, _) = makeDabBridge(capture: cap, store: store)
-        _ = try await b.runTurn(channelId: "c", guildId: "g", ownerId: "o", text: "hi")   // no live config
+        _ = try await runPushes(b, ownerId: "o", text: "hi")   // no live config
         #expect(cap.withLock { $0["model"] } == "claude-x")
         #expect(cap.withLock { $0["effort"] } == "high")
     }
@@ -862,9 +918,10 @@ struct DabSessionBridgeTests {
     @Test func configReachesSessionStartParams() async throws {
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture)
-        let reply = try await bridge.runTurn(channelId: "c", guildId: "g", ownerId: nil, text: "hi",
-                                             config: SessionConfig(backend: .claude, model: "claude-x", effort: "high"))
-        #expect(reply.text == "ok:hi")
+        let reply = try await runPushes(
+            bridge, text: "hi", config: SessionConfig(backend: .claude, model: "claude-x", effort: "high")
+        ).last
+        #expect(reply?.text == "ok:hi")
         let got = capture.withLock { $0 }
         #expect(got["model"] == "claude-x")
         #expect(got["effort"] == "high")
@@ -891,11 +948,11 @@ struct DabSessionBridgeTests {
                 )
             }
         )
-        let reply = try await bridge.runTurn(
-            channelId: "c", guildId: "g", ownerId: "o", text: "hi",
+        let reply = try await runPushes(
+            bridge, ownerId: "o", text: "hi",
             config: SessionConfig(backend: .custom, model: "opus", effort: "high")
-        )
-        #expect(reply.text == "ok:hi")
+        ).last
+        #expect(reply?.text == "ok:hi")
         let got = capture.withLock { $0 }
         #expect(got["model"] == "kimi-k2.7-code")
         #expect(got["env.present"] == "1")
@@ -1000,11 +1057,11 @@ struct DabSessionBridgeUsageActivityTests {
         }
 
         let (bridge, _) = makeDabBridge(emitContextAndRateLimit: true)
-        let turn = try await bridge.runTurn(channelId: usageChannelId, guildId: "g", ownerId: nil, text: "hi")
+        let turn = try await runPushes(bridge, channelId: usageChannelId, text: "hi").last
 
         // Terminal values are retained for the single ordered final panel.
-        #expect(turn.contextUsage?.percentage == 10)
-        #expect(turn.rateLimit?.utilization == 50)
+        #expect(turn?.contextUsage?.percentage == 10)
+        #expect(turn?.rateLimit?.utilization == 50)
         #expect(recorder.withLock { $0.isEmpty })
 
         // Isolated cleanup (this suite is the only place touching the shared singleton).

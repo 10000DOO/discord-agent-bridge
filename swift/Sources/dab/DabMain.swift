@@ -1463,14 +1463,6 @@ struct EventHandler: GatewayEventHandler {
         )
     }
 
-    /// Prefer persisted session ownerId; fall back to the message author (drive path).
-    private func resolveOwnerId(channelId: String, messageAuthorId: String) async -> String {
-        if let o = await SessionStore.shared.binding(channelId: channelId)?.ownerId, !o.isEmpty {
-            return o
-        }
-        return messageAuthorId
-    }
-
     /// Interactions usually carry the computed Administrator permission. The cache additionally
     /// preserves the guild-owner bypass when that field is unavailable or Discord omits it.
     private func hasDiscordAdministrator(
@@ -2957,22 +2949,49 @@ struct EventHandler: GatewayEventHandler {
         }
         // G-P1-01: arm idle watchdog for this turn (StreamStatusHost notes reset; stop on end).
         await IdleWatchdog.shared.arm(channelId: channelId)
+        // WO-5 (docs/claude-turn-timeout-delay.md): push-based delivery, no "is this the last
+        // result" judgment. `pushChain` serializes `deliverTurnPush` calls fired from Claude's
+        // `onAnswer` (possibly more than once — a background-subagent follow-up `.result` fires it
+        // again) so they post in order, and so the one-shot completion decoration below waits for
+        // at least the first one to actually finish instead of racing ahead of it.
+        let pushCtx = TurnDeliveryContext(
+            client: client, channelId: payload.channel_id, guildId: guildId, backend: backend,
+            caps: caps, actorId: actorId, roleTier: tier, permMode: binding?.permMode
+        )
+        let pushChain = LockedBox<Task<Void, Never>?>(nil)
+        // RV follow-up (docs/claude-turn-timeout-delay.md 10장): track whether any push actually
+        // reached Discord (pushFailed → completion reaction shows ❌ even if the AI itself
+        // succeeded) and the most recent tool count (restores the completion embed's "🛠️ N").
+        let pushFailed = LockedBox<Bool>(false)
+        let lastToolCount = LockedBox<Int>(0)
+        let onAnswer: @Sendable (TurnResult) -> Void = { turn in
+            lastToolCount.withLock { $0 = turn.tools.reduce(0) { $0 + $1.count } }
+            pushChain.withLock { prev in
+                let previous = prev
+                prev = Task {
+                    _ = await previous?.value
+                    if await !deliverTurnPush(turn, ctx: pushCtx) {
+                        pushFailed.withLock { $0 = true }
+                    }
+                }
+            }
+        }
         do {
-            let turn: TurnResult
             switch backend {
             case .claude, .custom:
                 // custom: Claude sidecar path + shell-env overlay inside DabSessionBridge (W16-f).
                 let cfg = binding ?? SessionConfig(backend: backend)
-                turn = try await DabSessionBridge.shared.runTurn(
+                try await DabSessionBridge.shared.runTurn(
                     channelId: channelId,
                     guildId: payload.guild_id?.rawValue ?? "dm",
                     ownerId: payload.author?.id.rawValue,
                     text: text,
                     config: cfg,
-                    files: turnFiles
+                    files: turnFiles,
+                    onAnswer: onAnswer
                 )
             case .codex:
-                turn = try await CodexSessionBridge.shared.runTurn(
+                let turn = try await CodexSessionBridge.shared.runTurn(
                     channelId: channelId,
                     ownerId: payload.author?.id.rawValue,
                     guildId: payload.guild_id?.rawValue ?? "dm",
@@ -2980,8 +2999,10 @@ struct EventHandler: GatewayEventHandler {
                     config: binding,
                     files: turnFiles
                 )
+                lastToolCount.withLock { $0 = turn.tools.reduce(0) { $0 + $1.count } }
+                if await !deliverTurnPush(turn, ctx: pushCtx) { pushFailed.withLock { $0 = true } }
             case .grok:
-                turn = try await GrokSessionBridge.shared.runTurn(
+                let turn = try await GrokSessionBridge.shared.runTurn(
                     channelId: channelId,
                     ownerId: payload.author?.id.rawValue,
                     guildId: payload.guild_id?.rawValue ?? "dm",
@@ -2989,120 +3010,23 @@ struct EventHandler: GatewayEventHandler {
                     config: binding,
                     files: turnFiles
                 )
+                lastToolCount.withLock { $0 = turn.tools.reduce(0) { $0 + $1.count } }
+                if await !deliverTurnPush(turn, ctx: pushCtx) { pushFailed.withLock { $0 = true } }
             }
-            // G-P1-01: turn finished — cancel idle notice.
-            await IdleWatchdog.shared.stop(channelId: channelId)
-            // G-P0-02: ⏳ → ✅ on successful turn.
-            await completeTurnReaction(
-                client: client,
-                channelId: payload.channel_id,
-                messageId: payload.id,
-                terminal: TurnReactions.done
+            await pushChain.withLock { $0 }?.value
+            // G-P1-01 / G-P0-02: one-shot completion decoration (emoji/stream/stop
+            // button/IdleWatchdog) — fires once, right after the first answer went out.
+            await finalizeTurnCompletion(
+                client: client, channelId: payload.channel_id, messageId: payload.id,
+                controlMsgId: controlMsgId, guildId: guildId, ok: !(pushFailed.withLock { $0 }),
+                toolCount: lastToolCount.withLock { $0 }
             )
-            await StreamStatusHost.shared.end(channelId: channelId)
-            let toolCount = turn.tools.reduce(0) { $0 + $1.count }
-            await finalizeInterruptControlMessage(
-                client: client, channelId: payload.channel_id, messageId: controlMsgId,
-                guildId: guildId, toolCount: toolCount
-            )
-            // W16-a + S3: deliverAnswer (chunkMessage; tables/mermaid → PNG when Chrome ready).
-            let body = turn.text.isEmpty ? "(no text)" : turn.text
-            let renderFn = await ImageRenderHost.shared.resolveRenderFn()
-            let chId = payload.channel_id
-            try await deliverAnswer(
-                body,
-                options: DeliverOptions(
-                    renderImage: renderFn,
-                    emit: { out in
-                        try await emitDeliverPayload(client: client, channelId: chId, payload: out)
-                    }
-                )
-            )
-            // W11-g slice1: optional done-line footer (cost/tokens/duration) after answer chunks.
-            if let usage = turn.usage, let line = buildResultLine(usage) {
-                _ = await createMessageWithRetry(
-                    client: client,
-                    channelId: payload.channel_id,
-                    payload: .init(content: line),
-                    onGone: {
-                        await SessionLifecycle.shared.stopChannel(
-                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-                        )
-                    }
-                )
-            }
-            let (usageSnap, usageTitle) = await usageSnapshotAndTitle(backend: backend)
-            // A rate update is part of this terminal snapshot. Post it before the completion
-            // mention so the usage panel remains the final terminal artifact.
-            if let rl = turn.rateLimit {
-                await postRateLimitLine(
-                    client: client, channelId: payload.channel_id, guildId: guildId,
-                    rateLimit: rl, usage: usageSnap
-                )
-            }
-            // mentionOnComplete is terminal output too: answer → footer → mention → usage.
-            let ownerId = await resolveOwnerId(channelId: channelId, messageAuthorId: actorId)
-            if let mention = mentionOnCompleteContent(ownerId: ownerId) {
-                _ = await createMessageWithRetry(
-                    client: client,
-                    channelId: payload.channel_id,
-                    payload: .init(content: mention),
-                    onGone: {
-                        await SessionLifecycle.shared.stopChannel(
-                            channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
-                        )
-                    }
-                )
-            }
-            if caps.usagePanel {
-                let embedExtras = UsageEmbedExtras(
-                    meta: await resolveUsageSessionMeta(
-                        channelId: channelId, fallbackPermMode: binding?.permMode
-                    ),
-                    title: usageTitle,
-                    observedModelIsActual: backend == .claude || backend == .custom,
-                    tools: turn.tools,
-                    agents: turn.agents
-                )
-                await postUsageEmbedOrFallback(
-                    client: client, channelId: payload.channel_id, guildId: guildId,
-                    usage: usageSnap, ctxUsage: turn.contextUsage, extras: embedExtras
-                )
-            }
-            // W16-g: status-channel notification (result + rate_limit when present).
-            let resultEv = AgentEvent.result(
-                text: turn.text,
-                costUsd: turn.usage?.costUsd,
-                tokensIn: turn.usage?.tokensIn,
-                tokensOut: turn.usage?.tokensOut,
-                durationMs: turn.usage?.durationMs
-            )
-            await postStatusNotification(
-                client: client, guildId: guildId, sessionChannelId: channelId, event: resultEv, backend: backend
-            )
-            if let rl = turn.rateLimit {
-                let rlEv = AgentEvent.rateLimit(
-                    resetAt: rl.resetAt, rateLimitType: rl.rateLimitType, utilization: rl.utilization
-                )
-                await postStatusNotification(
-                    client: client, guildId: guildId, sessionChannelId: channelId, event: rlEv, backend: backend
-                )
-            }
-            await AuditLog.shared.record(AuditEntry(actorId: actorId, roleTier: tier, guildId: guildId, channelId: channelId, action: "turn", mode: backend.rawValue, permMode: binding?.permMode, status: "ok"))
         } catch {
-            // G-P1-01: turn failed — cancel idle notice.
-            await IdleWatchdog.shared.stop(channelId: channelId)
-            // G-P0-02: ⏳ → ❌ on turn failure.
-            await completeTurnReaction(
-                client: client,
-                channelId: payload.channel_id,
-                messageId: payload.id,
-                terminal: TurnReactions.error
-            )
-            await StreamStatusHost.shared.end(channelId: channelId)
-            await finalizeInterruptControlMessage(
-                client: client, channelId: payload.channel_id, messageId: controlMsgId,
-                guildId: guildId
+            await pushChain.withLock { $0 }?.value
+            await finalizeTurnCompletion(
+                client: client, channelId: payload.channel_id, messageId: payload.id,
+                controlMsgId: controlMsgId, guildId: guildId, ok: false,
+                toolCount: lastToolCount.withLock { $0 }
             )
             // Same chunking on error path so huge error text is not truncated.
             let msg = "⚠️ \(error.localizedDescription)"

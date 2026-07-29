@@ -52,7 +52,7 @@ public actor DabSessionBridge {
     /// channelId → epoch bumped on `stop` so sessionHandle that races mid-await drops the orphan.
     private var stopEpoch: [String: UInt64] = [:]
     /// Serialize turns per channel (avoid concurrent send on same session).
-    private var channelGates: [String: Task<TurnResult, Error>] = [:]
+    private var channelGates: [String: Task<Void, Error>] = [:]
     /// Per-channel count of `runTurn` callers (in-flight + waiting on the gate chain).
     /// G-P2-04: `running` = depth > 0; queueDepth = max(0, depth − 1).
     private var turnDepth: [String: Int] = [:]
@@ -66,15 +66,25 @@ public actor DabSessionBridge {
         var usage: TurnUsage?
         var contextUsage: ContextUsageInfo?
         var rateLimit: RateLimitInfo?
-        /// Turn-local tools/subagent HUD aggregates (W11-g slice4).
+        /// Turn-local tools/subagent HUD aggregates (W11-g slice4). Reset after every push (WO-5).
         var stats = TurnToolStatsAggregator()
-        var done = false
-        var resultReceived = false
-        var continuation: CheckedContinuation<TurnResult, Error>?
+        /// WO-5 (docs/claude-turn-timeout-delay.md): true once the FIRST terminal-ish event
+        /// (`.result` / `.turnComplete` / `.error`) has resumed `continuation`. After that there is
+        /// no more judgment about "is this really the end" — further events on this handle
+        /// (subagent-triggered `.result`, etc.) just keep pushing through `onAnswer`, exactly like
+        /// TS 1.x's `RendererDispatcher` (gating-free, resend on every `result`). Only this one-shot
+        /// flag still exists, to (a) resume the `Void` continuation exactly once and (b) let the
+        /// caller know when to fire the one-shot completion decoration (emoji/stream/stop
+        /// button/IdleWatchdog) — TS `armCompletionIndicator` parity (first result/error, one-shot).
+        var terminalStarted = false
+        /// Delivered once per `.result` (or the rare `.turnComplete`-without-`.result` safety net),
+        /// gating-free — the caller (DabMain/RedmineKickoffPrompt) does the actual Discord posting.
+        var onAnswer: (@Sendable (TurnResult) -> Void)?
+        var continuation: CheckedContinuation<Void, Error>?
         var timeoutTask: Task<Void, Never>?
     }
 
-    /// Build TurnResult from the live box (tools/agents snapshotted at finish).
+    /// Build TurnResult from the live box (tools/agents snapshotted at push time).
     private func makeTurnResult(box: TurnBox, text: String) -> TurnResult {
         TurnResult(
             text: text,
@@ -109,7 +119,9 @@ public actor DabSessionBridge {
     /// `turnTimeoutNs` unless cancelled first. Called once when the turn starts (`executeTurn`)
     /// and again on every received event (`onEvent`, any kind) so a live turn's fixed window keeps
     /// getting pushed out by activity — only a turn with zero events for the full window ever
-    /// hits the fallback (the "completely hung session" safety net stays intact).
+    /// hits the fallback (the "completely hung session" safety net stays intact). WO-5: this only
+    /// matters BEFORE the first terminal-ish event — once answered, the timer is left cancelled
+    /// (nothing left to protect; see `onEvent`/`deliverTerminal`).
     private func armTimeoutTask(handle: String) -> Task<Void, Never> {
         let timeoutNs = turnTimeoutNs
         return Task {
@@ -159,13 +171,14 @@ public actor DabSessionBridge {
         let tails = eventChains.withLock { chains in handles.compactMap { chains[$0] } }
         for tail in tails { await tail.value }
         guard client === closedClient else { return }
-        for (handle, box) in turns where !box.done {
-            // A result without turn_complete is not yet a complete turn. EOF proves no explicit
-            // drain marker can arrive, so retain the accumulated answer instead of timing out.
-            if box.resultReceived {
-                finishTerminalResult(handle: handle)
+        for (handle, var box) in turns where !box.terminalStarted {
+            // EOF proves no further event can ever arrive. A turn that never got a first answer at
+            // all is a hard failure; one that had already accumulated some text (e.g. `.text`
+            // deltas with no `.result` yet) retains it instead of failing.
+            if box.text.isEmpty {
+                finishWithError(handle: handle, error: error)
             } else {
-                finishTurnUnlocked(handle: handle, result: nil, error: error)
+                deliverTerminal(handle: handle, box: &box)
             }
         }
         sessions.removeAll()
@@ -199,32 +212,38 @@ public actor DabSessionBridge {
         }
     }
 
-    /// Send user text for a Discord channel; wait for accumulated text + result (or timeout).
-    /// Turns on the same channel are serialized. Usage (cost/tokens/duration) from the result
-    /// event is returned when present (W11-g slice1).
-    /// `files` are confined workspace paths (G-P0-01) forwarded to sidecar `session.send`.
+    /// Send user text for a Discord channel. `onAnswer` fires once per `.result` (WO-5 push
+    /// model, docs/claude-turn-timeout-delay.md) — no gating, no "is this the last one" judgment;
+    /// a background-subagent-triggered follow-up `.result` on the same handle just fires it again.
+    /// This function itself returns once the FIRST terminal-ish event (`.result` / rare
+    /// `.turnComplete`-without-`.result` / `.error`) has already been pushed — matching the old
+    /// synchronous timing so the caller's one-shot "turn accepted" bookkeeping is unaffected.
+    /// Turns on the same channel are serialized. `files` are confined workspace paths (G-P0-01)
+    /// forwarded to sidecar `session.send`.
     public func runTurn(
         channelId: String,
         guildId: String,
         ownerId: String?,
         text: String,
         config: SessionConfig? = nil,
-        files: [TurnFile] = []
-    ) async throws -> TurnResult {
+        files: [TurnFile] = [],
+        onAnswer: @escaping @Sendable (TurnResult) -> Void
+    ) async throws {
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session. The previous turn is awaited INSIDE the task — that
         // is where serialization happens.
         let prev = channelGates[channelId]
         turnDepth[channelId, default: 0] += 1
-        let task = Task { () -> TurnResult in
+        let task = Task {
             if let prev { _ = try? await prev.value }
-            return try await self.executeTurn(
+            try await self.executeTurn(
                 channelId: channelId,
                 guildId: guildId,
                 ownerId: ownerId,
                 text: text,
                 config: config,
-                files: files
+                files: files,
+                onAnswer: onAnswer
             )
         }
         channelGates[channelId] = task
@@ -233,12 +252,7 @@ public actor DabSessionBridge {
             if turnDepth[channelId] == 0 { turnDepth[channelId] = nil }
             if channelGates[channelId] == task { channelGates[channelId] = nil }
         }
-        var result = try await task.value
-        // F5: prepend the resume-failure notice once, if this turn fell back to a fresh session.
-        if let notice = fallbackNotice.removeValue(forKey: channelId) {
-            result.text = notice + "\n\n" + result.text
-        }
-        return result
+        try await task.value
     }
 
     /// G-P2-04: any turn in-flight or waiting on this channel's gate chain.
@@ -257,8 +271,9 @@ public actor DabSessionBridge {
         ownerId: String?,
         text: String,
         config: SessionConfig?,
-        files: [TurnFile]
-    ) async throws -> TurnResult {
+        files: [TurnFile],
+        onAnswer: @escaping @Sendable (TurnResult) -> Void
+    ) async throws {
         let client = try await ensureClient()
         let handle = try await sessionHandle(
             client: client,
@@ -277,11 +292,11 @@ public actor DabSessionBridge {
                 return o
             }
 
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TurnResult, Error>) in
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             turns[handle] = TurnBox(
                 text: "",
                 usage: nil,
-                done: false,
+                onAnswer: onAnswer,
                 continuation: cont,
                 timeoutTask: armTimeoutTask(handle: handle)
             )
@@ -484,11 +499,20 @@ public actor DabSessionBridge {
     }
 
     private func onEvent(handle: String, event: AgentEvent) {
-        guard var box = turns[handle], !box.done else { return }
-        // WO-2: any activity (any event kind) pushes the hang-timeout window back out.
-        box.timeoutTask?.cancel()
-        box.timeoutTask = armTimeoutTask(handle: handle)
-        turns[handle] = box
+        // WO-5 (docs/claude-turn-timeout-delay.md): the old `!box.done` gate that silently dropped
+        // every event after the first `.result` is gone — a handle keeps accepting events (and
+        // keeps pushing them out via `onAnswer`) for as long as its box exists, exactly like TS
+        // 1.x's gating-free `RendererDispatcher`. The box is only ever replaced wholesale by the
+        // NEXT user message's `executeTurn` call, or dropped by `stop()`.
+        guard var box = turns[handle] else { return }
+        // WO-2: any activity (any event kind) pushes the hang-timeout window back out — but only
+        // while no answer has gone out yet; once `terminalStarted`, there is nothing left to guard
+        // against hanging (the caller already got its first answer), so the timer stays cancelled.
+        if !box.terminalStarted {
+            box.timeoutTask?.cancel()
+            box.timeoutTask = armTimeoutTask(handle: handle)
+            turns[handle] = box
+        }
         // H2: confirm whether/when .result and .turn_complete actually arrive per turn (see
         // docs/claude-turn-timeout-delay.md WO-3). warn level — info is lost to stdout buffering
         // under launchd (docs/log-buffering-lost-info-logs.md).
@@ -509,35 +533,29 @@ public actor DabSessionBridge {
                     box.text += t
                 }
             }
-            // Capture metrics for the done-line footer (W11-g slice1).
-            if let u = turnUsage(fromResult: costUsd, tokensIn: tokensIn, tokensOut: tokensOut, durationMs: durationMs) {
-                box.usage = u
-            }
-            box.resultReceived = true
-            turns[handle] = box
-            // WO-4 (docs/claude-turn-timeout-delay.md): H2 confirmed `.turnComplete` never
-            // arrives in production, while `.result` always does and already carries the
-            // finished answer text. Finish the turn here instead of waiting for a signal that
-            // never comes — `.turnComplete` case below still finishes safely if it ever does
-            // arrive first (rare case WO-1 covered), since `box.done` guards double-finish.
-            finishTerminalResult(handle: handle)
+            // This result's own cost/tokens/duration — TS renders then clears every time, never a
+            // running total. `nil` when this event carries no metrics, overwriting any stale value.
+            box.usage = turnUsage(fromResult: costUsd, tokensIn: tokensIn, tokensOut: tokensOut, durationMs: durationMs)
+            // WO-5: push immediately, no "is this the last one" judgment — a background-subagent
+            // follow-up `.result` on the same handle fires this again later, same as any other one.
+            deliverTerminal(handle: handle, box: &box)
         case .turnComplete:
-            // The Claude SDK's session_state_changed:idle follows all held-back turn events
-            // (including rate_limit). `session.send` itself is only an enqueue ACK. idle is the
-            // authoritative end-of-turn boundary (TS session.ts:88,258-265) — finish the turn
-            // regardless of whether `.result` arrived, so a lost/undecoded result never stalls
-            // the reply until the turn timeout fallback.
-            finishTerminalResult(handle: handle)
+            // The Claude SDK's session_state_changed:idle. Production evidence (H2) shows this
+            // basically never arrives. Kept only as WO-1's original safety net: if the FIRST
+            // terminal-ish event hasn't happened yet, finish on whatever text accumulated instead
+            // of stalling until the turn-timeout fallback. Once a `.result` has already delivered
+            // the first answer, this is a no-op (no more "last event" judgment to make).
+            guard !box.terminalStarted else { return }
+            deliverTerminal(handle: handle, box: &box)
         case .contextUsage:
-            // Keep the terminal context snapshot with its owning turn. Discord delivery is
-            // serialized in DabMain after answer/footer/mention, never from this event callback.
+            // Turn-local snapshot — shown at the next push then cleared (TS renderers/index.ts
+            // usage(ev): render then clear every time, never accumulated).
             if let info = ContextUsageInfo.from(event: event) {
                 box.contextUsage = info
                 turns[handle] = box
             }
         case .rateLimit(let resetAt, let rateLimitType, let utilization):
-            // Keep the latest limit snapshot with its owning turn. Sending it from this
-            // callback raced answer delivery and could put a late panel before the answer.
+            // Turn-local snapshot — shown at the next push then cleared, same as contextUsage.
             let info = RateLimitInfo(
                 resetAt: resetAt,
                 rateLimitType: rateLimitType,
@@ -546,11 +564,9 @@ public actor DabSessionBridge {
             box.rateLimit = info
             turns[handle] = box
         case .error(let message, _):
-            finishTurnUnlocked(
-                handle: handle,
-                result: nil,
-                error: SidecarRpcError(code: "sdk_error", message: message)
-            )
+            // No-op once a prior `.result` already delivered an answer — `finishWithError`'s own
+            // `!terminalStarted` guard covers this (nothing left to fail).
+            finishWithError(handle: handle, error: SidecarRpcError(code: "sdk_error", message: message))
         case .permissionRequest(let id, let toolName, let input):
             // Ask the owner via Discord buttons; waits forever if unanswered (TS parity — no
             // timeout). Answers the sidecar with the decision so the tool proceeds/aborts. Does not
@@ -615,9 +631,9 @@ public actor DabSessionBridge {
     }
 
     private func finishTurn(handle: String, error: Error?, timeoutFallback: Bool = false) {
-        guard let box = turns[handle], !box.done else { return }
+        guard var box = turns[handle], !box.terminalStarted else { return }
         if let error {
-            finishTurnUnlocked(handle: handle, result: nil, error: error)
+            finishWithError(handle: handle, error: error)
             return
         }
         if timeoutFallback {
@@ -635,9 +651,8 @@ public actor DabSessionBridge {
                 client?.unregisterSessionHandlers(handle: handle)
                 let deadClient = client
                 Task { try? await deadClient?.sessionStop(session: handle) }
-                finishTurnUnlocked(
+                finishWithError(
                     handle: handle,
-                    result: nil,
                     error: SidecarRpcError(
                         code: "internal",
                         message: "turn timeout (no terminal result)",
@@ -645,37 +660,63 @@ public actor DabSessionBridge {
                     )
                 )
             } else {
-                finishTurnUnlocked(
-                    handle: handle,
-                    result: makeTurnResult(box: box, text: box.text + "\n…(timeout)")
-                )
+                box.text += "\n…(timeout)"
+                deliverTerminal(handle: handle, box: &box)
             }
         }
     }
 
-    private func finishTurnUnlocked(handle: String, result: TurnResult?, error: Error? = nil) {
-        guard var box = turns[handle], !box.done else { return }
-        box.done = true
+    /// Fail the turn outright (no answer ever went out). No-op once a prior `.result` already
+    /// delivered one (`!box.terminalStarted` guard) — there is nothing left to fail.
+    private func finishWithError(handle: String, error: Error) {
+        guard var box = turns[handle], !box.terminalStarted else { return }
+        box.terminalStarted = true
         box.timeoutTask?.cancel()
+        box.timeoutTask = nil
         let cont = box.continuation
         box.continuation = nil
-        box.timeoutTask = nil
         turns[handle] = box
         // W16-g: turn boundary for tool threads (in-flight posts keep their captured thread).
         if let channelId = sessionMeta[handle]?.channelId {
             Task { await ToolActivityHost.shared.resetTurn(channelId: channelId) }
         }
-        if let error {
-            cont?.resume(throwing: error)
-        } else {
-            cont?.resume(returning: result ?? makeTurnResult(box: box, text: box.text))
-        }
+        cont?.resume(throwing: error)
     }
 
-    private func finishTerminalResult(handle: String) {
-        guard let box = turns[handle], !box.done else { return }
-        let out = box.text.isEmpty ? "(empty result)" : box.text
-        finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: out))
+    /// Deliver one push: this event's accumulated text (+ this-event usage, turn-local
+    /// contextUsage/rateLimit/tools/agents snapshots) via `onAnswer`, gating-free (WO-5) — then
+    /// reset the per-push accumulators (TS parity: render then clear, never summed). On the FIRST
+    /// call only, also resumes `runTurn`'s continuation so the caller's one-shot completion
+    /// decoration (emoji/stream/stop button/IdleWatchdog) fires right after — TS
+    /// `armCompletionIndicator` parity (first result/error, one-shot, unrelated to answer delivery).
+    private func deliverTerminal(handle: String, box: inout TurnBox) {
+        var text = box.text.isEmpty ? "(empty result)" : box.text
+        let isFirst = !box.terminalStarted
+        // F5: prepend the resume-failure notice once, on the very first answer only.
+        if isFirst, let channelId = sessionMeta[handle]?.channelId,
+           let notice = fallbackNotice.removeValue(forKey: channelId) {
+            text = notice + "\n\n" + text
+        }
+        let pushResult = makeTurnResult(box: box, text: text)
+        box.text = ""
+        box.contextUsage = nil
+        box.rateLimit = nil
+        box.stats.reset()
+        var cont: CheckedContinuation<Void, Error>?
+        if isFirst {
+            box.terminalStarted = true
+            box.timeoutTask?.cancel()
+            box.timeoutTask = nil
+            cont = box.continuation
+            box.continuation = nil
+        }
+        turns[handle] = box
+        // W16-g: turn boundary for tool threads (in-flight posts keep their captured thread).
+        if let channelId = sessionMeta[handle]?.channelId {
+            Task { await ToolActivityHost.shared.resetTurn(channelId: channelId) }
+        }
+        box.onAnswer?(pushResult)
+        cont?.resume()
     }
 
     // MARK: - Lifecycle (W14)
@@ -702,14 +743,9 @@ public actor DabSessionBridge {
         // leaving an in-flight turn's timer armed when the session is killed out from under it.
         await IdleWatchdog.shared.stop(channelId: channelId)
         guard let handle else { return }
-        // Unblock a waiter before the RPC so stop is never stuck on a hung turn.
-        if let box = turns[handle], !box.done {
-            finishTurnUnlocked(
-                handle: handle,
-                result: nil,
-                error: SidecarRpcError(code: "interrupted", message: "session stopped")
-            )
-        }
+        // Unblock a waiter before the RPC so stop is never stuck on a hung turn. No-op once a
+        // prior `.result` already answered (`finishWithError`'s own guard).
+        finishWithError(handle: handle, error: SidecarRpcError(code: "interrupted", message: "session stopped"))
         turns[handle] = nil
         try? await client?.sessionStop(session: handle)
         client?.unregisterSessionHandlers(handle: handle)
@@ -720,9 +756,9 @@ public actor DabSessionBridge {
     public func interrupt(channelId: String) async -> Bool {
         guard let handle = sessions[channelId] else { return false }
         try? await client?.sessionInterrupt(session: handle)
-        if let box = turns[handle], !box.done {
-            let partial = box.text.isEmpty ? "(interrupted)" : box.text
-            finishTurnUnlocked(handle: handle, result: makeTurnResult(box: box, text: partial))
+        if var box = turns[handle], !box.terminalStarted {
+            if box.text.isEmpty { box.text = "(interrupted)" }
+            deliverTerminal(handle: handle, box: &box)
         }
         return true
     }
