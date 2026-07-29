@@ -98,6 +98,10 @@ struct AutoUpdaterDecisionTests {
         #expect(ctx.acks.contains { $0.contains("시작") })
         #expect(ctx.acks.contains(UpdateLabels.restartRequested))
         #expect(ctx.acks.contains(UpdateLabels.restartConfirmed))
+        // approve() stamps pendingRestartVersion before requesting restart. The harness's restart
+        // mock (unlike production AutoUpdateWiring) never calls clearPendingRestart(), so it's
+        // still set here — clearing only happens via the real onConfirmed wiring.
+        #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == "1.1.0")
     }
 
     @Test func installFailureDoesNotRestart() async {
@@ -196,6 +200,39 @@ struct AutoUpdaterDecisionTests {
         let r = await h.updater.checkNow()
         #expect(r.kind == .dismissed)
         #expect(h.postsBox.withLock { $0 }.isEmpty)
+    }
+}
+
+@Suite("AutoUpdater.confirmPendingRestartIfNeeded / clearPendingRestart")
+struct AutoUpdaterPendingRestartTests {
+    @Test func noPendingRestartDoesNothing() async {
+        let h = UpdateHarness()
+        await h.updater.confirmPendingRestartIfNeeded()
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+        #expect(h.metaBox.withLock { $0 } == AutoUpdateMeta())
+    }
+
+    @Test func pendingMatchingCurrentVersionAnnouncesAndClears() async {
+        let h = UpdateHarness()
+        h.metaBox.withLock { $0.pendingRestartVersion = "1.0.0" }  // harness currentVersion
+        await h.updater.confirmPendingRestartIfNeeded()
+        #expect(h.announcesBox.withLock { $0 } == [UpdateLabels.restartConfirmed])
+        #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == nil)
+    }
+
+    @Test func pendingMismatchedVersionStaysQuietButClears() async {
+        let h = UpdateHarness()
+        h.metaBox.withLock { $0.pendingRestartVersion = "9.9.9" }
+        await h.updater.confirmPendingRestartIfNeeded()
+        #expect(h.announcesBox.withLock { $0 }.isEmpty)
+        #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == nil)
+    }
+
+    @Test func clearPendingRestartClearsRegardlessOfValue() async {
+        let h = UpdateHarness()
+        h.metaBox.withLock { $0.pendingRestartVersion = "1.1.0" }
+        await h.updater.clearPendingRestart()
+        #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == nil)
     }
 }
 
@@ -338,6 +375,8 @@ private final class UpdateHarness: @unchecked Sendable {
                 metaBox.withLock { m in
                     if let t = patch.lastCheckAt { m.lastCheckAt = t }
                     if let d = patch.dismissedVersion { m.dismissedVersion = d }
+                    if let p = patch.pendingRestartVersion { m.pendingRestartVersion = p }
+                    if patch.clearPendingRestart { m.pendingRestartVersion = nil }
                 }
             },
             postPrompt: { v in

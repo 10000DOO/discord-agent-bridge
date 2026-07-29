@@ -673,7 +673,6 @@ for attempt in 1 2 3; do
 done
 if [ "$ok" -eq 1 ]; then
   log "brew service started"
-  notify "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요."
   exit 0
 fi
 log "FAILED: brew service not started after retries"
@@ -742,7 +741,6 @@ if [ "$ok" -ne 1 ]; then
 fi
 if [ "$ok" -eq 1 ]; then
   log "process/service running"
-  notify "✅ 업데이트 완료. 새 버전이 정상적으로 기동했어요."
   exit 0
 fi
 log "FAILED: service down after stop+start retries"

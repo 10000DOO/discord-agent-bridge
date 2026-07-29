@@ -260,6 +260,8 @@ public actor SessionStore {
         var meta = disk?.autoUpdate ?? autoUpdate
         if let t = patch.lastCheckAt { meta.lastCheckAt = t }
         if let d = patch.dismissedVersion { meta.dismissedVersion = d }
+        if let p = patch.pendingRestartVersion { meta.pendingRestartVersion = p }
+        if patch.clearPendingRestart { meta.pendingRestartVersion = nil }
         let drafts = disk?.presetDrafts ?? presetDrafts
         try Self.writeFile(
             fileURL,

@@ -238,6 +238,29 @@ struct SessionStoreTests {
         #expect(await reloaded.binding(channelId: "c1")?.backend == .claude)
     }
 
+    @Test func pendingRestartVersionSetAndClearRoundTrips() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let s = SessionStore(fileURL: url)
+        await s.load()
+        #expect(await s.getUpdateMeta().pendingRestartVersion == nil)
+
+        try await s.setUpdateMeta(AutoUpdateMetaPatch(pendingRestartVersion: "1.1.0"))
+        #expect(await s.getUpdateMeta().pendingRestartVersion == "1.1.0")
+
+        let reloaded = SessionStore(fileURL: url)
+        await reloaded.load()
+        #expect(await reloaded.getUpdateMeta().pendingRestartVersion == "1.1.0")
+
+        try await s.setUpdateMeta(AutoUpdateMetaPatch(clearPendingRestart: true))
+        #expect(await s.getUpdateMeta().pendingRestartVersion == nil)
+
+        let reloadedAfterClear = SessionStore(fileURL: url)
+        await reloadedAfterClear.load()
+        #expect(await reloadedAfterClear.getUpdateMeta().pendingRestartVersion == nil)
+    }
+
     @Test func autoUpdateAbsentInOldFileDefaults() async throws {
         let url = tempStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

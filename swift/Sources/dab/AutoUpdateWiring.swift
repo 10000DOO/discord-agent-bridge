@@ -110,6 +110,9 @@ func startAutoUpdater(client: any DiscordClient) async {
                 ),
                 onLog: { log.info($0) },
                 onConfirmed: {
+                    if let updater = await AutoUpdaterRegistry.shared.get() {
+                        await updater.clearPendingRestart()
+                    }
                     await request.notify(UpdateLabels.restartConfirmed)
                 }
             )

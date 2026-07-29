@@ -276,6 +276,11 @@ struct EventHandler: GatewayEventHandler {
         )
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
         await startAutoUpdater(client: client)
+        // respawn hand-off의 predecessor가 onConfirmed에서 이미 clearPendingRestart+notify를 수행하므로,
+        // 그 successor(DAB_SUCCESSOR_READY_FILE로 식별)까지 또 확인하면 확인 메시지가 중복 발송된다.
+        if ProcessInfo.processInfo.environment["DAB_SUCCESSOR_READY_FILE"] == nil {
+            await AutoUpdaterRegistry.shared.get()?.confirmPendingRestartIfNeeded()
+        }
         // WO-10: resume per-guild Redmine pollers for guilds that already have a saved config.
         await restoreRedminePollers(client: client)
     }

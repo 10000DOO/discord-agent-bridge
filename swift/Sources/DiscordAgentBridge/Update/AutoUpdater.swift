@@ -10,10 +10,12 @@ public let updateDefaultIntervalMs = 1 * 60 * 60 * 1000
 public struct AutoUpdateMeta: Codable, Sendable, Equatable {
     public var lastCheckAt: Int
     public var dismissedVersion: String?
+    public var pendingRestartVersion: String?
 
-    public init(lastCheckAt: Int = 0, dismissedVersion: String? = nil) {
+    public init(lastCheckAt: Int = 0, dismissedVersion: String? = nil, pendingRestartVersion: String? = nil) {
         self.lastCheckAt = lastCheckAt
         self.dismissedVersion = dismissedVersion
+        self.pendingRestartVersion = pendingRestartVersion
     }
 
     public static let empty = AutoUpdateMeta()
@@ -23,10 +25,20 @@ public struct AutoUpdateMeta: Codable, Sendable, Equatable {
 public struct AutoUpdateMetaPatch: Sendable, Equatable {
     public var lastCheckAt: Int?
     public var dismissedVersion: String?
+    public var pendingRestartVersion: String?
+    /// true면 pendingRestartVersion을 명시적으로 nil로 지운다 (patch의 "nil=변경없음" 관례와 구분하기 위한 별도 신호).
+    public var clearPendingRestart: Bool
 
-    public init(lastCheckAt: Int? = nil, dismissedVersion: String? = nil) {
+    public init(
+        lastCheckAt: Int? = nil,
+        dismissedVersion: String? = nil,
+        pendingRestartVersion: String? = nil,
+        clearPendingRestart: Bool = false
+    ) {
         self.lastCheckAt = lastCheckAt
         self.dismissedVersion = dismissedVersion
+        self.pendingRestartVersion = pendingRestartVersion
+        self.clearPendingRestart = clearPendingRestart
     }
 }
 
@@ -327,6 +339,23 @@ public actor AutoUpdater {
         _ = await checkNow()
     }
 
+    /// Boot-time recovery: supervised 재시작의 완료 확인은 원래 분리된 헬퍼 스크립트의 웹훅 하나에만
+    /// 의존한다. 그 스크립트가 도중에 죽으면(크래시, 재부팅) 확인이 영영 안 온다 — 다음 onReady에서
+    /// 새로 뜬 프로세스 자신이 이 표시를 보고 스스로 확인하는 게 항상 도달하는 유일한 경로다.
+    public func confirmPendingRestartIfNeeded() async {
+        let meta = await deps.readMeta()
+        guard let pending = meta.pendingRestartVersion else { return }
+        await deps.writeMeta(AutoUpdateMetaPatch(clearPendingRestart: true))
+        guard pending == deps.currentVersion else { return }
+        await deps.announce(deps.messages.restartConfirmed)
+    }
+
+    /// respawn 경로는 exit 전에 in-process로 이미 확실히 confirm하므로(onConfirmed), 후속 successor의
+    /// onReady가 같은 표시를 보고 중복 알림을 보내지 않도록 여기서 먼저 지운다.
+    public func clearPendingRestart() async {
+        await deps.writeMeta(AutoUpdateMetaPatch(clearPendingRestart: true))
+    }
+
     /// [Yes] click. Without install port → manual-only ack (no restart).
     /// With install port: install then announce + restart on success; on failure keep process.
     public func approve(_ version: String, ctx: UpdateDecisionCtx) async {
@@ -375,6 +404,7 @@ public actor AutoUpdater {
             updating = false
             return
         }
+        await deps.writeMeta(AutoUpdateMetaPatch(pendingRestartVersion: version))
         // "재시작 요청" ≠ "기동 확인". Spawn of helper only means the request was accepted.
         await ctx.ack(deps.messages.restartRequested)
         let restartResult = await restart(RestartRequest(
