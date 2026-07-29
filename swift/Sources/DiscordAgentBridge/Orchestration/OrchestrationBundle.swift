@@ -7,6 +7,37 @@ public enum OrchestrationBundle {
     public static let markerBegin = "<!-- dab-orchestration BEGIN -->"
     public static let markerEnd = "<!-- dab-orchestration END -->"
 
+    /// Claude plugin keys forced on in `~/.claude/settings.json` `enabledPlugins` (DAB R1).
+    public static let claudeLSPPluginKeys: [String] = [
+        "swift-lsp@claude-plugins-official",
+        "clangd-lsp@claude-plugins-official",
+    ]
+
+    /// One Grok `~/.grok/lsp.json` top-level language-server entry (DAB R1, Grok).
+    public struct GrokLSPServerEntry: Sendable, Equatable {
+        public let key: String
+        /// Pre-formatted JSON object literal (starts at column 0, 2-space nested indent).
+        public let jsonLiteral: String
+    }
+
+    /// Grok LSP server entries forced into `~/.grok/lsp.json` (DAB R1, Grok).
+    public static let grokLSPServerEntries: [GrokLSPServerEntry] = [
+        GrokLSPServerEntry(key: "swift", jsonLiteral: """
+        {
+          "command": "sourcekit-lsp",
+          "args": [],
+          "extensionToLanguage": { ".swift": "swift" }
+        }
+        """),
+        GrokLSPServerEntry(key: "objective-c", jsonLiteral: """
+        {
+          "command": "clangd",
+          "args": ["--background-index"],
+          "extensionToLanguage": { ".m": "objective-c", ".h": "objective-c", ".mm": "objective-cpp" }
+        }
+        """),
+    ]
+
     /// Always-on block for CLAUDE.md / AGENTS.md (same substance).
     public static let alwaysRulesMarkdown = """
     ## 이슈 오케스트레이션 (항상)
@@ -174,6 +205,12 @@ description: >-
 - 분석 목적 소스 **읽기 허용**. 이 스킬 구간 **기능 코드 수정·커밋 금지**.
 - 설계 원칙 파일(SOLID 등)이 있으면 로드·준수. [원본 O P1, DM §3-2, A §3-1]
 
+## 0. 참고문서 캐시 (착수 전) [DAB R2]
+- 대상 프로젝트 루트 `.dab-index/PROJECT_INDEX.md` + `.dab-index/fingerprint` 확인.
+- 지문(정렬된 소스 파일 경로 목록의 해시) 재계산 후 저장값과 비교: 일치 → 캐시 읽고 배경지식으로 사용, LSP 전수 스캔 생략. 없음/불일치 → 재생성.
+- 재생성: LSP 도구(documentSymbol/workspaceSymbol/incomingCalls/outgoingCalls, 언어 미지원 시 grep+디렉터리 트리 대체)로 모듈/파일 구조·공개 API 목록·주요 호출관계 요약 작성 → `.dab-index/` 두 파일 갱신, `.gitignore`에 `.dab-index/` 없으면 추가.
+- 이 캐시는 참고용 개요일 뿐 단일 진실이 아니다. 이슈별 정밀 조회(특정 심볼 최신 참조 등)는 캐시로 대체하지 말고 그때그때 LSP 직접 호출.
+
 ## 1. 이슈 분석 [원본 O P0, §8]
 - 요구/오류 현상 정리, 경미 vs 복잡 판단.
 - 오류면 원인 판단 우선 가능 (진단 트랙).
@@ -307,6 +344,9 @@ private let agentImpactAnalyzerBodyOnly = """
 
 ## 권한
 읽기 전용. 기능 코드 수정·커밋·빌드 금지. [원본 O P2, A §3-1 정적 분석]
+
+## 참고문서 캐시 [DAB R2]
+분석 시작 전 대상 프로젝트 `.dab-index/PROJECT_INDEX.md` 확인. 지문(정렬된 소스 파일 경로 목록 해시) 재계산해 저장값과 비교: 일치 시 그대로 사용, LSP 전수 스캔 생략. 없거나 불일치면 LSP(documentSymbol/workspaceSymbol/incomingCalls/outgoingCalls, 미지원 언어는 grep 대체)로 재생성 후 `.dab-index/`에 두 파일 갱신(`.gitignore`에도 반영). 캐시는 참고용 개요 — 특정 심볼 정밀 확인은 캐시 대신 직접 LSP 호출.
 
 ## 임무 [원본 O P1, DM §3-2, A §3-1]
 설계 초안 기준:

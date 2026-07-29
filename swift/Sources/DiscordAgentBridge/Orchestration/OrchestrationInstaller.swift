@@ -126,6 +126,185 @@ public enum OrchestrationInstaller {
         return lower..<upper
     }
 
+    // MARK: - LSP plugin/config surgical patch (DAB R1)
+
+    /// Force `pluginKeys` on in a `~/.claude/settings.json`-shaped JSON blob, touching nothing
+    /// else (D1: no full JSONSerialization re-encode — that would reorder/reformat unrelated keys).
+    /// Returns the file untouched (`changed == false`) when every key is already `true`.
+    /// On unparseable existing JSON, returns `existing` verbatim plus a diagnostic `error` (P4
+    /// fail-safe: never attempt a surgical patch against content we couldn't understand).
+    public static func ensureLSPPlugins(
+        existing: String?,
+        pluginKeys: [String] = OrchestrationBundle.claudeLSPPluginKeys
+    ) -> (text: String, changed: Bool, error: String?) {
+        guard let existing, !existing.isEmpty else {
+            var lines = ["{", "  \"enabledPlugins\": {"]
+            for (i, key) in pluginKeys.enumerated() {
+                lines.append("    \"\(key)\": true" + (i == pluginKeys.count - 1 ? "" : ","))
+            }
+            lines.append("  }")
+            lines.append("}")
+            return (lines.joined(separator: "\n") + "\n", true, nil)
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: Data(existing.utf8)) as? [String: Any] else {
+            return (existing, false, "settings.json parse failed — skipped LSP plugin patch")
+        }
+        let enabledPlugins = root["enabledPlugins"] as? [String: Any]
+        let missing = pluginKeys.filter { (enabledPlugins?[$0] as? Bool) != true }
+        guard !missing.isEmpty else {
+            return (existing, false, nil)
+        }
+        return (patchEnabledPlugins(in: existing, missingKeys: missing), true, nil)
+    }
+
+    /// `"enabledPlugins"` object: flat boolean map (D2) — its closing brace is the first `}`
+    /// after its opening `{`, no nested-brace matching needed. If the key itself is absent,
+    /// insert a whole new top-level block before the document's root closing brace.
+    private static func patchEnabledPlugins(in text: String, missingKeys: [String]) -> String {
+        guard
+            let keyRange = text.range(of: "\"enabledPlugins\""),
+            let openRange = text.range(of: "{", range: keyRange.upperBound..<text.endIndex),
+            let closeRange = text.range(of: "}", range: openRange.upperBound..<text.endIndex)
+        else {
+            let indent = sampleIndent(in: text) ?? "  "
+            var lines = ["\(indent)\"enabledPlugins\": {"]
+            for (i, key) in missingKeys.enumerated() {
+                lines.append("\(indent)  \"\(key)\": true" + (i == missingKeys.count - 1 ? "" : ","))
+            }
+            lines.append("\(indent)}")
+            return insertBeforeRootClosingBrace(in: text, blockLines: lines)
+        }
+
+        var body = String(text[openRange.upperBound..<closeRange.lowerBound])
+        var toAppend: [String] = []
+        for key in missingKeys {
+            let pattern = "\"\(NSRegularExpression.escapedPattern(for: key))\"\\s*:\\s*false"
+            if let hit = body.range(of: pattern, options: .regularExpression) {
+                body.replaceSubrange(hit, with: "\"\(key)\": true")
+            } else {
+                toAppend.append(key)
+            }
+        }
+        if !toAppend.isEmpty {
+            let indent = sampleIndent(in: body) ?? "    "
+            body = appendLines(toAppend.map { "\(indent)\"\($0)\": true" }, to: body)
+        }
+        return String(text[text.startIndex..<openRange.upperBound]) + body + String(text[closeRange.lowerBound...])
+    }
+
+    /// Leading whitespace of the first line whose trimmed content starts with a JSON string key
+    /// (`"..."`), scanning top-to-bottom. Over a full document this is always a top-level key's
+    /// indent (a nested key's line can't appear before its parent key's line); over an object-body
+    /// substring it's a sibling key's indent. `nil` if no such line exists (empty object/file).
+    private static func sampleIndent(in text: String) -> String? {
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard let firstNonSpace = line.firstIndex(where: { $0 != " " && $0 != "\t" }) else { continue }
+            guard line[firstNonSpace] == "\"" else { continue }
+            return String(line[line.startIndex..<firstNonSpace])
+        }
+        return nil
+    }
+
+    /// Append `lines` just before the end of `body` (an object's inner text, braces excluded),
+    /// adding a trailing comma to existing content if needed, and commas between the new `lines`
+    /// themselves when there's more than one.
+    private static func appendLines(_ lines: [String], to body: String) -> String {
+        var trimmed = body
+        while let last = trimmed.last, last == " " || last == "\n" || last == "\t" {
+            trimmed.removeLast()
+        }
+        let joinedNew = lines.joined(separator: ",\n")
+        if trimmed.isEmpty {
+            return "\n" + joinedNew + "\n"
+        }
+        let comma = trimmed.hasSuffix(",") ? "" : ","
+        return trimmed + comma + "\n" + joinedNew + "\n"
+    }
+
+    /// Insert `blockLines` right before a JSON document's root closing brace (the last `}` in
+    /// the trimmed text, D2 — valid for any single-root JSON document), adding a trailing comma
+    /// to whatever precedes it if needed.
+    private static func insertBeforeRootClosingBrace(in text: String, blockLines: [String]) -> String {
+        guard let lastBrace = text.range(of: "}", options: .backwards) else {
+            return text
+        }
+        var trimmedBefore = String(text[text.startIndex..<lastBrace.lowerBound])
+        while let last = trimmedBefore.last, last == " " || last == "\n" || last == "\t" {
+            trimmedBefore.removeLast()
+        }
+        let comma = (trimmedBefore.isEmpty || trimmedBefore.hasSuffix("{") || trimmedBefore.hasSuffix(",")) ? "" : ","
+        return trimmedBefore + comma + "\n" + blockLines.joined(separator: "\n") + "\n" + String(text[lastBrace.lowerBound...])
+    }
+
+    // MARK: - Grok LSP config surgical patch (DAB R1, Grok)
+
+    /// Force `[features] lsp_tools = true` on in a `~/.grok/config.toml`-shaped TOML blob.
+    /// TOML has no braces, so section boundaries are found by line scanning (D10) rather than
+    /// the brace-matching used for JSON — simpler, not shared with the Claude/JSON helpers above.
+    public static func ensureGrokLSPFeatureFlag(existing: String?) -> (text: String, changed: Bool) {
+        guard let existing, !existing.isEmpty else {
+            return ("[features]\nlsp_tools = true\n", true)
+        }
+        var lines = existing.components(separatedBy: "\n")
+        guard let sectionStart = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "[features]" }) else {
+            var text = existing
+            if !text.hasSuffix("\n") { text += "\n" }
+            text += "\n[features]\nlsp_tools = true\n"
+            return (text, true)
+        }
+        var sectionEnd = lines.count
+        for i in (sectionStart + 1)..<lines.count where lines[i].hasPrefix("[") {
+            sectionEnd = i
+            break
+        }
+        for i in (sectionStart + 1)..<sectionEnd {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+            let parts = trimmed.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.first == "lsp_tools" else { continue }
+            if parts.count == 2, parts[1] == "true" {
+                return (existing, false)
+            }
+            lines[i] = "lsp_tools = true"
+            return (lines.joined(separator: "\n"), true)
+        }
+        lines.insert("lsp_tools = true", at: sectionStart + 1)
+        return (lines.joined(separator: "\n"), true)
+    }
+
+    /// Add missing `entries` as top-level keys in a `~/.grok/lsp.json`-shaped JSON blob. Only
+    /// checks whether each entry's **key** already exists (3-8 point 2) — existing values are
+    /// never inspected or touched, so a user's own customized language entry is preserved as-is.
+    public static func ensureGrokLSPServers(
+        existing: String?,
+        entries: [OrchestrationBundle.GrokLSPServerEntry] = OrchestrationBundle.grokLSPServerEntries
+    ) -> (text: String, changed: Bool, error: String?) {
+        var base = "{}\n"
+        if let existing, !existing.isEmpty {
+            base = existing
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: Data(base.utf8)) as? [String: Any] else {
+            return (base, false, "lsp.json parse failed — skipped server entry patch")
+        }
+        let missing = entries.filter { root[$0.key] == nil }
+        guard !missing.isEmpty else {
+            return (base, false, nil)
+        }
+        let indent = sampleIndent(in: base) ?? "  "
+        var blockLines: [String] = []
+        for (i, entry) in missing.enumerated() {
+            var entryLines = entry.jsonLiteral.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            entryLines[0] = "\(indent)\"\(entry.key)\": \(entryLines[0])"
+            for j in 1..<entryLines.count {
+                entryLines[j] = "\(indent)\(entryLines[j])"
+            }
+            if i < missing.count - 1 {
+                entryLines[entryLines.count - 1] += ","
+            }
+            blockLines.append(contentsOf: entryLines)
+        }
+        return (insertBeforeRootClosingBrace(in: base, blockLines: blockLines), true, nil)
+    }
+
     public static func install(
         homes: OrchestrationHomes,
         fileManager: FileManager = .default
@@ -142,6 +321,7 @@ public enum OrchestrationInstaller {
     private static func installClaude(_ root: URL, fm: FileManager, report: inout OrchestrationInstallReport) {
         ensureDir(root, fm: fm, report: &report)
         writeRulesFile(root.appendingPathComponent("CLAUDE.md"), fm: fm, report: &report)
+        ensureLSPPluginsEnabled(root.appendingPathComponent("settings.json"), fm: fm, report: &report)
         let skillsRoot = root.appendingPathComponent("skills", isDirectory: true)
         let agentsRoot = root.appendingPathComponent("agents", isDirectory: true)
         ensureDir(skillsRoot, fm: fm, report: &report)
@@ -157,6 +337,18 @@ public enum OrchestrationInstaller {
             removeIfExists(path, fm: fm, report: &report)
             writeFile(path, content: agent.claudeMarkdownBody, fm: fm, report: &report)
         }
+    }
+
+    /// Force `claudeLSPPluginKeys` on in `settings.json`; leaves the file untouched when already
+    /// satisfied (`changed == false`), never rewrites unrelated keys.
+    private static func ensureLSPPluginsEnabled(_ url: URL, fm: FileManager, report: inout OrchestrationInstallReport) {
+        let existing = try? String(contentsOf: url, encoding: .utf8)
+        let result = ensureLSPPlugins(existing: existing)
+        if let error = result.error {
+            report.errors.append("\(url.path): \(error)")
+        }
+        guard result.changed else { return }
+        writeFile(url, content: result.text, fm: fm, report: &report)
     }
 
     // MARK: - Codex
@@ -199,6 +391,7 @@ public enum OrchestrationInstaller {
 
     private static func installGrok(_ root: URL, fm: FileManager, report: inout OrchestrationInstallReport) {
         ensureDir(root, fm: fm, report: &report)
+        ensureGrokLSPEnabled(root, fm: fm, report: &report)
         writeRulesFile(root.appendingPathComponent("AGENTS.md"), fm: fm, report: &report)
         let skillsRoot = root.appendingPathComponent("skills", isDirectory: true)
         let agentsRoot = root.appendingPathComponent("agents", isDirectory: true)
@@ -220,6 +413,28 @@ public enum OrchestrationInstaller {
                 body: agent.codexInstructions
             )
             writeFile(path, content: body, fm: fm, report: &report)
+        }
+    }
+
+    /// Force Grok's `[features] lsp_tools = true` (config.toml) + swift/objective-c server
+    /// entries (lsp.json). Only rewrites a file when its patch actually changed something
+    /// (D9/D11 — no PATH binary check, config only; both files independently idempotent).
+    private static func ensureGrokLSPEnabled(_ root: URL, fm: FileManager, report: inout OrchestrationInstallReport) {
+        let configURL = root.appendingPathComponent("config.toml")
+        let existingConfig = try? String(contentsOf: configURL, encoding: .utf8)
+        let configResult = ensureGrokLSPFeatureFlag(existing: existingConfig)
+        if configResult.changed {
+            writeFile(configURL, content: configResult.text, fm: fm, report: &report)
+        }
+
+        let lspURL = root.appendingPathComponent("lsp.json")
+        let existingLSP = try? String(contentsOf: lspURL, encoding: .utf8)
+        let lspResult = ensureGrokLSPServers(existing: existingLSP)
+        if let error = lspResult.error {
+            report.errors.append("\(lspURL.path): \(error)")
+        }
+        if lspResult.changed {
+            writeFile(lspURL, content: lspResult.text, fm: fm, report: &report)
         }
     }
 
