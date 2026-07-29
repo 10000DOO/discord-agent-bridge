@@ -351,7 +351,7 @@ public actor GrokSessionBridge {
                     try await client.sessionLoad(sessionId: resumeId, cwd: cwdValue)
                     log.info("session/load channel=\(channelId) sid=\(resumeId)")
                 } catch {
-                    fallbackNotice[channelId] = sessionFallbackNotice
+                    fallbackNotice[channelId] = sessionFallbackNotice()
                     _ = try await client.sessionNew(cwd: cwdValue)
                     startedFresh = true
                     log.warn("load failed (\(error)) → session/new channel=\(channelId)")

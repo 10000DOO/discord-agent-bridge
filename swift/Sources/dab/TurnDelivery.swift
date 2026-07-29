@@ -81,7 +81,7 @@ func deliverTurnPush(_ turn: TurnResult, ctx: TurnDeliveryContext) async -> Bool
         // Best-effort notice — if the channel is this broken, the notice may fail too; ignore.
         _ = try? await ctx.client.createMessage(
             channelId: ctx.channelId,
-            payload: .init(content: "⚠️ 답변을 전송하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+            payload: .init(content: I18n.t("turn.deliveryFailed"))
         )
         delivered = false
     }

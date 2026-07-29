@@ -72,16 +72,16 @@ public func codexNotificationMatchesActiveTurn(params: JSONValue?, activeTurnId:
 
 // MARK: - Progress mid-turn (G-P1-02 / TS eventMapper mapItemStarted + turn/started)
 
-/// TS PROGRESS_LABELS (eventMapper.ts) — KO status lines for TranscriptFeed / StreamStatusHost.
+/// TS PROGRESS_LABELS (eventMapper.ts) — status lines for TranscriptFeed / StreamStatusHost.
 public enum CodexProgressLabels {
-    public static let working = "작업 중"
-    public static let commandExecution = "명령 실행 중"
-    public static let fileChange = "파일 수정 중"
-    public static let fileSearch = "파일 탐색 중"
-    public static let webSearch = "웹 검색 중"
-    public static let image = "이미지 생성 중"
-    public static let mcpToolCall = "도구 실행 중"
-    public static let collabAgentToolCall = "서브에이전트 작업 중"
+    public static var working: String { I18n.t("codex.progress.working") }
+    public static var commandExecution: String { I18n.t("codex.progress.commandExecution") }
+    public static var fileChange: String { I18n.t("codex.progress.fileChange") }
+    public static var fileSearch: String { I18n.t("codex.progress.fileSearch") }
+    public static var webSearch: String { I18n.t("codex.progress.webSearch") }
+    public static var image: String { I18n.t("codex.progress.image") }
+    public static var mcpToolCall: String { I18n.t("codex.progress.mcpToolCall") }
+    public static var collabAgentToolCall: String { I18n.t("codex.progress.collabAgentToolCall") }
 }
 
 /// Map codex app-server notifications → `progress` / `thinking` AgentEvents.
@@ -138,13 +138,13 @@ private func codexProgressForItem(type: String, item: JSONValue) -> AgentEvent? 
     }
 }
 
-/// TS fileChangeDetail: one path, or "N개 파일".
+/// TS fileChangeDetail: one path, or "N개 파일"/"N file(s)" (I18n `codex.progress.fileChangeCount`).
 private func codexFileChangeProgressDetail(_ item: JSONValue) -> String? {
     guard let arr = item["changes"]?.arrayValue else { return nil }
     let paths = arr.compactMap { $0["path"]?.stringValue }.filter { !$0.isEmpty }
     if paths.isEmpty { return nil }
     if paths.count == 1 { return paths[0] }
-    return "\(paths.count)개 파일"
+    return I18n.t("codex.progress.fileChangeCount", ["count": "\(paths.count)"])
 }
 
 // MARK: - Context usage (C2 / TS eventMapper.ts:186-208 thread/tokenUsage/updated)

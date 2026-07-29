@@ -388,7 +388,7 @@ public final class ConfigPanel: @unchecked Sendable {
         )
         let accessBtn = ConfigPanelComponent.button(
             customId: ConfigPanelIds.accessOpen,
-            label: "👤 Access",
+            label: I18n.t("config.access.button"),
             style: .secondary
         )
 
@@ -487,7 +487,7 @@ public final class ConfigPanel: @unchecked Sendable {
         do {
             try await store.saveServerConfig(next)
         } catch {
-            return .autosaved(notice: "역할 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.roleFailed", ["error": "\(error)"]))
         }
 
         // Refresh in-memory defaults so re-open of same panel instance shows new roles.
@@ -588,10 +588,10 @@ public final class ConfigPanel: @unchecked Sendable {
                 try await patchServerDefaults { $0.mode = backend }
                 defaults.backend = backend
             } catch {
-                return .autosaved(notice: "backend 저장 실패: \(error)")
+                return .autosaved(notice: I18n.t("config.autosaved.backendFailed", ["error": "\(error)"]))
             }
         }
-        return .autosaved(notice: "기본 backend → `\(backend)`")
+        return .autosaved(notice: I18n.t("config.autosaved.backend", ["backend": backend]))
     }
 
     private func autosaveModel(_ model: String) async -> ConfigPanelResult {
@@ -608,9 +608,9 @@ public final class ConfigPanel: @unchecked Sendable {
             }
             defaults.model = model
         } catch {
-            return .autosaved(notice: "model 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.modelFailed", ["error": "\(error)"]))
         }
-        return .autosaved(notice: "기본 model → `\(model)`")
+        return .autosaved(notice: I18n.t("config.autosaved.model", ["model": model]))
     }
 
     private func autosaveEffort(_ effort: String) async -> ConfigPanelResult {
@@ -625,9 +625,9 @@ public final class ConfigPanel: @unchecked Sendable {
             }
             defaults.effort = effort
         } catch {
-            return .autosaved(notice: "effort 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.effortFailed", ["error": "\(error)"]))
         }
-        return .autosaved(notice: "기본 effort → `\(effort)`")
+        return .autosaved(notice: I18n.t("config.autosaved.effort", ["effort": effort]))
     }
 
     private func autosavePermMode(_ permMode: String) async -> ConfigPanelResult {
@@ -635,9 +635,9 @@ public final class ConfigPanel: @unchecked Sendable {
             try await patchServerDefaults { $0.permissionMode = permMode }
             defaults.permMode = permMode
         } catch {
-            return .autosaved(notice: "permMode 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.permModeFailed", ["error": "\(error)"]))
         }
-        return .autosaved(notice: "기본 권한 모드 → `\(permMode)`")
+        return .autosaved(notice: I18n.t("config.autosaved.permMode", ["perm": permMode]))
     }
 
     private func autosaveLocale(_ locale: String) async -> ConfigPanelResult {
@@ -653,7 +653,7 @@ public final class ConfigPanel: @unchecked Sendable {
             try await store.saveServerConfig(next)
             defaults.locale = locale
         } catch {
-            return .autosaved(notice: "locale 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.localeFailed", ["error": "\(error)"]))
         }
         return .autosaved(notice: I18n.t("config.autosaved.locale", ["locale": localeLabel(locale)]))
     }
@@ -665,7 +665,7 @@ public final class ConfigPanel: @unchecked Sendable {
         do {
             try await patchNotifications { $0.enabled = !current.enabled }
         } catch {
-            return .autosaved(notice: "알림 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.notifFailed", ["error": "\(error)"]))
         }
         return await .notifUpdated(renderNotifications())
     }
@@ -674,7 +674,7 @@ public final class ConfigPanel: @unchecked Sendable {
         do {
             try await patchNotifications { $0.channelId = channelId }
         } catch {
-            return .autosaved(notice: "상태 채널 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.notifChannelFailed", ["error": "\(error)"]))
         }
         return await .notifUpdated(renderNotifications())
     }
@@ -704,12 +704,12 @@ public final class ConfigPanel: @unchecked Sendable {
         }()
         let toggle = ConfigPanelComponent.button(
             customId: ConfigPanelIds.notifToggle,
-            label: n.enabled ? "Disable notifications" : "Enable notifications",
+            label: n.enabled ? I18n.t("config.notif.disable") : I18n.t("config.notif.enable"),
             style: n.enabled ? .danger : .success
         )
         let channel = ConfigPanelComponent.channelSelect(
             customId: ConfigPanelIds.notifChannel,
-            placeholder: "Status channel (empty → setup default)",
+            placeholder: I18n.t("config.notif.channel.placeholder"),
             defaultChannelIds: n.channelId.map { [$0] } ?? [],
             minValues: 0,
             maxValues: 1
@@ -739,7 +739,7 @@ public final class ConfigPanel: @unchecked Sendable {
         do {
             try await store.setRenderEnabled(next)
         } catch {
-            return .autosaved(notice: "render 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.renderFailed", ["error": "\(error)"]))
         }
         return await .renderUpdated(renderRenderPanel())
     }
@@ -748,7 +748,7 @@ public final class ConfigPanel: @unchecked Sendable {
         do {
             try await store.setChromiumDecision("declined")
         } catch {
-            return .autosaved(notice: "chromium 저장 실패: \(error)")
+            return .autosaved(notice: I18n.t("config.autosaved.chromiumFailed", ["error": "\(error)"]))
         }
         return await .renderUpdated(renderRenderPanel())
     }
@@ -761,7 +761,7 @@ public final class ConfigPanel: @unchecked Sendable {
             ?? "no system Chrome (Install downloads Chrome for Testing)"
         let toggle = ConfigPanelComponent.button(
             customId: ConfigPanelIds.renderToggle,
-            label: enabled ? "Disable table/mermaid PNG" : "Enable table/mermaid PNG",
+            label: enabled ? I18n.t("config.render.disable") : I18n.t("config.render.enable"),
             style: enabled ? .danger : .success
         )
         let install = ConfigPanelComponent.button(
@@ -777,10 +777,10 @@ public final class ConfigPanel: @unchecked Sendable {
             style: .secondary
         )
         return ConfigPanelSubView(
-            title: "Image render (tables · mermaid)",
+            title: I18n.t("config.render.title"),
             description: """
-            Render GFM tables and ```mermaid``` blocks as PNG attachments (headless Chrome).
-            State: **\(enabled ? "on" : "off")** · chromium.decision: `\(decision)`
+            \(I18n.t("config.render.intro", ["state": enabled ? I18n.t("config.render.on") : I18n.t("config.render.off")]))
+            chromium.decision: `\(decision)`
             Browser: \(chromeLine)
             Env: `DAB_RENDER=0` force off · `DAB_MERMAID_JS` · `DAB_CHROMIUM_CACHE`
             """,

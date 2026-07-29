@@ -172,8 +172,8 @@ public func isRedmineIssueCustomId(_ customId: String) -> Bool {
 
 public func buildRedmineIssueButtons(issueId: Int) -> UpdateComponentRow {
     UpdateComponentRow(components: [
-        UpdateButtonSpec(customId: buildRedmineIssueId(action: .start, issueId: issueId), label: "착수", style: .success),
-        UpdateButtonSpec(customId: buildRedmineIssueId(action: .cancel, issueId: issueId), label: "취소", style: .secondary),
+        UpdateButtonSpec(customId: buildRedmineIssueId(action: .start, issueId: issueId), label: I18n.t("redmine.issue.button.start"), style: .success),
+        UpdateButtonSpec(customId: buildRedmineIssueId(action: .cancel, issueId: issueId), label: I18n.t("redmine.issue.button.cancel"), style: .secondary),
     ])
 }
 
@@ -182,27 +182,27 @@ public func buildRedmineSessionConfirmRow(issueId: Int, targetChannelId: String)
     UpdateComponentRow(components: [
         UpdateButtonSpec(
             customId: buildRedmineSessionConfirmId(issueId: issueId, targetChannelId: targetChannelId),
-            label: "확인",
+            label: I18n.t("redmine.issue.button.confirm"),
             style: .success
         ),
         UpdateButtonSpec(
             customId: buildRedmineIssueId(action: .sessionAbort, issueId: issueId),
-            label: "취소",
+            label: I18n.t("redmine.issue.button.cancel"),
             style: .secondary
         ),
     ])
 }
 
 /// Single DISABLED button row after a decision (mirrors buildUpdateDecidedRow above). `.start`
-/// gets a second, always-enabled "재착수" button next to the disabled placeholder — its
+/// gets a second, always-enabled restart (`redmine.issue.button.restart`) button next to the disabled placeholder — its
 /// custom_id is identical to the original start button's, so the existing `.start` handling in
 /// `handleRedmineIssueComponent` re-runs unchanged and lets the same issue be started again.
 public func buildRedmineIssueDecidedRow(action: RedmineIssueAction, issueId: Int) -> UpdateComponentRow {
     let label: String
     switch action {
-    case .start: label = "착수함"
-    case .cancel: label = "취소함"
-    default: label = "완료"
+    case .start: label = I18n.t("redmine.issue.button.started")
+    case .cancel: label = I18n.t("redmine.issue.button.cancelled")
+    default: label = I18n.t("redmine.issue.button.done")
     }
     let placeholder = UpdateButtonSpec(
         customId: "\(redmineIssueCustomIdPrefix):decided",
@@ -213,7 +213,7 @@ public func buildRedmineIssueDecidedRow(action: RedmineIssueAction, issueId: Int
     if action == .start {
         let restart = UpdateButtonSpec(
             customId: buildRedmineIssueId(action: .start, issueId: issueId),
-            label: "재착수",
+            label: I18n.t("redmine.issue.button.restart"),
             style: .secondary
         )
         return UpdateComponentRow(components: [placeholder, restart])
@@ -248,8 +248,8 @@ public func isTurnTimeoutCustomId(_ customId: String) -> Bool {
 
 public func buildTurnTimeoutRetryRow() -> UpdateComponentRow {
     UpdateComponentRow(components: [
-        UpdateButtonSpec(customId: buildTurnTimeoutId(action: .confirm), label: "예", style: .success),
-        UpdateButtonSpec(customId: buildTurnTimeoutId(action: .dismiss), label: "아니오", style: .secondary),
+        UpdateButtonSpec(customId: buildTurnTimeoutId(action: .confirm), label: I18n.t("turnTimeout.button.yes"), style: .success),
+        UpdateButtonSpec(customId: buildTurnTimeoutId(action: .dismiss), label: I18n.t("turnTimeout.button.no"), style: .secondary),
     ])
 }
 
@@ -258,7 +258,7 @@ public func buildTurnTimeoutDecidedRow(action: TurnTimeoutAction) -> UpdateCompo
     UpdateComponentRow(components: [
         UpdateButtonSpec(
             customId: "\(turnTimeoutCustomIdPrefix):decided",
-            label: action == .confirm ? "확인함" : "아니오",
+            label: action == .confirm ? I18n.t("turnTimeout.button.confirmed") : I18n.t("turnTimeout.button.no"),
             style: .secondary,
             disabled: true
         ),

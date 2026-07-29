@@ -524,12 +524,12 @@ func formatRpcError(_ error: JSONValue) -> String {
 
 // MARK: - Process failure classification (H24)
 
-/// User-facing KO hint when the `codex` CLI binary itself can't be found (TS
+/// User-facing hint when the `codex` CLI binary itself can't be found (TS
 /// `NOT_INSTALLED_MESSAGE`, appServerClient.ts:110).
-let codexNotInstalledMessage = "`codex` CLI를 찾을 수 없습니다. 설치 여부와 PATH를 확인하세요."
-/// User-facing KO hint when codex app-server reports it isn't logged in (TS `LOGIN_MESSAGE`,
+var codexNotInstalledMessage: String { I18n.t("codex.notInstalled") }
+/// User-facing hint when codex app-server reports it isn't logged in (TS `LOGIN_MESSAGE`,
 /// appServerClient.ts:112).
-let codexLoginMessage = "Codex에 로그인되어 있지 않습니다. 터미널에서 `codex login`을 실행한 뒤 다시 시도하세요."
+var codexLoginMessage: String { I18n.t("codex.notLoggedIn") }
 
 private let codexAuthFailureRegex = try? NSRegularExpression(
     pattern: #"\bnot authenticated\b|please log in|codex login|\bunauthorized\b|\bauthenticat"#,

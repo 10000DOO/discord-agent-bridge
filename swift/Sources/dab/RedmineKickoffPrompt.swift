@@ -12,7 +12,7 @@ private let log = Logger(name: "redmine-kickoff")
 /// Sends only the issue number + link, not the full description (2026-07-28 user directive) —
 /// a session with the Redmine MCP tool can look the issue up itself; otherwise the link suffices.
 func redmineKickoffPromptText(issue: RedmineIssueDTO) -> String {
-    "#\(issue.id) \(issue.url) 내용을 가볍게 파악해줘. 깊은 분석은 필요 없고, 무슨 이슈인지 정도만 파악하면 돼."
+    I18n.t("redmine.kickoff.prompt", ["issueId": "\(issue.id)", "url": issue.url])
 }
 
 /// Posts the kickoff prompt as a plain channel message, runs one turn on `backend`, and delivers
@@ -177,7 +177,7 @@ func runRedmineKickoffPrompt(
                 client: client,
                 channelId: chId,
                 payload: .init(
-                    content: "다시 시작할까요?",
+                    content: I18n.t("turnTimeout.prompt"),
                     components: discordActionRows(from: [buildTurnTimeoutRetryRow()])
                 )
             )

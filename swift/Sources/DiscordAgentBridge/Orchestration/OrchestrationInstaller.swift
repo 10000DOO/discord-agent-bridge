@@ -35,35 +35,35 @@ public struct OrchestrationInstallReport: Sendable, Equatable {
     }
 
     public var summaryMarkdown: String {
-        var lines: [String] = ["**오케스트레이션 설치 결과**", ""]
+        var lines: [String] = [I18n.t("orchestration.install.title"), ""]
         if !removedPaths.isEmpty {
-            lines.append("### 삭제 후 재작성 (\(removedPaths.count))")
+            lines.append(I18n.t("orchestration.install.removedHeading", ["count": "\(removedPaths.count)"]))
             for p in removedPaths.sorted() {
                 lines.append("- `\(p)`")
             }
             lines.append("")
         }
         if !writtenPaths.isEmpty {
-            lines.append("### 기록 (\(writtenPaths.count))")
+            lines.append(I18n.t("orchestration.install.writtenHeading", ["count": "\(writtenPaths.count)"]))
             for p in writtenPaths.sorted() {
                 lines.append("- `\(p)`")
             }
             lines.append("")
         }
         if !errors.isEmpty {
-            lines.append("### 오류")
+            lines.append(I18n.t("orchestration.install.errorHeading"))
             for e in errors {
                 lines.append("- \(e)")
             }
             lines.append("")
         }
         if writtenPaths.isEmpty, removedPaths.isEmpty, errors.isEmpty {
-            lines.append("_변경 없음_")
+            lines.append(I18n.t("orchestration.install.noChanges"))
         }
-        lines.append("재설치 시: 마커 블록·해당 스킬/서브 디렉터리·파일을 지운 뒤 다시 씁니다.")
-        lines.append("Claude: `CLAUDE.md` + `skills/` + `agents/`")
-        lines.append("Codex: `AGENTS.md` + `skills/` + `agents/*.toml`")
-        lines.append("Grok: `AGENTS.md` + `skills/` + `agents/` (홈 없으면 생성)")
+        lines.append(I18n.t("orchestration.install.reinstallNote"))
+        lines.append(I18n.t("orchestration.install.claudePaths"))
+        lines.append(I18n.t("orchestration.install.codexPaths"))
+        lines.append(I18n.t("orchestration.install.grokPaths"))
         return lines.joined(separator: "\n")
     }
 }

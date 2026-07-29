@@ -10,10 +10,10 @@ struct MentionAndRateLimitFormatTests {
     }
 
     @Test func rateLimitTypeLabelMapsKnownAndUnknown() {
-        #expect(rateLimitTypeLabel("five_hour") == "5시간 한도")
-        #expect(rateLimitTypeLabel("seven_day") == "주간 한도")
-        #expect(rateLimitTypeLabel("seven_day_opus") == "주간 한도 (Opus)")
-        #expect(rateLimitTypeLabel("seven_day_sonnet") == "주간 한도 (Sonnet)")
+        #expect(rateLimitTypeLabel("five_hour") == "5시간")
+        #expect(rateLimitTypeLabel("seven_day") == "주간")
+        #expect(rateLimitTypeLabel("seven_day_opus") == "주간 (Opus)")
+        #expect(rateLimitTypeLabel("seven_day_sonnet") == "주간 (Sonnet)")
         #expect(rateLimitTypeLabel("overage") == "추가 사용량")
         #expect(rateLimitTypeLabel("moon_phase") == "moon_phase")
     }
@@ -31,7 +31,7 @@ struct MentionAndRateLimitFormatTests {
             sevenDaySonnet: UsageLimit(utilization: 0),
             fetchedAt: 0
         )
-        #expect(formatUsageWindows(snapshot: snap) == "5시간 26% · 주간(Opus) 13% · 주간(Sonnet) 0%")
+        #expect(formatUsageWindows(snapshot: snap) == "5시간 26% · 주간 (Opus) 13% · 주간 (Sonnet) 0%")
     }
 
     @Test func formatRateLimitLineUsesSnapshotWhenPresent() {
@@ -47,13 +47,13 @@ struct MentionAndRateLimitFormatTests {
     @Test func formatRateLimitLineEventFallback() {
         #expect(
             formatRateLimitLine(RateLimitInfo(rateLimitType: "five_hour"), usage: nil)
-                == "📊 사용량 한도 알림 · 5시간 한도"
+                == "📊 사용량 한도 알림 · 5시간"
         )
         #expect(
             formatRateLimitLine(
                 RateLimitInfo(rateLimitType: "five_hour"),
                 usage: .unavailable(UsageUnavailable(reason: .noCredentials))
-            ) == "📊 사용량 한도 알림 · 5시간 한도"
+            ) == "📊 사용량 한도 알림 · 5시간"
         )
         let withUtil = formatRateLimitLine(RateLimitInfo(utilization: 42.7))
         #expect(withUtil.contains("사용량 43%"))
@@ -153,7 +153,7 @@ struct UsageEmbedTests {
             extras: UsageEmbedExtras(meta: UsageSessionMeta(model: "grok-4", effort: "high", permMode: "auto"))
         )
         #expect(embed?.fields.map(\.name) == ["⚙️ 세션 설정"])
-        #expect(embed?.fields.first?.value == "설정 모델: grok-4\n추론: high\n권한: 자동")
+        #expect(embed?.fields.first?.value == "설정 모델: grok-4\n추론: high\n권한: 자동 판단 (모델이 승인/거부)")
     }
 
     @Test func descriptionFromDisplayNameAndCwd() {

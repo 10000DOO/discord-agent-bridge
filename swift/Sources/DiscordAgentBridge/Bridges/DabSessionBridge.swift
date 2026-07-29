@@ -413,7 +413,7 @@ public actor DabSessionBridge {
                 started = try await client.sessionResume(params, backendSessionId: resumeId)
                 log.info("session.resume channel=\(channelId) backend=\(resumeId)")
             } catch {
-                fallbackNotice[channelId] = sessionFallbackNotice
+                fallbackNotice[channelId] = sessionFallbackNotice()
                 started = try await client.sessionStart(params)
                 startedFresh = true
                 log.warn("session.resume failed (\(error)) → start channel=\(channelId)")

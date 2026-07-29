@@ -26,8 +26,8 @@ public func buildRedmineIssueEmbed(_ issue: RedmineIssueDTO) -> RedmineIssueEmbe
         url: issue.url,
         description: issue.description,
         fields: [
-            StatusEmbedField(name: "프로젝트", value: issue.projectName, inline: true),
-            StatusEmbedField(name: "목표 버전", value: issue.fixedVersionName ?? "-", inline: true),
+            StatusEmbedField(name: I18n.t("redmine.embed.project"), value: issue.projectName, inline: true),
+            StatusEmbedField(name: I18n.t("redmine.embed.targetVersion"), value: issue.fixedVersionName ?? "-", inline: true),
         ]
     )
 }

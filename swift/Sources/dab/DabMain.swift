@@ -393,7 +393,29 @@ struct EventHandler: GatewayEventHandler {
         return I18n.resolveServerLocale(server?.locale)
     }
 
+    private func appLocale(fromDiscord locale: DiscordLocale) -> AppLocale {
+        locale == .korean ? .ko : .en
+    }
+
+    private func autoDetectServerLocaleIfNeeded(_ payload: Interaction) async {
+        guard payload.type == .applicationCommand else { return }
+        guard let guildId = payload.guild_id?.rawValue, !guildId.isEmpty else { return }
+        guard let discordLocale = payload.locale else { return }
+        let existing = await ConfigStore.shared.loadServerConfig(guildId: guildId)
+        guard existing?.locale == nil else { return }
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.locale = appLocale(fromDiscord: discordLocale).rawValue
+        do {
+            try await ConfigStore.shared.saveServerConfig(next)
+        } catch {
+            log.warn("locale auto-detect save failed for guild \(guildId): \(error)")
+        }
+    }
+
     func onInteractionCreate(_ payload: Interaction) async throws {
+        await autoDetectServerLocaleIfNeeded(payload)
         let locale = await responseLocale(guildId: payload.guild_id?.rawValue)
         try await I18n.withLocale(locale) {
             try await handleInteractionCreate(payload)
@@ -457,7 +479,7 @@ struct EventHandler: GatewayEventHandler {
                 } else {
                     _ = try? await client.createInteractionResponse(
                         id: payload.id, token: payload.token,
-                        payload: .channelMessageWithSource(.init(content: "이 결정은 세션 승인자만 할 수 있어요 (또는 이미 처리됨/만료).", flags: [.ephemeral]))
+                        payload: .channelMessageWithSource(.init(content: I18n.t("perm.request.notAuthorized"), flags: [.ephemeral]))
                     )
                 }
                 return
@@ -650,7 +672,7 @@ struct EventHandler: GatewayEventHandler {
 
         case "model":
             guard let value = try? cmd.requireOption(named: "value").requireString(), !value.isEmpty else {
-                try await respondEphemeral(payload, "model 값이 필요합니다.")
+                try await respondEphemeral(payload, I18n.t("cmd.model.missingValue"))
                 return
             }
             // C4-c: only Claude/.custom sessions expose a live setModel (TS
@@ -682,7 +704,7 @@ struct EventHandler: GatewayEventHandler {
 
         case "effort":
             guard let value = try? cmd.requireOption(named: "value").requireString(), !value.isEmpty else {
-                try await respondEphemeral(payload, "effort 값이 필요합니다.")
+                try await respondEphemeral(payload, I18n.t("cmd.effort.missingValue"))
                 return
             }
             // C4-c: Grok sessions never expose live effort switching (TS acpSession.ts —
@@ -714,7 +736,7 @@ struct EventHandler: GatewayEventHandler {
             switch sub.name {
             case "backend":
                 guard let raw = try? sub.requireOption(named: "backend").requireString() else {
-                    try await respondEphemeral(payload, "알 수 없는 backend")
+                    try await respondEphemeral(payload, I18n.t("cmd.mode.unknownBackend"))
                     return
                 }
                 guard let backend = Backend(rawValue: raw) else {
@@ -810,7 +832,7 @@ struct EventHandler: GatewayEventHandler {
                 // G-P1-04 / TS switchPerm: known config.profiles name → profile + bundled
                 // permissionMode; otherwise raw permMode (existing permissionProfile kept).
                 guard let value = try? sub.requireOption(named: "value").requireString(), !value.isEmpty else {
-                    try await respondEphemeral(payload, "perm 값이 필요합니다.")
+                    try await respondEphemeral(payload, I18n.t("cmd.perm.missingValue"))
                     return
                 }
                 let profiles = (try? await ConfigStore.shared.load())?.profiles ?? [:]
@@ -824,7 +846,7 @@ struct EventHandler: GatewayEventHandler {
                     permResult == .ok ? I18n.t("cmd.perm.switched", ["perm": resolved.display]) : noSession
                 )
             default:
-                try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
+                try await respondEphemeral(payload, I18n.t("cmd.unknownSubcommand", ["name": sub.name]))
             }
 
         case "agent":
@@ -838,7 +860,7 @@ struct EventHandler: GatewayEventHandler {
                    owner != actorId,
                    decision.tier != .admin
                 {
-                    try await respondEphemeral(payload, "이 채널 세션의 소유자 또는 관리자만 새 세션으로 바꿀 수 있어요.")
+                    try await respondEphemeral(payload, I18n.t("session.ownerOrAdminRequired"))
                     return
                 }
                 // The live provider catalog can cold-start a local CLI. Acknowledge before
@@ -910,11 +932,11 @@ struct EventHandler: GatewayEventHandler {
                 let lines = formatStatsLines(bindings: await life.listActiveBindings())
                 let count = lines.count == 1 && lines[0] == "(none)" ? 0 : lines.count
                 let meta = await SessionStore.shared.getUpdateMeta()
-                let dismissed = meta.dismissedVersion.map { " · 무시 `\($0)`" } ?? ""
+                let dismissed = meta.dismissedVersion.map { I18n.t("stats.dismissedSuffix", ["version": $0]) } ?? ""
                 let activeHeading = I18n.t("stats.active", ["n": "\(count)"])
                 let content =
                     "**\(activeHeading)**\n" + lines.joined(separator: "\n")
-                    + "\n**버전** `\(readAppVersion())`\(dismissed)"
+                    + I18n.t("stats.versionLine", ["version": readAppVersion(), "dismissed": dismissed])
                 // W11-g + G-P1-09: Claude OAuth + Grok weekly + Codex rate-limit embeds.
                 var embeds: [Embed] = []
                 let claudeUsage = await ClaudeUsageService.shared.getUsage()
@@ -939,7 +961,7 @@ struct EventHandler: GatewayEventHandler {
                     try await respondEphemeral(payload, content, embeds: embeds)
                 }
             default:
-                try await respondEphemeral(payload, "알 수 없는 서브커맨드: \(sub.name)")
+                try await respondEphemeral(payload, I18n.t("cmd.unknownSubcommand", ["name": sub.name]))
             }
 
         case "setup":
@@ -1010,7 +1032,7 @@ struct EventHandler: GatewayEventHandler {
             } catch {
                 try await respondEphemeral(
                     payload,
-                    "config.json을 읽을 수 없어요. 설정 파일을 확인하세요: \(error)"
+                    I18n.t("config.loadFailed", ["error": "\(error)"])
                 )
                 return
             }
@@ -1097,7 +1119,7 @@ struct EventHandler: GatewayEventHandler {
         case "doc":
             // W16-d: share markdown into a 📄 thread (drive tier). Needs a bound session for cwd.
             guard let docPath = try? cmd.requireOption(named: "path").requireString(), !docPath.isEmpty else {
-                try await respondEphemeral(payload, "path 값이 필요합니다.")
+                try await respondEphemeral(payload, I18n.t("cmd.doc.missingPath"))
                 return
             }
             let regBound = await SessionRegistry.shared.binding(channelId: channelId) != nil
@@ -1126,14 +1148,14 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.updateOriginalInteractionResponse(
                     appId: payload.application_id,
                     token: payload.token,
-                    payload: .init(content: "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.")
+                    payload: .init(content: I18n.t("doc.error.shareFailed"))
                 )
             }
 
         case "update":
             // W16-h: admin version check; if available, show Yes/No prompt ephemerally.
             guard let updater = await AutoUpdaterRegistry.shared.get() else {
-                try await respondEphemeral(payload, "업데이터가 아직 준비되지 않았어요. 잠시 후 다시 시도하세요.")
+                try await respondEphemeral(payload, I18n.t("update.notReady"))
                 return
             }
             // checkNow fetches the version registry over the network; ack before it starts
@@ -1191,25 +1213,25 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id, token: payload.token,
                 payload: .modal(.init(
                     custom_id: "redmine:config",
-                    title: "레드마인 연동 설정",
+                    title: I18n.t("redmine.config.title"),
                     textInputs: [
                         .init(
                             custom_id: "url",
                             style: .short,
-                            label: "레드마인 주소",
+                            label: I18n.t("redmine.config.urlLabel"),
                             required: true,
                             placeholder: "https://redmine.example.com"
                         ),
                         .init(
                             custom_id: "apiKey",
                             style: .short,
-                            label: "API 키",
+                            label: I18n.t("redmine.config.apiKeyLabel"),
                             required: true
                         ),
                         .init(
                             custom_id: "project",
                             style: .short,
-                            label: "프로젝트(선택, 비우면 전체)",
+                            label: I18n.t("redmine.config.projectLabel"),
                             required: false
                         ),
                     ]
@@ -1220,7 +1242,7 @@ struct EventHandler: GatewayEventHandler {
             // WO-13: R9 dropdown — same status/assignee filter as the poller (R5), but `since`
             // is nil (D5, WO-5) since this command has no "last checked" concept.
             guard let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine else {
-                try await respondEphemeral(payload, "먼저 `/redmine`으로 설정하세요.")
+                try await respondEphemeral(payload, I18n.t("redmine.issueSelect.needsSetup"))
                 return
             }
             do {
@@ -1236,7 +1258,7 @@ struct EventHandler: GatewayEventHandler {
                 let resolvedStatusIds = RedmineStatusResolver.resolveTargetIds(statuses: statuses)
                 let matched = RedmineIssueFilter.match(issues: issues, resolvedStatusIds: resolvedStatusIds, since: nil)
                 guard !matched.isEmpty else {
-                    try await respondEphemeral(payload, "조건에 맞는 이슈가 없습니다.")
+                    try await respondEphemeral(payload, I18n.t("redmine.issueSelect.empty"))
                     return
                 }
                 // WO-13b (9장 Q6): Discord select menus cap options at 25 — split into several
@@ -1246,7 +1268,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "레드마인 이슈를 선택하세요.",
+                        content: I18n.t("redmine.issueSelect.prompt"),
                         flags: [.ephemeral],
                         components: [Interaction.ActionRow(components: [
                             .stringSelect(redmineIssueSelectMenu(for: chunks[0], batch: firstBatch)),
@@ -1263,13 +1285,13 @@ struct EventHandler: GatewayEventHandler {
                         appId: payload.application_id,
                         token: payload.token,
                         payload: .init(
-                            content: "레드마인 이슈를 선택하세요.",
+                            content: I18n.t("redmine.issueSelect.prompt"),
                             components: [Interaction.ActionRow(components: [.stringSelect(menu)])]
                         )
                     )
                 }
             } catch {
-                try await respondEphemeral(payload, "레드마인 이슈 조회에 실패했어요: \(error)")
+                try await respondEphemeral(payload, I18n.t("redmine.issueSelect.fetchFailed", ["error": "\(error)"]))
             }
 
         default:
@@ -1287,7 +1309,9 @@ struct EventHandler: GatewayEventHandler {
         let options = issues.map {
             Interaction.ActionRow.StringSelectMenu.Option(label: "#\($0.id) \($0.subject)", value: String($0.id))
         }
-        let placeholder = batch.map { "이슈 목록 (\($0.index)/\($0.total))" } ?? "이슈 선택"
+        let placeholder = batch.map {
+            I18n.t("redmine.issueSelect.placeholder.paged", ["index": "\($0.index)", "total": "\($0.total)"])
+        } ?? I18n.t("redmine.issueSelect.placeholder.single")
         return Interaction.ActionRow.StringSelectMenu(
             custom_id: "redmine:issue-select",
             options: options,
@@ -1393,7 +1417,7 @@ struct EventHandler: GatewayEventHandler {
             _ = await createMessageWithRetry(
                 client: client,
                 channelId: channelId,
-                payload: .init(content: "새 세션이 준비됐어요. 메시지를 다시 보내주시면 새 세션으로 시작돼요.")
+                payload: .init(content: I18n.t("turnTimeout.newSessionReady"))
             )
         }
     }
@@ -1613,7 +1637,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+                        content: I18n.t("wizard.sessionMissing"),
                         flags: [.ephemeral]
                     ))
                 )
@@ -1623,7 +1647,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "이 마법사는 연 사람만 조작할 수 있어요.",
+                        content: I18n.t("wizard.notOwner"),
                         flags: [.ephemeral]
                     ))
                 )
@@ -1650,7 +1674,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "재개 마법사 세션이 없습니다. `/agent start` → 세션 재개로 다시 열어주세요.",
+                    content: I18n.t("wizard.resumeSessionMissing"),
                     flags: [.ephemeral]
                 ))
             )
@@ -1660,7 +1684,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "이 마법사는 연 사람만 조작할 수 있어요.",
+                    content: I18n.t("wizard.notOwner"),
                     flags: [.ephemeral]
                 ))
             )
@@ -1765,7 +1789,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+                    content: I18n.t("wizard.sessionMissing"),
                     flags: [.ephemeral]
                 ))
             )
@@ -1775,7 +1799,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "이 마법사는 연 사람만 조작할 수 있어요.",
+                    content: I18n.t("wizard.notOwner"),
                     flags: [.ephemeral]
                 ))
             )
@@ -1789,14 +1813,14 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id, token: payload.token,
                 payload: .modal(.init(
                     custom_id: "dir:create",
-                    title: "새 폴더 만들기",
+                    title: I18n.t("dir.create.title"),
                     textInputs: [
                         .init(
                             custom_id: "name",
                             style: .short,
-                            label: "폴더 이름",
+                            label: I18n.t("dir.create.label"),
                             required: true,
-                            placeholder: "예: my-project"
+                            placeholder: I18n.t("dir.create.placeholder")
                         ),
                     ]
                 ))
@@ -1807,14 +1831,14 @@ struct EventHandler: GatewayEventHandler {
                 id: payload.id, token: payload.token,
                 payload: .modal(.init(
                     custom_id: "dir:manual",
-                    title: "경로 직접 입력",
+                    title: I18n.t("dir.manual.title"),
                     textInputs: [
                         .init(
                             custom_id: "path",
                             style: .short,
-                            label: "절대 경로",
+                            label: I18n.t("dir.manual.label"),
                             required: true,
-                            placeholder: "예: /Volumes/SourceCode/MyProject"
+                            placeholder: I18n.t("dir.manual.placeholder")
                         ),
                     ]
                 ))
@@ -1864,8 +1888,8 @@ struct EventHandler: GatewayEventHandler {
                             defaultCwd: p.cwd
                         )
                         let text = ok
-                            ? "백엔드를 \(p.backend.rawValue) 로 바꿨어요."
-                            : "전환 실패: 이 채널에 바인딩된 세션이 없습니다."
+                            ? I18n.t("cmd.mode.switched", ["backend": p.backend.rawValue])
+                            : I18n.t("wizard.recfg.noSession")
                         _ = try? await client.updateOriginalInteractionResponse(
                             appId: payload.application_id, token: payload.token,
                             payload: .init(content: text, embeds: [], components: [])
@@ -1876,7 +1900,7 @@ struct EventHandler: GatewayEventHandler {
                                 client: client,
                                 channelId: ch,
                                 payload: .init(content:
-                                    "⚠️ \(p.backend.rawValue) 로 바꾸면 이 채널은 새 대화로 시작돼요. 이전 맥락은 안 넘어갑니다."
+                                    I18n.t("cmd.mode.freshContext", ["backend": p.backend.rawValue])
                                 ),
                                 onGone: {
                                     await SessionLifecycle.shared.stopChannel(
@@ -1888,7 +1912,7 @@ struct EventHandler: GatewayEventHandler {
                     } else {
                         _ = try? await client.updateOriginalInteractionResponse(
                             appId: payload.application_id, token: payload.token,
-                            payload: .init(content: "전환 실패 (선택 없음).", embeds: [], components: [])
+                            payload: .init(content: I18n.t("wizard.recfg.noSelection"), embeds: [], components: [])
                         )
                     }
                 } else if let p = wizard.startParams {
@@ -1911,7 +1935,7 @@ struct EventHandler: GatewayEventHandler {
                             appId: payload.application_id,
                             token: payload.token,
                             payload: .init(
-                                content: "세션 설정을 저장하지 못했습니다. 기존 세션은 변경되지 않았습니다.",
+                                content: I18n.t("wizard.recfg.saveFailed"),
                                 embeds: [],
                                 components: []
                             )
@@ -1948,7 +1972,7 @@ struct EventHandler: GatewayEventHandler {
                             Interaction.ActionRow(components: [
                                 .button(Interaction.ActionRow.Button(
                                     style: .secondary,
-                                    label: "💾 프리셋으로 저장",
+                                    label: I18n.t("preset.save.button"),
                                     custom_id: "preset.save"
                                 )),
                             ]),
@@ -1958,16 +1982,15 @@ struct EventHandler: GatewayEventHandler {
                     // Ephemeral wizard reply: link to session channel (TS cmd.start.channelCreated).
                     let replyText: String
                     if bindChannelId != p.channelId {
-                        replyText = "세션 채널 생성됨: <#\(bindChannelId)>"
+                        replyText = I18n.t("cmd.start.channelCreated", ["channel": "<#\(bindChannelId)>"])
                     } else {
                         let extra = [
                             p.model.isEmpty ? nil : "model=\(p.model)",
                             p.effort.isEmpty ? nil : "effort=\(p.effort)",
                             p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
                         ].compactMap { $0 }.joined(separator: " ")
-                        replyText = "이 채널이 \(p.backend.rawValue) 세션에 바인딩됨"
+                        replyText = I18n.t("wizard.recfg.bound", ["backend": p.backend.rawValue, "cwd": p.cwd])
                             + (extra.isEmpty ? "" : " (\(extra))")
-                            + ". cwd=\(p.cwd). 이제 접두사 없이 메시지를 보내면 됩니다."
                     }
                     _ = try? await client.updateOriginalInteractionResponse(
                         appId: payload.application_id, token: payload.token,
@@ -2035,7 +2058,7 @@ struct EventHandler: GatewayEventHandler {
                 } else {
                     _ = try? await client.updateOriginalInteractionResponse(
                         appId: payload.application_id, token: payload.token,
-                        payload: .init(content: "시작 실패 (선택 없음).", embeds: [], components: [])
+                        payload: .init(content: I18n.t("wizard.start.noSelection"), embeds: [], components: [])
                     )
                 }
             case .cancelled:
@@ -2069,7 +2092,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createFollowupMessage(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: "이미 폴더 선택 창이 열려 있어요. Mac 화면을 확인하세요.", flags: [.ephemeral])
+                payload: .init(content: I18n.t("dir.panel.busy"), flags: [.ephemeral])
             )
             return
         }
@@ -2080,7 +2103,7 @@ struct EventHandler: GatewayEventHandler {
             appId: payload.application_id,
             token: payload.token,
             payload: .init(
-                content: "🖥️ Mac 화면에 폴더 선택 창을 열었어요. Mac에서 폴더를 선택하세요… (2분 내)",
+                content: I18n.t("dir.panel.wait"),
                 flags: [.ephemeral]
             )
         )
@@ -2090,7 +2113,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createFollowupMessage(
                     appId: payload.application_id,
                     token: payload.token,
-                    payload: .init(content: "폴더 선택을 취소했어요.", flags: [.ephemeral])
+                    payload: .init(content: I18n.t("dir.panel.cancelled"), flags: [.ephemeral])
                 )
                 return
             }
@@ -2099,7 +2122,7 @@ struct EventHandler: GatewayEventHandler {
                     appId: payload.application_id,
                     token: payload.token,
                     payload: .init(
-                        content: "이동할 수 없는 경로예요: `\(picked ?? "")` (존재하지 않거나, 폴더가 아니거나, 허용 범위 밖).",
+                        content: I18n.t("dir.manual.invalid", ["path": picked ?? ""]),
                         flags: [.ephemeral]
                     )
                 )
@@ -2115,7 +2138,7 @@ struct EventHandler: GatewayEventHandler {
                 appId: payload.application_id,
                 token: payload.token,
                 payload: .init(
-                    content: "경로로 이동했어요: `\(wizard.browserCwd())`\n`✅ 이 폴더로 시작`을 눌러 이 폴더에서 세션을 시작하세요.",
+                    content: I18n.t("dir.manual.done", ["path": wizard.browserCwd()]),
                     flags: [.ephemeral]
                 )
             )
@@ -2123,9 +2146,9 @@ struct EventHandler: GatewayEventHandler {
             let text: String
             switch err {
             case .timeout:
-                text = "폴더 선택 창을 2분이 지나 닫았어요. Mac 앞에 있을 때 사용하세요."
+                text = I18n.t("dir.panel.timeout")
             case .failed(let msg):
-                text = "폴더 선택 창을 열지 못했어요: \(msg)"
+                text = I18n.t("dir.panel.error", ["err": msg])
             }
             _ = try? await client.createFollowupMessage(
                 appId: payload.application_id,
@@ -2136,7 +2159,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createFollowupMessage(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: "폴더 선택 창을 열지 못했어요: \(error)", flags: [.ephemeral])
+                payload: .init(content: I18n.t("dir.panel.error", ["err": "\(error)"]), flags: [.ephemeral])
             )
         }
     }
@@ -2150,7 +2173,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "저장할 최근 세션 설정이 없어요.",
+                    content: I18n.t("preset.save.none"),
                     flags: [.ephemeral]
                 ))
             )
@@ -2160,14 +2183,14 @@ struct EventHandler: GatewayEventHandler {
             id: payload.id, token: payload.token,
             payload: .modal(.init(
                 custom_id: "preset.name",
-                title: "프리셋 저장",
+                title: I18n.t("preset.save.title"),
                 textInputs: [
                     .init(
                         custom_id: "name",
                         style: .short,
-                        label: "프리셋 이름",
+                        label: I18n.t("preset.save.label"),
                         required: true,
-                        placeholder: "예: claude-opus-plan"
+                        placeholder: I18n.t("preset.save.placeholder")
                     ),
                 ]
             ))
@@ -2198,7 +2221,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+                    content: I18n.t("wizard.sessionMissing"),
                     flags: [.ephemeral]
                 ))
             )
@@ -2215,7 +2238,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "폴더를 만들었어요: \(name)",
+                        content: I18n.t("dir.create.done", ["name": name]),
                         embeds: embeds,
                         flags: [.ephemeral],
                         components: components
@@ -2225,7 +2248,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "폴더 이름이 올바르지 않아요. `/`, `..`, 절대 경로는 쓸 수 없어요.",
+                        content: I18n.t("dir.create.invalid"),
                         flags: [.ephemeral]
                     ))
                 )
@@ -2233,7 +2256,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "폴더를 만들지 못했어요: \(err)",
+                        content: I18n.t("dir.create.failed", ["error": "\(err)"]),
                         flags: [.ephemeral]
                     ))
                 )
@@ -2245,7 +2268,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "절대 경로를 입력하세요 (예: `/Users/...` 또는 `/Volumes/...`).",
+                        content: I18n.t("dir.manual.notabs"),
                         flags: [.ephemeral]
                     ))
                 )
@@ -2255,7 +2278,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.createInteractionResponse(
                     id: payload.id, token: payload.token,
                     payload: .channelMessageWithSource(.init(
-                        content: "이동할 수 없는 경로예요: `\(input)` (존재하지 않거나, 폴더가 아니거나, 허용 범위 밖).",
+                        content: I18n.t("dir.manual.invalid", ["path": input]),
                         flags: [.ephemeral]
                     ))
                 )
@@ -2265,7 +2288,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "경로로 이동했어요: `\(wizard.browserCwd())`\n`✅ 이 폴더로 시작`을 눌러 이 폴더에서 세션을 시작하세요.",
+                    content: I18n.t("dir.manual.done", ["path": wizard.browserCwd()]),
                     embeds: embeds,
                     flags: [.ephemeral],
                     components: components
@@ -2274,7 +2297,7 @@ struct EventHandler: GatewayEventHandler {
         default:
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
-                payload: .channelMessageWithSource(.init(content: "알 수 없는 모달입니다.", flags: [.ephemeral]))
+                payload: .channelMessageWithSource(.init(content: I18n.t("wizard.unknownModal"), flags: [.ephemeral]))
             )
         }
     }
@@ -2326,7 +2349,7 @@ struct EventHandler: GatewayEventHandler {
                 appId: payload.application_id,
                 token: payload.token,
                 payload: .init(
-                    content: "레드마인 연동을 저장할 수 없어요: 서버에 `DAB_REDMINE_KEY_SECRET`이 설정되지 않았습니다. 운영자에게 문의하세요."
+                    content: I18n.t("redmine.session.cipherUnavailable")
                 )
             )
             return
@@ -2355,7 +2378,7 @@ struct EventHandler: GatewayEventHandler {
                     appId: payload.application_id,
                     token: payload.token,
                     payload: .init(
-                        content: "레드마인 연동 설정이 완료됐어요. `#\(channel.name)` 채널에서 알림을 확인하세요."
+                        content: I18n.t("redmine.session.configSaved", ["channel": channel.name])
                     )
                 )
                 tempDiagWrite("followup HTTP response: \(resp)")
@@ -2368,7 +2391,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: "레드마인 연동 설정에 실패했어요: \(error)")
+                payload: .init(content: I18n.t("redmine.session.configSaveFailed", ["error": "\(error)"]))
             )
         }
     }
@@ -2385,7 +2408,7 @@ struct EventHandler: GatewayEventHandler {
         guard let issueIdString = comp.values?.first, let issueId = Int(issueIdString) else { return }
         let guildId = payload.guild_id?.rawValue ?? ""
         guard let redmine = await ConfigStore.shared.loadServerConfig(guildId: guildId)?.redmine else {
-            try await respondEphemeral(payload, "레드마인 설정을 찾을 수 없어요. `/redmine`으로 먼저 설정하세요.")
+            try await respondEphemeral(payload, I18n.t("redmine.session.configNotFound"))
             return
         }
         do {
@@ -2396,7 +2419,7 @@ struct EventHandler: GatewayEventHandler {
                 projectId: redmine.projectId
             )
             guard let issue = issues.first(where: { $0.id == issueId }) else {
-                try await respondEphemeral(payload, "선택한 이슈를 더 이상 찾을 수 없어요.")
+                try await respondEphemeral(payload, I18n.t("redmine.session.issueGone"))
                 return
             }
             let embed = discordEmbed(from: buildRedmineIssueEmbed(issue))
@@ -2406,7 +2429,7 @@ struct EventHandler: GatewayEventHandler {
                 payload: .channelMessageWithSource(.init(embeds: [embed], components: components))
             )
         } catch {
-            try await respondEphemeral(payload, "이슈 조회에 실패했어요: \(error)")
+            try await respondEphemeral(payload, I18n.t("redmine.session.issueFetchFailed", ["error": "\(error)"]))
         }
     }
 
@@ -2495,7 +2518,7 @@ struct EventHandler: GatewayEventHandler {
                     appId: payload.application_id,
                     token: payload.token,
                     payload: .init(
-                        content: "세션을 선택하세요.",
+                        content: I18n.t("redmine.session.selectPrompt"),
                         components: [Interaction.ActionRow(components: [.stringSelect(menu)])]
                     )
                 )
@@ -2545,7 +2568,7 @@ struct EventHandler: GatewayEventHandler {
                     _ = try? await client.createInteractionResponse(
                         id: payload.id, token: payload.token,
                         payload: .channelMessageWithSource(.init(
-                            content: "이 채널 세션의 소유자 또는 관리자만 새 세션으로 바꿀 수 있어요.",
+                            content: I18n.t("session.ownerOrAdminRequired"),
                             flags: [.ephemeral]
                         ))
                     )
@@ -2599,7 +2622,7 @@ struct EventHandler: GatewayEventHandler {
                     _ = try? await client.updateOriginalInteractionResponse(
                         appId: payload.application_id,
                         token: payload.token,
-                        payload: .init(content: "세션을 찾을 수 없어요.", components: [])
+                        payload: .init(content: I18n.t("redmine.session.notFound"), components: [])
                     )
                     return
                 }
@@ -2610,7 +2633,7 @@ struct EventHandler: GatewayEventHandler {
                     appId: payload.application_id,
                     token: payload.token,
                     payload: .init(
-                        content: "이슈 #\(issueId) → <#\(chosenChannelId)> 에 전달할까요?",
+                        content: I18n.t("redmine.session.confirmDeliver", ["issueId": "\(issueId)", "channel": chosenChannelId]),
                         components: confirmRows
                     )
                 )
@@ -2651,7 +2674,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.updateOriginalInteractionResponse(
                     appId: payload.application_id,
                     token: payload.token,
-                    payload: .init(content: "세션을 찾을 수 없어요.", components: [])
+                    payload: .init(content: I18n.t("redmine.session.notFound"), components: [])
                 )
                 return
             }
@@ -2659,7 +2682,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = try? await client.updateOriginalInteractionResponse(
                     appId: payload.application_id,
                     token: payload.token,
-                    payload: .init(content: "레드마인 설정을 찾을 수 없어요. `/redmine`으로 먼저 설정하세요.", components: [])
+                    payload: .init(content: I18n.t("redmine.session.configNotFound"), components: [])
                 )
                 return
             }
@@ -2668,7 +2691,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: "요청했어요: <#\(chosenChannelId)>", components: [])
+                payload: .init(content: I18n.t("redmine.session.requested", ["channel": chosenChannelId]), components: [])
             )
             let roleTier = decision.tier?.rawValue ?? "execute"
             let appClient = client
@@ -2685,7 +2708,7 @@ struct EventHandler: GatewayEventHandler {
                         _ = await createMessageWithRetry(
                             client: appClient,
                             channelId: ChannelSnowflake(chosenChannelId),
-                            payload: .init(content: "⚠️ 선택한 이슈(#\(issueId))를 더 이상 찾을 수 없어요."),
+                            payload: .init(content: I18n.t("redmine.session.issueGoneNotice", ["issueId": "\(issueId)"])),
                             onGone: nil
                         )
                         return
@@ -2704,7 +2727,7 @@ struct EventHandler: GatewayEventHandler {
                     _ = await createMessageWithRetry(
                         client: appClient,
                         channelId: ChannelSnowflake(chosenChannelId),
-                        payload: .init(content: "⚠️ 이슈 조회에 실패했어요: \(error)"),
+                        payload: .init(content: I18n.t("redmine.session.issueFetchFailedNotice", ["error": "\(error)"])),
                         onGone: nil
                     )
                 }
@@ -2718,7 +2741,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: "전달을 취소했어요.", components: [])
+                payload: .init(content: I18n.t("redmine.session.deliverCancelled"), components: [])
             )
         }
     }
@@ -2732,7 +2755,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "저장할 최근 세션 설정이 없어요.",
+                    content: I18n.t("preset.save.none"),
                     flags: [.ephemeral]
                 ))
             )
@@ -2744,7 +2767,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "프리셋 이름은 1~100자여야 해요.",
+                    content: I18n.t("preset.save.invalidName"),
                     flags: [.ephemeral]
                 ))
             )
@@ -2766,7 +2789,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "프리셋을 저장했어요: \(name)",
+                    content: I18n.t("preset.saved", ["name": name]),
                     flags: [.ephemeral]
                 ))
             )
@@ -2775,7 +2798,7 @@ struct EventHandler: GatewayEventHandler {
             _ = try? await client.createInteractionResponse(
                 id: payload.id, token: payload.token,
                 payload: .channelMessageWithSource(.init(
-                    content: "프리셋 저장 실패: \(error)",
+                    content: I18n.t("preset.save.failed", ["error": "\(error)"]),
                     flags: [.ephemeral]
                 ))
             )
@@ -2914,7 +2937,7 @@ struct EventHandler: GatewayEventHandler {
                 _ = await createMessageWithRetry(
                     client: client,
                     channelId: payload.channel_id,
-                    payload: .init(content: "첨부 처리 실패: \(error)"),
+                    payload: .init(content: I18n.t("cmd.attachment.failed", ["error": "\(error)"])),
                     onGone: {
                         await SessionLifecycle.shared.stopChannel(
                             channelId: channelId, actorId: "system", guildId: guildId, roleTier: "execute"
@@ -3056,7 +3079,7 @@ struct EventHandler: GatewayEventHandler {
                     client: client,
                     channelId: payload.channel_id,
                     payload: .init(
-                        content: "다시 시작할까요?",
+                        content: I18n.t("turnTimeout.prompt"),
                         components: discordActionRows(from: [buildTurnTimeoutRetryRow()])
                     )
                 )

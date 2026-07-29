@@ -595,11 +595,11 @@ public final class GrokAcpClient: @unchecked Sendable {
 
 // MARK: - Pure helpers
 
-/// User-facing KO hints for a dead/missing child (TS acpClient ACP_*_MESSAGE).
-public let ACP_LOGIN_MESSAGE =
-    "Grok에 로그인되어 있지 않습니다. 터미널에서 `grok login`을 실행한 뒤 다시 시도하세요."
-public let ACP_NOT_INSTALLED_MESSAGE =
-    "`grok` CLI를 찾을 수 없습니다. 설치 여부와 PATH를 확인하세요."
+/// User-facing hints for a dead/missing child (TS acpClient ACP_*_MESSAGE). Computed (not `let`)
+/// so each read reflects the request-local locale (I18n.getLocale()), same reasoning as
+/// AppServerClient.swift's codexNotInstalledMessage/codexLoginMessage (§8-2 `let` constant issue).
+public var ACP_LOGIN_MESSAGE: String { I18n.t("grok.notLoggedIn") }
+public var ACP_NOT_INSTALLED_MESSAGE: String { I18n.t("grok.notInstalled") }
 
 private let acpAuthFailureRegex: NSRegularExpression? = try? NSRegularExpression(
     pattern: #"\bnot authenticated\b|please log in|grok login|\bunauthorized\b|\bauthenticat"#,

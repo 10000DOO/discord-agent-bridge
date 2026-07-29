@@ -389,7 +389,7 @@ public actor AutoUpdater {
             return
         }
 
-        await ctx.ack("업데이트 설치를 시작합니다…")
+        await ctx.ack(I18n.t("update.installing"))
         let result = await install()
         if !result.ok {
             deps.onLog("auto-update: install failed code=\(result.code) stderr=\(result.stderr.prefix(200))")

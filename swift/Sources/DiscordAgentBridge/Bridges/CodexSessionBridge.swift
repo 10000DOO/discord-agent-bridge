@@ -415,7 +415,7 @@ public actor CodexSessionBridge {
                     threadId = resumeId
                     log.info("thread/resume channel=\(channelId) thread=\(resumeId)")
                 } catch {
-                    fallbackNotice[channelId] = sessionFallbackNotice
+                    fallbackNotice[channelId] = sessionFallbackNotice()
                     threadId = try await client.threadStart(params: .object(startParams))
                     startedFresh = true
                     log.warn("resume failed (\(error)) → thread/start channel=\(channelId)")

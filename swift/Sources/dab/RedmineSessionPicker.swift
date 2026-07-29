@@ -56,11 +56,11 @@ func buildRedmineSessionSelectMenus(
             )
         }
         options.append(
-            Interaction.ActionRow.StringSelectMenu.Option(label: "🆕 신규 세션", value: newSessionSentinel)
+            Interaction.ActionRow.StringSelectMenu.Option(label: I18n.t("redmine.session.newSession"), value: newSessionSentinel)
         )
         let placeholder = sessionChunks.count > 1
-            ? "세션 목록 (\(index + 1)/\(sessionChunks.count))"
-            : "세션 선택"
+            ? I18n.t("redmine.session.placeholder.paged", ["index": "\(index + 1)", "total": "\(sessionChunks.count)"])
+            : I18n.t("redmine.session.placeholder.single")
         return Interaction.ActionRow.StringSelectMenu(custom_id: customId, options: options, placeholder: placeholder)
     }
 }

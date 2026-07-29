@@ -1,5 +1,14 @@
 import Foundation
 
+/// A ko/en text pair for slash command descriptions. `AppLocale` has exactly two cases
+/// (`I18n.swift:7-10`), so this is a fixed 2-field struct rather than a dictionary — both
+/// values are required at compile time (no silent fallback on a missing key).
+public struct LocalizedText: Sendable, Equatable {
+    public var ko: String
+    public var en: String
+    public init(ko: String, en: String) { self.ko = ko; self.en = en }
+}
+
 /// Backend-agnostic description of a slash command. The library owns the shape (testable); `dab`
 /// translates it to `DiscordBM`'s `Payloads.ApplicationCommandCreate` (thin glue, no logic).
 /// Supports subcommands **or** top-level string options (leaf commands like `/model value:…`).
@@ -11,14 +20,14 @@ public struct SlashCommandSpec: Sendable, Equatable {
     }
     public struct Option: Sendable, Equatable {
         public var name: String
-        public var description: String
+        public var description: LocalizedText
         public var required: Bool
         public var choices: [Choice]
         /// When true, Discord asks the bot for suggestions (G-P1-03). Mutually exclusive with non-empty `choices`.
         public var autocomplete: Bool
         public init(
             name: String,
-            description: String,
+            description: LocalizedText,
             required: Bool,
             choices: [Choice],
             autocomplete: Bool = false
@@ -32,14 +41,14 @@ public struct SlashCommandSpec: Sendable, Equatable {
     }
     public struct Subcommand: Sendable, Equatable {
         public var name: String
-        public var description: String
+        public var description: LocalizedText
         public var options: [Option]
-        public init(name: String, description: String, options: [Option]) {
+        public init(name: String, description: LocalizedText, options: [Option]) {
             self.name = name; self.description = description; self.options = options
         }
     }
     public var name: String
-    public var description: String
+    public var description: LocalizedText
     /// Top-level options when the command has no subcommands (e.g. `/model`, `/effort`).
     public var options: [Option]
     public var subcommands: [Subcommand]
@@ -48,7 +57,7 @@ public struct SlashCommandSpec: Sendable, Equatable {
     public var requiresAdministrator: Bool
     public init(
         name: String,
-        description: String,
+        description: LocalizedText,
         options: [Option] = [],
         subcommands: [Subcommand] = [],
         requiresAdministrator: Bool = false
@@ -65,19 +74,19 @@ public struct SlashCommandSpec: Sendable, Equatable {
 public func agentCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "agent",
-        description: "Manage this channel's agent session",
+        description: LocalizedText(ko: "이 채널의 에이전트 세션을 관리합니다", en: "Manage this channel's agent session"),
         subcommands: [
             // W11-b2 slice1: wizard-only start (backend→model→effort→perm selects). No free-text options.
             .init(
                 name: "start",
-                description: "Start and bind an agent session in this channel (wizard)",
+                description: LocalizedText(ko: "이 채널에 에이전트 세션을 시작하고 연결합니다 (마법사)", en: "Start and bind an agent session in this channel (wizard)"),
                 options: []
             ),
             // W14: close is a real stop (backend + unbind), not unbind-only.
-            .init(name: "close", description: "Stop and unbind this channel's session", options: []),
+            .init(name: "close", description: LocalizedText(ko: "이 채널의 세션을 중지하고 연결을 해제합니다", en: "Stop and unbind this channel's session"), options: []),
             // G-P1-05: re-bind + status intro + soft ensure (lazy turn still works if soft fails).
-            .init(name: "resume", description: "Re-bind stored session, post status, soft-reconnect", options: []),
-            .init(name: "stats", description: "List active session bindings", options: []),
+            .init(name: "resume", description: LocalizedText(ko: "저장된 세션을 다시 연결하고 상태를 게시한 뒤 소프트 재연결합니다", en: "Re-bind stored session, post status, soft-reconnect"), options: []),
+            .init(name: "stats", description: LocalizedText(ko: "활성 세션 연결 목록을 표시합니다", en: "List active session bindings"), options: []),
         ]
     )
 }
@@ -86,15 +95,15 @@ public func agentCommandSpec() -> SlashCommandSpec {
 public func modeCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "mode",
-        description: "Switch the backend or permission mode",
+        description: LocalizedText(ko: "백엔드 또는 권한 모드를 전환합니다", en: "Switch the backend or permission mode"),
         subcommands: [
             .init(
                 name: "backend",
-                description: "Switch the agent backend (starts a fresh context)",
+                description: LocalizedText(ko: "에이전트 백엔드를 전환합니다 (새 컨텍스트로 시작)", en: "Switch the agent backend (starts a fresh context)"),
                 options: [
                     .init(
                         name: "backend",
-                        description: "Backend to switch to",
+                        description: LocalizedText(ko: "전환할 백엔드", en: "Backend to switch to"),
                         required: true,
                         choices: Backend.allCases.map {
                             // custom: dynamic model name when resolvable (TS buildSlashCommands).
@@ -106,9 +115,9 @@ public func modeCommandSpec() -> SlashCommandSpec {
             ),
             .init(
                 name: "perm",
-                description: "Switch the permission mode (session kept)",
+                description: LocalizedText(ko: "권한 모드를 전환합니다 (세션 유지)", en: "Switch the permission mode (session kept)"),
                 options: [
-                    .init(name: "value", description: "Permission mode", required: true, choices: []),
+                    .init(name: "value", description: LocalizedText(ko: "권한 모드", en: "Permission mode"), required: true, choices: []),
                 ]
             ),
         ]
@@ -120,11 +129,11 @@ public func modeCommandSpec() -> SlashCommandSpec {
 public func modelCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "model",
-        description: "Switch the model for this session",
+        description: LocalizedText(ko: "이 세션의 모델을 전환합니다", en: "Switch the model for this session"),
         options: [
             .init(
                 name: "value",
-                description: "Model to switch to",
+                description: LocalizedText(ko: "전환할 모델", en: "Model to switch to"),
                 required: true,
                 choices: [],
                 autocomplete: true
@@ -138,11 +147,11 @@ public func modelCommandSpec() -> SlashCommandSpec {
 public func effortCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "effort",
-        description: "Switch the reasoning effort for this session",
+        description: LocalizedText(ko: "이 세션의 추론 강도를 전환합니다", en: "Switch the reasoning effort for this session"),
         options: [
             .init(
                 name: "value",
-                description: "Reasoning effort to switch to",
+                description: LocalizedText(ko: "전환할 추론 강도", en: "Reasoning effort to switch to"),
                 required: true,
                 choices: [],
                 autocomplete: true
@@ -153,27 +162,27 @@ public func effortCommandSpec() -> SlashCommandSpec {
 
 /// Top-level `/stop` — hard-stop the current channel (drive tier; TS ACTION_TIER.stop).
 public func stopCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(name: "stop", description: "Stop this channel's agent session")
+    SlashCommandSpec(name: "stop", description: LocalizedText(ko: "이 채널의 에이전트 세션을 중지합니다", en: "Stop this channel's agent session"))
 }
 
 /// `/clear` — drop live sessions, keep config, wipe backendSessionId (PLAN §14.6).
 public func clearCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "clear",
-        description: "Clear conversation context (fresh session, same folder/settings)"
+        description: LocalizedText(ko: "대화 컨텍스트를 초기화합니다 (같은 폴더/설정으로 새 세션 시작)", en: "Clear conversation context (fresh session, same folder/settings)")
     )
 }
 
 /// Top-level `/stop-all` — hard-stop every bound session (admin tier; TS ACTION_TIER['stop-all']).
 public func stopAllCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(name: "stop-all", description: "Stop all agent sessions")
+    SlashCommandSpec(name: "stop-all", description: LocalizedText(ko: "모든 에이전트 세션을 중지합니다", en: "Stop all agent sessions"))
 }
 
 /// `/setup` — A4D guild channel structure (admin; TS `setDefaultMemberPermissions(Administrator)`).
 public func setupCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "setup",
-        description: "Create the agent control channel and sessions category (unnecessary if the channels already exist)",
+        description: LocalizedText(ko: "에이전트 제어 채널과 세션 카테고리를 생성합니다 (채널이 이미 있으면 불필요)", en: "Create the agent control channel and sessions category (unnecessary if the channels already exist)"),
         requiresAdministrator: true
     )
 }
@@ -183,11 +192,11 @@ public func setupCommandSpec() -> SlashCommandSpec {
 public func docCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "doc",
-        description: "Share a markdown document into a thread",
+        description: LocalizedText(ko: "마크다운 문서를 스레드에 공유합니다", en: "Share a markdown document into a thread"),
         options: [
             .init(
                 name: "path",
-                description: "Path to the markdown file (absolute, or relative to the session folder)",
+                description: LocalizedText(ko: "마크다운 파일 경로 (절대 경로 또는 세션 폴더 기준 상대 경로)", en: "Path to the markdown file (absolute, or relative to the session folder)"),
                 required: true,
                 choices: []
             ),
@@ -199,7 +208,7 @@ public func docCommandSpec() -> SlashCommandSpec {
 public func configCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "config",
-        description: "Configure role tiers and defaults for this server",
+        description: LocalizedText(ko: "이 서버의 역할 등급과 기본값을 설정합니다", en: "Configure role tiers and defaults for this server"),
         requiresAdministrator: true
     )
 }
@@ -208,26 +217,26 @@ public func configCommandSpec() -> SlashCommandSpec {
 public func updateCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "update",
-        description: "Check for a new discord-agent-bridge version",
+        description: LocalizedText(ko: "새 discord-agent-bridge 버전을 확인합니다", en: "Check for a new discord-agent-bridge version"),
         requiresAdministrator: true
     )
 }
 
 /// `/redmine` — configure Redmine notification integration (drive tier; anyone can run, D7).
 public func redmineCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(name: "redmine", description: "레드마인 알림 연동을 설정합니다")
+    SlashCommandSpec(name: "redmine", description: LocalizedText(ko: "레드마인 알림 연동을 설정합니다", en: "Configure Redmine notification integration"))
 }
 
 /// `/redmine-issue-select` — pick a matching Redmine issue from a dropdown (drive tier; anyone can run, D7).
 public func redmineIssueSelectCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(name: "redmine-issue-select", description: "조건에 맞는 레드마인 이슈를 선택합니다")
+    SlashCommandSpec(name: "redmine-issue-select", description: LocalizedText(ko: "조건에 맞는 레드마인 이슈를 선택합니다", en: "Select a matching Redmine issue"))
 }
 
 /// `/orchestration` — install global issue-orchestration rules, skills, and subagents for Claude/Codex/Grok.
 public func orchestrationCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "orchestration",
-        description: "이슈 오케스트레이션 규칙·스킬·서브에이전트를 Claude/Codex/Grok 전역에 설치합니다"
+        description: LocalizedText(ko: "이슈 오케스트레이션 규칙·스킬·서브에이전트를 Claude/Codex/Grok 전역에 설치합니다", en: "Install issue-orchestration rules, skills, and subagents globally for Claude/Codex/Grok")
     )
 }
 

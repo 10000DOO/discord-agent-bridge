@@ -59,36 +59,36 @@ public func formatNotification(
         return nil
     case .result(_, let costUsd, let tokensIn, let tokensOut, let durationMs):
         guard events.result else { return nil }
-        var line = "✅ <#\(sessionChannelId)> 완료"
+        var line = I18n.t("notify.result.done", ["channel": sessionChannelId])
         if let tin = tokensIn, let tout = tokensOut {
-            line += " · \(tin)/\(tout) tok"
+            line += I18n.t("notify.result.tokens", ["tokensIn": "\(tin)", "tokensOut": "\(tout)"])
         }
-        if let ms = durationMs { line += " · \(ms)ms" }
-        if let cost = costUsd { line += " · $\(cost)" }
+        if let ms = durationMs { line += I18n.t("notify.result.duration", ["ms": "\(ms)"]) }
+        if let cost = costUsd { line += I18n.t("notify.result.cost", ["cost": "\(cost)"]) }
         return line
     case .error(let message, _):
         guard events.error else { return nil }
         let msg = String(message.prefix(500))
-        return "❌ <#\(sessionChannelId)> 에러: \(msg)"
+        return I18n.t("notify.error", ["channel": sessionChannelId, "message": msg])
     case .rateLimit(let resetAt, let rateLimitType, let utilization):
         // Gated by events.error (TS parity — operational status).
         guard events.error else { return nil }
         if let windows = formatUsageWindows(usage) {
-            return "📊 <#\(sessionChannelId)> 사용량 한도 · \(windows)"
+            return I18n.t("notify.rateLimit", ["channel": sessionChannelId, "windows": windows])
         }
-        var line = "📊 <#\(sessionChannelId)> 사용량 한도"
-        if let t = rateLimitType { line += " · \(rateLimitTypeLabel(t))" }
-        if let u = utilization { line += " · 사용량 \(Int(u.rounded()))%" }
+        var line = I18n.t("notify.rateLimit.base", ["channel": sessionChannelId])
+        if let t = rateLimitType { line += I18n.t("notify.rateLimit.type", ["label": rateLimitTypeLabel(t)]) }
+        if let u = utilization { line += I18n.t("notify.rateLimit.utilization", ["util": "\(Int(u.rounded()))"]) }
         if let r = resetAt, let date = parseISODate(r) {
             let fmt = DateFormatter()
-            fmt.locale = Locale(identifier: "ko_KR")
+            fmt.locale = I18n.getLocale() == .ko ? Locale(identifier: "ko_KR") : Locale(identifier: "en_US")
             fmt.dateFormat = "HH:mm"
-            line += " · 리셋 \(fmt.string(from: date))"
+            line += I18n.t("notify.rateLimit.reset", ["time": fmt.string(from: date)])
         }
         return line
     case .toolUse(_, let name, _, _):
         guard events.toolUse else { return nil }
-        return "🔧 <#\(sessionChannelId)> \(name)"
+        return I18n.t("notify.toolUse", ["channel": sessionChannelId, "name": name])
     default:
         return nil
     }

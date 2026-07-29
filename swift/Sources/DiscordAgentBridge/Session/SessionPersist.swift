@@ -67,4 +67,4 @@ func persistSession(
 func iso8601Now() -> String { ISO8601DateFormatter().string(from: Date()) }
 
 /// Shown once when a stored session cannot be resumed (expired/gone) and we start fresh (F5).
-let sessionFallbackNotice = "⚠️ 이전 세션 복구 실패 — 새 세션으로 시작합니다."
+func sessionFallbackNotice() -> String { I18n.t("session.fallbackNotice") }

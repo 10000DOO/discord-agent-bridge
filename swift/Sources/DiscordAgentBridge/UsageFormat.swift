@@ -239,7 +239,7 @@ public func mentionOnCompleteContent(ownerId: String) -> String? {
 
 /// One-line context summary after a turn (surface TurnResult.contextUsage).
 public func formatContextUsageLine(_ ctx: ContextUsageInfo) -> String {
-    var parts: [String] = ["📊 컨텍스트 \(Int(ctx.percentage.rounded()))%"]
+    var parts: [String] = ["📊 \(I18n.t("usage.context")) \(Int(ctx.percentage.rounded()))%"]
     parts.append("\(formatTokens(ctx.totalTokens))/\(formatTokens(ctx.maxTokens))")
     if let name = ctx.modelDisplayName ?? ctx.model, !name.isEmpty {
         parts.append(name)
@@ -252,11 +252,11 @@ public func formatContextUsageLine(_ ctx: ContextUsageInfo) -> String {
 /// Human-readable label for SDK rateLimitType codes. Unknown types pass through verbatim.
 public func rateLimitTypeLabel(_ type: String) -> String {
     switch type {
-    case "five_hour": return "5시간 한도"
-    case "seven_day": return "주간 한도"
-    case "seven_day_opus": return "주간 한도 (Opus)"
-    case "seven_day_sonnet": return "주간 한도 (Sonnet)"
-    case "overage": return "추가 사용량"
+    case "five_hour": return I18n.t("usage.fiveHour")
+    case "seven_day": return I18n.t("usage.weekly")
+    case "seven_day_opus": return I18n.t("usage.weeklyOpus")
+    case "seven_day_sonnet": return I18n.t("usage.weeklySonnet")
+    case "overage": return I18n.t("usage.overage")
     default: return type
     }
 }
@@ -266,7 +266,7 @@ public func formatResetTime(_ resetsAt: String?, now: Date = Date()) -> String? 
     guard let resetsAt, let date = parseISODate(resetsAt) else { return nil }
     let cal = Calendar.current
     let fmt = DateFormatter()
-    fmt.locale = Locale(identifier: "ko_KR")
+    fmt.locale = I18n.getLocale() == .ko ? Locale(identifier: "ko_KR") : Locale(identifier: "en_US")
     if cal.isDate(date, inSameDayAs: now) {
         fmt.dateFormat = "HH:mm"
     } else {
@@ -286,30 +286,30 @@ public func formatUsageWindows(snapshot: UsageSnapshot) -> String? {
     func add(_ limit: UsageLimit?, _ label: String) {
         guard let limit else { return }
         let reset = formatResetTime(limit.resetsAt)
-        segments.append("\(label) \(Int(limit.utilization.rounded()))%\(reset.map { " (리셋 \($0))" } ?? "")")
+        segments.append("\(label) \(Int(limit.utilization.rounded()))%\(reset.map { " (\(I18n.t("usage.resets", ["reset": $0])))" } ?? "")")
     }
-    add(snapshot.fiveHour, "5시간")
-    add(snapshot.sevenDay, "주간")
-    add(snapshot.sevenDayOpus, "주간(Opus)")
-    add(snapshot.sevenDaySonnet, "주간(Sonnet)")
+    add(snapshot.fiveHour, I18n.t("usage.fiveHour"))
+    add(snapshot.sevenDay, I18n.t("usage.weekly"))
+    add(snapshot.sevenDayOpus, I18n.t("usage.weeklyOpus"))
+    add(snapshot.sevenDaySonnet, I18n.t("usage.weeklySonnet"))
     return segments.isEmpty ? nil : segments.joined(separator: " · ")
 }
 
 /// One-line rate_limit summary. Snapshot windows win over event fields (TS parity).
 public func formatRateLimitLine(_ ev: RateLimitInfo, usage: UsageResult? = nil) -> String {
     if let windows = formatUsageWindows(usage) {
-        return "📊 사용량 한도 알림 · \(windows)"
+        return "\(I18n.t("usage.rateLimitAlert")) · \(windows)"
     }
 
-    var line = "📊 사용량 한도 알림"
+    var line = I18n.t("usage.rateLimitAlert")
     if let t = ev.rateLimitType { line += " · \(rateLimitTypeLabel(t))" }
-    if let u = ev.utilization { line += " · 사용량 \(Int(u.rounded()))%" }
+    if let u = ev.utilization { line += I18n.t("notify.rateLimit.utilization", ["util": "\(Int(u.rounded()))"]) }
     if let r = ev.resetAt, let date = parseISODate(r) {
         // Event path: HH:mm only (TS toLocaleTimeString hour/minute, 24h).
         let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "ko_KR")
+        fmt.locale = I18n.getLocale() == .ko ? Locale(identifier: "ko_KR") : Locale(identifier: "en_US")
         fmt.dateFormat = "HH:mm"
-        line += " · 리셋 \(fmt.string(from: date))"
+        line += I18n.t("notify.rateLimit.reset", ["time": fmt.string(from: date)])
     }
     return line
 }
@@ -347,19 +347,19 @@ public func formatDuration(_ ms: Int) -> String {
 public func buildResultLine(_ usage: TurnUsage) -> String? {
     var parts: [String] = []
     if let cost = usage.costUsd {
-        parts.append(String(format: "비용 $%.4f", cost))
+        parts.append("\(I18n.t("result.cost")) $\(String(format: "%.4f", cost))")
     }
     if usage.tokensIn != nil || usage.tokensOut != nil {
         var tok: [String] = []
         if let tin = usage.tokensIn { tok.append("\(formatTokens(tin))↓") }
         if let tout = usage.tokensOut { tok.append("\(formatTokens(tout))↑") }
-        parts.append("토큰 \(tok.joined(separator: " "))")
+        parts.append("\(I18n.t("result.tokens")) \(tok.joined(separator: " "))")
     }
     if let ms = usage.durationMs {
-        parts.append("소요 \(formatDuration(ms))")
+        parts.append("\(I18n.t("result.duration")) \(formatDuration(ms))")
     }
     if parts.isEmpty { return nil }
-    return "완료 · \(parts.joined(separator: " · "))"
+    return "\(I18n.t("result.done")) · \(parts.joined(separator: " · "))"
 }
 
 /// Build TurnUsage from an AgentEvent.result payload (Claude sidecar).

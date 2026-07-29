@@ -167,7 +167,7 @@ struct NotifierPureTests {
             sessionChannelId: "sess-1",
             events: allOn
         )
-        #expect(line == "📊 <#sess-1> 사용량 한도 · 5시간 한도 · 사용량 87%")
+        #expect(line == "📊 <#sess-1> 사용량 한도 · 5시간 · 사용량 87%")
     }
 
     @Test func sessionNotifierPosts() async {

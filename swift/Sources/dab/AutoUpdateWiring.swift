@@ -182,17 +182,17 @@ func formatUpdateCheckReply(_ result: UpdateCheckResult) -> String {
     let cur = result.currentVersion
     switch result.kind {
     case .disabled:
-        return UpdateLabels.disabled + " (현재 `\(cur)`)"
+        return UpdateLabels.disabled + I18n.t("update.check.current", ["version": cur])
     case .fetchFailed:
-        return UpdateLabels.checkFailed + " (현재 `\(cur)`)"
+        return UpdateLabels.checkFailed + I18n.t("update.check.current", ["version": cur])
     case .upToDate:
-        let latest = result.latestVersion.map { " / 레지스트리 `\($0)`" } ?? ""
-        return "\(UpdateLabels.upToDate) 현재 `\(cur)`\(latest)"
+        let latest = result.latestVersion.map { I18n.t("update.check.registrySuffix", ["version": $0]) } ?? ""
+        return "\(UpdateLabels.upToDate)\(I18n.t("update.check.upToDateCurrent", ["version": cur]))\(latest)"
     case .dismissed:
         let latest = result.latestVersion ?? "?"
-        return "새 버전 `\(latest)` 이(가) 있지만 무시됨 (현재 `\(cur)`). 더 새 버전이 나오면 다시 알려드려요."
+        return I18n.t("update.check.dismissed", ["latest": latest, "current": cur])
     case .available:
         let latest = result.latestVersion ?? "?"
-        return "새 버전 `\(latest)` 사용 가능 (현재 `\(cur)`)."
+        return I18n.t("update.check.available", ["latest": latest, "current": cur])
     }
 }

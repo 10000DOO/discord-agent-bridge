@@ -473,14 +473,15 @@ struct ConfigPanelTests {
             Issue.record("expected renderPanel, got \(opened)")
             return
         }
-        #expect(before.description.contains("**on**"))
+        #expect(before.description.contains("**\(I18n.t("config.render.on"))**"))
 
         let r = await panel.handle(ConfigPanelInput(id: ConfigPanelIds.renderDecline))
         guard case .renderUpdated(let after) = r else {
             Issue.record("expected renderUpdated, got \(r)")
             return
         }
-        #expect(after.description.contains("**on**")) // still on — decline must not disable render
+        // still on — decline must not disable render
+        #expect(after.description.contains("**\(I18n.t("config.render.on"))**"))
         #expect(after.description.contains("declined"))
         let global = try await store.load()
         #expect(global.chromium?.decision == "declined")

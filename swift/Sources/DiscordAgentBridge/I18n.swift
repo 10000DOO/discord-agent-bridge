@@ -84,6 +84,7 @@ public enum I18n {
         "router.turn.queued": "대기열에 추가했어요 (#{depth}).",
         "cmd.error": "명령을 처리하지 못했어요: {error}",
         "cmd.error.generic": "명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
+        "turn.deliveryFailed": "⚠️ 답변을 전송하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
 
         // Boot / setup guidance
         "boot.noConfig": "설정이 없습니다. 먼저 셋업을 실행하세요:  dab --setup",
@@ -206,6 +207,15 @@ public enum I18n {
         "usage.elapsed.dayHour": "{d}일 {h}시간",
         "usage.duration.sec": "{s}초",
         "usage.duration.minSec": "{m}분 {s}초",
+        // R3 WO-10: UsageEmbed.swift/UsageFormat.swift — 카탈로그에 없던 개념만 최소 신규 키
+        "usage.overage": "추가 사용량",
+        "usage.rateLimitAlert": "📊 사용량 한도 알림",
+        "usage.sessionConfig": "세션 설정",
+        "usage.model": "설정 모델: {model}",
+        "usage.effort": "추론: {effort}",
+        "usage.model.auto": "자동 선택",
+        "usage.effort.default": "기본값",
+        "usage.actualModel": "실제 모델: {model}",
         "stats.title": "📊 Agent Stats",
         "stats.active": "활성 세션 ({n})",
         "stats.none": "활성 세션이 없어요.",
@@ -314,6 +324,7 @@ public enum I18n {
         "update.decided.approved": "업데이트 진행 중…",
         "update.decided.dismissed": "이 버전 건너뜀",
         "update.busy": "이미 업데이트가 진행 중이에요.",
+        "update.installing": "업데이트 설치를 시작합니다…",
         "update.restartRequested":
             "✅ 설치 완료. 서비스를 재시작하는 중이에요 (잠시 후 결과 메시지가 옵니다)…",
         "update.installed":
@@ -411,6 +422,161 @@ public enum I18n {
         "config.access.saveFailed": "사용자 예외 권한 저장 실패: {error}",
         "config.locale.ko": "한국어 (ko)",
         "config.locale.en": "English (en)",
+
+        // R3 WO-4: Redmine setup modal + issue-select command (dab/DabMain.swift)
+        "redmine.config.title": "레드마인 연동 설정",
+        "redmine.config.urlLabel": "레드마인 주소",
+        "redmine.config.apiKeyLabel": "API 키",
+        "redmine.config.projectLabel": "프로젝트(선택, 비우면 전체)",
+        "redmine.issueSelect.needsSetup": "먼저 `/redmine`으로 설정하세요.",
+        "redmine.issueSelect.empty": "조건에 맞는 이슈가 없습니다.",
+        "redmine.issueSelect.prompt": "레드마인 이슈를 선택하세요.",
+        "redmine.issueSelect.fetchFailed": "레드마인 이슈 조회에 실패했어요: {error}",
+        "redmine.issueSelect.placeholder.paged": "이슈 목록 ({index}/{total})",
+        "redmine.issueSelect.placeholder.single": "이슈 선택",
+
+        // R3 WO-5: Redmine config-save + session picker/issue delivery (dab/DabMain.swift)
+        "redmine.session.cipherUnavailable":
+            "레드마인 연동을 저장할 수 없어요: 서버에 `DAB_REDMINE_KEY_SECRET`이 설정되지 않았습니다. 운영자에게 문의하세요.",
+        "redmine.session.configSaved": "레드마인 연동 설정이 완료됐어요. `#{channel}` 채널에서 알림을 확인하세요.",
+        "redmine.session.configSaveFailed": "레드마인 연동 설정에 실패했어요: {error}",
+        "redmine.session.configNotFound": "레드마인 설정을 찾을 수 없어요. `/redmine`으로 먼저 설정하세요.",
+        "redmine.session.issueGone": "선택한 이슈를 더 이상 찾을 수 없어요.",
+        "redmine.session.issueFetchFailed": "이슈 조회에 실패했어요: {error}",
+        "redmine.session.selectPrompt": "세션을 선택하세요.",
+        "redmine.session.notFound": "세션을 찾을 수 없어요.",
+        "redmine.session.confirmDeliver": "이슈 #{issueId} → <#{channel}> 에 전달할까요?",
+        "redmine.session.requested": "요청했어요: <#{channel}>",
+        "redmine.session.issueGoneNotice": "⚠️ 선택한 이슈(#{issueId})를 더 이상 찾을 수 없어요.",
+        "redmine.session.issueFetchFailedNotice": "⚠️ 이슈 조회에 실패했어요: {error}",
+        "redmine.session.deliverCancelled": "전달을 취소했어요.",
+        "session.ownerOrAdminRequired": "이 채널 세션의 소유자 또는 관리자만 새 세션으로 바꿀 수 있어요.",
+        // NOTE: WO-5 소속이지만 실제 기능은 프리셋 저장 — preset.* 접두어로 명명(옵션 B, preset.save.* 옆 배치)
+        "preset.save.invalidName": "프리셋 이름은 1~100자여야 해요.",
+        "preset.save.failed": "프리셋 저장 실패: {error}",
+
+        // R3 WO-6: DabMain.swift remaining hardcoded replies
+        "perm.request.notAuthorized": "이 결정은 세션 승인자만 할 수 있어요 (또는 이미 처리됨/만료).",
+        "cmd.model.missingValue": "model 값이 필요합니다.",
+        "cmd.effort.missingValue": "effort 값이 필요합니다.",
+        "cmd.mode.unknownBackend": "알 수 없는 backend",
+        "cmd.perm.missingValue": "perm 값이 필요합니다.",
+        "cmd.unknownSubcommand": "알 수 없는 서브커맨드: {name}",
+        "stats.versionLine": "\n**버전** `{version}`{dismissed}",
+        "stats.dismissedSuffix": " · 무시 `{version}`",
+        "config.loadFailed": "config.json을 읽을 수 없어요. 설정 파일을 확인하세요: {error}",
+        "cmd.doc.missingPath": "path 값이 필요합니다.",
+        "doc.error.shareFailed": "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.",
+        "update.notReady": "업데이터가 아직 준비되지 않았어요. 잠시 후 다시 시도하세요.",
+        "wizard.sessionMissing": "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+        "wizard.notOwner": "이 마법사는 연 사람만 조작할 수 있어요.",
+        "wizard.resumeSessionMissing": "재개 마법사 세션이 없습니다. `/agent start` → 세션 재개로 다시 열어주세요.",
+        "wizard.recfg.noSession": "전환 실패: 이 채널에 바인딩된 세션이 없습니다.",
+        "wizard.recfg.noSelection": "전환 실패 (선택 없음).",
+        "wizard.recfg.saveFailed": "세션 설정을 저장하지 못했습니다. 기존 세션은 변경되지 않았습니다.",
+        "wizard.recfg.bound":
+            "이 채널이 {backend} 세션에 바인딩됨. cwd={cwd}. 이제 접두사 없이 메시지를 보내면 됩니다.",
+        "wizard.start.noSelection": "시작 실패 (선택 없음).",
+        "wizard.unknownModal": "알 수 없는 모달입니다.",
+        "cmd.attachment.failed": "첨부 처리 실패: {error}",
+        "turnTimeout.prompt": "다시 시작할까요?",
+        "turnTimeout.newSessionReady": "새 세션이 준비됐어요. 메시지를 다시 보내주시면 새 세션으로 시작돼요.",
+
+        // R3 WO-7: RedmineKickoffPrompt.swift
+        "redmine.kickoff.prompt":
+            "#{issueId} {url} 내용을 가볍게 파악해줘. 깊은 분석은 필요 없고, 무슨 이슈인지 정도만 파악하면 돼.",
+
+        // R3 WO-8: RedmineSessionPicker.swift
+        "redmine.session.newSession": "🆕 신규 세션",
+        "redmine.session.placeholder.paged": "세션 목록 ({index}/{total})",
+        "redmine.session.placeholder.single": "세션 선택",
+
+        // R3 WO-9: AutoUpdateWiring.swift (formatUpdateCheckReply)
+        "update.check.current": " (현재 `{version}`)",
+        "update.check.upToDateCurrent": " 현재 `{version}`",
+        "update.check.registrySuffix": " / 레지스트리 `{version}`",
+        "update.check.dismissed":
+            "새 버전 `{latest}` 이(가) 있지만 무시됨 (현재 `{current}`). 더 새 버전이 나오면 다시 알려드려요.",
+        "update.check.available": "새 버전 `{latest}` 사용 가능 (현재 `{current}`).",
+
+        // R3 WO-11: ConfigPanel.swift save-failure notices + access button
+        "config.autosaved.roleFailed": "역할 저장 실패: {error}",
+        "config.autosaved.backendFailed": "backend 저장 실패: {error}",
+        "config.autosaved.modelFailed": "model 저장 실패: {error}",
+        "config.autosaved.effortFailed": "effort 저장 실패: {error}",
+        "config.autosaved.permModeFailed": "permMode 저장 실패: {error}",
+        "config.autosaved.notifFailed": "알림 저장 실패: {error}",
+        "config.autosaved.notifChannelFailed": "상태 채널 저장 실패: {error}",
+        "config.autosaved.renderFailed": "render 저장 실패: {error}",
+        "config.autosaved.chromiumFailed": "chromium 저장 실패: {error}",
+        // ConfigPanel.swift:656 — WO-11 목록엔 없었으나 실제로 하드코딩 한글이 남아있어 추가 발견(완료판정이 파일 전체 기준이라 포함)
+        "config.autosaved.localeFailed": "locale 저장 실패: {error}",
+        "config.access.button": "👤 예외 권한",
+
+        // R3 WO-12: UpdateButton.swift (redmine issue buttons + turn-timeout retry buttons)
+        "redmine.issue.button.start": "착수",
+        "redmine.issue.button.cancel": "취소",
+        "redmine.issue.button.confirm": "확인",
+        "redmine.issue.button.started": "착수함",
+        "redmine.issue.button.cancelled": "취소함",
+        "redmine.issue.button.done": "완료",
+        "redmine.issue.button.restart": "재착수",
+        "turnTimeout.button.yes": "예",
+        "turnTimeout.button.no": "아니오",
+        "turnTimeout.button.confirmed": "확인함",
+
+        // R3 WO-13: SessionNotifier.swift (status-channel one-line notifications)
+        "notify.result.done": "✅ <#{channel}> 완료",
+        "notify.result.tokens": " · {tokensIn}/{tokensOut} tok",
+        "notify.result.duration": " · {ms}ms",
+        "notify.result.cost": " · ${cost}",
+        "notify.error": "❌ <#{channel}> 에러: {message}",
+        "notify.rateLimit": "📊 <#{channel}> 사용량 한도 · {windows}",
+        "notify.rateLimit.base": "📊 <#{channel}> 사용량 한도",
+        "notify.rateLimit.type": " · {label}",
+        "notify.rateLimit.utilization": " · 사용량 {util}%",
+        "notify.rateLimit.reset": " · 리셋 {time}",
+        "notify.toolUse": "🔧 <#{channel}> {name}",
+
+        // R3 WO-14: CodexTurnAccumulator.swift (CodexProgressLabels)
+        "codex.progress.working": "작업 중",
+        "codex.progress.commandExecution": "명령 실행 중",
+        "codex.progress.fileChange": "파일 수정 중",
+        "codex.progress.fileSearch": "파일 탐색 중",
+        "codex.progress.webSearch": "웹 검색 중",
+        "codex.progress.image": "이미지 생성 중",
+        "codex.progress.mcpToolCall": "도구 실행 중",
+        "codex.progress.collabAgentToolCall": "서브에이전트 작업 중",
+        "codex.progress.fileChangeCount": "{count}개 파일",
+
+        // R3 WO-15: AppServerClient.swift
+        "codex.notInstalled": "`codex` CLI를 찾을 수 없습니다. 설치 여부와 PATH를 확인하세요.",
+        "codex.notLoggedIn":
+            "Codex에 로그인되어 있지 않습니다. 터미널에서 `codex login`을 실행한 뒤 다시 시도하세요.",
+
+        // R3 (found beyond WO-6 scope): AcpClient.swift — Grok equivalent of codex.notInstalled/notLoggedIn
+        "grok.notInstalled": "`grok` CLI를 찾을 수 없습니다. 설치 여부와 PATH를 확인하세요.",
+        "grok.notLoggedIn":
+            "Grok에 로그인되어 있지 않습니다. 터미널에서 `grok login`을 실행한 뒤 다시 시도하세요.",
+
+        // R3 WO-16: RedmineIssueEmbedSpec.swift
+        "redmine.embed.project": "프로젝트",
+        "redmine.embed.targetVersion": "목표 버전",
+
+        // R3 WO-17: SessionPersist.swift
+        "session.fallbackNotice": "⚠️ 이전 세션 복구 실패 — 새 세션으로 시작합니다.",
+
+        // R3 WO-18: OrchestrationInstaller.swift (summaryMarkdown)
+        "orchestration.install.title": "**오케스트레이션 설치 결과**",
+        "orchestration.install.removedHeading": "### 삭제 후 재작성 ({count})",
+        "orchestration.install.writtenHeading": "### 기록 ({count})",
+        "orchestration.install.errorHeading": "### 오류",
+        "orchestration.install.noChanges": "_변경 없음_",
+        "orchestration.install.reinstallNote":
+            "재설치 시: 마커 블록·해당 스킬/서브 디렉터리·파일을 지운 뒤 다시 씁니다.",
+        "orchestration.install.claudePaths": "Claude: `CLAUDE.md` + `skills/` + `agents/`",
+        "orchestration.install.codexPaths": "Codex: `AGENTS.md` + `skills/` + `agents/*.toml`",
+        "orchestration.install.grokPaths": "Grok: `AGENTS.md` + `skills/` + `agents/` (홈 없으면 생성)",
     ]
 
     /// English overrides (major slash/error/stream paths). Absent keys fall back to ko.
@@ -421,6 +587,7 @@ public enum I18n {
         "router.turn.queued": "Queued (#{depth}).",
         "cmd.error": "Could not process the command: {error}",
         "cmd.error.generic": "Could not process the command. Please try again shortly.",
+        "turn.deliveryFailed": "⚠️ Something went wrong sending the answer. Please try again shortly.",
 
         "boot.noConfig": "No configuration found. Run setup first:  dab --setup",
         "boot.noToken": "Discord token is not set — run --setup again.",
@@ -537,6 +704,14 @@ public enum I18n {
         "usage.elapsed.dayHour": "{d}d {h}h",
         "usage.duration.sec": "{s}s",
         "usage.duration.minSec": "{m}m {s}s",
+        "usage.overage": "Overage",
+        "usage.rateLimitAlert": "📊 Rate limit alert",
+        "usage.sessionConfig": "Session settings",
+        "usage.model": "Configured model: {model}",
+        "usage.effort": "Reasoning: {effort}",
+        "usage.model.auto": "Auto-selected",
+        "usage.effort.default": "Default",
+        "usage.actualModel": "Actual model: {model}",
         "stats.title": "📊 Agent Stats",
         "stats.active": "Active sessions ({n})",
         "stats.none": "No active sessions.",
@@ -639,6 +814,7 @@ public enum I18n {
         "update.decided.approved": "Updating…",
         "update.decided.dismissed": "Version skipped",
         "update.busy": "An update is already in progress.",
+        "update.installing": "Starting the update install…",
         "update.restartRequested":
             "✅ Installed. Restarting the service (a result message will follow)…",
         "update.installed":
@@ -733,5 +909,161 @@ public enum I18n {
         "config.access.saveFailed": "Could not save the member exception: {error}",
         "config.locale.ko": "한국어 (ko)",
         "config.locale.en": "English (en)",
+
+        // R3 WO-4: Redmine setup modal + issue-select command (dab/DabMain.swift)
+        "redmine.config.title": "Redmine integration setup",
+        "redmine.config.urlLabel": "Redmine URL",
+        "redmine.config.apiKeyLabel": "API key",
+        "redmine.config.projectLabel": "Project (optional, empty = all)",
+        "redmine.issueSelect.needsSetup": "Set up `/redmine` first.",
+        "redmine.issueSelect.empty": "No issues match the criteria.",
+        "redmine.issueSelect.prompt": "Select a Redmine issue.",
+        "redmine.issueSelect.fetchFailed": "Failed to fetch Redmine issues: {error}",
+        "redmine.issueSelect.placeholder.paged": "Issue list ({index}/{total})",
+        "redmine.issueSelect.placeholder.single": "Select an issue",
+
+        // R3 WO-5: Redmine config-save + session picker/issue delivery (dab/DabMain.swift)
+        "redmine.session.cipherUnavailable":
+            "Can't save the Redmine integration: `DAB_REDMINE_KEY_SECRET` is not set on the server. Contact your operator.",
+        "redmine.session.configSaved":
+            "Redmine integration is set up. Check notifications in the `#{channel}` channel.",
+        "redmine.session.configSaveFailed": "Failed to set up the Redmine integration: {error}",
+        "redmine.session.configNotFound": "Redmine configuration not found. Set it up with `/redmine` first.",
+        "redmine.session.issueGone": "The selected issue can no longer be found.",
+        "redmine.session.issueFetchFailed": "Failed to fetch the issue: {error}",
+        "redmine.session.selectPrompt": "Select a session.",
+        "redmine.session.notFound": "Session not found.",
+        "redmine.session.confirmDeliver": "Deliver issue #{issueId} to <#{channel}>?",
+        "redmine.session.requested": "Requested: <#{channel}>",
+        "redmine.session.issueGoneNotice": "⚠️ The selected issue (#{issueId}) can no longer be found.",
+        "redmine.session.issueFetchFailedNotice": "⚠️ Failed to fetch the issue: {error}",
+        "redmine.session.deliverCancelled": "Cancelled delivery.",
+        "session.ownerOrAdminRequired":
+            "Only this channel session's owner or an admin can switch to a new session.",
+        // NOTE: filed under WO-5 but the actual feature is preset saving — named with the preset.* prefix (Option B, see preset.save.*)
+        "preset.save.invalidName": "Preset name must be 1–100 characters.",
+        "preset.save.failed": "Failed to save the preset: {error}",
+
+        // R3 WO-6: DabMain.swift remaining hardcoded replies
+        "perm.request.notAuthorized":
+            "Only the session approver can make this decision (or it was already handled/expired).",
+        "cmd.model.missingValue": "A `model` value is required.",
+        "cmd.effort.missingValue": "An `effort` value is required.",
+        "cmd.mode.unknownBackend": "Unknown backend",
+        "cmd.perm.missingValue": "A `perm` value is required.",
+        "cmd.unknownSubcommand": "Unknown subcommand: {name}",
+        "stats.versionLine": "\n**Version** `{version}`{dismissed}",
+        "stats.dismissedSuffix": " · dismissed `{version}`",
+        "config.loadFailed": "Can't read config.json. Check the config file: {error}",
+        "cmd.doc.missingPath": "A `path` value is required.",
+        "doc.error.shareFailed": "Failed to share the document. Please try again shortly.",
+        "update.notReady": "The updater isn't ready yet. Please try again shortly.",
+        "wizard.sessionMissing": "No wizard session found. Reopen it with `/agent start`.",
+        "wizard.notOwner": "Only the person who opened this wizard can use it.",
+        "wizard.resumeSessionMissing":
+            "No resume-wizard session found. Reopen it via `/agent start` → Resume session.",
+        "wizard.recfg.noSession": "Switch failed: no session is bound to this channel.",
+        "wizard.recfg.noSelection": "Switch failed (nothing selected).",
+        "wizard.recfg.saveFailed":
+            "Failed to save the session settings. The existing session was not changed.",
+        "wizard.recfg.bound":
+            "This channel is now bound to a {backend} session. cwd={cwd}. Just send messages without a prefix now.",
+        "wizard.start.noSelection": "Start failed (nothing selected).",
+        "wizard.unknownModal": "Unknown modal.",
+        "cmd.attachment.failed": "Failed to process the attachment: {error}",
+        "turnTimeout.prompt": "Start again?",
+        "turnTimeout.newSessionReady": "A new session is ready. Send a message to start it.",
+
+        // R3 WO-7: RedmineKickoffPrompt.swift
+        "redmine.kickoff.prompt":
+            "Take a quick look at #{issueId} {url}. No deep analysis needed — just get a sense of what the issue is about.",
+
+        // R3 WO-8: RedmineSessionPicker.swift
+        "redmine.session.newSession": "🆕 New session",
+        "redmine.session.placeholder.paged": "Session list ({index}/{total})",
+        "redmine.session.placeholder.single": "Select a session",
+
+        // R3 WO-9: AutoUpdateWiring.swift (formatUpdateCheckReply)
+        "update.check.current": " (current `{version}`)",
+        "update.check.upToDateCurrent": " current `{version}`",
+        "update.check.registrySuffix": " / registry `{version}`",
+        "update.check.dismissed":
+            "New version `{latest}` is available but dismissed (current `{current}`). We'll let you know again when a newer one ships.",
+        "update.check.available": "New version `{latest}` is available (current `{current}`).",
+
+        // R3 WO-11: ConfigPanel.swift save-failure notices + access button
+        "config.autosaved.roleFailed": "Failed to save roles: {error}",
+        "config.autosaved.backendFailed": "Failed to save backend: {error}",
+        "config.autosaved.modelFailed": "Failed to save model: {error}",
+        "config.autosaved.effortFailed": "Failed to save effort: {error}",
+        "config.autosaved.permModeFailed": "Failed to save permission mode: {error}",
+        "config.autosaved.notifFailed": "Failed to save notification settings: {error}",
+        "config.autosaved.notifChannelFailed": "Failed to save the status channel: {error}",
+        "config.autosaved.renderFailed": "Failed to save render setting: {error}",
+        "config.autosaved.chromiumFailed": "Failed to save chromium setting: {error}",
+        // ConfigPanel.swift:656 — not in the WO-11 list, but still hardcoded Korean in the file (found live; included since the pass criteria is file-wide)
+        "config.autosaved.localeFailed": "Failed to save locale: {error}",
+        "config.access.button": "👤 Access",
+
+        // R3 WO-12: UpdateButton.swift (redmine issue buttons + turn-timeout retry buttons)
+        "redmine.issue.button.start": "Start",
+        "redmine.issue.button.cancel": "Cancel",
+        "redmine.issue.button.confirm": "Confirm",
+        "redmine.issue.button.started": "Started",
+        "redmine.issue.button.cancelled": "Cancelled",
+        "redmine.issue.button.done": "Done",
+        "redmine.issue.button.restart": "Restart",
+        "turnTimeout.button.yes": "Yes",
+        "turnTimeout.button.no": "No",
+        "turnTimeout.button.confirmed": "Confirmed",
+
+        // R3 WO-13: SessionNotifier.swift (status-channel one-line notifications)
+        "notify.result.done": "✅ <#{channel}> done",
+        "notify.result.tokens": " · {tokensIn}/{tokensOut} tok",
+        "notify.result.duration": " · {ms}ms",
+        "notify.result.cost": " · ${cost}",
+        "notify.error": "❌ <#{channel}> error: {message}",
+        "notify.rateLimit": "📊 <#{channel}> usage limit · {windows}",
+        "notify.rateLimit.base": "📊 <#{channel}> usage limit",
+        "notify.rateLimit.type": " · {label}",
+        "notify.rateLimit.utilization": " · usage {util}%",
+        "notify.rateLimit.reset": " · resets {time}",
+        "notify.toolUse": "🔧 <#{channel}> {name}",
+
+        // R3 WO-14: CodexTurnAccumulator.swift (CodexProgressLabels)
+        "codex.progress.working": "Working",
+        "codex.progress.commandExecution": "Running command",
+        "codex.progress.fileChange": "Editing file",
+        "codex.progress.fileSearch": "Searching files",
+        "codex.progress.webSearch": "Searching the web",
+        "codex.progress.image": "Generating image",
+        "codex.progress.mcpToolCall": "Running tool",
+        "codex.progress.collabAgentToolCall": "Subagent working",
+        "codex.progress.fileChangeCount": "{count} file(s)",
+
+        // R3 WO-15: AppServerClient.swift
+        "codex.notInstalled": "Can't find the `codex` CLI. Check that it's installed and on PATH.",
+        "codex.notLoggedIn": "Not logged in to Codex. Run `codex login` in a terminal, then try again.",
+        "grok.notInstalled": "Can't find the `grok` CLI. Check that it's installed and on PATH.",
+        "grok.notLoggedIn": "Not logged in to Grok. Run `grok login` in a terminal, then try again.",
+
+        // R3 WO-16: RedmineIssueEmbedSpec.swift
+        "redmine.embed.project": "Project",
+        "redmine.embed.targetVersion": "Target version",
+
+        // R3 WO-17: SessionPersist.swift
+        "session.fallbackNotice": "⚠️ Failed to restore the previous session — starting a new one.",
+
+        // R3 WO-18: OrchestrationInstaller.swift (summaryMarkdown)
+        "orchestration.install.title": "**Orchestration install result**",
+        "orchestration.install.removedHeading": "### Removed & rewritten ({count})",
+        "orchestration.install.writtenHeading": "### Written ({count})",
+        "orchestration.install.errorHeading": "### Errors",
+        "orchestration.install.noChanges": "_No changes_",
+        "orchestration.install.reinstallNote":
+            "On reinstall: the marker block and its skill/subagent directories/files are removed, then rewritten.",
+        "orchestration.install.claudePaths": "Claude: `CLAUDE.md` + `skills/` + `agents/`",
+        "orchestration.install.codexPaths": "Codex: `AGENTS.md` + `skills/` + `agents/*.toml`",
+        "orchestration.install.grokPaths": "Grok: `AGENTS.md` + `skills/` + `agents/` (created if home doesn't exist)",
     ]
 }

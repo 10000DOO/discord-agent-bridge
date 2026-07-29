@@ -15,13 +15,17 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
             ApplicationCommand.Option(
                 type: .subCommand,
                 name: sub.name,
-                description: sub.description,
+                name_localizations: [.korean: sub.name, .englishUS: sub.name],
+                description: sub.description.en,
+                description_localizations: localizations(sub.description),
                 options: sub.options.map(stringOption)
             )
         }
         return Payloads.ApplicationCommandCreate(
             name: spec.name,
-            description: spec.description,
+            name_localizations: [.korean: spec.name, .englishUS: spec.name],
+            description: spec.description.en,
+            description_localizations: localizations(spec.description),
             options: subs,
             default_member_permissions: adminPerms,
             dm_permission: false
@@ -30,7 +34,9 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
     if !spec.options.isEmpty {
         return Payloads.ApplicationCommandCreate(
             name: spec.name,
-            description: spec.description,
+            name_localizations: [.korean: spec.name, .englishUS: spec.name],
+            description: spec.description.en,
+            description_localizations: localizations(spec.description),
             options: spec.options.map(stringOption),
             default_member_permissions: adminPerms,
             dm_permission: false
@@ -38,7 +44,9 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
     }
     return Payloads.ApplicationCommandCreate(
         name: spec.name,
-            description: spec.description,
+            name_localizations: [.korean: spec.name, .englishUS: spec.name],
+            description: spec.description.en,
+            description_localizations: localizations(spec.description),
             options: nil,
             default_member_permissions: adminPerms,
             dm_permission: false
@@ -56,6 +64,12 @@ private let backendChoiceLabels: [String: String] = [
     "grok": "Grok",
 ]
 
+/// `LocalizedText` → DiscordBM's per-locale dictionary shape (ko + en-US; other locales fall back
+/// to the base value, which is already English — R1/D8).
+private func localizations(_ t: LocalizedText) -> [DiscordLocale: String] {
+    [.korean: t.ko, .englishUS: t.en]
+}
+
 private func stringOption(_ opt: SlashCommandSpec.Option) -> ApplicationCommand.Option {
     // Discord: autocomplete and static choices are mutually exclusive; empty choices → omit.
     let staticChoices: [ApplicationCommand.Option.Choice]? =
@@ -68,7 +82,9 @@ private func stringOption(_ opt: SlashCommandSpec.Option) -> ApplicationCommand.
     return ApplicationCommand.Option(
         type: .string,
         name: opt.name,
-        description: opt.description,
+        name_localizations: [.korean: opt.name, .englishUS: opt.name],
+        description: opt.description.en,
+        description_localizations: localizations(opt.description),
         required: opt.required,
         choices: staticChoices,
         autocomplete: opt.autocomplete ? true : nil

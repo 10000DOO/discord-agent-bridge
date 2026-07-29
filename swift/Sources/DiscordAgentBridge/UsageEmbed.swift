@@ -121,8 +121,8 @@ private let agentLabelMax = 100
 /// "(12초)" / "(3분 12초)" duration suffix for a subagent run (TS formatRunDuration).
 public func formatSubagentRunDuration(_ ms: Int) -> String {
     let totalSec = max(0, Int((Double(ms) / 1000.0).rounded()))
-    if totalSec < 60 { return "\(totalSec)초" }
-    return "\(totalSec / 60)분 \(totalSec % 60)초"
+    if totalSec < 60 { return I18n.t("usage.duration.sec", ["s": "\(totalSec)"]) }
+    return I18n.t("usage.duration.minSec", ["m": "\(totalSec / 60)", "s": "\(totalSec % 60)"])
 }
 
 /// "✅ Bash ×20 · ✅ Read ×3 · ❌ Edit ×1 · +N" — top names by count; ❌ when any failure.
@@ -199,7 +199,7 @@ private func progressBar(_ utilization: Double) -> String {
 private func resetLine(_ limit: UsageLimit) -> String {
     guard let resetsAt = limit.resetsAt, let date = parseISODate(resetsAt) else { return "" }
     let unix = Int(date.timeIntervalSince1970)
-    return "\n초기화 <t:\(unix):R>"
+    return "\n" + I18n.t("usage.resets", ["reset": "<t:\(unix):R>"])
 }
 
 private func limitField(label: String, limit: UsageLimit, inline: Bool? = nil) -> UsageEmbedField {
@@ -216,20 +216,16 @@ private func formatElapsed(createdAt: String?, now: Date) -> String? {
     let startMs = started.timeIntervalSince1970 * 1000
     guard startMs <= nowMs else { return nil }
     let totalMin = Int((nowMs - startMs) / 60_000)
-    if totalMin < 60 { return "\(totalMin)분" }
+    if totalMin < 60 { return I18n.t("usage.elapsed.min", ["m": "\(totalMin)"]) }
     let totalHours = totalMin / 60
-    if totalHours < 24 { return "\(totalHours)시간 \(totalMin % 60)분" }
-    return "\(totalHours / 24)일 \(totalHours % 24)시간"
+    if totalHours < 24 { return I18n.t("usage.elapsed.hourMin", ["h": "\(totalHours)", "m": "\(totalMin % 60)"]) }
+    return I18n.t("usage.elapsed.dayHour", ["d": "\(totalHours / 24)", "h": "\(totalHours % 24)"])
 }
 
 private func permLabel(_ mode: String) -> String {
     switch mode {
-    case "default": return "기본"
-    case "acceptEdits": return "편집 자동 승인"
-    case "bypassPermissions": return "전체 자동 승인 (⚠️ 위험)"
-    case "plan": return "플랜"
-    case "dontAsk": return "묻지 않음"
-    case "auto": return "자동"
+    case "default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto":
+        return I18n.t("perm.\(mode)")
     default: return mode
     }
 }
@@ -277,19 +273,19 @@ public func buildUsageEmbed(
 
     if let snap {
         if let five = snap.fiveHour {
-            fields.append(limitField(label: "5시간", limit: five))
+            fields.append(limitField(label: I18n.t("usage.fiveHour"), limit: five))
             maxUtil = max(maxUtil, five.utilization)
         }
         if let week = snap.sevenDay {
-            fields.append(limitField(label: "주간", limit: week))
+            fields.append(limitField(label: I18n.t("usage.weekly"), limit: week))
             maxUtil = max(maxUtil, week.utilization)
         }
         if let opus = snap.sevenDayOpus {
-            fields.append(limitField(label: "주간 (Opus)", limit: opus, inline: true))
+            fields.append(limitField(label: I18n.t("usage.weeklyOpus"), limit: opus, inline: true))
             maxUtil = max(maxUtil, opus.utilization)
         }
         if let sonnet = snap.sevenDaySonnet {
-            fields.append(limitField(label: "주간 (Sonnet)", limit: sonnet, inline: true))
+            fields.append(limitField(label: I18n.t("usage.weeklySonnet"), limit: sonnet, inline: true))
             maxUtil = max(maxUtil, sonnet.utilization)
         }
     }
@@ -297,10 +293,10 @@ public func buildUsageEmbed(
     if let ctx = ctxUsage {
         var clearHint = ""
         if let c = ctx.clearableTokens, c > 0 {
-            clearHint = " · /clear 시 ~\(formatTokens(c)) 토큰 절약"
+            clearHint = " · " + I18n.t("usage.clearHint", ["tokens": formatTokens(c)])
         }
         fields.append(UsageEmbedField(
-            name: "\(utilizationEmoji(ctx.percentage)) 컨텍스트",
+            name: "\(utilizationEmoji(ctx.percentage)) \(I18n.t("usage.context"))",
             value: "\(progressBar(ctx.percentage)) **\(Int(ctx.percentage.rounded()))%**\(clearHint)"
         ))
         maxUtil = max(maxUtil, ctx.percentage)
@@ -309,32 +305,32 @@ public func buildUsageEmbed(
         if let m = ctx.memoryFileCount { composition.append("CLAUDE.md \(m)") }
         if let m = ctx.mcpServerCount { composition.append("MCP \(m)") }
         if !composition.isEmpty {
-            fields.append(UsageEmbedField(name: "⚙️ 세션 구성", value: composition.joined(separator: " · "), inline: true))
+            fields.append(UsageEmbedField(name: "⚙️ \(I18n.t("usage.session"))", value: composition.joined(separator: " · "), inline: true))
         }
     }
 
     if let meta {
-        let configuredModel = meta.model?.isEmpty == false ? meta.model! : "자동 선택"
-        let effort = meta.effort?.isEmpty == false ? meta.effort! : "기본값"
-        let permission = meta.permMode.map(permLabel) ?? "자동"
+        let configuredModel = meta.model?.isEmpty == false ? meta.model! : I18n.t("usage.model.auto")
+        let effort = meta.effort?.isEmpty == false ? meta.effort! : I18n.t("usage.effort.default")
+        let permission = permLabel(meta.permMode ?? "auto")
         fields.append(UsageEmbedField(
-            name: "⚙️ 세션 설정",
-            value: "설정 모델: \(configuredModel)\n추론: \(effort)\n권한: \(permission)"
+            name: "⚙️ \(I18n.t("usage.sessionConfig"))",
+            value: "\(I18n.t("usage.model", ["model": configuredModel]))\n\(I18n.t("usage.effort", ["effort": effort]))\n\(I18n.t("usage.perm", ["perm": permission]))"
         ))
     }
 
     if let toolsValue = buildToolsValue(tools) {
-        fields.append(UsageEmbedField(name: "🛠️ 이번 턴 도구", value: toolsValue, inline: true))
+        fields.append(UsageEmbedField(name: "🛠️ \(I18n.t("usage.tools"))", value: toolsValue, inline: true))
     }
     if let agentsValue = buildAgentsValue(agents) {
-        fields.append(UsageEmbedField(name: "🤖 서브에이전트", value: agentsValue))
+        fields.append(UsageEmbedField(name: "🤖 \(I18n.t("usage.agents"))", value: agentsValue))
     }
 
     if fields.isEmpty { return nil }
 
     var footerParts: [String] = []
     if extras?.observedModelIsActual == true, let model = ctxUsage?.model {
-        footerParts.append("실제 모델: \(model)")
+        footerParts.append(I18n.t("usage.actualModel", ["model": model]))
     }
 
     let isGrokWeeklyOnly =
