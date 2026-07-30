@@ -50,6 +50,9 @@ export interface SessionStartParams {
     permissionTimeoutSec?: number;
   };
   env?: Record<string, string | undefined>;
+  // `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.7):
+  // when true, the session loads only `settingSources: ['project']` (no user/local settings).
+  projectSettingSourcesOnly?: boolean;
 }
 
 export interface SessionResumeParams extends SessionStartParams {

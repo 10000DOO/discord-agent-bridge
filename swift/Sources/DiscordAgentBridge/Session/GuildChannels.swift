@@ -256,6 +256,26 @@ public func deleteSessionChannel(
     }
 }
 
+/// True for the session-generator / agent-status / redmine-report channels — control-plane
+/// channels where a project-scoped command like `/orchestration` must never run (§1.2). Checked
+/// independently of session-binding lookups: a small guild's `/agent start` fallback path
+/// (`resolveSessionChannelId`, empty `sessionsCategoryId`) can bind a session directly onto
+/// `controlChannelId`, so "no binding" alone cannot reliably distinguish these channels.
+public func isControlPlaneChannel(
+    channelId: String,
+    serverChannels: ServerChannels?,
+    redmineReportChannelId: String?
+) -> Bool {
+    if let sc = serverChannels {
+        if channelId == sc.controlChannelId { return true }
+        if let status = sc.statusChannelId, !status.isEmpty, channelId == status { return true }
+    }
+    if let redmineReportChannelId, !redmineReportChannelId.isEmpty, channelId == redmineReportChannelId {
+        return true
+    }
+    return false
+}
+
 /// `proj-<basename>` slug, lowercased, non-alnum → `-`, capped at 100 chars.
 public func sessionChannelName(_ folderPath: String) -> String {
     var path = folderPath

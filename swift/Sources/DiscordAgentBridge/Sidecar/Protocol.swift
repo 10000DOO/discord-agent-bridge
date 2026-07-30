@@ -68,6 +68,9 @@ public struct SessionStartParams: Sendable, Equatable {
     public var permMode: String
     public var config: SessionConfig?
     public var env: [String: String?]?
+    /// `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.6):
+    /// when true, the sidecar loads only `settingSources: ['project']` (no user/local settings).
+    public var projectSettingSourcesOnly: Bool
 
     public struct SessionConfig: Sendable, Equatable {
         public var allowedTools: [String]?
@@ -94,7 +97,8 @@ public struct SessionStartParams: Sendable, Equatable {
         effort: String? = nil,
         permMode: String,
         config: SessionConfig? = nil,
-        env: [String: String?]? = nil
+        env: [String: String?]? = nil,
+        projectSettingSourcesOnly: Bool = false
     ) {
         self.cwd = cwd
         self.guildId = guildId
@@ -105,6 +109,7 @@ public struct SessionStartParams: Sendable, Equatable {
         self.permMode = permMode
         self.config = config
         self.env = env
+        self.projectSettingSourcesOnly = projectSettingSourcesOnly
     }
 
     public func asParams() -> [String: JSONValue] {
@@ -137,6 +142,7 @@ public struct SessionStartParams: Sendable, Equatable {
             }
             p["env"] = .object(e)
         }
+        if projectSettingSourcesOnly { p["projectSettingSourcesOnly"] = .bool(true) }
         return p
     }
 }

@@ -402,7 +402,8 @@ public actor DabSessionBridge {
         )
         let params = SessionStartParams(
             cwd: cwdValue, guildId: guildId, channelId: channelId, ownerId: ownerId,
-            model: model, effort: effort, permMode: perm, config: sessionCfg, env: sessionEnv
+            model: model, effort: effort, permMode: perm, config: sessionCfg, env: sessionEnv,
+            projectSettingSourcesOnly: persisted?.projectSettingSourcesOnly ?? false
         )
 
         // Resume the stored backend session if we have one; on failure fall back to a fresh start (F5).

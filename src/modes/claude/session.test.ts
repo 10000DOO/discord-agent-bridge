@@ -34,6 +34,7 @@ function makeCtx(opts: {
   autoAllowClaudeTools?: string[];
   permissionDecision?: PermissionDecision;
   onSessionIdReady?: (id: string) => void;
+  projectSettingSourcesOnly?: boolean;
 } = {}): CtxHarness {
   const events: AgentEvent[] = [];
   const permissionCalls: { toolName: string; input: unknown }[] = [];
@@ -44,6 +45,9 @@ function makeCtx(opts: {
     ownerId: 'u1',
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     permMode: opts.permMode ?? 'default',
+    ...(opts.projectSettingSourcesOnly !== undefined
+      ? { projectSettingSourcesOnly: opts.projectSettingSourcesOnly }
+      : {}),
     emit: (ev) => events.push(ev),
     requestPermission: async (req) => {
       permissionCalls.push(req);
@@ -827,6 +831,18 @@ describe('ClaudeSession — query options', () => {
     // subagents/hooks/skills/project-MCP work like the terminal claude.
     expect(options.settingSources).toEqual(['user', 'project', 'local']);
     expect(typeof options.canUseTool).toBe('function');
+    await session.stop();
+  });
+
+  // design_orchestration_project_scoped_command.md §4.7: `/orchestration` project-scoped mode
+  // narrows settingSources to 'project' only (no user/local settings layered on top).
+  it('narrows settingSources to project-only when projectSettingSourcesOnly is set', async () => {
+    const { ctx } = makeCtx({ projectSettingSourcesOnly: true });
+    const { queryFn, captured } = fakeQueryFn([]);
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    const options = captured.options as { settingSources: string[] };
+    expect(options.settingSources).toEqual(['project']);
     await session.stop();
   });
 

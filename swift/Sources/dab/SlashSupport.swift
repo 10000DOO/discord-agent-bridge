@@ -53,6 +53,17 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
     )
 }
 
+/// DiscordBM 1.16.2 validate() bug: description_localizations values are checked against the
+/// 32-char name limit instead of the real 100-char description limit (Payloads.swift:1073,1123).
+/// Drop only the locale values that would actually trip that bug; keep the rest so the ko/en
+/// dual-description feature still works for the (majority of) descriptions under 32 chars.
+private func localizations(_ t: LocalizedText) -> [DiscordLocale: String]? {
+    var out: [DiscordLocale: String] = [:]
+    if t.ko.unicodeScalars.count <= 32 { out[.korean] = t.ko }
+    if t.en.unicodeScalars.count <= 32 { out[.englishUS] = t.en }
+    return out.isEmpty ? nil : out
+}
+
 /// M17: human-readable choice labels for known backend ids (TS `BACKEND_LABELS`,
 /// src/discord/client.ts:90) — `SlashCommandSpec`'s `backend` choices otherwise expose the raw
 /// enum id ("claude"/"codex"/"grok") as the Discord-visible name. `custom` is deliberately
@@ -63,12 +74,6 @@ private let backendChoiceLabels: [String: String] = [
     "codex": "Codex",
     "grok": "Grok",
 ]
-
-/// `LocalizedText` → DiscordBM's per-locale dictionary shape (ko + en-US; other locales fall back
-/// to the base value, which is already English — R1/D8).
-private func localizations(_ t: LocalizedText) -> [DiscordLocale: String] {
-    [.korean: t.ko, .englishUS: t.en]
-}
 
 private func stringOption(_ opt: SlashCommandSpec.Option) -> ApplicationCommand.Option {
     // Discord: autocomplete and static choices are mutually exclusive; empty choices → omit.

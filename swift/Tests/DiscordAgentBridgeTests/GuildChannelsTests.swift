@@ -478,6 +478,44 @@ struct GuildChannelsDeleteSessionTests {
     }
 }
 
+// MARK: - isControlPlaneChannel (design_orchestration_project_scoped_command.md §4.1)
+
+@Suite("GuildChannels isControlPlaneChannel")
+struct GuildChannelsIsControlPlaneChannelTests {
+    private let structure = ServerChannels(
+        categoryId: "cat",
+        controlChannelId: "ctrl",
+        sessionsCategoryId: "sess-cat",
+        statusChannelId: "status"
+    )
+
+    @Test func trueForControlChannel() {
+        #expect(isControlPlaneChannel(channelId: "ctrl", serverChannels: structure, redmineReportChannelId: nil))
+    }
+
+    @Test func trueForStatusChannel() {
+        #expect(isControlPlaneChannel(channelId: "status", serverChannels: structure, redmineReportChannelId: nil))
+    }
+
+    @Test func trueForRedmineReportChannel() {
+        #expect(isControlPlaneChannel(channelId: "redmine-1", serverChannels: structure, redmineReportChannelId: "redmine-1"))
+    }
+
+    @Test func falseForOrdinarySessionChannel() {
+        #expect(!isControlPlaneChannel(channelId: "sess-1", serverChannels: structure, redmineReportChannelId: "redmine-1"))
+    }
+
+    @Test func falseWhenServerChannelsAndRedmineBothNil() {
+        #expect(!isControlPlaneChannel(channelId: "ctrl", serverChannels: nil, redmineReportChannelId: nil))
+    }
+
+    @Test func falseForEmptyStatusOrRedmineId() {
+        // Empty string ids (never a real Discord snowflake) must not match by accident.
+        let sc = ServerChannels(categoryId: "cat", controlChannelId: "ctrl", sessionsCategoryId: "sess-cat", statusChannelId: "")
+        #expect(!isControlPlaneChannel(channelId: "", serverChannels: sc, redmineReportChannelId: ""))
+    }
+}
+
 /// Fake that always fails create — for resolveSessionChannelId fallback tests.
 private final class ThrowingProvisioner: GuildChannelProvisioner, @unchecked Sendable {
     let guildId = "g1"

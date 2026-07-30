@@ -221,6 +221,62 @@ struct SessionLifecycleTests {
         #expect(stopped.withLock { $0 } == ["claude:c1", "codex:c1", "grok:c1"])
     }
 
+    // design_orchestration_project_scoped_command.md §4.5: enableOrchestrationMode mirrors
+    // clearChannel (store upsert → stop all bridges → registry rebind), plus flips
+    // projectSettingSourcesOnly so the next session start narrows to `settingSources: ['project']`.
+    @Test func enableOrchestrationModeSetsProjectFlagWipesBackendSessionIdAndStopsBridges() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        await reg.bind(
+            channelId: "c1",
+            SessionConfig(backend: .claude, model: "sonnet", effort: "high", permMode: "plan")
+        )
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, backendSessionId: "B-OLD", cwd: "/proj", guildId: "g",
+                model: "sonnet", effort: "high", permMode: "plan", updatedAt: "t0"
+            )
+        )
+        let stopped = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: reg,
+            store: store,
+            audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { $0.append("claude:\(ch)") } },
+            stopCodex: { ch in stopped.withLock { $0.append("codex:\(ch)") } },
+            stopGrok: { ch in stopped.withLock { $0.append("grok:\(ch)") } },
+            interruptClaude: { _ in false },
+            interruptCodex: { _ in false },
+            interruptGrok: { _ in false },
+            now: { "T-orch" }
+        )
+        #expect(await life.enableOrchestrationMode(channelId: "c1", actorId: "u", guildId: "g") == true)
+        let s = await store.binding(channelId: "c1")
+        #expect(s?.projectSettingSourcesOnly == true)
+        #expect(s?.backendSessionId == nil)
+        #expect(s?.model == "sonnet") // config otherwise preserved, same as clearChannel
+        #expect(s?.cwd == "/proj")
+        #expect(s?.updatedAt == "T-orch")
+        #expect(await reg.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
+        #expect(stopped.withLock { $0 } == ["claude:c1", "codex:c1", "grok:c1"])
+
+        // Calling again (re-run of /orchestration) is idempotent — still true, no separate branch.
+        #expect(await life.enableOrchestrationMode(channelId: "c1", actorId: "u", guildId: "g") == true)
+        #expect(await store.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
+    }
+
+    @Test func enableOrchestrationModeNoBindingReturnsFalse() async {
+        let life = SessionLifecycle(
+            registry: SessionRegistry(),
+            store: freshTempStore(),
+            audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        #expect(await life.enableOrchestrationMode(channelId: "none", actorId: "u", guildId: "g") == false)
+    }
+
     @Test func clearNoBindingReturnsFalse() async {
         let life = SessionLifecycle(
             registry: SessionRegistry(),

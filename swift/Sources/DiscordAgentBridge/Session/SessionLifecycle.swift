@@ -217,6 +217,47 @@ public struct SessionLifecycle: Sendable {
         return true
     }
 
+    /// `/orchestration`: same rebind mechanism as `clearChannel` (design_orchestration_project_scoped_command.md
+    /// §4.5), but also flips `projectSettingSourcesOnly` so the next session start loads only the
+    /// project's `.claude/` settings (no user/local). Safe to call repeatedly — setting `true` again
+    /// is a no-op, and the underlying stop/rebind is already idempotent like `clearChannel`.
+    @discardableResult
+    public func enableOrchestrationMode(
+        channelId: String,
+        actorId: String,
+        guildId: String,
+        roleTier: String = "execute",
+        defaultCwd: String = NSHomeDirectory()
+    ) async -> Bool {
+        guard var session = await resolveSession(
+            channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
+        ) else { return false }
+
+        session.projectSettingSourcesOnly = true
+        session.backendSessionId = nil
+        session.lifecycleGeneration = UUID().uuidString
+        let startedAt = now()
+        session.contextGenerationStartedAt = startedAt
+        session.updatedAt = startedAt
+        do {
+            try await store.upsert(channelId: channelId, session)
+        } catch {
+            return false
+        }
+        await stopAllBridges(channelId: channelId)
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+        await audit.record(AuditEntry(
+            actorId: actorId,
+            roleTier: roleTier,
+            guildId: guildId,
+            channelId: channelId,
+            action: "orchestration",
+            mode: session.backend.rawValue,
+            status: "ok"
+        ))
+        return true
+    }
+
     /// `/mode backend` same-backend: persist then stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.
     /// Cross-backend drops model/effort (backend-specific); same-backend keeps them.
     /// Different-backend path from the slash command opens the reconfigure wizard instead (see

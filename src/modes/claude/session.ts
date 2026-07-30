@@ -158,7 +158,10 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
       // Load the project's .claude/ (subagents, hooks, MCP, CLAUDE.md) plus user
       // and local settings, exactly like the terminal `claude`. 'project' is
       // required for CLAUDE.md; all three cover subagents/hooks/skills/MCP.
-      settingSources: ['user', 'project', 'local'],
+      // `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md
+      // §4.7) narrows this to 'project' only, so the channel runs strictly on the
+      // project's own `.claude/` without the user's global `~/.claude/` layered on top.
+      settingSources: ctx.projectSettingSourcesOnly ? ['project'] : ['user', 'project', 'local'],
       plugins: resolvePlugins(ctx.logger),
       ...(ctx.model !== undefined ? { model: ctx.model } : {}),
       // Reasoning effort chosen in the wizard (§9). The wizard only sets a valid Claude

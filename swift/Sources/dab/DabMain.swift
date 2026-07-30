@@ -1189,21 +1189,68 @@ struct EventHandler: GatewayEventHandler {
             }
 
         case "orchestration":
-            // Install global CLAUDE.md/AGENTS.md block + skills + subagents for Claude/Codex/Grok.
-            // Filesystem work can take a moment — defer ephemeral first (3s window).
+            // Project-scoped install: session channels only, `.claude/` local to the bound cwd
+            // (design_orchestration_project_scoped_command.md §4.8). Filesystem work + a session
+            // restart can take a moment — defer ephemeral first (3s window), as the old install did.
             let orchDeferred = try? await client.createInteractionResponse(
                 id: payload.id,
                 token: payload.token,
                 payload: .deferredChannelMessageWithSource(isEphemeral: true)
             )
             guard orchDeferred != nil else { return }
-            let report = OrchestrationInstaller.install(homes: .standard())
-            let body = report.summaryMarkdown
-            let clipped = body.count > 1900 ? String(body.prefix(1900)) + "\n…" : body
+            let orchServerConfig = await ConfigStore.shared.loadServerConfig(guildId: guildId)
+            if isControlPlaneChannel(
+                channelId: channelId,
+                serverChannels: orchServerConfig?.channels,
+                redmineReportChannelId: orchServerConfig?.redmine?.reportChannelId
+            ) {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: I18n.t("orchestration.wrongChannel"))
+                )
+                return
+            }
+            guard let orchCwd = await SessionStore.shared.binding(channelId: channelId)?.cwd else {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: noSession)
+                )
+                return
+            }
+            let report = OrchestrationInstaller.installProject(root: URL(fileURLWithPath: orchCwd))
+            guard report.errors.isEmpty else {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: I18n.t(
+                        "orchestration.project.installFailed",
+                        ["errors": report.errors.joined(separator: "\n")]
+                    ))
+                )
+                return
+            }
+            let orchEnabled = await SessionLifecycle.shared.enableOrchestrationMode(
+                channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: orchCwd
+            )
+            guard orchEnabled else {
+                _ = try? await client.updateOriginalInteractionResponse(
+                    appId: payload.application_id,
+                    token: payload.token,
+                    payload: .init(content: I18n.t("orchestration.project.installFailed", ["errors": "session reset failed"]))
+                )
+                return
+            }
+            var orchLines = [I18n.t("orchestration.project.installed", ["cwd": orchCwd])]
+            if let backupPath = report.backupPath {
+                orchLines.append(I18n.t("orchestration.project.backedUp", ["path": backupPath]))
+            }
+            orchLines.append(I18n.t("orchestration.project.freshContextNotice"))
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: clipped)
+                payload: .init(content: orchLines.joined(separator: "\n"))
             )
 
         case "redmine":

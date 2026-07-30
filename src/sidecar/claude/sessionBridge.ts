@@ -174,6 +174,9 @@ export class SessionBridge {
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.effort !== undefined ? { effort: params.effort } : {}),
       permMode: params.permMode as SessionPermMode,
+      ...(params.projectSettingSourcesOnly !== undefined
+        ? { projectSettingSourcesOnly: params.projectSettingSourcesOnly }
+        : {}),
       emit: (ev: AgentEvent) => {
         this.write(event(handle, ev));
       },

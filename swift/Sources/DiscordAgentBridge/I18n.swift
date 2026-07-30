@@ -566,17 +566,15 @@ public enum I18n {
         // R3 WO-17: SessionPersist.swift
         "session.fallbackNotice": "⚠️ 이전 세션 복구 실패 — 새 세션으로 시작합니다.",
 
-        // R3 WO-18: OrchestrationInstaller.swift (summaryMarkdown)
-        "orchestration.install.title": "**오케스트레이션 설치 결과**",
-        "orchestration.install.removedHeading": "### 삭제 후 재작성 ({count})",
-        "orchestration.install.writtenHeading": "### 기록 ({count})",
-        "orchestration.install.errorHeading": "### 오류",
-        "orchestration.install.noChanges": "_변경 없음_",
-        "orchestration.install.reinstallNote":
-            "재설치 시: 마커 블록·해당 스킬/서브 디렉터리·파일을 지운 뒤 다시 씁니다.",
-        "orchestration.install.claudePaths": "Claude: `CLAUDE.md` + `skills/` + `agents/`",
-        "orchestration.install.codexPaths": "Codex: `AGENTS.md` + `skills/` + `agents/*.toml`",
-        "orchestration.install.grokPaths": "Grok: `AGENTS.md` + `skills/` + `agents/` (홈 없으면 생성)",
+        // design_orchestration_project_scoped_command.md §4.9: project-scoped /orchestration
+        "orchestration.wrongChannel":
+            "이 명령어는 세션 채널(프로젝트 폴더가 연결된 채널)에서만 사용할 수 있습니다.",
+        "orchestration.project.installFailed": "오케스트레이션 설치에 실패했어요: {errors}",
+        "orchestration.project.installed":
+            "프로젝트 `.claude/`(CLAUDE.md + agents/ + skills/)를 `{cwd}` 기준으로 설치했어요.",
+        "orchestration.project.freshContextNotice":
+            "다음 메시지부터 이 채널은 새 세션으로 다시 연결되고, 프로젝트 설정(`.claude/`)만 적용돼요.",
+        "orchestration.project.backedUp": "이전 설정을 `{path}`로 백업했어요.",
     ]
 
     /// English overrides (major slash/error/stream paths). Absent keys fall back to ko.
@@ -1054,16 +1052,14 @@ public enum I18n {
         // R3 WO-17: SessionPersist.swift
         "session.fallbackNotice": "⚠️ Failed to restore the previous session — starting a new one.",
 
-        // R3 WO-18: OrchestrationInstaller.swift (summaryMarkdown)
-        "orchestration.install.title": "**Orchestration install result**",
-        "orchestration.install.removedHeading": "### Removed & rewritten ({count})",
-        "orchestration.install.writtenHeading": "### Written ({count})",
-        "orchestration.install.errorHeading": "### Errors",
-        "orchestration.install.noChanges": "_No changes_",
-        "orchestration.install.reinstallNote":
-            "On reinstall: the marker block and its skill/subagent directories/files are removed, then rewritten.",
-        "orchestration.install.claudePaths": "Claude: `CLAUDE.md` + `skills/` + `agents/`",
-        "orchestration.install.codexPaths": "Codex: `AGENTS.md` + `skills/` + `agents/*.toml`",
-        "orchestration.install.grokPaths": "Grok: `AGENTS.md` + `skills/` + `agents/` (created if home doesn't exist)",
+        // design_orchestration_project_scoped_command.md §4.9: project-scoped /orchestration
+        "orchestration.wrongChannel":
+            "This command can only be used in a session channel bound to a project folder.",
+        "orchestration.project.installFailed": "Failed to install orchestration: {errors}",
+        "orchestration.project.installed":
+            "Installed the project `.claude/` (CLAUDE.md + agents/ + skills/) under `{cwd}`.",
+        "orchestration.project.freshContextNotice":
+            "From the next message, this channel reconnects with a fresh session using only the project's `.claude/` settings.",
+        "orchestration.project.backedUp": "Backed up the previous configuration to `{path}`.",
     ]
 }

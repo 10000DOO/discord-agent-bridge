@@ -232,11 +232,12 @@ public func redmineIssueSelectCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(name: "redmine-issue-select", description: LocalizedText(ko: "조건에 맞는 레드마인 이슈를 선택합니다", en: "Select a matching Redmine issue"))
 }
 
-/// `/orchestration` — install global issue-orchestration rules, skills, and subagents for Claude/Codex/Grok.
+/// `/orchestration` — install project-scoped issue-orchestration rules, skills, and subagents
+/// into this session channel's project `.claude/` folder (Claude only).
 public func orchestrationCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "orchestration",
-        description: LocalizedText(ko: "이슈 오케스트레이션 규칙·스킬·서브에이전트를 Claude/Codex/Grok 전역에 설치합니다", en: "Install issue-orchestration rules, skills, and subagents globally for Claude/Codex/Grok")
+        description: LocalizedText(ko: "이 세션의 프로젝트 폴더에 이슈 오케스트레이션 규칙·스킬·서브에이전트를 설치합니다 (Claude 전용)", en: "Install issue-orchestration rules, skills, and subagents into this project's folder (Claude only)")
     )
 }
 
