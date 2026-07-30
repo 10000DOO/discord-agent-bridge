@@ -227,6 +227,50 @@ describe('SidecarServer with fake session factory', () => {
     await h.endInput();
   });
 
+  it('passes projectSettingSourcesOnly through session.start', async () => {
+    const { createSession, created } = makeFakeSessionFactory();
+    const h = await startServer({ createSession });
+
+    const startRes = await h.rpc('session.start', {
+      cwd: '/tmp/project-only',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+      projectSettingSourcesOnly: true,
+    });
+
+    expect(startRes.error).toBeUndefined();
+    expect(created).toHaveLength(1);
+    expect(created[0]!.ctx.projectSettingSourcesOnly).toBe(true);
+    await h.endInput();
+  });
+
+  it('preserves false projectSettingSourcesOnly and rejects non-boolean values', async () => {
+    const { createSession, created } = makeFakeSessionFactory();
+    const h = await startServer({ createSession });
+
+    const falseRes = await h.rpc('session.start', {
+      cwd: '/tmp/default-settings',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+      projectSettingSourcesOnly: false,
+    });
+    expect(falseRes.error).toBeUndefined();
+    expect(created[0]!.ctx.projectSettingSourcesOnly).toBe(false);
+
+    const invalidRes = await h.rpc('session.start', {
+      cwd: '/tmp/invalid-settings',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+      projectSettingSourcesOnly: 'true',
+    });
+    expect(invalidRes.error?.code).toBe('invalid_request');
+    expect(created).toHaveLength(1);
+    await h.endInput();
+  });
+
   it('session.permission round-trip via requestPermission', async () => {
     // Mirror real ClaudeSession: send() returns after queueing; permission is async.
     const { createSession } = makeFakeSessionFactory({

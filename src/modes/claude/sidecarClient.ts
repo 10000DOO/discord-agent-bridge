@@ -474,6 +474,9 @@ export class ClaudeSidecarClient {
       permMode: ctx.permMode,
       ...(ctx.model !== undefined ? { model: ctx.model } : {}),
       ...(ctx.effort !== undefined ? { effort: ctx.effort } : {}),
+      ...(ctx.projectSettingSourcesOnly !== undefined
+        ? { projectSettingSourcesOnly: ctx.projectSettingSourcesOnly }
+        : {}),
       config: {
         ...(ctx.config.allowedTools !== undefined
           ? { allowedTools: ctx.config.allowedTools }

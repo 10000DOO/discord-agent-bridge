@@ -1,12 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEvent, ModeContext, PermissionDecision } from '../../core/contracts.js';
 import { ClaudeMode } from './index.js';
 import { ClaudeSession, humanizeModelId, resolveModelDisplayName, type QueryFn } from './session.js';
 import { makeCanUseTool } from './permissions.js';
 import { attachFileConfined, shareDocumentResult } from './mcpFileTool.js';
+
+const resolvePluginsMock = vi.hoisted(() => vi.fn<() => SdkPluginConfig[]>(() => []));
+
+vi.mock('./plugins.js', () => ({ resolvePlugins: resolvePluginsMock }));
 
 // ---- Test doubles ------------------------------------------------------------
 
@@ -811,7 +816,14 @@ describe('resolveModelDisplayName / humanizeModelId', () => {
 
 describe('ClaudeSession — query options', () => {
   it('loads project settings via settingSources and passes cwd/model/permissionMode', async () => {
-    const { ctx } = makeCtx({ cwd: '/tmp/proj', model: 'opus', permMode: 'plan' });
+    const globalPlugins = [{ type: 'local' as const, path: '/tmp/global-claude-plugin' }];
+    resolvePluginsMock.mockReturnValueOnce(globalPlugins);
+    const { ctx } = makeCtx({
+      cwd: '/tmp/proj',
+      model: 'opus',
+      permMode: 'plan',
+      projectSettingSourcesOnly: false,
+    });
     const { queryFn, captured } = fakeQueryFn([]);
     const session = new ClaudeSession(ctx, { queryFn });
 
@@ -821,6 +833,7 @@ describe('ClaudeSession — query options', () => {
       permissionMode: string;
       includePartialMessages: boolean;
       settingSources: string[];
+      plugins: typeof globalPlugins;
       canUseTool: unknown;
     };
     expect(options.cwd).toBe('/tmp/proj');
@@ -830,6 +843,8 @@ describe('ClaudeSession — query options', () => {
     // The critical option: load user + project + local .claude/ config so
     // subagents/hooks/skills/project-MCP work like the terminal claude.
     expect(options.settingSources).toEqual(['user', 'project', 'local']);
+    expect(resolvePluginsMock).toHaveBeenCalledWith(ctx.logger);
+    expect(options.plugins).toEqual(globalPlugins);
     expect(typeof options.canUseTool).toBe('function');
     await session.stop();
   });
@@ -837,12 +852,15 @@ describe('ClaudeSession — query options', () => {
   // design_orchestration_project_scoped_command.md §4.7: `/orchestration` project-scoped mode
   // narrows settingSources to 'project' only (no user/local settings layered on top).
   it('narrows settingSources to project-only when projectSettingSourcesOnly is set', async () => {
+    resolvePluginsMock.mockClear();
     const { ctx } = makeCtx({ projectSettingSourcesOnly: true });
     const { queryFn, captured } = fakeQueryFn([]);
     const session = new ClaudeSession(ctx, { queryFn });
 
-    const options = captured.options as { settingSources: string[] };
+    const options = captured.options as { settingSources: string[]; plugins: unknown[] };
     expect(options.settingSources).toEqual(['project']);
+    expect(options.plugins).toEqual([]);
+    expect(resolvePluginsMock).not.toHaveBeenCalled();
     await session.stop();
   });
 

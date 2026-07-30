@@ -90,6 +90,15 @@ function optionalString(params: Record<string, unknown>, key: string): string | 
   return v;
 }
 
+function optionalBoolean(params: Record<string, unknown>, key: string): boolean | undefined {
+  const v = params[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'boolean') {
+    throw Object.assign(new Error(`invalid params.${key}`), { code: 'invalid_request' });
+  }
+  return v;
+}
+
 function sessionHandle(env: Envelope, params: Record<string, unknown>): string {
   const fromParams = optionalString(params, 'session');
   if (fromParams) return fromParams;
@@ -129,6 +138,7 @@ function parseStartParams(params: Record<string, unknown>): SessionStartParams {
     }
     env = envRaw as Record<string, string | undefined>;
   }
+  const projectSettingSourcesOnly = optionalBoolean(params, 'projectSettingSourcesOnly');
   return {
     cwd: requireString(params, 'cwd'),
     guildId: requireString(params, 'guildId'),
@@ -145,6 +155,7 @@ function parseStartParams(params: Record<string, unknown>): SessionStartParams {
     permMode: requireString(params, 'permMode'),
     ...(config !== undefined ? { config } : {}),
     ...(env !== undefined ? { env } : {}),
+    ...(projectSettingSourcesOnly !== undefined ? { projectSettingSourcesOnly } : {}),
   };
 }
 

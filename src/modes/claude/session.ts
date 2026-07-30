@@ -162,7 +162,9 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
       // §4.7) narrows this to 'project' only, so the channel runs strictly on the
       // project's own `.claude/` without the user's global `~/.claude/` layered on top.
       settingSources: ctx.projectSettingSourcesOnly ? ['project'] : ['user', 'project', 'local'],
-      plugins: resolvePlugins(ctx.logger),
+      // `resolvePlugins` reads ~/.claude directly, outside the SDK setting-source
+      // boundary. Do not inject those global plugins into project-only sessions.
+      plugins: ctx.projectSettingSourcesOnly ? [] : resolvePlugins(ctx.logger),
       ...(ctx.model !== undefined ? { model: ctx.model } : {}),
       // Reasoning effort chosen in the wizard (§9). The wizard only sets a valid Claude
       // EffortLevel for the Claude backend; empty/absent lets the SDK use its default.
