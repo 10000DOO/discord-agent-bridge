@@ -9,10 +9,11 @@ private let log = Logger(name: "redmine-kickoff")
 /// either way the channel is already bound by the time this runs.
 ///
 /// Kickoff prompt text (3-3 D8) — explicitly a "light skim" request, not a deep-analysis one.
-/// Sends only the issue number + link, not the full description (2026-07-28 user directive) —
-/// a session with the Redmine MCP tool can look the issue up itself; otherwise the link suffices.
+/// Sends the issue number, title, and full description inline (2026-07-30 user directive,
+/// reversing the prior 2026-07-28 link-only decision) so the session doesn't need to look the
+/// issue up itself; the link is dropped since the content is already inline.
 func redmineKickoffPromptText(issue: RedmineIssueDTO) -> String {
-    I18n.t("redmine.kickoff.prompt", ["issueId": "\(issue.id)", "url": issue.url])
+    I18n.t("redmine.kickoff.prompt", ["issueId": "\(issue.id)", "subject": issue.subject, "description": issue.description])
 }
 
 /// Posts the kickoff prompt as a plain channel message, runs one turn on `backend`, and delivers

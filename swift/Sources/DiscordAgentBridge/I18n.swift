@@ -484,7 +484,7 @@ public enum I18n {
 
         // R3 WO-7: RedmineKickoffPrompt.swift
         "redmine.kickoff.prompt":
-            "#{issueId} {url} 내용을 가볍게 파악해줘. 깊은 분석은 필요 없고, 무슨 이슈인지 정도만 파악하면 돼.",
+            "**#{issueId} {subject}**\n\n{description}\n\n위 내용 간단히 파악해줘.",
 
         // R3 WO-8: RedmineSessionPicker.swift
         "redmine.session.newSession": "🆕 신규 세션",
@@ -974,7 +974,7 @@ public enum I18n {
 
         // R3 WO-7: RedmineKickoffPrompt.swift
         "redmine.kickoff.prompt":
-            "Take a quick look at #{issueId} {url}. No deep analysis needed — just get a sense of what the issue is about.",
+            "**#{issueId} {subject}**\n\n{description}\n\nPlease briefly review the above.",
 
         // R3 WO-8: RedmineSessionPicker.swift
         "redmine.session.newSession": "🆕 New session",
