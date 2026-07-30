@@ -223,8 +223,9 @@ struct RestartStrategyTests {
         #expect(s == .supervised)
     }
 
-    @Test func performRestartSupervisedRelaunchesAndExits() async {
+    @Test func performRestartLaunchdSupervisedHandsOffToKeepAliveWithoutHelper() async {
         let relaunch = LockedBox(0)
+        let spawn = LockedBox(0)
         let exits = LockedBox<[Int32]>([])
         let confirmed = LockedBox(0)
         let result = await performRestart(
@@ -233,24 +234,26 @@ struct RestartStrategyTests {
                 platformIsDarwin: true,
                 home: "/h",
                 fileExists: { $0 == launchdPlistPath(home: "/h") },
+                launchdJobIsLoaded: { true },
                 runKickstart: { relaunch.withLock { $0 += 1 }; return true },
-                spawnDetached: { _, _, _ in true },
+                spawnDetached: { _, _, _ in spawn.withLock { $0 += 1 }; return true },
                 exitProcess: { code in exits.withLock { $0.append(code) } }
             ),
             onConfirmed: { confirmed.withLock { $0 += 1 } }
         )
-        // Confirmed comes from detached webhook, not onConfirmed, for supervised.
+        // Confirmation belongs to the successor's READY handling, not this handoff.
         #expect(confirmed.withLock { $0 } == 0)
-        #expect(relaunch.withLock { $0 } == 1)
+        #expect(relaunch.withLock { $0 } == 0)
+        #expect(spawn.withLock { $0 } == 0)
         #expect(exits.withLock { $0 } == [0])
         #expect(result == .handedOff)
     }
 
-    @Test func performRestartSupervisedRelaunchFailureIsManual() async {
+    @Test func performRestartNonLaunchdSupervisedRelaunchFailureIsManual() async {
         let result = await performRestart(
             RestartPerformDeps(
                 strategy: .supervised,
-                platformIsDarwin: true,
+                platformIsDarwin: false,
                 home: "/h",
                 runKickstart: { false },
                 exitProcess: { _ in }
@@ -287,7 +290,7 @@ struct RestartStrategyTests {
         #expect(result == .handedOff)
     }
 
-    @Test func performRestartRespawnWithLaunchdPlistUsesServiceRelaunch() async {
+    @Test func performRestartRespawnWithLaunchdPlistHandsOffToKeepAliveWithoutHelper() async {
         let relaunch = LockedBox(0)
         let exits = LockedBox<[Int32]>([])
         let confirmed = LockedBox(0)
@@ -297,15 +300,46 @@ struct RestartStrategyTests {
                 platformIsDarwin: true,
                 home: "/h",
                 fileExists: { $0 == launchdPlistPath(home: "/h") },
+                launchdJobIsLoaded: { true },
                 runKickstart: { relaunch.withLock { $0 += 1 }; return true },
                 exitProcess: { code in exits.withLock { $0.append(code) } }
             ),
             onConfirmed: { confirmed.withLock { $0 += 1 } }
         )
         #expect(confirmed.withLock { $0 } == 0)
-        #expect(relaunch.withLock { $0 } == 1)
+        #expect(relaunch.withLock { $0 } == 0)
         #expect(exits.withLock { $0 } == [0])
         #expect(result == .handedOff)
+    }
+
+    @Test func performRestartWithUnloadedLaunchdPlistUsesForegroundRespawnAndKeepsCurrentBot() async {
+        let spawn = LockedBox<[(String, [String])]>([])
+        let relaunch = LockedBox(0)
+        let exits = LockedBox<[Int32]>([])
+        let result = await performRestart(
+            RestartPerformDeps(
+                strategy: .supervised,
+                platformIsDarwin: true,
+                home: "/h",
+                dabBinaryPath: "/h/.dab/bin/dab",
+                fileExists: { path in
+                    path == launchdPlistPath(home: "/h") || path == "/h/.dab/bin/dab"
+                },
+                launchdJobIsLoaded: { false },
+                runKickstart: { relaunch.withLock { $0 += 1 }; return true },
+                spawnDetached: { path, args, _ in
+                    spawn.withLock { $0.append((path, args)) }
+                    return true
+                },
+                makeReadyMarker: { URL(fileURLWithPath: "/tmp/dab-unloaded-launchd-ready") },
+                waitForReadyMarker: { _ in false },
+                exitProcess: { code in exits.withLock { $0.append(code) } }
+            )
+        )
+        #expect(spawn.withLock { $0.map(\.0) } == ["/h/.dab/bin/dab"])
+        #expect(relaunch.withLock { $0 } == 0)
+        #expect(exits.withLock { $0 }.isEmpty)
+        #expect(result == .manualRestartRequired)
     }
 
     @Test func performRestartKeepsCurrentBotWhenSuccessorNeverBecomesReady() async {
@@ -442,24 +476,6 @@ struct SupervisedRelaunchScriptContractTests {
         )
         let snap = captured.withLock { $0 }
         return (ok, snap.0, snap.1, snap.2, snap.3)
-    }
-
-    @Test func launchdScriptHasWebhookRetriesAndLoadRecovery() {
-        let r = captureScript(env: [:])
-        #expect(r.ok)
-        #expect(r.path == "/bin/bash")
-        #expect(r.args.count == 1)
-        #expect(r.extra["DAB_RELAUNCH_APP_ID"] == "app-e2e")
-        #expect(r.extra["DAB_RELAUNCH_TOKEN"] == "tok-e2e")
-        #expect(!r.body.isEmpty)
-        #expect(r.body.contains("wait=true"))
-        #expect(r.body.contains("for try in 1 2 3 4 5"))
-        #expect(r.body.contains("recovery: final load -w"))
-        #expect(r.body.contains("launchctl load -w"))
-        #expect(r.body.contains("bootout"))
-        #expect(r.body.contains("for attempt in 1 2 3"))
-        #expect(r.body.contains("trap cleanup EXIT"))
-        #expect(r.body.contains("json_escape"))
     }
 
     @Test func brewScriptHasStopStartRetriesAndWebhookRetries() {

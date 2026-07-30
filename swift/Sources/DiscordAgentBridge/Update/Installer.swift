@@ -460,6 +460,7 @@ public struct RestartPerformDeps: Sendable {
     public var home: String
     public var dabBinaryPath: String
     public var fileExists: @Sendable (String) -> Bool
+    public var launchdJobIsLoaded: @Sendable () -> Bool
     public var runKickstart: @Sendable () -> Bool
     public var spawnDetached: @Sendable (String, [String], [String: String]) -> Bool
     public var makeReadyMarker: @Sendable () -> URL?
@@ -472,6 +473,9 @@ public struct RestartPerformDeps: Sendable {
         home: String = NSHomeDirectory(),
         dabBinaryPath: String = (NSHomeDirectory() as NSString).appendingPathComponent(".dab/bin/dab"),
         fileExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        launchdJobIsLoaded: @escaping @Sendable () -> Bool = {
+            isLaunchdJobLoaded()
+        },
         runKickstart: @escaping @Sendable () -> Bool = { false },
         spawnDetached: @escaping @Sendable (String, [String], [String: String]) -> Bool = { _, _, _ in false },
         makeReadyMarker: @escaping @Sendable () -> URL? = {
@@ -492,6 +496,7 @@ public struct RestartPerformDeps: Sendable {
         self.home = home
         self.dabBinaryPath = dabBinaryPath
         self.fileExists = fileExists
+        self.launchdJobIsLoaded = launchdJobIsLoaded
         self.runKickstart = runKickstart
         self.spawnDetached = spawnDetached
         self.makeReadyMarker = makeReadyMarker
@@ -501,50 +506,81 @@ public struct RestartPerformDeps: Sendable {
 }
 
 /// Perform post-install restart.
-/// - **supervised**: fully stop then start via launchd/brew (detached helper verifies + webhooks).
+/// - **supervised launchd**: exit normally and let the installed LaunchAgent's KeepAlive relaunch.
+/// - **other supervised**: use the existing relaunch hook.
 /// - **respawn** (foreground): spawn successor with READY marker, then exit.
 public func performRestart(
     _ d: RestartPerformDeps,
     onLog: @Sendable (String) -> Void = { _ in },
-    /// Called after successor READY (respawn) or not used for supervised (webhook confirms).
+    /// Called after successor READY in the foreground respawn path.
     onConfirmed: @escaping @Sendable () async -> Void = {}
 ) async -> RestartResult {
     switch d.strategy {
     case .supervised:
+        if d.platformIsDarwin, d.fileExists(launchdPlistPath(home: d.home)) {
+            if isLaunchdKeepAliveHandoff(d) {
+                return launchdKeepAliveHandoff(d, onLog: onLog)
+            }
+            onLog("auto-update: launchd plist is not loaded; using foreground respawn")
+            return await foregroundRespawn(d, onLog: onLog, onConfirmed: onConfirmed)
+        }
         return await supervisedServiceRelaunch(d, onLog: onLog)
 
     case .respawn:
-        if d.platformIsDarwin, d.fileExists(launchdPlistPath(home: d.home)) {
-            onLog("auto-update: launchd plist present — supervised stop+start path")
-            return await supervisedServiceRelaunch(d, onLog: onLog)
+        if isLaunchdKeepAliveHandoff(d) {
+            return launchdKeepAliveHandoff(d, onLog: onLog)
         }
-        if d.fileExists(d.dabBinaryPath) {
-            guard let marker = d.makeReadyMarker() else {
-                onLog("auto-update: respawn aborted (could not create successor readiness marker)")
-                return .manualRestartRequired
-            }
-            defer { try? FileManager.default.removeItem(at: marker) }
-            onLog("auto-update: starting successor \(d.dabBinaryPath) before handoff")
-            guard d.spawnDetached(d.dabBinaryPath, [], ["DAB_SUCCESSOR_READY_FILE": marker.path]) else {
-                onLog("auto-update: respawn aborted (successor launch failed)")
-                return .manualRestartRequired
-            }
-            guard d.waitForReadyMarker(marker) else {
-                onLog("auto-update: respawn aborted (successor did not reach gateway ready); current bot remains running")
-                return .manualRestartRequired
-            }
-            onLog("auto-update: successor ready; exiting previous bot")
-        } else {
-            onLog("auto-update: respawn aborted (binary missing at \(d.dabBinaryPath)); current bot remains running")
-            return .manualRestartRequired
-        }
-        await onConfirmed()
-        d.exitProcess(0)
-        return .handedOff
+        return await foregroundRespawn(d, onLog: onLog, onConfirmed: onConfirmed)
     }
 }
 
-/// Spawn detached stop+start helper, then exit. Final confirm/fail is webhook from the helper.
+private func isLaunchdKeepAliveHandoff(_ d: RestartPerformDeps) -> Bool {
+    d.platformIsDarwin
+        && d.fileExists(launchdPlistPath(home: d.home))
+        && d.launchdJobIsLoaded()
+}
+
+private func launchdKeepAliveHandoff(
+    _ d: RestartPerformDeps,
+    onLog: @Sendable (String) -> Void
+) -> RestartResult {
+    onLog("auto-update: launchd KeepAlive handoff; exiting current bot")
+    d.exitProcess(0)
+    return .handedOff
+}
+
+private func foregroundRespawn(
+    _ d: RestartPerformDeps,
+    onLog: @Sendable (String) -> Void,
+    onConfirmed: @escaping @Sendable () async -> Void
+) async -> RestartResult {
+    guard d.fileExists(d.dabBinaryPath) else {
+        onLog("auto-update: respawn aborted (binary missing at \(d.dabBinaryPath)); current bot remains running")
+        return .manualRestartRequired
+    }
+
+    guard let marker = d.makeReadyMarker() else {
+        onLog("auto-update: respawn aborted (could not create successor readiness marker)")
+        return .manualRestartRequired
+    }
+    defer { try? FileManager.default.removeItem(at: marker) }
+    onLog("auto-update: starting successor \(d.dabBinaryPath) before handoff")
+    guard d.spawnDetached(d.dabBinaryPath, [], ["DAB_SUCCESSOR_READY_FILE": marker.path]) else {
+        onLog("auto-update: respawn aborted (successor launch failed)")
+        return .manualRestartRequired
+    }
+    guard d.waitForReadyMarker(marker) else {
+        onLog("auto-update: respawn aborted (successor did not reach gateway ready); current bot remains running")
+        return .manualRestartRequired
+    }
+    onLog("auto-update: successor ready; exiting previous bot")
+    await onConfirmed()
+    d.exitProcess(0)
+    return .handedOff
+}
+
+/// Other supervised environments keep the existing relaunch hook until they have a
+/// platform-specific equivalent.
 private func supervisedServiceRelaunch(
     _ d: RestartPerformDeps,
     onLog: @Sendable (String) -> Void
@@ -557,6 +593,27 @@ private func supervisedServiceRelaunch(
     onLog("auto-update: supervised relaunch helper spawned; exiting")
     d.exitProcess(0)
     return .handedOff
+}
+
+/// Whether the expected LaunchAgent is currently registered in this user's GUI domain.
+/// A plist on disk alone can belong to a stopped foreground install, so it is not enough to
+/// authorize an exit-only KeepAlive handoff.
+public func isLaunchdJobLoaded(
+    label: String = "com.discord-agent-bridge",
+    uid: uid_t = getuid()
+) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    process.arguments = ["print", "gui/\(uid)/\(label)"]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
 }
 
 /// Production: fully stop then start the supervised service (detached).

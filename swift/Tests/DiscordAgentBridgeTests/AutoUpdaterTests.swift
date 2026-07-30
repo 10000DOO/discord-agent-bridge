@@ -86,7 +86,7 @@ struct AutoUpdaterDecisionTests {
         #expect(h.announcesBox.withLock { $0 }.isEmpty)
     }
 
-    @Test func approveWithInstallThenRestart() async {
+    @Test func approveWithInstallPersistsPendingAndOnlyRequestsLaunchdRestart() async {
         let h = UpdateHarness(withInstall: true)
         let ctx = DecisionProbe()
         await h.updater.approve("1.1.0", ctx: ctx.asCtx())
@@ -97,10 +97,9 @@ struct AutoUpdaterDecisionTests {
         #expect(h.announcesBox.withLock { $0 }.isEmpty)
         #expect(ctx.acks.contains { $0.contains("시작") })
         #expect(ctx.acks.contains(UpdateLabels.restartRequested))
-        #expect(ctx.acks.contains(UpdateLabels.restartConfirmed))
-        // approve() stamps pendingRestartVersion before requesting restart. The harness's restart
-        // mock (unlike production AutoUpdateWiring) never calls clearPendingRestart(), so it's
-        // still set here — clearing only happens via the real onConfirmed wiring.
+        #expect(!ctx.acks.contains(UpdateLabels.restartConfirmed))
+        // A launchd handoff only requests the restart. The successor clears this marker and
+        // announces completion after its own READY event.
         #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == "1.1.0")
     }
 
@@ -220,12 +219,12 @@ struct AutoUpdaterPendingRestartTests {
         #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == nil)
     }
 
-    @Test func pendingMismatchedVersionStaysQuietButClears() async {
+    @Test func pendingMismatchedVersionStaysQuietAndRetainsMarker() async {
         let h = UpdateHarness()
         h.metaBox.withLock { $0.pendingRestartVersion = "9.9.9" }
         await h.updater.confirmPendingRestartIfNeeded()
         #expect(h.announcesBox.withLock { $0 }.isEmpty)
-        #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == nil)
+        #expect(h.metaBox.withLock { $0 }.pendingRestartVersion == "9.9.9")
     }
 
     @Test func clearPendingRestartClearsRegardlessOfValue() async {
@@ -386,12 +385,8 @@ private final class UpdateHarness: @unchecked Sendable {
             },
             announce: { t in announcesBox.withLock { $0.append(t) } },
             install: install,
-            restart: { request in
+            restart: { _ in
                 restartCallsBox.withLock { $0 += 1 }
-                // Simulate respawn READY confirm path when handoff succeeds.
-                if restartResult == .handedOff {
-                    await request.notify(UpdateLabels.restartConfirmed)
-                }
                 return restartResult
             },
             homebrewTrigger: homebrewTrigger,

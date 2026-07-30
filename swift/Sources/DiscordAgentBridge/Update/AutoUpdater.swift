@@ -339,14 +339,14 @@ public actor AutoUpdater {
         _ = await checkNow()
     }
 
-    /// Boot-time recovery: supervised 재시작의 완료 확인은 원래 분리된 헬퍼 스크립트의 웹훅 하나에만
-    /// 의존한다. 그 스크립트가 도중에 죽으면(크래시, 재부팅) 확인이 영영 안 온다 — 다음 onReady에서
-    /// 새로 뜬 프로세스 자신이 이 표시를 보고 스스로 확인하는 게 항상 도달하는 유일한 경로다.
+    /// Boot-time recovery: a restart handoff is not a successful gateway connection. The next
+    /// process confirms itself from this marker only after its own READY event.
     public func confirmPendingRestartIfNeeded() async {
         let meta = await deps.readMeta()
-        guard let pending = meta.pendingRestartVersion else { return }
+        guard let pending = meta.pendingRestartVersion,
+              pending == deps.currentVersion
+        else { return }
         await deps.writeMeta(AutoUpdateMetaPatch(clearPendingRestart: true))
-        guard pending == deps.currentVersion else { return }
         await deps.announce(deps.messages.restartConfirmed)
     }
 
@@ -405,7 +405,7 @@ public actor AutoUpdater {
             return
         }
         await deps.writeMeta(AutoUpdateMetaPatch(pendingRestartVersion: version))
-        // "재시작 요청" ≠ "기동 확인". Spawn of helper only means the request was accepted.
+        // "재시작 요청" ≠ "기동 확인". A handoff only means the request was accepted.
         await ctx.ack(deps.messages.restartRequested)
         let restartResult = await restart(RestartRequest(
             applicationId: ctx.applicationId,
@@ -413,12 +413,12 @@ public actor AutoUpdater {
             notify: { text in await ctx.ack(text) }
         ))
         if restartResult == .manualRestartRequired {
-            // Helper failed to *spawn* — service was not torn down yet.
+            // The restart handoff failed — the current process is still running.
             await ctx.ack(deps.messages.restartFailed)
-            deps.onLog("auto-update: install ok for \(version) — relaunch helper failed to spawn")
+            deps.onLog("auto-update: install ok for \(version) — restart handoff failed")
         }
         // If restart returns (tests / dry-run / spawn-only), release guard.
-        // Production supervised path typically exits the process after spawning the helper.
+        // Production launchd path typically exits the process after the KeepAlive handoff.
         updating = false
     }
 
