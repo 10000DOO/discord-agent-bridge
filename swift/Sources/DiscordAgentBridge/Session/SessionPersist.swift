@@ -55,7 +55,8 @@ func persistSession(
         contextGenerationStartedAt: contextGenerationStartedAt ?? existing?.contextGenerationStartedAt ?? iso8601Now(),
         createdAt: existing?.createdAt,
         updatedAt: iso8601Now(),
-        archived: existing?.archived ?? false
+        archived: existing?.archived ?? false,
+        projectSettingSourcesOnly: existing?.projectSettingSourcesOnly ?? false
     )
     do {
         try await store.upsert(channelId: channelId, record)

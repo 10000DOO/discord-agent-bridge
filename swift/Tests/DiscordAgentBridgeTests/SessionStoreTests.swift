@@ -481,7 +481,8 @@ struct SessionStoreTests {
                 permissionProfile: "prof",
                 projectAuth: acl,
                 createdAt: "C0",
-                updatedAt: "T0"
+                updatedAt: "T0",
+                projectSettingSourcesOnly: true
             )
         )
         let generation = await s.binding(channelId: "c1")!.lifecycleGeneration
@@ -501,6 +502,7 @@ struct SessionStoreTests {
         let got = await s.binding(channelId: "c1")
         #expect(got?.projectAuth == acl)
         #expect(got?.permissionProfile == "prof")
+        #expect(got?.projectSettingSourcesOnly == true)
         #expect(got?.backendSessionId == "sess-1")
         #expect(got?.model == "m")
         #expect(got?.createdAt == "C0")

@@ -266,6 +266,45 @@ struct SessionLifecycleTests {
         #expect(await store.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
     }
 
+    @Test func orchestrationProjectFlagSurvivesSessionPersistenceAcrossClear() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        try await store.upsert(
+            channelId: "c1",
+            PersistedSession(
+                backend: .claude, cwd: "/proj", guildId: "g", updatedAt: "t0"
+            )
+        )
+        let life = SessionLifecycle(
+            registry: reg,
+            store: store,
+            audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        #expect(await life.enableOrchestrationMode(channelId: "c1", actorId: "u", guildId: "g"))
+        let firstGeneration = try #require(await store.binding(channelId: "c1")?.lifecycleGeneration)
+        await persistSession(
+            store: store, backend: .claude, channelId: "c1", guildId: "g", ownerId: "u",
+            cwd: "/proj", model: nil, effort: nil, permMode: nil, backendSessionId: "B-FIRST",
+            lifecycleGeneration: firstGeneration
+        )
+        #expect(await store.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
+
+        #expect(await life.clearChannel(channelId: "c1", actorId: "u", guildId: "g"))
+        let secondGeneration = try #require(await store.binding(channelId: "c1")?.lifecycleGeneration)
+        await persistSession(
+            store: store, backend: .claude, channelId: "c1", guildId: "g", ownerId: "u",
+            cwd: "/proj", model: nil, effort: nil, permMode: nil, backendSessionId: "B-SECOND",
+            lifecycleGeneration: secondGeneration
+        )
+
+        let persisted = await store.binding(channelId: "c1")
+        #expect(persisted?.backendSessionId == "B-SECOND")
+        #expect(persisted?.projectSettingSourcesOnly == true)
+    }
+
     @Test func enableOrchestrationModeNoBindingReturnsFalse() async {
         let life = SessionLifecycle(
             registry: SessionRegistry(),
