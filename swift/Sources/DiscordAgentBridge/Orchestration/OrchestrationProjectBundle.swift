@@ -85,28 +85,26 @@ private let claudeMdRaw = #"""
 
 ## 이슈 오케스트레이션 (항상)
 
-1. 순서: 이슈 분석 → 설계 협업 → 영향도 분석 → 설계 확정 → 사람 최종 승인 → 구현 → 확인 → 완료. 승인 전 구현 금지.
+1. 순서: 최소 이슈 분석 → 설계 협업 → 사용자 최종 설계 승인 → 전체 영향도 분석 → 사용자 구현 승인 → 구현 → 확인 → 완료. 설계 승인 전 영향도 분석·구현 승인 전 구현 금지.
 2. 이 절차를 임의로 축약하지 않는다. 경미해 보여도 스스로 생략하지 말고, 무엇을 줄일지·왜 경미한지 사람에게 먼저 묻고 동의 후에만 간단 경로로 진행한다.
 3. 설계 중 미결·선택·불확실이 있으면 문서에 묻어두지 말고, 번호 매긴 질문 + 항목별 권장안을 대화로 즉시 제시하고 답을 기다린다. 확정 문서에는 결정된 내용만 남긴다.
-4. 산출물: `docs/issues/{이슈번호}/` — STATUS, DESIGN, IMPACT, REPORT(완료 시), NOTES(선택), review/(선택), handoff/(선택).
-5. 커밋: `{유형}(#{이슈}): {제목}`. AI 출처 문구 금지.
+4. 스킬: `issue-orchestration`(전체 진행 총괄) · `issue-analysis`(이슈·영향도 분석) · `issue-artifacts`(산출물) · `issue-implementation`(구현). 해당 단계에 들어가면 그 스킬을 따른다.
+5. 서브에이전트: 이슈 분석→`issue-analyzer` · 영향도 분석→`impact-analyzer` · 구현→`module-implementer` · 공통 이관→`common-handoff` · 설계 점검→`design-critic` · 원인불명 진단→`log-prober`.
+6. 산출물: `docs/issues/{이슈번호}/` — STATUS, DESIGN, IMPACT, REPORT(완료 시), NOTES(선택), review/(선택), handoff/(선택).
+7. 커밋: `{유형}(#{이슈}): {제목}`. AI 출처 문구 금지.
 
 ## 스킬·서브에이전트 사용 가이드
 
-**스킬과 서브에이전트의 역할 차이**
-- 스킬(`.claude/skills/`)은 "이 단계에서 어떤 순서·규칙으로 진행할지"를 알려주는 절차서다. 스킬 자체는 코드를 고치지 않는다.
-- 서브에이전트(`.claude/agents/`)는 그 절차 중 한 단계를 실제로 위임받아 수행하는 실행자다. 대부분 자기 역할 밖의 파일은 건드리지 않도록 범위가 제한돼 있다.
-
 **서브에이전트 (6개) — `.claude/agents/`**
 
-| 이름 | 설명 | 제약 |
+| 이름 | 설명 | 호출 조건 |
 |---|---|---|
-| `issue-analyzer` | 이슈 요청이 뭘 원하는지 파악하고 경미/복잡을 1차로 가늠 | 읽기 전용 |
-| `impact-analyzer` | 설계 확정 후 영향 범위(연쇄 영향·API 변화·회귀 테스트 포인트)를 미리 확인 | 읽기 전용, 빌드 금지 |
-| `module-implementer` | 승인된 설계대로 실제 코드 작성 | 승인된 설계·영향 범위 안에서만, 범위 밖 기능 추가 금지 |
-| `common-handoff` | 공통 모듈 등 범위 밖 수정이 필요할 때 이관 요청서만 작성 | 대상 소스 직접 수정 금지 |
-| `design-critic` | 설계·영향도 분석을 승인 전 재검토(치명적 문제·권장사항·테스트 누락) | 읽기 전용 |
-| `log-prober` | 원인불명 버그 진단 시 임시 로그만 삽입/제거 | 로직 수정 금지, 커밋 제외 |
+| `issue-analyzer` | 요구·오류·후보 위치의 1차 조사 | 요구가 모호하거나 후보 모듈이 둘 이상일 때 |
+| `impact-analyzer` | 확정 설계의 전체/증분 영향도 분석 | 사용자 최종 설계 승인 뒤; delta는 이전 IMPACT 검증 범위 증거가 있을 때만 |
+| `module-implementer` | 승인된 설계의 구현 | 독립 파일 소유권을 분리해 병렬 구현할 수 있을 때 |
+| `common-handoff` | 공통/범위 밖 수정 이관 요청 | 정합 위치가 현재 프로젝트 범위 밖일 때 |
+| `design-critic` | 설계·영향도 재검토 | API·동시성·권한·저장·프로토콜 위험이 있을 때 |
+| `log-prober` | 원인 불명 오류의 임시 로그 | 원인 불명 진단일 때 |
 
 **스킬 (20개) — `.claude/skills/`**
 
@@ -114,54 +112,54 @@ private let claudeMdRaw = #"""
 
 | 이름 | 설명 |
 |---|---|
-| `issue-orchestration` | 이슈 하나의 전체 진행을 지휘하는 총괄 — 순서·휴먼 게이트·재작업 경로·스킬/서브 매핑 담당 |
-| `issue-analysis` | 이슈 분석·영향도 분석 단계 진행 방법 안내 |
-| `issue-artifacts` | 작업 문서를 어디에 어떤 형식으로 남길지 안내 |
-| `issue-implementation` | 승인된 설계를 코드로 옮길 때의 규칙(커밋 형식, 문제 대응) |
-| `issue-manager` | 팀 전체 이슈 현황·배포 현황 보고서 작성(개별 이슈 진행용 아님) |
-| `root-cause-loop` | 원인불명 오류를 "로그 심기→재현요청→분석→반복"으로 진단 |
-| `dry-run` | 정식 이슈 없이 미리보기(무흔적)·시연(원복) |
-| `release-pipeline` | 버전 확정 후 배포 절차 개념 안내(비-SDK 프로젝트, 실제 명령은 프로젝트별 상이) |
+| `issue-orchestration` | 이슈 흐름·휴먼 게이트·조건부 스킬/서브 호출 총괄 |
+| `issue-analysis` | 설계 전 최소 조사와 `.dab-index` 후보 지도 확인 |
+| `issue-artifacts` | STATUS·DESIGN·IMPACT·REPORT 산출물 형식 |
+| `issue-implementation` | 승인 설계 구현 규칙 |
+| `issue-manager` | 팀 이슈·배포 현황 보고 |
+| `root-cause-loop` | 원인 불명 오류 진단 반복 |
+| `dry-run` | 정식 이슈 밖 미리보기·시연 |
+| `release-pipeline` | 비 SDK 프로젝트 배포 절차 |
 
 SDK/라이브러리 개발 (2개)
 
 | 이름 | 설명 |
 |---|---|
-| `sdk-library-conventions` | SDK 코드 자체의 규칙(Public API 하위호환 필수, Zero-Trace) |
-| `sdk-development-process` | SDK 개발 방식(UI 역할 범위, 함수 단위 개발, 버전/문서화, 완료 검증) |
+| `sdk-library-conventions` | SDK 코드 규칙 |
+| `sdk-development-process` | SDK 개발 절차 |
 
 품질 점검 (10개, 상황 발생 시 자동 활성화 — 별도 호출 불필요)
 
 | 이름 | 설명 |
 |---|---|
-| `solid-objc-design` | 클래스 설계가 SOLID 원칙을 지키는지 점검 |
-| `cocoa-patterns` | NSNotificationCenter·KVO·NSError 등 자주 실수하는 패턴 점검 |
-| `cocoa-thread-safety` | 여러 스레드에서 동시에 건드리는 코드가 안전한지 점검 |
-| `arc-retain-cycle-hunt` | 메모리 순환 참조 점검 |
-| `interface-first-design` | 구현보다 먼저 인터페이스부터 설계하도록 안내 |
-| `error-handling-review` | 에러 처리 누락 점검 |
-| `macos-zero-trace` | 민감 정보(비밀번호·토큰)가 로그·저장소에 새지 않는지 점검 |
-| `xcode-build-verify` | 코드 수정 후 빌드가 깨끗하게 되는지 확인 |
-| `sdk-dylib-deploy` | SDK 모듈을 의존 순서대로 빌드해 배포 저장소에 올리는 절차 |
-| `sdk-build-sync` | SDK 모듈을 로컬 재빌드해 소비 프로젝트에 반영하는 절차 |
+| `solid-objc-design` | SOLID 설계 점검 |
+| `cocoa-patterns` | Cocoa 위험 패턴 점검 |
+| `cocoa-thread-safety` | 동시성 안전 점검 |
+| `arc-retain-cycle-hunt` | 순환 참조 점검 |
+| `interface-first-design` | 인터페이스 우선 설계 |
+| `error-handling-review` | 오류 처리 점검 |
+| `macos-zero-trace` | 민감 정보 누출 점검 |
+| `xcode-build-verify` | Xcode 빌드 점검 |
+| `sdk-dylib-deploy` | SDK 배포 절차 |
+| `sdk-build-sync` | SDK 소비처 반영 절차 |
 
-**단계별 매핑 (이슈 진행 중 빠르게 참조)**
+**단계별 매핑**
 
 | 단계 | 스킬 | 서브에이전트 |
 |---|---|---|
-| 이슈 분석 | `issue-analysis` | `issue-analyzer` |
-| 영향도 분석 | `issue-analysis` | `impact-analyzer` |
+| 설계 전 조사 | `issue-analysis` | 조건부 `issue-analyzer` |
+| 사용자 최종 설계 승인 후 영향도 | `issue-analysis` | `impact-analyzer` |
 | 산출물 작성 | `issue-artifacts` | — |
-| 구현 | `issue-implementation` | `module-implementer` |
+| 구현 | `issue-implementation` | 조건부 `module-implementer` |
 | 공통 모듈 이관 | — | `common-handoff` |
-| 설계 재검토 | — | `design-critic` |
-| 원인불명 오류 진단 | `root-cause-loop` | `log-prober` |
-| 정식 이슈 밖 미리보기·시연 | `dry-run` | — |
+| 고위험 설계 점검 | — | 조건부 `design-critic` |
+| 원인불명 진단 | `root-cause-loop` | `log-prober` |
+| 정식 이슈 밖 시연/검토 | `dry-run` | — |
 
 **선택 원칙**
-- 지금 어느 단계인지 모르겠으면 `issue-orchestration` 스킬부터 확인한다.
-- 서브에이전트는 담당 범위 밖의 파일을 고치지 않는다. 범위를 벗어날 것 같으면 사람에게 먼저 확인하거나 `common-handoff`로 이관한다.
-- 품질 점검 스킬(10개)은 이름을 몰라도 상황(Objective-C 작성, 민감정보 처리 등)에 맞으면 자동으로 켜진다.
+- `.dab-index`는 후보 파일·심볼 지도다. 먼저 이 지도로 후보만 고르고, 캐시는 증거가 아니므로 변경 심볼·API·경계 통과는 직접 LSP 또는 grep으로 확인한다.
+- 영향도 전체 분석은 사용자 최종 설계 승인 뒤 한 번 수행한다. 이후 설계 변경은 이전 IMPACT의 검증 범위 증거가 있을 때만 delta 분석하고, 그렇지 않으면 전체 분석으로 돌아간다.
+- 서브에이전트는 위 호출 조건을 충족할 때만 사용한다. 범위를 벗어나면 `common-handoff`로 이관한다.
 
 """#
 
@@ -230,11 +228,11 @@ description: "설계 기준 영향도 분석·수정 리스트. 읽기 전용. �
 ## 권한
 읽기 전용. 기능 코드 수정·커밋·빌드 금지. 정적 분석만 수행한다.
 
-## 참고문서 캐시
-분석 시작 전 대상 프로젝트의 `.dab-index/PROJECT_INDEX.md` + `.dab-index/fingerprint`를 확인한다. 지문(정렬된 소스 파일 경로 목록의 해시)을 재계산해 저장값과 비교: 일치하면 캐시를 그대로 쓰고 LSP 전수 스캔을 생략한다. 없거나 불일치하면 LSP 도구(documentSymbol/workspaceSymbol/incomingCalls/outgoingCalls, 언어 미지원 시 grep+디렉터리 트리 대체)로 재생성 후 `.dab-index/` 두 파일을 갱신한다(`.gitignore`에도 반영). 이 캐시는 참고용 개요일 뿐이다 — 특정 심볼의 최신 상태를 정밀 확인해야 할 때는 캐시로 대체하지 말고 그때그때 LSP를 직접 호출한다.
+## 진입과 참고문서 캐시
+사용자 최종 설계 승인 뒤 첫 영향도 분석은 항상 전체 분석이다. 분석 시작 전 `.dab-index/PROJECT_INDEX.md` + `.dab-index/fingerprint`를 확인하고 후보 파일·심볼 지도로 먼저 사용한다. 지문(정렬된 소스 파일 경로 목록의 해시)을 재계산해 저장값과 비교한다: 일치하면 그 지도로 후보만 고르고 지도에 없는 파일을 넓게 읽지 않는다. 캐시는 증거가 아니므로 변경 심볼·공개 API·모듈 경계 통과는 직접 LSP 또는 grep으로 확인한다. 없거나 불일치하면 LSP(documentSymbol/workspaceSymbol, 미지원 언어는 grep+디렉터리 트리)로 지도를 재생성해 두 파일을 갱신하고(`.dab-index/`는 `.gitignore`에 반영), 전체 분석으로 진행한다.
 
 ## 임무
-설계 초안을 기준으로:
+최종 설계를 기준으로:
 1. 정합성·구조 측면 영향도 분석
 2. 수정 모듈 리스트 작성(목표 버전 산출은 하지 않는다)
 3. 코드 영향도 분석(기존 코드 수정인 경우만 — 신규 모듈은 생략 가능, 생략 근거는 남긴다)
@@ -245,7 +243,19 @@ description: "설계 기준 영향도 분석·수정 리스트. 읽기 전용. �
 
 API가 소스에 없어도 계약(설계 문서)에 있으면 구현 예정으로 정상 처리하고, 계약에도 없으면 진짜 오류로 보고한다.
 
+## Delta 재분석
+이전 IMPACT의 검증 범위에 baseline revision, 범위 내 모듈, 포괄 경계, 검증된 양방향 closure·tests와 읽은 파일·심볼, 캐시 결과, 직접 조회 증거가 모두 남아 있고 새 설계 delta가 그 범위 안일 때만 delta 분석을 한다. changed symbol마다 incomingCalls·outgoingCalls·references를 양방향으로 따라가며, 확인한 경계에서만 중단 사유를 남긴다. 공통/범위 밖 경계를 만나면 `common-handoff` 후보로 남긴다.
+
+다음 중 하나면 delta를 중단하고 전체 분석으로 되돌린다: 공개 API, 모듈 경계, 프로토콜·직렬화, 동시성, 권한, 영속성, 설정, 빌드 계약 변경; 캐시 불일치; 해결되지 않은 동적 호출·심볼; 검증 범위 누락 또는 이전 revision 증거 부족.
+
 ## 반환 (= IMPACT.md 초안)
+## Revision / Baseline revision
+## 분석 모드: full | delta
+## 설계 delta / changed symbols
+## 검증 범위: baseline revision / 범위 내 모듈 / 포괄 경계 / 검증된 양방향 closure·tests
+## 캐시 결과
+## 읽은 파일·심볼 / 직접 LSP 조회 수 / grep 조회 수
+## 확장·중단·전체 분석 폴백 사유
 ## 수정 대상
 ## 연쇄 영향
 ## API·동작 변화
@@ -321,7 +331,7 @@ description: "승인 설계·영향 범위 내 구현. 범위 밖 수정·명세
 # 모듈 구현 서브에이전트
 
 ## 권한
-메인이 지정한 경로만 쓴다.
+메인이 지정한 경로만 쓴다. 읽기는 IMPACT의 "수정 대상"·"읽은 파일·심볼" 범위에서 시작한다 — 코드베이스를 처음부터 다시 탐색하지 말고, 그 밖을 봐야 하면 넓게 뒤지기 전에 범위를 재확인한다.
 
 ## 순서
 1. 설계 검토: 확정 DESIGN을 읽고 자기 담당 범위 소스와 대조해 실현 가능성·정합성을 확인한다.
@@ -333,9 +343,6 @@ description: "승인 설계·영향 범위 내 구현. 범위 밖 수정·명세
 
 ## 문서
 공개 API·사용법이 바뀌면 README/INTEGRATION_GUIDE 등을 같은 작업에서 함께 갱신한다. 보고서에 문서 갱신 섹션을 반드시 남기거나 "해당 없음: {사유}"를 명시한다. 누락하면 완료로 보고하지 않는다.
-
-## 커밋 (허용 시)
-`{유형}(#{이슈}): {제목}` 형식. AI 출처 문구(Co-Authored-By, Generated with 등) 금지.
 
 ## 반환
 ## 결과: 성공 | 막힘
@@ -354,7 +361,7 @@ description: "승인 설계·영향 범위 내 구현. 범위 밖 수정·명세
 private let skillArcRetainCycleHunt = #"""
 ---
 name: arc-retain-cycle-hunt
-description: "Activate when reviewing or writing Objective-C code in these situations: self capture inside Blocks (the `__weak`/`__strong` dance), ownership of delegate/dataSource properties (must be weak), balancing CoreFoundation objects (`CFCreate*`/`CGCreate*` paired with `CFRelease`/`CGRelease`), and NSTimer/KVO/NSNotificationCenter observer lifecycle (add/remove paired in dealloc). Provides category-specific regex search patterns across 4 phases."
+description: "Activate when reviewing or writing Objective-C code in these situations: self capture inside Blocks (the `__weak`/`__strong` dance), ownership of delegate/dataSource properties (must be weak), balancing CoreFoundation objects (`CFCreate*`/`CGCreate*` paired with `CFRelease`/`CGRelease`), and NSTimer/KVO/NSNotificationCenter observer lifecycle (add/remove paired in dealloc)."
 ---
 
 # ARC Retain-Cycle Hunt
@@ -482,7 +489,7 @@ description: "Activate when using NSNotificationCenter, KVO, or NSError in Objec
 private let skillCocoaThreadSafety = #"""
 ---
 name: cocoa-thread-safety
-description: "Activate when Objective-C code uses GCD dispatch, shared mutable state (NSMutableArray/Dictionary, singletons) is accessed from multiple threads, UI updates occur next to background queues, or `@synchronized`/locks are added. Covers 4 phases: (1) Main-thread UI audit — every NSTextField/tableView/NSWindow update must be on main; (2) Shared-state protection — `@synchronized`, serial queue, `dispatch_barrier`; (3) Deadlock detection — `dispatch_sync` onto the current queue, nested lock order; (4) atomic vs nonatomic property appropriateness."
+description: "Activate when Objective-C code uses GCD dispatch, shared mutable state (NSMutableArray/Dictionary, singletons) is accessed from multiple threads, UI updates occur next to background queues, or `@synchronized`/locks are added. Audits main-thread UI, shared-state protection, deadlocks, and atomic-property use."
 ---
 
 # Cocoa Thread-Safety Verification
@@ -584,7 +591,7 @@ description: >-
 private let skillErrorHandlingReview = #"""
 ---
 name: error-handling-review
-description: "Activate when reviewing error-handling completeness on any platform — Swift, Objective-C, Dart, etc. Scans: (1) unhandled external calls (network, file I/O, DB, JSON parsing); (2) force operations that cause runtime crashes (Swift `try!`/`as!`/`!`, Dart `!`, ObjC unsafe casts); (3) silently swallowed errors and unclear error-propagation paths; (4) absence of user-visible error messages and recovery logic (retry, fallback, graceful degradation)."
+description: "Activate when reviewing error-handling completeness on any platform — Swift, Objective-C, Dart, etc. Covers unhandled external calls, crash-prone force unwrap/cast operations, silently swallowed errors, and missing user-facing recovery."
 ---
 
 # Error-Handling Review
@@ -665,7 +672,7 @@ For each error-handling site found in Step 1:
 private let skillInterfaceFirstDesign = #"""
 ---
 name: interface-first-design
-description: "Activate when designing a new component or feature on macOS (Objective-C/Cocoa). Define the public `.h` interface with all methods/properties and an `@protocol` containing the delegate methods, then pick a communication pattern by searching existing codebase conventions (Delegate for 1:1, NSNotificationCenter for 1:N, Block for async completion, KVO for property change). Verify layer separation (View <-> Controller <-> Model), injectability of dependencies, and testability **before** writing the `.m` implementation."
+description: "Activate when designing a new component or feature on macOS (Objective-C/Cocoa). Define the public `.h` contract and delegate `@protocol` and pick a communication pattern from existing conventions before writing the `.m` implementation."
 ---
 
 # Interface-First Design — macOS
@@ -746,41 +753,27 @@ private let skillIssueAnalysis = #"""
 ---
 name: issue-analysis
 description: >-
-  이슈 분석과 설계 이후 영향도 분석(수정 모듈/파일 리스트·연쇄 영향)을 수행한다.
-  이 단계에서는 기능 코드를 수정하지 않는다. Use for issue analysis and impact analysis.
+  설계 전 요구·오류의 최소 조사와 후보 파일·심볼 지도를 만든다.
+  전체 영향도 분석은 사용자 최종 설계 승인 뒤 impact-analyzer가 수행한다. Use for pre-design issue analysis.
 ---
 
-# 이슈·영향도 분석
+# 이슈 사전 조사
 
 ## 공통
 - 분석 목적의 소스 읽기는 허용한다. 이 스킬 구간에서는 기능 코드 수정·커밋을 하지 않는다.
 - 프로젝트에 설계 원칙 파일(SOLID 등)이 있으면 로드해 준수한다.
 
-## 참고문서 캐시
-착수 전 `.dab-index/` 캐시를 확인한다 — 상세 절차는 `impact-analyzer`에 정의돼 있다(중복 방지). 서브 위임 없이 이 스킬만으로 영향도 분석까지 처리하는 예외적인 경우에만 그 절차를 직접 따른다.
+## 참고문서 캐시 우선
+착수 전 `.dab-index/PROJECT_INDEX.md` + `.dab-index/fingerprint`를 확인한다. 일치하는 캐시는 후보 파일·공개 심볼 지도일 뿐 증거가 아니다. 먼저 지도에서 이번 요구와 닿는 후보만 고르고 그 파일만 읽는다. 캐시가 없거나 불일치하면 구조 지도만 재생성하고, 직접 LSP/grep은 변경 심볼·API·경계 통과를 확인해야 하는 `impact-analyzer` 단계까지 넓히지 않는다.
 
-## 1. 이슈 분석
+## 1. 최소 조사
 - 요구/오류 현상을 정리하고 경미 vs 복잡을 판단한다.
 - 오류 이슈면 원인 판단을 우선할 수 있다(진단 트랙 — `root-cause-loop` 참고).
-- 규모가 크면 서브에이전트 `issue-analyzer`에 위임한다.
+- 요구가 모호하거나 후보 모듈이 둘 이상일 때만 서브에이전트 `issue-analyzer`에 위임한다.
+- 후보 파일·심볼, 캐시 hit/miss 사유, 실제 읽은 파일만 기록한다. 이 단계에서 수정 모듈 목록·연쇄 영향·API 계약을 확정하지 않는다.
 
-## 2. 영향도 분석
-설계 초안 작성 후(구현 전):
-1. 정합성·구조 측면 영향도 분석
-2. 수정 모듈 리스트 작성(목표 버전 산출 금지)
-3. 코드 영향도 분석(기존 코드 수정 시만 — 신규 모듈은 생략 가능, 근거를 남긴다)
-4. 신규/변경 API가 있으면 계약(시그니처·타입·스레드 규약) 작성
-5. 문제 발견 시 "문제 보고" 섹션에 명시한다. 빌드·컴파일 검증은 하지 않는다(정적 분석 전용).
-6. 정합 위치가 공통/범위 밖이면 이관 후보로 표시한다(우회 제안 금지).
-
-## 3. 산출
-`docs/issues/{이슈}/IMPACT.md` 또는 DESIGN.md의 "영향도 분석" 섹션에 남긴다.
-
-## 4. 이후
-문제가 있으면 구현하지 말고 설계 수정·사람 협의로 넘어간다. 정상이면 확정 설계 후 승인 단계로 진행한다.
-
-## 5. 서브
-영향도 분석은 `impact-analyzer`에 위임한다(생략은 사람 동의 후에만).
+## 2. 이후
+후보와 열린 결정을 바탕으로 설계 협업을 한다. 사용자가 최종 설계를 승인한 뒤에만 `impact-analyzer`에 전체 영향도 분석을 위임한다. 분석 결과가 없거나 사용자 구현 승인이 없거나 설계가 바뀌면 구현하지 않는다.
 
 """#
 
@@ -849,26 +842,15 @@ description: >-
 - 명확한 패턴이 하나면 그 구조를 그대로 따라 구현하고, 참고한 패턴을 보고서에 남긴다(파일 위치 포함).
 - 패턴이 여럿이라 뭘 따라야 할지 애매하면 임의로 고르지 말고, 후보를 정리해 사람에게 확인받은 뒤 진행한다.
 
-## 순서
-1. 설계 검토 2. 영향 리스트 대조 3. 불가능하면 강행하지 말고 문제로 보고 4. 승인된 설계대로 구현 — 명세 외 기능 추가 금지.
-
 ## 구현 중
 - 프로젝트 관례·팀 코딩 규칙을 준수한다.
-- 공개 API·사용법이 바뀌면 README/INTEGRATION_GUIDE 등을 같은 작업에서 함께 갱신한다(갱신 없이 완료 보고 금지).
 - 계약을 이행할 수 없으면 즉시 문제로 보고한다.
-
-## 문제 발견 시 — 심각도별 대응
-- **경미**(스스로 바로잡을 수 있는 수준): 자체적으로 수정하고 계속 진행한다. 무엇을 왜 바꿨는지 보고서에 남긴다.
-- **중대**(설계 자체를 다시 봐야 하는 수준): 강행하지 말고 즉시 멈추고 사람에게 보고한 뒤 답을 기다린다.
 
 ## 진단용 임시 로그
 `root-cause-loop`/`log-prober`가 심은 `[DEBUG-FIX]` 태그 로그는 커밋에서 제외한다(작업 트리에만 존재).
 
 ## 공통모듈 이관
 프로젝트 범위에서 공통 모듈을 직접 수정하지 않는다 → `common-handoff`로 이관 + `COMMON_MODULE_HANDOFF: {id}` 마커. 우회 선택지를 만들지 않는다.
-
-## git
-`{유형}(#{이슈}): {제목}` 형식. AI 출처 문구(Co-Authored-By, Generated with 등) 금지.
 
 ## 범위
 담당 범위 밖 수정을 하지 않는다. 모호하면 추측하지 말고 보고한다. 프로젝트 관례를 우선한다.
@@ -951,7 +933,7 @@ private let skillIssueOrchestration = #"""
 ---
 name: issue-orchestration
 description: >-
-  이슈를 분석→설계 협업→영향도 분석→승인→구현→확인→완료로 진행한다.
+  최소 이슈 분석→설계 협업→사용자 최종 설계 승인→전체 영향도 분석→사용자 구현 승인→구현→확인→완료로 진행한다.
   휴먼 게이트·대화 우선·스킬/서브 호출 시점을 총괄한다. Use for issue orchestration workflow.
 ---
 
@@ -967,15 +949,15 @@ description: >-
 - 버전은 개발 단계에서 결정하지 않는다.
 
 ## 필수 순서
-이슈 분석 → 설계 협업 → 영향도 분석 → 설계 확정 → 사람 최종 승인 → 구현 → 확인 → 완료.
+최소 이슈 분석 → 설계 협업 → 사용자 최종 설계 승인 → 전체 영향도 분석 → 사용자 구현 승인 → 구현 → 확인 → 완료.
 
 | 단계 | 할 일 |
 |---|---|
-| 이슈 분석 | 요구 파악, 경미/복잡 판단 |
+| 최소 이슈 분석 | 요구 파악, 경미/복잡 판단 |
 | 설계 협업 | 초안 작성, 열린 결정은 대화로 확정 |
-| 영향도 분석 | IMPACT 작성 |
-| 설계 확정 | DESIGN에 결정된 내용만 |
-| 최종 승인 | 승인 전 구현 금지 |
+| 사용자 최종 설계 승인 | DESIGN에 결정된 내용만, 승인 전 영향도 분석 금지 |
+| 전체 영향도 분석 | IMPACT 작성 |
+| 사용자 구현 승인 | 승인 전 구현 금지 |
 | 구현 | `issue-implementation` / `module-implementer` |
 | 확인 | 사람 테스트 요청 |
 | 완료 | REPORT 작성, 재작업 경로 처리 |
@@ -992,20 +974,12 @@ description: >-
 
 ## 고정 휴먼 게이트
 1. 이슈 착수 확인
-2. 설계 + 영향도 분석 리뷰
-3. 사람 테스트
+2. 사용자 최종 설계 승인
+3. 사용자 구현 승인
+4. 사람 테스트
 
 ## 스킬·서브 사용
-| 단계 | 스킬 | 서브 |
-|---|---|---|
-| 이슈 분석 | `issue-analysis` | `issue-analyzer` |
-| 영향도 분석 | `issue-analysis` | `impact-analyzer` |
-| 산출물 | `issue-artifacts` | — |
-| 구현 | `issue-implementation` | `module-implementer` |
-| 이관 | — | `common-handoff` |
-| 설계 점검 | — | `design-critic` |
-| 원인불명 진단 | `root-cause-loop` | `log-prober` |
-| 정식 이슈 밖 시연/검토 | `dry-run` | — |
+단계별 스킬·서브 매핑과 호출 조건은 CLAUDE.md의 "단계별 매핑"·서브에이전트 표를 따른다(중복 제거).
 
 ## 정합 위치 · 이관
 수정 위치를 정할 때는 정합상 올바른 위치를 기준으로 판단한다. 프로젝트 범위에서 공통모듈에 속한다고 판단되면 우회 구현하지 말고 `common-handoff`로 이관한다.
@@ -1419,7 +1393,7 @@ SDK 코드는 UI 요소(NSView/NSWindow 등)의 생성·배치·레이아웃 작
 private let skillSdkDylibDeploy = #"""
 ---
 name: sdk-dylib-deploy
-description: "수정된 SDK dylib 모듈(들)을 의존성 최하위부터 순서대로, 각 프로젝트의 vendored sdk 폴더를 통째로 비우고 gsdkmanager로 의존성을 새로 받아 Release/Debug 두 configuration으로 **유니버셜(arm64+x86_64)** 재빌드한 뒤 `sdk_deploy/{category}/{release|debug}/<module>`(=gitlab clone)에 배포하고 commit+tag+push 까지 한다. gsdkmanager 가 없는 의존성-없는 베이스 모듈(예 RXCommonModels)은 sdk 삭제·재다운로드 단계를 생략하고 직접 빌드한다. 호출: `/sdk-dylib-deploy <module_name> [<module_name> ...]`. 카테고리는 폴더 위치로 자동 판단, 경로는 cwd/git 루트에서 추론(하드코딩 금지)."
+description: "수정된 SDK dylib 모듈(들)을 의존성 순서(최하위부터)대로 Release/Debug 유니버셜(arm64+x86_64)로 재빌드해 `sdk_deploy/{category}/{release|debug}/<module>`(=gitlab clone)에 배포하고 commit+tag+push 한다. 호출: `/sdk-dylib-deploy <module_name> [<module_name> ...]`. 카테고리·경로는 cwd/git 루트에서 추론(하드코딩 금지)."
 ---
 
 # SDK Dylib Deploy
@@ -1691,7 +1665,7 @@ description: >-
 private let skillSolidObjcDesign = #"""
 ---
 name: solid-objc-design
-description: "Activate when designing or reviewing Objective-C/Cocoa class and protocol structure for SOLID compliance. Checks: SRP — split when `.m` exceeds 500 lines or the class name contains 'And'; OCP — extend via Protocol/Category rather than modifying if/switch; LSP — subtypes fully honor the base contract; ISP — split protocols with more than 5 `@optional` methods into focused protocols; DIP — inject `id<Protocol>` instead of concrete classes. Also verifies cohesion (every method operates on the same ivars) and an acyclic dependency graph."
+description: "Activate when designing or reviewing Objective-C/Cocoa class and protocol structure for SOLID compliance. Checks SRP/OCP/LSP/ISP/DIP plus cohesion and an acyclic dependency graph."
 ---
 
 # SOLID Design Review — Objective-C / Cocoa
@@ -1762,7 +1736,7 @@ Refactor: suggested fix.
 private let skillXcodeBuildVerify = #"""
 ---
 name: xcode-build-verify
-description: "Activate after code changes in a macOS (Objective-C/Cocoa) project to verify that the build compiles cleanly using `xcodebuild`. Identifies project/scheme, runs the build with a macOS destination, filters errors/warnings, and diagnoses common ObjC patterns (ARC Semantic Issue, undeclared identifier, missing @interface, incompatible pointer types). Must pass with 0 errors before reporting implementation complete."
+description: "Activate after code changes in a macOS (Objective-C/Cocoa) project to verify the build compiles cleanly with `xcodebuild`. Must pass with 0 errors before reporting implementation complete."
 ---
 
 # Xcode Build Verification (macOS)
