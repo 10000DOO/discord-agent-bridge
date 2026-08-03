@@ -265,7 +265,7 @@ export const CONFIG_DEFAULTS = {
   },
   documentShare: {
     maxBytes: 524288,
-    bodyMode: 'preview' as const,
+    bodyMode: 'full' as const,
     previewMaxChars: 8000,
     extensions: ['.md', '.markdown'],
   },

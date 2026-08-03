@@ -260,7 +260,10 @@ struct DocumentShareLoadTests {
         let r = try loadShareableDocument(
             cwd: fx.cwd.path,
             path: "doc.md",
-            options: opts { $0.previewMaxChars = -1 }
+            options: opts {
+                $0.bodyMode = "preview"
+                $0.previewMaxChars = -1
+            }
         )
         guard case .success(let doc) = r else {
             Issue.record("expected document to load")
@@ -329,7 +332,10 @@ struct DocumentSharePostTests {
         _ = try await shareDocument(
             cwd: fx.cwd.path,
             path: "doc.md",
-            options: opts { $0.previewMaxChars = 10 },
+            options: opts {
+                $0.bodyMode = "preview"
+                $0.previewMaxChars = 10
+            },
             channel: sink.channel()
         )
         #expect(sink.sends.count == 2)

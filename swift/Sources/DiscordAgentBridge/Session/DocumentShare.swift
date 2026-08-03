@@ -34,7 +34,7 @@ public struct DocumentShareOptions: Sendable, Equatable {
 
     public init(
         maxBytes: Int = 524_288,
-        bodyMode: BodyMode = "preview",
+        bodyMode: BodyMode = "full",
         previewMaxChars: Int = 8000,
         extensions: [String] = [".md", ".markdown"]
     ) {

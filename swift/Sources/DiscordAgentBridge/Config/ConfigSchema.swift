@@ -170,7 +170,7 @@ public struct DocumentShareSection: Codable, Sendable, Equatable {
     public var extensions: [String]
     public init(
         maxBytes: Int = 524_288,
-        bodyMode: String = "preview",
+        bodyMode: String = "full",
         previewMaxChars: Int = 8000,
         extensions: [String] = [".md", ".markdown"]
     ) {
@@ -668,7 +668,7 @@ func configDefaultsDict() -> [String: Any] {
         "render": ["enabled": true] as [String: Any],
         "documentShare": [
             "maxBytes": 524_288,
-            "bodyMode": "preview",
+            "bodyMode": "full",
             "previewMaxChars": 8000,
             "extensions": [".md", ".markdown"],
         ] as [String: Any],
