@@ -69,3 +69,4 @@ swift/.build/
 **/.build/
 **/.swiftpm/
 .dab-index/
+.codegraph
