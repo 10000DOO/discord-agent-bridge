@@ -45,6 +45,7 @@ public struct BrowserImageRendererDeps: Sendable {
 }
 
 /// Locate mermaid.min.js: env `DAB_MERMAID_JS` → repo node_modules → `~/.dab/render/`.
+// Keep `mermaid` in package.json even though no JS/TS imports it — this reads dist/mermaid.min.js off disk (regressed once in b0ae0e8, don't remove again).
 public func resolveMermaidJsPath(
     env: [String: String] = ProcessInfo.processInfo.environment,
     cwd: String = FileManager.default.currentDirectoryPath,
