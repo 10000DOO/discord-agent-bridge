@@ -68,6 +68,27 @@ public struct ConsoleSink: LogSink {
     }
 }
 
+/// Local-time stamp `YYYY-MM-DDTHH:MM:SS.mmm±HHMM`, built with `localtime_r` rather than a
+/// `DateFormatter`: a shared formatter is not `Sendable` under strict concurrency, and building one
+/// per line would allocate on every log call. Local time, not UTC — these lines get read next to a
+/// user's "it broke at 4pm" report.
+func logTimestamp(_ date: Date) -> String {
+    let epoch = date.timeIntervalSince1970
+    let whole = epoch.rounded(.down)
+    var seconds = time_t(whole)
+    var parts = tm()
+    localtime_r(&seconds, &parts)
+    let milliseconds = Int((epoch - whole) * 1000)
+    let offsetMinutes = parts.tm_gmtoff / 60
+    let absoluteOffset = abs(offsetMinutes)
+    return String(
+        format: "%04d-%02d-%02dT%02d:%02d:%02d.%03d%@%02d%02d",
+        parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday,
+        parts.tm_hour, parts.tm_min, parts.tm_sec, milliseconds,
+        offsetMinutes < 0 ? "-" : "+", absoluteOffset / 60, absoluteOffset % 60
+    )
+}
+
 /// Swift port of TS `RedactingLogger` (`logger.ts:112-144`). A plain `Sendable` value (not an
 /// actor, unlike `AuditLog`): its state (name/level/sink) is immutable after init, and unlike
 /// `AuditLog`'s append-only file it has no ordering guarantee to protect.
@@ -75,20 +96,31 @@ public struct Logger: Sendable {
     private let name: String
     private let fixedLevel: LogLevel?
     private let sink: any LogSink
+    private let now: @Sendable () -> Date
 
     /// - Parameter level: pins the gating threshold, bypassing `currentLogLevel` (tests use
     ///   this for deterministic behavior). Nil (default) reads `currentLogLevel` on every call.
-    public init(name: String, level: LogLevel? = nil, sink: any LogSink = ConsoleSink()) {
+    /// - Parameter now: injectable clock so tests can assert an exact line.
+    public init(
+        name: String,
+        level: LogLevel? = nil,
+        sink: any LogSink = ConsoleSink(),
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.name = name
         self.fixedLevel = level
         self.sink = sink
+        self.now = now
     }
 
     private var threshold: LogLevel { fixedLevel ?? currentLogLevel.withLock { $0 } }
 
     private func log(_ level: LogLevel, _ message: String) {
         guard level >= threshold else { return }
-        let line = "[\(level.rawValue.uppercased())] \(name): \(redactSecrets(message))"
+        // Timestamp first so the launchd log file stays sortable and greppable by time — without it
+        // there is no way to tell when a background job (provider runtime updates) ran.
+        let stamp = logTimestamp(now())
+        let line = "\(stamp) [\(level.rawValue.uppercased())] \(name): \(redactSecrets(message))"
         sink.write(level: level, line: line)
     }
 

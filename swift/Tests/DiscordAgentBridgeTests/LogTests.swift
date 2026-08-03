@@ -28,23 +28,23 @@ struct LogTests {
 
     @Test func atOrAboveThresholdMessagesPass() {
         let sink = FakeSink()
-        let log = Logger(name: "test", level: .info, sink: sink)
+        let log = Logger(name: "test", level: .info, sink: sink, now: { fixedLogInstant })
 
         log.info("hello")
 
         let captured = sink.lines.withLock { $0 }
         #expect(captured.count == 1)
-        #expect(captured[0].1 == "[INFO] test: hello")
+        #expect(captured[0].1 == "\(fixedLogStamp) [INFO] test: hello")
     }
 
     @Test func formatsLevelAndNamePrefix() {
         let sink = FakeSink()
-        let log = Logger(name: "myname", level: .debug, sink: sink)
+        let log = Logger(name: "myname", level: .debug, sink: sink, now: { fixedLogInstant })
 
         log.error("boom")
 
         let line = sink.lines.withLock { $0 }[0].1
-        #expect(line == "[ERROR] myname: boom")
+        #expect(line == "\(fixedLogStamp) [ERROR] myname: boom")
     }
 
     @Test func redactsSecretsInMessage() {
@@ -92,3 +92,8 @@ struct LogTests {
         #expect(!(LogLevel.error < .debug))
     }
 }
+
+/// Pinned clock for the two format assertions above: the line now carries a timestamp, so the
+/// expectation has to be reproducible rather than wall-clock dependent.
+let fixedLogInstant = Date(timeIntervalSince1970: 1_700_000_000)
+var fixedLogStamp: String { logTimestamp(fixedLogInstant) }
