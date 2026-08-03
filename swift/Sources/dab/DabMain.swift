@@ -673,6 +673,14 @@ struct EventHandler: GatewayEventHandler {
                 channelId: channelId, actorId: actorId, guildId: guildId,
                 roleTier: tier, defaultCwd: stubCwd
             )
+            // clear keeps the binding but drops the live bridges, so the channel would sit bound
+            // with no open session until its next message — /model and /effort would then have
+            // nothing live to apply to. Reopen now (same soft ensure the /agent resume paths use),
+            // and do it BEFORE the done reply so a user acting on that reply always finds a live
+            // session instead of racing the in-flight start.
+            if ok {
+                _ = await life.softEnsureLive(channelId: channelId)
+            }
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,

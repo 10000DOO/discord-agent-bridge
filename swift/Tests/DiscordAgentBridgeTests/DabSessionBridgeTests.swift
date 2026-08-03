@@ -1060,11 +1060,14 @@ struct DabSessionBridgeTests {
 
         #expect(await bridge.setModel(channelId: "c", model: "sonnet") == true)
         #expect(await bridge.setEffort(channelId: "c", effort: "high") == true)
-        // No live handle → false (does not throw).
-        #expect(await bridge.setModel(channelId: "missing", model: "opus") == false)
-        #expect(await bridge.setEffort(channelId: "missing", effort: "low") == false)
+        // No live handle → nothing to apply, which is NOT a failure: `updateBinding` must still
+        // persist the value (the next session start reads it) instead of reporting `.applyFailed`.
+        // Regression guard for `/clear` (or a pre-first-message binding) followed by /model|/effort.
+        #expect(await bridge.setModel(channelId: "missing", model: "opus") == true)
+        #expect(await bridge.setEffort(channelId: "missing", effort: "low") == true)
 
         let got = capture.withLock { $0 }
+        // The absent channel must not have pushed an RPC — only the live channel's values landed.
         #expect(got["setModel"] == "sonnet")
         #expect(got["setEffort"] == "high")
     }

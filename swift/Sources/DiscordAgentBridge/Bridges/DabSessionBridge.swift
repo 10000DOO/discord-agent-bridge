@@ -794,15 +794,19 @@ public actor DabSessionBridge {
     }
 
     /// Live `session.setModel` on an open Claude session (TS orchestrator.setModel / W11-g).
-    /// Returns `true` when a live handle accepted the RPC; `false` when no session or RPC failed
+    /// Returns `true` when a live handle accepted the RPC **or when there is no live session to
+    /// apply to** — nothing to apply is not a failure, and the next `sessionHandle` start reads the
+    /// persisted model (line 343). `false` means a live RPC actually failed, which is the only case
+    /// `BindingUpdateResult.applyFailed` documents ("live session declined the switch").
     /// (binding layer still owns persistence — caller updates registry/store separately).
     @discardableResult
     public func setModel(channelId: String, model: String) async -> Bool {
-        guard let handle = sessions[channelId], let client, !client.isClosed else { return false }
+        guard let handle = sessions[channelId], let client, !client.isClosed else { return true }
         do {
             try await client.sessionSetModel(session: handle, model: model)
             return true
         } catch {
+            log.warn("session.setModel failed channel=\(channelId) model=\(model) error=\(error)")
             return false
         }
     }
@@ -810,11 +814,12 @@ public actor DabSessionBridge {
     /// Live `session.setEffort` on an open Claude session. Same contract as `setModel`.
     @discardableResult
     public func setEffort(channelId: String, effort: String) async -> Bool {
-        guard let handle = sessions[channelId], let client, !client.isClosed else { return false }
+        guard let handle = sessions[channelId], let client, !client.isClosed else { return true }
         do {
             try await client.sessionSetEffort(session: handle, effort: effort)
             return true
         } catch {
+            log.warn("session.setEffort failed channel=\(channelId) effort=\(effort) error=\(error)")
             return false
         }
     }
