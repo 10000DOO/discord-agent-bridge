@@ -3,9 +3,8 @@ import Foundation
 // Tool-activity feed (TS `src/discord/renderers/toolThread.ts`).
 // Posts tool_use input + tool_result headers into TurnThreadRegistry threads.
 
-/// Labels (TS i18n `tool.result` / `tool.error` / `thread.work`).
+/// Labels (TS i18n `tool.error` / `thread.work`).
 public enum ToolThreadLabels {
-    public static var result: String { I18n.t("tool.result") }
     public static var error: String { I18n.t("tool.error") }
     public static var workThread: String { I18n.t("thread.work") }
 }
@@ -35,11 +34,9 @@ public final class ToolThreadHandler: @unchecked Sendable {
             let thread = try await registry.getForToolUse(
                 id: id, name: name, input: input, parentToolUseId: parentToolUseId
             )
-            // Edit/Write/… rendered by DiffViewHandler — skip raw input.
+            // Edit/Write/… rendered by DiffViewHandler — skip the call line.
             if !FILE_EDIT_TOOLS.contains(name) {
-                let header = "**\(toolThreadName(toolName: name, input: input))**"
-                let body = "\(header)\n\(formatToolInput(input))"
-                for chunk in DiscordText.chunkMessage(body) {
+                for chunk in DiscordText.chunkMessage(formatToolCallLine(toolName: name, input: input)) {
                     try await thread.send(chunk)
                 }
             }
@@ -95,9 +92,8 @@ public final class ToolThreadHandler: @unchecked Sendable {
 
     private func postResult(_ thread: TurnThreadMessage, _ r: PendingResult) async {
         let name = state.withLock { $0.toolNames[r.id] }
-        let label = r.ok ? ToolThreadLabels.result : ToolThreadLabels.error
-        let header = name.map { "**\($0) · \(label)**" } ?? "**\(label)**"
-        for chunk in DiscordText.chunkMessage("\(header)\n\(r.content)") {
+        let body = formatToolResult(toolName: name, content: r.content, ok: r.ok)
+        for chunk in DiscordText.chunkMessage(body) {
             try? await thread.send(chunk)
         }
     }

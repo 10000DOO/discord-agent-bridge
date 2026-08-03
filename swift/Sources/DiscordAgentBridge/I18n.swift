@@ -183,8 +183,9 @@ public enum I18n {
 
         // Tool thread
         "thread.work": "작업 내역",
-        "tool.result": "결과",
         "tool.error": "오류",
+        "tool.lines": "{n}줄",
+        "tool.noOutput": "출력 없음",
         "transcript.working": "작업 중…",
 
         // Usage / stats
@@ -683,8 +684,9 @@ public enum I18n {
         "perm.danger-full-access": "Full access (⚠️ no sandbox)",
 
         "thread.work": "Work log",
-        "tool.result": "Result",
         "tool.error": "Error",
+        "tool.lines": "{n} lines",
+        "tool.noOutput": "no output",
         "transcript.working": "working…",
 
         "usage.title": "Claude usage",

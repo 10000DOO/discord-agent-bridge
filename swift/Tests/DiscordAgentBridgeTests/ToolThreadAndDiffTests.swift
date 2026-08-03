@@ -49,7 +49,7 @@ private final class FakePosts: @unchecked Sendable {
 
 // MARK: - Pure formatters
 
-@Suite("toolSummary / toolThreadName / truncate")
+@Suite("toolSummary / work-log lines / truncate")
 struct ToolFormatTests {
     @Test func toolSummaryPerTool() {
         #expect(toolSummary(toolName: "Edit", input: .object(["file_path": .string("/ws/a.ts")])) == "/ws/a.ts")
@@ -58,12 +58,49 @@ struct ToolFormatTests {
         #expect(toolSummary(toolName: "WebSearch", input: .object(["query": .string("swift")])) == "swift")
     }
 
-    @Test func toolThreadNameCapsAndSummarizes() {
-        #expect(toolThreadName(toolName: "Edit", input: .object(["file_path": .string("/ws/a.ts")])) == "Edit: /ws/a.ts")
-        #expect(toolThreadName(toolName: "Bash", input: .object(["command": .string("ls -la")])) == "Bash: ls -la")
+    @Test func toolSummaryClipsFreeFormFieldsAtLimit() {
+        let cmd = String(repeating: "x", count: 120)
+        #expect(toolSummary(toolName: "Bash", input: .object(["command": .string(cmd)])).count == 60)
+        #expect(toolSummary(toolName: "Bash", input: .object(["command": .string(cmd)]), limit: 200).count == 120)
+        // A path is never clipped by `limit` — the call line needs the whole thing.
         let longPath = "/" + String(repeating: "p", count: 200)
-        let name = toolThreadName(toolName: "Read", input: .object(["file_path": .string(longPath)]))
-        #expect(DiscordText.utf16Len(name) <= DiscordText.threadNameLimit)
+        #expect(toolSummary(toolName: "Read", input: .object(["file_path": .string(longPath)])) == longPath)
+    }
+
+    @Test func callLineIsOneLineWithBackticksNeutralized() {
+        #expect(formatToolCallLine(toolName: "Bash", input: .object(["command": .string("ls -la")])) == "● **Bash** `ls -la`")
+        // Multi-line command must not break the inline code span.
+        let line = formatToolCallLine(toolName: "Bash", input: .object(["command": .string("cd /ws \\\n  && `id`")]))
+        #expect(!line.contains("\n"))
+        #expect(line == "● **Bash** `cd /ws \\ && 'id'`")
+        // No summarizable field → bare tool name, no empty code span.
+        #expect(formatToolCallLine(toolName: "Read", input: .object([:])) == "● **Read**")
+    }
+
+    @Test func resultCollapsesOnSuccessAndKeepsBodyOnError() {
+        // Short success → size + verbatim body.
+        let short = formatToolResult(toolName: "Bash", content: "a\nb\nc", ok: true)
+        #expect(short.hasPrefix("⎿ Bash · 3줄"))
+        #expect(short.contains("```\na\nb\nc\n```"))
+
+        // Long success → size only, body dropped.
+        let long = formatToolResult(toolName: "Read", content: String(repeating: "line\n", count: 200), ok: true)
+        #expect(long == "⎿ Read · 200줄")
+
+        // Failure → always keeps the body, however long.
+        let failed = formatToolResult(toolName: "Bash", content: String(repeating: "boom\n", count: 200), ok: false)
+        #expect(failed.hasPrefix("⎿ Bash · 오류 · 200줄"))
+        #expect(failed.contains("boom"))
+        #expect(DiscordText.utf16Len(failed) < 1200)
+
+        #expect(formatToolResult(toolName: "Bash", content: "   ", ok: true) == "⎿ Bash · 출력 없음")
+        #expect(formatToolResult(toolName: nil, content: "x", ok: true).hasPrefix("⎿ 1줄"))
+    }
+
+    @Test func resultBodyCannotEscapeItsFence() {
+        let out = formatToolResult(toolName: "Read", content: "before\n```\nfenced\n```\nafter", ok: true)
+        // Exactly the opening and closing fence this formatter added — none from the content.
+        #expect(out.components(separatedBy: "```").count - 1 == 2)
     }
 
     @Test func truncateAlias() {
@@ -211,9 +248,11 @@ struct ToolThreadHandlerTests {
         await h.handleToolResult(id: "t1", ok: true, content: "output", parentToolUseId: nil)
         #expect(fake.names == ["작업 내역"])
         let contents = fake.posts.map(\.content)
-        #expect(contents.contains { $0.contains("Bash: ls -la") })
-        #expect(contents.contains { $0.contains("결과") })
+        #expect(contents.contains { $0.contains("● **Bash** `ls -la`") })
+        #expect(contents.contains { $0.hasPrefix("⎿ Bash · 1줄") })
         #expect(contents.contains { $0.contains("output") })
+        // The old JSON dump of the input is gone.
+        #expect(!contents.contains { $0.contains("\"command\"") })
     }
 
     @Test func reusesOneThreadForMultipleMainTools() async {
@@ -253,7 +292,7 @@ struct ToolThreadHandlerTests {
         await h.handleToolResult(id: "t1", ok: true, content: "done", parentToolUseId: nil)
         let contents = fake.posts.map(\.content)
         #expect(!contents.contains { $0.contains("\"file_path\"") })
-        #expect(contents.contains { $0.contains("결과") })
+        #expect(contents.contains { $0.hasPrefix("⎿ Edit · 1줄") })
     }
 
     @Test func errorHeaderOnFailedResult() async {
