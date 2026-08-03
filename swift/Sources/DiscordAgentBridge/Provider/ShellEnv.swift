@@ -83,7 +83,8 @@ public func resolveCustomEnv(_ opts: ResolveCustomEnvOptions = ResolveCustomEnvO
 public func customBackendLabel(_ opts: ResolveCustomEnvOptions = ResolveCustomEnvOptions()) -> String {
     let env = resolveCustomEnv(opts).env
     if let model = env["ANTHROPIC_MODEL"], !model.isEmpty {
-        return "Custom (\(model))"
+        // Operator-set env value: an SDK alias becomes its wire id, anything else prints as-is.
+        return "Custom (\(modelDisplayText(model)))"
     }
     return "Custom"
 }

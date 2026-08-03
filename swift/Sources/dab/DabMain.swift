@@ -696,7 +696,8 @@ struct EventHandler: GatewayEventHandler {
             // Claude live session: updateBinding also fires session.setModel (W11-g).
             let modelMessage: String
             switch modelResult {
-            case .ok: modelMessage = I18n.t("cmd.model.switched", ["model": value])
+            // Persist the alias the autocomplete submitted; confirm it as the concrete wire id.
+            case .ok: modelMessage = I18n.t("cmd.model.switched", ["model": modelDisplayText(value)])
             case .noBinding: modelMessage = noSession
             case .invalidEffort, .applyFailed, .persistFailed: modelMessage = I18n.t("cmd.model.failed")
             }
@@ -1060,11 +1061,20 @@ struct EventHandler: GatewayEventHandler {
                 ? global.defaults.codexModel
                 : global.defaults.claudeModel
             var models = await catalog.models(configured: configuredModel.isEmpty ? nil : configuredModel)
-            if !panelDefaults.model.isEmpty,
-               !models.contains(where: { $0.value == panelDefaults.model }) {
-                models.insert(ModelChoice(value: panelDefaults.model, label: panelDefaults.model), at: 0)
+            if !panelDefaults.model.isEmpty {
+                // Preselect the row that names this model (config.json's bare `opus` → the SDK's
+                // `opus[1m]` row); only a genuinely unknown id gets a row minted for it.
+                if let same = modelRowMatching(panelDefaults.model, in: models) {
+                    panelDefaults.model = same.value
+                } else {
+                    models.insert(
+                        ModelChoice(value: panelDefaults.model, label: modelDisplayText(panelDefaults.model)),
+                        at: 0
+                    )
+                }
             }
             if models.isEmpty {
+                // Degraded only (sidecar down AND nothing configured): the alias is all we have.
                 let v = panelDefaults.model.isEmpty ? "opus" : panelDefaults.model
                 models = [ModelChoice(value: v, label: v)]
             }
@@ -1921,7 +1931,7 @@ struct EventHandler: GatewayEventHandler {
                 if wizard.isReconfigure() {
                     // Backend-switch confirm: stop live session then rebind same channel (TS switchSession).
                     if let p = wizard.startParams {
-                        let model = p.model.isEmpty ? nil : p.model
+                        let model = modelForPersistedBinding(p.model)
                         let effort = p.effort.isEmpty ? nil : p.effort
                         let perm = p.permMode.isEmpty ? nil : p.permMode
                         let ok = await SessionLifecycle.shared.reconfigureBinding(
@@ -2008,7 +2018,7 @@ struct EventHandler: GatewayEventHandler {
                     if !fromPreset {
                         let draft = PresetDraft(
                             backend: p.backend.rawValue,
-                            model: p.model.isEmpty ? nil : p.model,
+                            model: modelForPersistedBinding(p.model),
                             effort: p.effort.isEmpty ? nil : p.effort,
                             permMode: p.permMode.isEmpty ? nil : p.permMode,
                             profile: p.profile
@@ -2032,7 +2042,7 @@ struct EventHandler: GatewayEventHandler {
                         replyText = I18n.t("cmd.start.channelCreated", ["channel": "<#\(bindChannelId)>"])
                     } else {
                         let extra = [
-                            p.model.isEmpty ? nil : "model=\(p.model)",
+                            isProviderDefaultModelSelection(p.model) ? nil : "model=\(modelDisplayText(p.model))",
                             p.effort.isEmpty ? nil : "effort=\(p.effort)",
                             p.permMode.isEmpty ? nil : "perm=\(p.permMode)",
                         ].compactMap { $0 }.joined(separator: " ")
@@ -2856,7 +2866,7 @@ struct EventHandler: GatewayEventHandler {
     /// `channelId` defaults to wizard params (same channel); A4D start passes a newly created
     /// session channel id when available.
     private func bindFromWizard(_ p: WizardStartParams, channelId: String? = nil) async -> Bool {
-        let model = p.model.isEmpty ? nil : p.model
+        let model = modelForPersistedBinding(p.model)
         let effort = p.effort.isEmpty ? nil : p.effort
         let perm = p.permMode.isEmpty ? nil : p.permMode
         let bindId = channelId ?? p.channelId

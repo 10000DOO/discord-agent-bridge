@@ -151,7 +151,8 @@ public func formatStatsLines(bindings: [StatsBindingLine]) -> [String] {
     if bindings.isEmpty { return ["(none)"] }
     return bindings.map { b in
         var line = "<#\(b.channelId)> · \(b.backend.rawValue)"
-        if let m = b.model { line += " · `\(m)`" }
+        // Stored value is an alias; print the concrete wire id it names.
+        if let m = b.model { line += " · `\(modelDisplayText(m))`" }
         if let e = b.effort { line += " · effort=\(e)" }
         line += " · queue \(b.queueDepth)"
         if b.running { line += " · running" }

@@ -65,9 +65,63 @@ describe('getClaudeModels (dynamic, mocked SDK)', () => {
     ]);
     const choices = await getClaudeModels({ queryFn });
     expect(choices).toEqual([
-      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-      { value: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6', description: 'Claude Opus 4.6 model' },
+      { value: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', description: 'Claude Sonnet 4.5 model' },
     ]);
+  });
+
+  it('keeps the SDK alias as the value and carries the wire id alongside for display', async () => {
+    const { queryFn } = fakeQueryFn(async () => [
+      { ...model('opus[1m]', 'Opus (1M context)'), resolvedModel: 'claude-opus-5[1m]' },
+      { ...model('sonnet', 'Sonnet'), resolvedModel: 'claude-sonnet-5' },
+      // Older SDKs omit resolvedModel entirely — the row stays as-is rather than disappearing.
+      model('haiku', 'Haiku'),
+    ]);
+
+    const choices = await getClaudeModels({ queryFn });
+
+    // The alias is what a binding persists, so a re-pointed alias follows the provider with no
+    // migration; `resolvedModel` is display-only and re-reads as the next release's id.
+    expect(choices).toEqual([
+      {
+        value: 'opus[1m]',
+        label: 'Opus (1M context)',
+        resolvedModel: 'claude-opus-5[1m]',
+        description: 'Opus (1M context) model',
+      },
+      {
+        value: 'sonnet',
+        label: 'Sonnet',
+        resolvedModel: 'claude-sonnet-5',
+        description: 'Sonnet model',
+      },
+      { value: 'haiku', label: 'Haiku', description: 'Haiku model' },
+    ]);
+  });
+
+  it("drops the generic 'default' row when a named row already covers the same resolved id", async () => {
+    const { queryFn } = fakeQueryFn(async () => [
+      { ...model('default', 'Default (recommended)'), resolvedModel: 'claude-opus-5[1m]' },
+      { ...model('opus[1m]', 'Opus (1M context)'), resolvedModel: 'claude-opus-5[1m]' },
+      { ...model('sonnet', 'Sonnet'), resolvedModel: 'claude-sonnet-5' },
+    ]);
+
+    const choices = await getClaudeModels({ queryFn });
+
+    // Both rows name the same model, so without the dedup the picker would show it twice. The
+    // named row wins — follow-the-provider stays available as the wizard's own row.
+    expect(choices.map((c) => c.value)).toEqual(['opus[1m]', 'sonnet']);
+  });
+
+  it("keeps a 'default' row that no named row covers", async () => {
+    const { queryFn } = fakeQueryFn(async () => [
+      { ...model('default', 'Default (recommended)'), resolvedModel: 'claude-opus-5[1m]' },
+      { ...model('sonnet', 'Sonnet'), resolvedModel: 'claude-sonnet-5' },
+    ]);
+
+    const choices = await getClaudeModels({ queryFn });
+
+    expect(choices.map((c) => c.value)).toEqual(['default', 'sonnet']);
   });
 
   it('falls back to the English aliases when supportedModels() REJECTS', async () => {

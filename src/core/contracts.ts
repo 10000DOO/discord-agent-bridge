@@ -160,10 +160,20 @@ export interface ResumableSession {
 // effort step narrow to what the chosen model accepts. Lives here (not providerCatalog)
 // so ModeCatalog can reference it without contracts back-referencing an implementation
 // module — the layer direction stays modes/providerCatalog → contracts.
+//
+// `resolvedModel` / `description` are DISPLAY-ONLY companions of a Claude alias row: the
+// persisted `value` stays the alias ('opus[1m]') so a binding follows the provider, while
+// every user-facing surface names the concrete wire id the alias points at right now.
 export interface ModelChoice {
   value: string;
   label: string;
   supportedEffortLevels?: string[];
+  // Concrete wire id the alias resolves to today ('claude-opus-5[1m]'). Re-reads as the
+  // next release's id once the SDK re-points the alias — nothing persisted changes.
+  resolvedModel?: string;
+  // The SDK's one-line blurb ('Opus 5 with 1M context · Best for everyday, complex tasks'),
+  // shown as the dropdown option's second line where Discord allows one.
+  description?: string;
 }
 
 // The per-backend "vocabulary" a mode contributes to the Discord UI (wizard, /config,

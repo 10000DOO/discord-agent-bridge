@@ -167,7 +167,7 @@ struct ChannelWizardTests {
         #expect(w.current().backend == .claude)
         #expect(await w.handle(WizardInput(id: "backend.next")) == .model)
         #expect(w.current().backend == .codex)
-        #expect(w.current().model == "gpt-5.5")
+        #expect(w.current().model == providerDefaultModelSelection)
         #expect(w.current().effort == "medium")
         #expect(w.current().permMode == "read-only")
 
@@ -299,7 +299,7 @@ struct ChannelWizardTests {
         // pending model discarded on back; committed backend kept
         #expect(await w.handle(WizardInput(id: "wizard.back")) == .backend)
         #expect(w.current().backend == .codex)
-        #expect(w.current().model == "gpt-5.5") // applyBackend default, not pending gpt-5.4
+        #expect(w.current().model == providerDefaultModelSelection) // provider default, not pending gpt-5.4
         #expect(await w.handle(WizardInput(id: "backend.next")) == .model)
         #expect(w.current().backend == .codex)
     }
@@ -425,8 +425,8 @@ struct ChannelWizardTests {
         let entry = WizardEntry(backend: .codex, cwd: "/tmp/proj", permMode: "workspace-write")
         let (w, root) = try makeReconfigureWizard(entry: entry)
         defer { try? FileManager.default.removeItem(at: root) }
-        // Seeds: new-backend model/effort defaults; perm carried from entry.
-        #expect(w.current().model == "gpt-5.5")
+        // New-backend sessions follow the provider default; perm carries from entry.
+        #expect(w.current().model == providerDefaultModelSelection)
         #expect(w.current().effort == "medium")
         #expect(w.current().permMode == "workspace-write")
         #expect(w.current().cwd == "/tmp/proj")
@@ -566,13 +566,13 @@ struct ChannelWizardTests {
             }
         }
         #expect(src.backends.contains(.custom))
-        #expect(src.models(for: .custom).map(\.value) == ["opus"])
+        #expect(src.models(for: .custom).map(\.value) == [providerDefaultModelSelection, "opus"])
         #expect(src.backends == Backend.allCases)
-        #expect(src.models(for: .claude).map(\.value) == ["opus"])
+        #expect(src.models(for: .claude).map(\.value) == [providerDefaultModelSelection, "opus"])
         #expect(src.efforts(for: .claude, model: "opus").map(\.value) == ["high"])
         #expect(src.perms(for: .codex).map(\.value) == ["read-only"])
         #expect(src.defaults.backend == .claude)
-        #expect(src.defaults.model == "opus")
+        #expect(src.defaults.model == providerDefaultModelSelection)
     }
 
     @Test func capSelectOptionsKeepsSelectedPast25() {
@@ -692,7 +692,7 @@ struct ChannelWizardPresetTests {
         await w.handle(WizardInput(id: "dir:here"))
         #expect(await w.handle(WizardInput(id: "preset.pick", value: "claude-min")) == .done)
         #expect(w.startParams?.backend == .claude)
-        #expect(w.startParams?.model == "opus")
+        #expect(w.startParams?.model == providerDefaultModelSelection)
         #expect(w.startParams?.effort == "high")
         #expect(w.startParams?.permMode == "default")
     }

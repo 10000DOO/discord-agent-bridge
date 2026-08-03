@@ -244,24 +244,32 @@ public struct ClaudeCatalogResult: Sendable, Equatable {
         guard let obj = result.objectValue else {
             throw SidecarRpcError(code: "invalid_request", message: "claude.catalog result not an object")
         }
-        func modelChoices(_ key: String, withEffortLevels: Bool) -> [ModelChoice] {
+        // `isModelRow`: only the `models` array carries effort levels and the display-only
+        // resolvedModel/description; permission rows are plain {value,label}.
+        func modelChoices(_ key: String, isModelRow: Bool) -> [ModelChoice] {
             guard let arr = obj[key]?.arrayValue else { return [] }
             return arr.compactMap { item -> ModelChoice? in
                 guard let o = item.objectValue,
                       let value = o["value"]?.stringValue,
                       let label = o["label"]?.stringValue
                 else { return nil }
-                let levels = withEffortLevels
-                    ? o["supportedEffortLevels"]?.arrayValue?.compactMap { $0.stringValue }
-                    : nil
-                return ModelChoice(value: value, label: label, supportedEffortLevels: levels)
+                guard isModelRow else { return ModelChoice(value: value, label: label) }
+                // Display-only companions; absent on an older sidecar, which just means the
+                // screen keeps printing the alias instead of the concrete wire id.
+                return ModelChoice(
+                    value: value,
+                    label: label,
+                    supportedEffortLevels: o["supportedEffortLevels"]?.arrayValue?.compactMap { $0.stringValue },
+                    resolvedModel: o["resolvedModel"]?.stringValue,
+                    description: o["description"]?.stringValue
+                )
             }
         }
         func strings(_ key: String) -> [String] {
             obj[key]?.arrayValue?.compactMap { $0.stringValue } ?? []
         }
-        self.models = modelChoices("models", withEffortLevels: true)
-        self.permissionModes = modelChoices("permissionModes", withEffortLevels: false)
+        self.models = modelChoices("models", isModelRow: true)
+        self.permissionModes = modelChoices("permissionModes", isModelRow: false)
         self.effortLevels = strings("effortLevels")
         self.runtimeEffortLevels = strings("runtimeEffortLevels")
         self.defaultEffort = obj["defaultEffort"]?.stringValue ?? ""

@@ -213,8 +213,45 @@ async function* emptyPrompt(): AsyncGenerator<SDKUserMessage> {
   // Intentionally empty: end the stream at once.
 }
 
+// The row's VALUE is the SDK's own alias ('opus[1m]', 'sonnet') — exactly what the native
+// Claude Code CLI persists (~/.claude/settings.json holds `"model": "opus[1m]"`). An alias is a
+// pointer to "whatever Opus is right now", so a binding rides a new release automatically and no
+// stored file ever needs migrating.
+//
+// `resolvedModel` and `description` ride along for DISPLAY only: every user-facing surface names
+// the concrete wire id ('claude-opus-5[1m]'), which therefore re-reads as 'claude-opus-6[1m]' the
+// day that ships — same stored alias, new text on screen.
+//
+// The generic 'default' row is dropped when a named row resolves to the same model (the SDK lists
+// both 'default' and 'opus[1m]' for the current Opus, which would otherwise be two identical
+// entries). Follow-the-provider stays available as the wizard's own row, so nothing is lost.
+function claudeModelChoices(models: ModelInfo[]): ModelChoice[] {
+  const resolvedOf = (m: ModelInfo) =>
+    m.resolvedModel && m.resolvedModel.length > 0 ? m.resolvedModel : undefined;
+  // A named row ('Opus (1M context)') always beats the generic 'default' row for the same model.
+  const namedTargets = new Set(
+    models.filter((m) => m.value !== 'default').map((m) => resolvedOf(m) ?? m.value),
+  );
+  const choices: ModelChoice[] = [];
+  for (const m of models) {
+    const resolved = resolvedOf(m);
+    if (m.value === 'default' && namedTargets.has(resolved ?? m.value)) continue;
+    choices.push({
+      value: m.value,
+      label: m.displayName || m.value,
+      ...(resolved ? { resolvedModel: resolved } : {}),
+      ...(m.description ? { description: m.description } : {}),
+      ...(m.supportedEffortLevels && m.supportedEffortLevels.length > 0
+        ? { supportedEffortLevels: [...m.supportedEffortLevels] }
+        : {}),
+    });
+  }
+  return choices;
+}
+
 // Fetch the Claude model list from the SDK's supportedModels() and map each to an
-// English {value,label} (value = model id, label = the SDK's displayName). Runs a
+// English {value,label} (value = SDK alias, label = displayName, plus the display-only
+// resolvedModel/description the Host renders the concrete wire id from). Runs a
 // short-lived query() purely to reach the control request, races it against a
 // timeout, and always closes the query. Any failure resolves to the alias fallback.
 async function fetchClaudeModels(queryFn: QueryFn, logger?: Logger): Promise<ModelChoice[]> {
@@ -222,15 +259,9 @@ async function fetchClaudeModels(queryFn: QueryFn, logger?: Logger): Promise<Mod
   try {
     q = queryFn({ prompt: emptyPrompt() });
     const models = await withTimeout(q.supportedModels(), SUPPORTED_MODELS_TIMEOUT_MS);
-    const choices = models
-      .filter((m): m is ModelInfo => Boolean(m && typeof m.value === 'string' && m.value.length > 0))
-      .map((m) => ({
-        value: m.value,
-        label: m.displayName || m.value,
-        ...(m.supportedEffortLevels && m.supportedEffortLevels.length > 0
-          ? { supportedEffortLevels: [...m.supportedEffortLevels] }
-          : {}),
-      }));
+    const choices = claudeModelChoices(
+      models.filter((m): m is ModelInfo => Boolean(m && typeof m.value === 'string' && m.value.length > 0))
+    );
     if (choices.length === 0) return fallbackChoices();
     return choices;
   } catch (err) {

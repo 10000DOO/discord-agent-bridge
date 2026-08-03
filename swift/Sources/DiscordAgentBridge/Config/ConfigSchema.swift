@@ -98,7 +98,9 @@ public struct DefaultsSection: Codable, Sendable, Equatable {
 
     public init(
         mode: String = "claude",
-        claudeModel: String = "opus",
+        // Empty → follow whatever the provider currently recommends. A concrete id here would
+        // freeze new installs on today's model, and an alias ('opus') is not one the SDK lists.
+        claudeModel: String = "",
         codexModel: String = "",
         permissionMode: String = "default",
         permissionProfile: String? = nil,
@@ -636,7 +638,8 @@ func configDefaultsDict() -> [String: Any] {
         ] as [String: Any],
         "defaults": [
             "mode": "claude",
-            "claudeModel": "opus",
+            // Empty → follow the provider's current recommendation (see DefaultsSection.init).
+            "claudeModel": "",
             "codexModel": "",
             "permissionMode": "default",
             "permissionProfile": NSNull(),

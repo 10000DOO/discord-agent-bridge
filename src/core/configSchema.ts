@@ -228,7 +228,9 @@ export const CONFIG_DEFAULTS = {
   },
   defaults: {
     mode: 'claude' as const,
-    claudeModel: 'opus',
+    // Empty → follow whatever the provider currently recommends. A concrete id here would
+    // freeze new installs on today's model, and an alias ('opus') is not one the SDK lists.
+    claudeModel: '',
     // Empty → the CodexMode omits `-m`, so `codex` uses its own config.toml default
     // model (operator-configured). Set a value here to force a specific Codex model.
     codexModel: '',

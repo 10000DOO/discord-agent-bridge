@@ -501,7 +501,7 @@ public final class ConfigPanel: @unchecked Sendable {
         admin: \(formatRoleList(adminRoleIds))
         execute: \(formatRoleList(executeRoleIds))
         read-only: \(formatRoleList(readOnlyRoleIds))
-        backend=\(d.backend) model=\(d.model) effort=\(d.effort) perm=\(d.permMode)
+        backend=\(d.backend) model=\(modelDisplayTextOrAuto(d.model)) effort=\(d.effort) perm=\(d.permMode)
         """
         return .saved(summary: summary)
     }
@@ -610,7 +610,8 @@ public final class ConfigPanel: @unchecked Sendable {
         } catch {
             return .autosaved(notice: I18n.t("config.autosaved.modelFailed", ["error": "\(error)"]))
         }
-        return .autosaved(notice: I18n.t("config.autosaved.model", ["model": model]))
+        // Persist the alias, but confirm it back as the concrete wire id it names.
+        return .autosaved(notice: I18n.t("config.autosaved.model", ["model": modelDisplayText(model)]))
     }
 
     private func autosaveEffort(_ effort: String) async -> ConfigPanelResult {
@@ -847,7 +848,7 @@ public final class ConfigPanel: @unchecked Sendable {
         roles admin: \(formatRoleList(d.adminRoleIds))
         roles execute: \(formatRoleList(d.executeRoleIds))
         roles read-only: \(formatRoleList(d.readOnlyRoleIds))
-        defaults: mode=`\(d.backend)` model=`\(d.model)` effort=`\(d.effort)` perm=`\(d.permMode)` locale=`\(d.locale)`
+        defaults: mode=`\(d.backend)` model=`\(modelDisplayTextOrAuto(d.model))` effort=`\(d.effort)` perm=`\(d.permMode)` locale=`\(d.locale)`
         limits: maxSessions/user=\(lim.maxSessionsPerUser) permTimeout=\(lim.permissionTimeoutSec)s codexTimeoutMs=\(lim.codexTimeoutMs)
 
         Role picks batch until **Save roles**. Backend / model / effort / perm / locale auto-save on change. 🔔 opens notifications.
@@ -884,7 +885,9 @@ private func selectOptions(
 ) -> [WizardSelectOption] {
     var list = Array(choices.prefix(25))
     if !selected.isEmpty, !list.contains(where: { $0.value == selected }) {
-        list.insert(ModelChoice(value: selected, label: selected), at: 0)
+        // Defensive: the caller normally preselects a real row, so this is the unknown-value case.
+        // Name the wire id when we know one rather than echoing a bare alias.
+        list.insert(ModelChoice(value: selected, label: modelDisplayText(selected)), at: 0)
         if list.count > 25 { list = Array(list.prefix(25)) }
     }
     if list.isEmpty {
@@ -892,7 +895,13 @@ private func selectOptions(
         list = [ModelChoice(value: v, label: v)]
     }
     return list.map {
-        WizardSelectOption(label: $0.label, value: $0.value, isDefault: $0.value == selected)
+        // Model rows carry a resolved wire id + blurb; effort/permission rows fall through as-is.
+        WizardSelectOption(
+            label: modelOptionLabel($0),
+            value: $0.value,
+            isDefault: $0.value == selected,
+            description: modelOptionDescription($0)
+        )
     }
 }
 

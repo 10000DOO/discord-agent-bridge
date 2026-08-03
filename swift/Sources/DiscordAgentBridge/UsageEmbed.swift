@@ -310,7 +310,10 @@ public func buildUsageEmbed(
     }
 
     if let meta {
-        let configuredModel = meta.model?.isEmpty == false ? meta.model! : I18n.t("usage.model.auto")
+        // The binding stores an alias; name the concrete wire id it currently points at.
+        let configuredModel = meta.model?.isEmpty == false
+            ? modelDisplayText(meta.model!)
+            : I18n.t("usage.model.auto")
         let effort = meta.effort?.isEmpty == false ? meta.effort! : I18n.t("usage.effort.default")
         let permission = permLabel(meta.permMode ?? "auto")
         fields.append(UsageEmbedField(

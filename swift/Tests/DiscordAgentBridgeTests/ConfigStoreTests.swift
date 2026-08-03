@@ -41,7 +41,8 @@ struct ConfigStoreTests {
         let loaded = try await ConfigStore(baseDir: dir).load()
         #expect(loaded.version == CONFIG_VERSION)
         #expect(loaded.defaults.mode == "claude")
-        #expect(loaded.defaults.claudeModel == "opus")
+        // Empty → follow the provider's current recommendation (no frozen id, no alias).
+        #expect(loaded.defaults.claudeModel == "")
         #expect(loaded.limits.permissionTimeoutSec == 0)
         #expect(loaded.policy.unknownCommand == "confirm")
         #expect(loaded.autoAllowClaudeTools == ["Read", "Glob", "Grep"])

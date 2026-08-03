@@ -13,7 +13,15 @@ import {
 import type { Logger } from '../../core/contracts.js';
 
 export interface ClaudeCatalogResult {
-  models: { value: string; label: string; supportedEffortLevels?: string[] }[];
+  // `value` is the SDK alias (what the Host persists); `resolvedModel`/`description` are the
+  // display-only companions the Host renders the concrete wire id + blurb from.
+  models: {
+    value: string;
+    label: string;
+    supportedEffortLevels?: string[];
+    resolvedModel?: string;
+    description?: string;
+  }[];
   permissionModes: { value: string; label: string }[];
   effortLevels: string[];
   runtimeEffortLevels: string[];

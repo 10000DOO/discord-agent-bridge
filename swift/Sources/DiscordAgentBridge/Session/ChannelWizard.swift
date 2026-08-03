@@ -201,8 +201,10 @@ public func isWizardCustomId(_ customId: String) -> Bool {
 }
 
 /// Discord option description clamp (select description max 100).
+/// The stored model is an alias; show the concrete wire id it names right now.
 public func summarizePreset(_ p: Preset) -> String {
-    let raw = "\(p.backend) · \(p.model ?? "-") · \(p.effort ?? "-") · \(p.profile ?? p.permMode ?? "-")"
+    let model = p.model.map(modelDisplayText) ?? "-"
+    let raw = "\(p.backend) · \(model) · \(p.effort ?? "-") · \(p.profile ?? p.permMode ?? "-")"
     if raw.count <= 100 { return raw }
     return String(raw.prefix(99)) + "…"
 }
@@ -221,7 +223,8 @@ public func loadWizardOptionSource(
     for backend in Backend.allCases {
         let cat = catalogFor(backend)
         // Warm async catalog (Claude caches the snapshot for subsequent effortChoices).
-        let models = await cat.models(configured: nil)
+        let models = [ModelChoice(value: providerDefaultModelSelection, label: "provider default (latest)")]
+            + (await cat.models(configured: nil))
         modelsFor[backend] = models
         permsFor[backend] = await cat.permissionChoices()
         let defE = await cat.defaultEffort() ?? ""
@@ -236,11 +239,10 @@ public func loadWizardOptionSource(
     }
 
     let defaultBackend = Backend.claude
-    let models = modelsFor[defaultBackend] ?? []
     let perms = permsFor[defaultBackend] ?? []
     let defaults = WizardDefaults(
         backend: defaultBackend,
-        model: models.first?.value ?? "",
+        model: providerDefaultModelSelection,
         effort: defaultEffortFor[defaultBackend] ?? "",
         permMode: perms.first?.value ?? "default"
     )
@@ -380,11 +382,10 @@ public final class ChannelWizard: @unchecked Sendable {
             self.kind = .reconfigure
             self.firstStep = .model
             self.step = .model
-            let models = options.models(for: entry.backend)
             self.selection = WizardSelection(
                 cwd: entry.cwd,
                 backend: entry.backend,
-                model: entry.model ?? models.first?.value ?? options.defaults.model,
+                model: entry.model ?? providerDefaultModelSelection,
                 effort: entry.effort ?? options.defaultEffort(for: entry.backend),
                 permMode: entry.permMode,
                 profile: entry.profile
@@ -551,9 +552,7 @@ public final class ChannelWizard: @unchecked Sendable {
                 return
             }
             selection.backend = backend
-            selection.model = picked.model
-                ?? options.models(for: backend).first?.value
-                ?? selection.model
+            selection.model = picked.model ?? providerDefaultModelSelection
             selection.effort = picked.effort ?? options.defaultEffort(for: backend)
             selection.permMode = picked.permMode ?? options.defaults.permMode
             selection.profile = picked.profile
@@ -636,8 +635,7 @@ public final class ChannelWizard: @unchecked Sendable {
 
     private func applyBackend(_ backend: Backend) {
         selection.backend = backend
-        let models = options.models(for: backend)
-        selection.model = models.first?.value ?? selection.model
+        selection.model = providerDefaultModelSelection
         selection.effort = options.defaultEffort(for: backend)
         let perms = options.perms(for: backend)
         selection.permMode = perms.first?.value ?? selection.permMode
@@ -706,7 +704,13 @@ public final class ChannelWizard: @unchecked Sendable {
                 description: stepDescription(.model),
                 selectId: "model",
                 options: options.models(for: selection.backend).map { m in
-                    WizardSelectOption(label: m.label, value: m.value, isDefault: m.value == selected)
+                    // First line names the concrete wire id, second line the friendly name + blurb.
+                    WizardSelectOption(
+                        label: modelOptionLabel(m),
+                        value: m.value,
+                        isDefault: m.value == selected,
+                        description: modelOptionDescription(m)
+                    )
                 },
                 confirmId: "model.next",
                 confirmLabel: I18n.t("wizard.next"),

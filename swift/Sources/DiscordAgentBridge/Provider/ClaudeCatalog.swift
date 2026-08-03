@@ -106,6 +106,9 @@ public final class ClaudeCatalog: ProviderCatalog, @unchecked Sendable {
             s.cached = snap
             s.inFlight = nil
         }
+        // Every probe refreshes the alias → wire id map, so compact surfaces that cannot probe
+        // (usage embed, stats line, /model confirmation) can still name the concrete model.
+        ModelDisplayCatalog.remember(snap.models)
         return snap
     }
 
