@@ -26,6 +26,7 @@ export function wellKnownUserBinDirs(opts: {
   const common = [
     path.join(home, '.local', 'bin'),
     path.join(home, '.grok', 'bin'),
+    path.join(home, '.dab', 'bin'),
     path.join(home, '.cargo', 'bin'),
   ];
   if (opts.platform === 'darwin') {

@@ -29,10 +29,16 @@ describe('wellKnownUserBinDirs', () => {
     expect(dirs).toEqual([
       path.join('/Users/alice', '.local', 'bin'),
       path.join('/Users/alice', '.grok', 'bin'),
+      path.join('/Users/alice', '.dab', 'bin'),
       path.join('/Users/alice', '.cargo', 'bin'),
       '/opt/homebrew/bin',
       '/usr/local/bin',
     ]);
+  });
+
+  it('includes ~/.dab/bin on darwin (dab CLI install location)', () => {
+    const dirs = wellKnownUserBinDirs({ homeDir: '/Users/alice', platform: 'darwin' });
+    expect(dirs).toContain(path.join('/Users/alice', '.dab', 'bin'));
   });
 
   it('lists portable home bins plus /usr/local and linuxbrew on linux (order)', () => {
@@ -40,6 +46,7 @@ describe('wellKnownUserBinDirs', () => {
     expect(dirs).toEqual([
       path.join('/home/alice', '.local', 'bin'),
       path.join('/home/alice', '.grok', 'bin'),
+      path.join('/home/alice', '.dab', 'bin'),
       path.join('/home/alice', '.cargo', 'bin'),
       '/usr/local/bin',
       '/home/linuxbrew/.linuxbrew/bin',
@@ -57,6 +64,7 @@ describe('wellKnownUserBinDirs', () => {
     expect(dirs).toEqual([
       path.join(home, '.local', 'bin'),
       path.join(home, '.grok', 'bin'),
+      path.join(home, '.dab', 'bin'),
       path.join(home, '.cargo', 'bin'),
       path.join(local, 'Programs'),
     ]);
@@ -74,6 +82,7 @@ describe('wellKnownUserBinDirs', () => {
     expect(dirs[0]).toBe(path.join(home, '.local', 'bin'));
     expect(dirs).toContain(path.join(home, '.cargo', 'bin'));
     expect(dirs).toContain(path.join(home, '.grok', 'bin'));
+    expect(dirs).toContain(path.join(home, '.dab', 'bin'));
   });
 });
 
@@ -163,6 +172,17 @@ describe('resolveCliCommand', () => {
       env: { PATH: '' },
       existing: [bin],
       homeDir: '/Users/alice',
+      platform: 'darwin',
+    });
+    expect(found).toBe(bin);
+  });
+
+  it('finds dab in ~/.dab/bin via well-known dirs', () => {
+    const bin = path.join('/home/alice', '.dab', 'bin', 'dab');
+    const found = resolve('dab', {
+      env: { PATH: '' },
+      pathExists: (p) => p.endsWith(path.join('.dab', 'bin', 'dab')),
+      homeDir: '/home/alice',
       platform: 'darwin',
     });
     expect(found).toBe(bin);
