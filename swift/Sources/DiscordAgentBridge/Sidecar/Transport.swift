@@ -96,7 +96,7 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
     /// dirs), so a bare command that works in a login shell can fail to resolve here.
     /// `env`/`homeDir`/`isExecutable` are injectable for tests; production call sites (all of
     /// them) pass none and get the real environment.
-    static func resolveExecutable(
+    public static func resolveExecutable(
         _ command: String,
         env: [String: String] = ProcessInfo.processInfo.environment,
         homeDir: String = NSHomeDirectory(),

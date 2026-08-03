@@ -38,6 +38,13 @@ pids/
 # Runtime attachment-download directory (Discord file attachments land here)
 .dab-attachments/
 
+# Provider runtime update transaction artifacts. The stage/backup trees must live on the same
+# filesystem as node_modules for the promotion renames, so they are created here — a kill between
+# the renames leaves one behind, and it must never be committable.
+.dab-provider-runtime-stage-*/
+.dab-provider-runtime-backup-*/
+.dab-provider-runtime-transaction.json
+
 # Environment variables (keep an example committed)
 .env
 .env.*

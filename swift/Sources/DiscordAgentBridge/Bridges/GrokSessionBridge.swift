@@ -112,6 +112,10 @@ public actor GrokSessionBridge {
     /// `files`: images go out as ACP `image` blocks (base64), everything else as a text hint
     /// (`buildGrokPromptBlocks`, TS `acpSession.ts:431-441` parity).
     public func runTurn(channelId: String, ownerId: String? = nil, guildId: String = "", text: String, config: SessionConfig? = nil, files: [TurnFile] = []) async throws -> TurnResult {
+        if !(await ProviderRuntimeMaintenanceGate.shared.reserveTurnIfAvailable()) {
+            await ProviderRuntimeMaintenanceGate.shared.reserveTurn()
+        }
+        defer { Task { await ProviderRuntimeMaintenanceGate.shared.releaseTurn() } }
         // Read + install the gate with NO await between them, so a reentering job cannot install a
         // rival task against the same session (buffer/session cross-talk). The previous turn is
         // awaited INSIDE the task — that is where serialization happens.
@@ -137,6 +141,20 @@ public actor GrokSessionBridge {
     /// G-P2-04: any turn in-flight or waiting on this channel's gate chain.
     public func isTurnRunning(channelId: String) -> Bool {
         (turnDepth[channelId] ?? 0) > 0
+    }
+
+    public func isAnyTurnRunning() -> Bool {
+        turnDepth.values.contains { $0 > 0 }
+    }
+
+    /// Provider maintenance has already reserved the turn gate.  Idle ACP children must be
+    /// recreated so a subsequent turn executes the newly installed Grok binary.
+    public func restartRuntimeAfterUpdate() async -> Bool {
+        guard !isAnyTurnRunning() else { return false }
+        let held = channels
+        channels.removeAll()
+        for channel in held.values { await channel.client.close() }
+        return true
     }
 
     /// G-P2-04: turns waiting behind the running one (TS `queueDepth`).
