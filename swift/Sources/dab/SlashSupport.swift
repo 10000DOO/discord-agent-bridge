@@ -10,6 +10,8 @@ import NIOCore
 /// - Non-empty `subcommands` → subcommand group (`/agent`, `/mode`).
 func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.ApplicationCommandCreate {
     let adminPerms: [Permission]? = spec.requiresAdministrator ? [.administrator] : nil
+    // Only the top-level name is prefixed (`/dab-agent start`) — see dabCommandPrefix.
+    let name = dabCommandName(spec.name)
     if !spec.subcommands.isEmpty {
         let subs: [ApplicationCommand.Option] = spec.subcommands.map { sub in
             ApplicationCommand.Option(
@@ -22,8 +24,8 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
             )
         }
         return Payloads.ApplicationCommandCreate(
-            name: spec.name,
-            name_localizations: [.korean: spec.name, .englishUS: spec.name],
+            name: name,
+            name_localizations: [.korean: name, .englishUS: name],
             description: spec.description.en,
             description_localizations: localizations(spec.description),
             options: subs,
@@ -33,8 +35,8 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
     }
     if !spec.options.isEmpty {
         return Payloads.ApplicationCommandCreate(
-            name: spec.name,
-            name_localizations: [.korean: spec.name, .englishUS: spec.name],
+            name: name,
+            name_localizations: [.korean: name, .englishUS: name],
             description: spec.description.en,
             description_localizations: localizations(spec.description),
             options: spec.options.map(stringOption),
@@ -43,8 +45,8 @@ func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.Application
         )
     }
     return Payloads.ApplicationCommandCreate(
-        name: spec.name,
-            name_localizations: [.korean: spec.name, .englishUS: spec.name],
+        name: name,
+            name_localizations: [.korean: name, .englishUS: name],
             description: spec.description.en,
             description_localizations: localizations(spec.description),
             options: nil,

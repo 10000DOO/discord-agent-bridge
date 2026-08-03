@@ -564,7 +564,9 @@ struct EventHandler: GatewayEventHandler {
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-        let authAction: AuthAction = (cmd.name == "stop-all" || cmd.name == "setup" || cmd.name == "config" || cmd.name == "update")
+        // Discord sends the prefixed name (`dab-update`); everything below routes on the bare one.
+        let commandName = bareCommandName(cmd.name)
+        let authAction: AuthAction = (commandName == "stop-all" || commandName == "setup" || commandName == "config" || commandName == "update")
             ? .admin : .drive
         // G-P0-05: per-project ACL from store narrows (nil = no extra gate).
         let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
@@ -572,7 +574,7 @@ struct EventHandler: GatewayEventHandler {
         // unconditionally so whoever runs it first can claim admin without touching Discord's own
         // role UI. Fires at most once per guild — adminUserIds is no longer empty afterward.
         let setupBootstrap: Bool
-        if cmd.name == "setup", let bootstrapGuildId = payload.guild_id?.rawValue {
+        if commandName == "setup", let bootstrapGuildId = payload.guild_id?.rawValue {
             setupBootstrap = await Authorizer(config: .shared).isSetupBootstrapEligible(guildId: bootstrapGuildId)
         } else {
             setupBootstrap = false
@@ -616,7 +618,7 @@ struct EventHandler: GatewayEventHandler {
         let life = SessionLifecycle.shared
         let noSession = I18n.t("router.noSession")
 
-        switch cmd.name {
+        switch commandName {
         case "stop":
             // Stopping the live bridge can be slow; ack before it starts so Discord's
             // three-second interaction token never expires (mirrors /agent start's defer).
@@ -1523,7 +1525,8 @@ struct EventHandler: GatewayEventHandler {
         let catalog = providerCatalog(for: backend)
 
         let suggestions: [AutocompleteChoice]
-        switch cmd.name {
+        // Autocomplete carries the prefixed name too — route on the bare one.
+        switch bareCommandName(cmd.name) {
         case "model":
             let models = await autocompleteModels(backend: backend, catalog: catalog)
             suggestions = filterAutocompleteChoices(models, query: query)

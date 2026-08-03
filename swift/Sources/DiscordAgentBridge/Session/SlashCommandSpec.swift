@@ -1,5 +1,28 @@
 import Foundation
 
+// MARK: - Discord-visible command prefix
+
+/// Prefix on every Discord-visible top-level command (`/dab-update`, `/dab-agent`), so this bot's
+/// commands cannot be shadowed by another bot — or a client-mod plugin — owning the same bare name.
+///
+/// Specs, routing switches, and tests all keep the BARE name (`update`). The prefix is added once
+/// at registration (`dabCommandName`) and removed once on dispatch (`bareCommandName`), so adding a
+/// command needs no prefix bookkeeping. Subcommand names are never prefixed — they are already
+/// namespaced by their parent (`/dab-agent start`).
+public let dabCommandPrefix = "dab-"
+
+/// Discord-visible name for a bare spec name.
+public func dabCommandName(_ bare: String) -> String { dabCommandPrefix + bare }
+
+/// Bare name to route on. A missing prefix is tolerated so an interaction from a stale client cache
+/// — or a leftover unprefixed registration mid-propagation — still routes instead of silently
+/// falling through to the unknown-command branch.
+public func bareCommandName(_ received: String) -> String {
+    received.hasPrefix(dabCommandPrefix)
+        ? String(received.dropFirst(dabCommandPrefix.count))
+        : received
+}
+
 /// A ko/en text pair for slash command descriptions. `AppLocale` has exactly two cases
 /// (`I18n.swift:7-10`), so this is a fixed 2-field struct rather than a dictionary — both
 /// values are required at compile time (no silent fallback on a missing key).

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Embedded project-scoped orchestration content for `/orchestration` (design
+/// Embedded project-scoped orchestration content for `/dab-orchestration` (design
 /// design_orchestration_project_scoped_command.md §4.3). Hand-ported verbatim from
 /// `docs/sample/` (1 CLAUDE.md + 6 agents + 20 skills) — same manual hand-porting
 /// convention already used by `OrchestrationBundle` for the (now removed) global

@@ -42,7 +42,7 @@ public enum I18n {
         return resolveLocale(raw)
     }
 
-    /// Apply global config.locale (boot + /config autosave).
+    /// Apply global config.locale (boot + /dab-config autosave).
     public static func applyFromConfigLocale(_ raw: String?) {
         setLocale(resolveLocale(raw))
     }
@@ -80,7 +80,7 @@ public enum I18n {
         // Auth / router
         "auth.denied": "권한이 없습니다: {reason}",
         "auth.denied.bare": "권한이 없습니다.",
-        "router.noSession": "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요.",
+        "router.noSession": "이 채널에 바인딩된 세션이 없습니다. `/dab-agent start`로 시작하세요.",
         "router.turn.queued": "대기열에 추가했어요 (#{depth}).",
         "cmd.error": "명령을 처리하지 못했어요: {error}",
         "cmd.error.generic": "명령을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
@@ -89,8 +89,8 @@ public enum I18n {
         // Boot / setup guidance
         "boot.noConfig": "설정이 없습니다. 먼저 셋업을 실행하세요:  dab --setup",
         "boot.noToken": "토큰이 설정되지 않았습니다 — --setup을 다시 실행하세요.",
-        "setup.rolesInDiscord": "역할은 봇을 서버에 초대한 뒤 Discord에서 `/config` 명령으로 클릭 설정하세요.",
-        "setup.defaultsInDiscord": "모델·언어·권한 등 기본값은 봇 초대 후 Discord `/config`에서 설정하세요.",
+        "setup.rolesInDiscord": "역할은 봇을 서버에 초대한 뒤 Discord에서 `/dab-config` 명령으로 클릭 설정하세요.",
+        "setup.defaultsInDiscord": "모델·언어·권한 등 기본값은 봇 초대 후 Discord `/dab-config`에서 설정하세요.",
 
         // Slash stop / clear / close
         "cmd.stop.done": "세션을 중지했어요.",
@@ -98,19 +98,19 @@ public enum I18n {
         "cmd.clear.done": "대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했습니다.",
         "cmd.clear.public": "🧹 이 채널 대화 컨텍스트를 비웠어요. 이전 맥락은 이어지지 않습니다.",
         "cmd.close.done": "세션을 종료하고 보관했어요.",
-        "cmd.resume.none": "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.",
+        "cmd.resume.none": "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/dab-agent start` 를 사용하세요.",
         "cmd.resume.rebound": "이 채널을 다시 연결했어요.",
         "cmd.start.intro":
-            "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
+            "이 채널에서 에이전트와 대화하세요. 메시지를 보내면 작업이 시작됩니다. `/dab-agent close` 로 세션을 종료하고 채널을 정리할 수 있어요.",
         "cmd.start.launched": "세션 시작 마법사를 열었어요.",
         "cmd.start.channelCreated": "세션 채널 생성됨: {channel}",
-        "cmd.setup.done": "채널 구성을 완료했어요. {control} 에서 `/agent start` 로 세션을 시작하세요.",
-        "cmd.setup.alreadyDone": "이미 채널 구성이 모두 되어 있어요. {control} 에서 `/agent start` 로 세션을 시작하세요.",
+        "cmd.setup.done": "채널 구성을 완료했어요. {control} 에서 `/dab-agent start` 로 세션을 시작하세요.",
+        "cmd.setup.alreadyDone": "이미 채널 구성이 모두 되어 있어요. {control} 에서 `/dab-agent start` 로 세션을 시작하세요.",
         "cmd.setup.unavailable":
             "채널을 만들 수 없어요. 봇에 \"채널 관리(Manage Channels)\" 권한이 있는지 확인하세요.",
         "cmd.config.opened":
             "역할·기본값 설정 패널을 열었어요. ① 역할을 고르고 저장, ② 아래 기본값은 고르면 바로 저장돼요.",
-        "cmd.config.denied": "`/config` 는 실제 Discord 서버 관리자(Administrator)만 사용할 수 있어요.",
+        "cmd.config.denied": "`/dab-config` 는 실제 Discord 서버 관리자(Administrator)만 사용할 수 있어요.",
 
         // Mode / model / effort / perm
         "cmd.mode.switched": "백엔드를 {backend} 로 바꿨어요.",
@@ -197,7 +197,7 @@ public enum I18n {
         "usage.weeklySonnet": "주간 (Sonnet)",
         "usage.context": "컨텍스트",
         "usage.resets": "초기화 {reset}",
-        "usage.clearHint": "/clear 시 ~{tokens} 토큰 절약",
+        "usage.clearHint": "/dab-clear 시 ~{tokens} 토큰 절약",
         "usage.session": "세션 구성",
         "usage.tools": "이번 턴 도구",
         "usage.agents": "서브에이전트",
@@ -354,21 +354,21 @@ public enum I18n {
         "render.setup.install": "설치",
         "render.setup.decline": "나중에",
         "render.setup.unavailable": "이 호스트에서는 설치를 사용할 수 없어요.",
-        "render.setup.declined": "알겠어요. 나중에 `/config` 에서 설치할 수 있어요.",
+        "render.setup.declined": "알겠어요. 나중에 `/dab-config` 에서 설치할 수 있어요.",
         "render.setup.already": "이미 사용 가능한 브라우저가 있어요. 이미지 렌더링이 켜졌습니다.",
         "render.setup.installing": "Chromium을 내려받는 중이에요… (백그라운드, 몇 분 걸릴 수 있어요)",
         "render.setup.progress": "⏬ **Chromium 설치 중**\n`{bar}` {pct}%",
         "render.setup.done": "✅ 설치 완료! 이제 표·다이어그램이 이미지로 렌더링됩니다.",
-        "render.setup.failed": "설치에 실패했어요. 잠시 후 `/config` 에서 다시 시도해 주세요.",
+        "render.setup.failed": "설치에 실패했어요. 잠시 후 `/dab-config` 에서 다시 시도해 주세요.",
 
         // Watchdog
         "watchdog.idle":
             "약 3분 동안 새 활동이 없습니다. 아직 긴 작업을 하는 중일 수도 있고, 멈췄을 수도 있습니다. 채널 위쪽·스레드를 확인해 보거나, 작업이 끝났는지 에이전트한테 물어보세요.",
 
-        // Config panel (/config)
+        // Config panel (/dab-config)
         "config.title": "역할·기본값 설정",
         "config.intro":
-            "① 역할: 봇을 쓸 사람의 Discord 역할을 고르고 **저장**하세요. 본인(관리자)이 가진 역할을 **admin**에 넣으면 다 됩니다.\n② 아래 기본값(백엔드·모델·권한·언어)은 **고르면 바로 저장**됩니다.\nClaude·Codex는 각자 홈(`~/.claude`, `~/.codex`)을 자동으로 사용하며, **작업할 프로젝트 폴더는 `/agent start` 할 때 고릅니다.**",
+            "① 역할: 봇을 쓸 사람의 Discord 역할을 고르고 **저장**하세요. 본인(관리자)이 가진 역할을 **admin**에 넣으면 다 됩니다.\n② 아래 기본값(백엔드·모델·권한·언어)은 **고르면 바로 저장**됩니다.\nClaude·Codex는 각자 홈(`~/.claude`, `~/.codex`)을 자동으로 사용하며, **작업할 프로젝트 폴더는 `/dab-agent start` 할 때 고릅니다.**",
         "config.role.admin.placeholder": "admin 역할 (설정·stop-all)",
         "config.role.execute.placeholder": "execute 역할 (세션 시작·명령 실행)",
         "config.role.readOnly.placeholder": "read-only 역할 (읽기 전용)",
@@ -388,7 +388,7 @@ public enum I18n {
         "config.notif.button": "🔔 알림 설정",
         "config.notif.title": "이벤트 알림 설정",
         "config.notif.intro":
-            "세션의 주요 이벤트(완료·에러)를 상태 채널로 한 줄 요약해 보냅니다.\n현재 상태: **{state}**\n아래에서 상태 채널을 고르고, 버튼으로 켜고 끌 수 있어요. 채널을 비우면 `/setup` 이 만든 기본 상태 채널을 사용합니다.",
+            "세션의 주요 이벤트(완료·에러)를 상태 채널로 한 줄 요약해 보냅니다.\n현재 상태: **{state}**\n아래에서 상태 채널을 고르고, 버튼으로 켜고 끌 수 있어요. 채널을 비우면 `/dab-setup` 이 만든 기본 상태 채널을 사용합니다.",
         "config.notif.on": "켜짐",
         "config.notif.off": "꺼짐",
         "config.notif.enable": "알림 켜기",
@@ -428,7 +428,7 @@ public enum I18n {
         "redmine.config.urlLabel": "레드마인 주소",
         "redmine.config.apiKeyLabel": "API 키",
         "redmine.config.projectLabel": "프로젝트(선택, 비우면 전체)",
-        "redmine.issueSelect.needsSetup": "먼저 `/redmine`으로 설정하세요.",
+        "redmine.issueSelect.needsSetup": "먼저 `/dab-redmine`으로 설정하세요.",
         "redmine.issueSelect.empty": "조건에 맞는 이슈가 없습니다.",
         "redmine.issueSelect.prompt": "레드마인 이슈를 선택하세요.",
         "redmine.issueSelect.fetchFailed": "레드마인 이슈 조회에 실패했어요: {error}",
@@ -440,7 +440,7 @@ public enum I18n {
             "레드마인 연동을 저장할 수 없어요: 서버에 `DAB_REDMINE_KEY_SECRET`이 설정되지 않았습니다. 운영자에게 문의하세요.",
         "redmine.session.configSaved": "레드마인 연동 설정이 완료됐어요. `#{channel}` 채널에서 알림을 확인하세요.",
         "redmine.session.configSaveFailed": "레드마인 연동 설정에 실패했어요: {error}",
-        "redmine.session.configNotFound": "레드마인 설정을 찾을 수 없어요. `/redmine`으로 먼저 설정하세요.",
+        "redmine.session.configNotFound": "레드마인 설정을 찾을 수 없어요. `/dab-redmine`으로 먼저 설정하세요.",
         "redmine.session.issueGone": "선택한 이슈를 더 이상 찾을 수 없어요.",
         "redmine.session.issueFetchFailed": "이슈 조회에 실패했어요: {error}",
         "redmine.session.selectPrompt": "세션을 선택하세요.",
@@ -468,9 +468,9 @@ public enum I18n {
         "cmd.doc.missingPath": "path 값이 필요합니다.",
         "doc.error.shareFailed": "문서 공유에 실패했어요. 잠시 후 다시 시도하세요.",
         "update.notReady": "업데이터가 아직 준비되지 않았어요. 잠시 후 다시 시도하세요.",
-        "wizard.sessionMissing": "마법사 세션이 없습니다. `/agent start`로 다시 열어주세요.",
+        "wizard.sessionMissing": "마법사 세션이 없습니다. `/dab-agent start`로 다시 열어주세요.",
         "wizard.notOwner": "이 마법사는 연 사람만 조작할 수 있어요.",
-        "wizard.resumeSessionMissing": "재개 마법사 세션이 없습니다. `/agent start` → 세션 재개로 다시 열어주세요.",
+        "wizard.resumeSessionMissing": "재개 마법사 세션이 없습니다. `/dab-agent start` → 세션 재개로 다시 열어주세요.",
         "wizard.recfg.noSession": "전환 실패: 이 채널에 바인딩된 세션이 없습니다.",
         "wizard.recfg.noSelection": "전환 실패 (선택 없음).",
         "wizard.recfg.saveFailed": "세션 설정을 저장하지 못했습니다. 기존 세션은 변경되지 않았습니다.",
@@ -566,7 +566,7 @@ public enum I18n {
         // R3 WO-17: SessionPersist.swift
         "session.fallbackNotice": "⚠️ 이전 세션 복구 실패 — 새 세션으로 시작합니다.",
 
-        // design_orchestration_project_scoped_command.md §4.9: project-scoped /orchestration
+        // design_orchestration_project_scoped_command.md §4.9: project-scoped /dab-orchestration
         "orchestration.wrongChannel":
             "이 명령어는 세션 채널(프로젝트 폴더가 연결된 채널)에서만 사용할 수 있습니다.",
         "orchestration.project.installFailed": "오케스트레이션 설치에 실패했어요: {errors}",
@@ -590,9 +590,9 @@ public enum I18n {
         "boot.noConfig": "No configuration found. Run setup first:  dab --setup",
         "boot.noToken": "Discord token is not set — run --setup again.",
         "setup.rolesInDiscord":
-            "After inviting the bot to your server, set up roles by clicking through the Discord `/config` command.",
+            "After inviting the bot to your server, set up roles by clicking through the Discord `/dab-config` command.",
         "setup.defaultsInDiscord":
-            "Set defaults like model, language, and permissions in Discord `/config` after inviting the bot.",
+            "Set defaults like model, language, and permissions in Discord `/dab-config` after inviting the bot.",
         "cmd.stop.done": "Stopped the session.",
         "cmd.stopAll.done": "Stopped all sessions ({count}).",
         "cmd.clear.done":
@@ -600,20 +600,20 @@ public enum I18n {
         "cmd.clear.public":
             "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
         "cmd.close.done": "Closed the session and archived it.",
-        "cmd.resume.none": "No session to resume. Use `/agent start` to start a new one.",
+        "cmd.resume.none": "No session to resume. Use `/dab-agent start` to start a new one.",
         "cmd.resume.rebound": "Reconnected this channel.",
         "cmd.start.intro":
-            "Chat with the agent in this channel. Sending a message starts work. Use `/agent close` to end the session and clean up the channel.",
+            "Chat with the agent in this channel. Sending a message starts work. Use `/dab-agent close` to end the session and clean up the channel.",
         "cmd.start.launched": "Opened the session start wizard.",
         "cmd.start.channelCreated": "Session channel created: {channel}",
-        "cmd.setup.done": "Channel setup complete. Start a session with `/agent start` in {control}.",
+        "cmd.setup.done": "Channel setup complete. Start a session with `/dab-agent start` in {control}.",
         "cmd.setup.alreadyDone":
-            "Channel setup is already complete. Start a session with `/agent start` in {control}.",
+            "Channel setup is already complete. Start a session with `/dab-agent start` in {control}.",
         "cmd.setup.unavailable":
             "Could not create channels. Check that the bot has Manage Channels permission.",
         "cmd.config.opened":
             "Opened the roles & defaults panel. ① Pick roles and save, ② defaults below save on change.",
-        "cmd.config.denied": "Only an actual Discord server Administrator can use `/config`.",
+        "cmd.config.denied": "Only an actual Discord server Administrator can use `/dab-config`.",
 
         "cmd.mode.switched": "Switched backend to {backend}.",
         "cmd.mode.freshContext":
@@ -692,7 +692,7 @@ public enum I18n {
         "usage.weeklySonnet": "Weekly (Sonnet)",
         "usage.context": "Context",
         "usage.resets": "Resets {reset}",
-        "usage.clearHint": "~{tokens} tokens saved with /clear",
+        "usage.clearHint": "~{tokens} tokens saved with /dab-clear",
         "usage.session": "Session config",
         "usage.tools": "Tools this turn",
         "usage.agents": "Subagents",
@@ -841,19 +841,19 @@ public enum I18n {
         "render.setup.install": "Install",
         "render.setup.decline": "Later",
         "render.setup.unavailable": "Install isn't available on this host.",
-        "render.setup.declined": "Got it — you can install it later from `/config`.",
+        "render.setup.declined": "Got it — you can install it later from `/dab-config`.",
         "render.setup.already": "A usable browser is already available. Image rendering is on.",
         "render.setup.installing": "Downloading Chromium… (running in background, may take a few minutes)",
         "render.setup.progress": "⏬ **Installing Chromium**\n`{bar}` {pct}%",
         "render.setup.done": "✅ Installed! Tables and diagrams will now render as images.",
-        "render.setup.failed": "Install failed. Please try again later from `/config`.",
+        "render.setup.failed": "Install failed. Please try again later from `/dab-config`.",
 
         "watchdog.idle":
             "No new activity for about 3 minutes. It may still be working on a long task, or it may have stalled. Check above in the channel and any threads, or ask the agent whether the work finished.",
 
         "config.title": "Roles & defaults settings",
         "config.intro":
-            "① Roles: pick the Discord roles allowed to use the bot and **Save**. Put your own (admin) role into **admin** and you're done.\n② The defaults below (backend, model, permission, language) **save as soon as you pick them**.\nClaude and Codex each use their own home (`~/.claude`, `~/.codex`) automatically — **the project folder to work in is picked when you run `/agent start`.**",
+            "① Roles: pick the Discord roles allowed to use the bot and **Save**. Put your own (admin) role into **admin** and you're done.\n② The defaults below (backend, model, permission, language) **save as soon as you pick them**.\nClaude and Codex each use their own home (`~/.claude`, `~/.codex`) automatically — **the project folder to work in is picked when you run `/dab-agent start`.**",
         "config.role.admin.placeholder": "admin role (config, stop-all)",
         "config.role.execute.placeholder": "execute role (start sessions, run commands)",
         "config.role.readOnly.placeholder": "read-only role (view only)",
@@ -873,7 +873,7 @@ public enum I18n {
         "config.notif.button": "🔔 Notification settings",
         "config.notif.title": "Event notification settings",
         "config.notif.intro":
-            "Sends a one-line summary of key session events (done, error) to the status channel.\nCurrent state: **{state}**\nPick a status channel below and toggle it on/off with the buttons. Leave it empty to use the default status channel `/setup` created.",
+            "Sends a one-line summary of key session events (done, error) to the status channel.\nCurrent state: **{state}**\nPick a status channel below and toggle it on/off with the buttons. Leave it empty to use the default status channel `/dab-setup` created.",
         "config.notif.on": "On",
         "config.notif.off": "Off",
         "config.notif.enable": "Turn on notifications",
@@ -913,7 +913,7 @@ public enum I18n {
         "redmine.config.urlLabel": "Redmine URL",
         "redmine.config.apiKeyLabel": "API key",
         "redmine.config.projectLabel": "Project (optional, empty = all)",
-        "redmine.issueSelect.needsSetup": "Set up `/redmine` first.",
+        "redmine.issueSelect.needsSetup": "Set up `/dab-redmine` first.",
         "redmine.issueSelect.empty": "No issues match the criteria.",
         "redmine.issueSelect.prompt": "Select a Redmine issue.",
         "redmine.issueSelect.fetchFailed": "Failed to fetch Redmine issues: {error}",
@@ -926,7 +926,7 @@ public enum I18n {
         "redmine.session.configSaved":
             "Redmine integration is set up. Check notifications in the `#{channel}` channel.",
         "redmine.session.configSaveFailed": "Failed to set up the Redmine integration: {error}",
-        "redmine.session.configNotFound": "Redmine configuration not found. Set it up with `/redmine` first.",
+        "redmine.session.configNotFound": "Redmine configuration not found. Set it up with `/dab-redmine` first.",
         "redmine.session.issueGone": "The selected issue can no longer be found.",
         "redmine.session.issueFetchFailed": "Failed to fetch the issue: {error}",
         "redmine.session.selectPrompt": "Select a session.",
@@ -956,10 +956,10 @@ public enum I18n {
         "cmd.doc.missingPath": "A `path` value is required.",
         "doc.error.shareFailed": "Failed to share the document. Please try again shortly.",
         "update.notReady": "The updater isn't ready yet. Please try again shortly.",
-        "wizard.sessionMissing": "No wizard session found. Reopen it with `/agent start`.",
+        "wizard.sessionMissing": "No wizard session found. Reopen it with `/dab-agent start`.",
         "wizard.notOwner": "Only the person who opened this wizard can use it.",
         "wizard.resumeSessionMissing":
-            "No resume-wizard session found. Reopen it via `/agent start` → Resume session.",
+            "No resume-wizard session found. Reopen it via `/dab-agent start` → Resume session.",
         "wizard.recfg.noSession": "Switch failed: no session is bound to this channel.",
         "wizard.recfg.noSelection": "Switch failed (nothing selected).",
         "wizard.recfg.saveFailed":
@@ -1052,7 +1052,7 @@ public enum I18n {
         // R3 WO-17: SessionPersist.swift
         "session.fallbackNotice": "⚠️ Failed to restore the previous session — starting a new one.",
 
-        // design_orchestration_project_scoped_command.md §4.9: project-scoped /orchestration
+        // design_orchestration_project_scoped_command.md §4.9: project-scoped /dab-orchestration
         "orchestration.wrongChannel":
             "This command can only be used in a session channel bound to a project folder.",
         "orchestration.project.installFailed": "Failed to install orchestration: {errors}",

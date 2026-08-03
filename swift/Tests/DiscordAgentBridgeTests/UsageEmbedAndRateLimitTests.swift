@@ -177,7 +177,7 @@ struct UsageEmbedTests {
         )
         let embed = buildUsageEmbed(usage: nil, ctxUsage: withClearable)
         let field = embed?.fields.first { $0.name == "🟢 컨텍스트" }
-        #expect(field?.value.contains("/clear 시 ~207.6K 토큰 절약") == true)
+        #expect(field?.value.contains("/dab-clear 시 ~207.6K 토큰 절약") == true)
         // Zero clearable tokens → no hint.
         let zero = buildUsageEmbed(
             usage: nil,
