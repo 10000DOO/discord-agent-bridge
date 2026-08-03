@@ -61,6 +61,7 @@ public enum OrchestrationInstaller {
             fm: fileManager,
             report: &report
         )
+        copyGlobalSettingsJSON(into: claudeRoot, fm: fileManager, report: &report)
 
         let skillsRoot = claudeRoot.appendingPathComponent("skills", isDirectory: true)
         ensureDir(skillsRoot, fm: fileManager, report: &report)
@@ -119,6 +120,22 @@ public enum OrchestrationInstaller {
             return (nil, "zip exited with status \(process.terminationStatus): \(zipURL.path)")
         }
         return (zipURL.path, nil)
+    }
+
+    /// Mirrors global `~/.claude/settings.json` (if any) into `<root>/.claude/settings.json` on
+    /// every install (R7) — full overwrite, not a merge, not "first run only". No global file →
+    /// silent no-op, not an error (D14): unlike CLAUDE.md/skills/agents this is an external file
+    /// the user may never have created. Global is read-only here; only the project-local copy
+    /// is written.
+    private static func copyGlobalSettingsJSON(
+        into claudeRoot: URL,
+        fm: FileManager,
+        report: inout OrchestrationInstallReport
+    ) {
+        let globalPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
+        guard fm.fileExists(atPath: globalPath) else { return }
+        guard let content = try? String(contentsOfFile: globalPath, encoding: .utf8) else { return }
+        writeFile(claudeRoot.appendingPathComponent("settings.json"), content: content, fm: fm, report: &report)
     }
 
     // MARK: - IO helpers

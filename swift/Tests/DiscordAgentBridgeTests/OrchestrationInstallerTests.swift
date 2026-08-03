@@ -2,6 +2,19 @@ import Foundation
 import Testing
 @testable import DiscordAgentBridge
 
+/// Fakes "no global settings.json" for the R7 copy step without ever touching the real
+/// `~/.claude/settings.json` — overrides only the single-arg `fileExists(atPath:)` (what
+/// `copyGlobalSettingsJSON` checks) to lie about that one path, deferring to `super` for every
+/// other path `installProject` checks (root dir, backups, stale skill files, ...).
+private final class HidingGlobalSettingsFileManager: FileManager {
+    private let hiddenPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
+
+    override func fileExists(atPath path: String) -> Bool {
+        if path == hiddenPath { return false }
+        return super.fileExists(atPath: path)
+    }
+}
+
 @Suite("OrchestrationInstaller")
 struct OrchestrationInstallerTests {
     private func tempProjectRoot() throws -> URL {
@@ -96,5 +109,64 @@ struct OrchestrationInstallerTests {
 
     @Test func orchestrationSlashCommand_isRegistered() {
         #expect(allSlashCommandSpecs().contains { $0.name == "orchestration" })
+    }
+
+    // MARK: - R7: global ~/.claude/settings.json -> project-local .claude/settings.json
+
+    // ponytail: `copyGlobalSettingsJSON` hardcodes NSHomeDirectory() with no injectable path
+    // (D14/P13), and NSHomeDirectory() ignores $HOME overrides on Darwin, so these tests read
+    // whatever the real global settings.json contains rather than faking "home". Upgrade path if
+    // this ever flakes in CI: give `installProject` an injectable global-settings path.
+
+    @Test func installProject_copiesGlobalSettingsJSON_whenGlobalExists() throws {
+        let globalPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
+        guard let globalContent = try? String(contentsOfFile: globalPath, encoding: .utf8) else {
+            return // no global settings.json on this machine - nothing to verify
+        }
+
+        let root = try tempProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let report = OrchestrationInstaller.installProject(root: root)
+        #expect(report.errors.isEmpty, "errors: \(report.errors)")
+
+        let localSettings = try String(
+            contentsOf: root.appendingPathComponent(".claude/settings.json"), encoding: .utf8
+        )
+        #expect(localSettings == globalContent)
+    }
+
+    @Test func installProject_skipsSettingsJSON_whenGlobalMissing() throws {
+        let root = try tempProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let report = OrchestrationInstaller.installProject(root: root, fileManager: HidingGlobalSettingsFileManager())
+        #expect(report.errors.isEmpty, "errors: \(report.errors)")
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".claude/settings.json").path
+        ))
+    }
+
+    @Test func installProject_rerun_overwritesLocalSettingsJSONRegardlessOfPriorContent() throws {
+        let globalPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
+        guard let globalContent = try? String(contentsOfFile: globalPath, encoding: .utf8) else {
+            return // no global settings.json on this machine - nothing to verify
+        }
+
+        let root = try tempProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = OrchestrationInstaller.installProject(root: root)
+        #expect(first.errors.isEmpty)
+
+        let settingsURL = root.appendingPathComponent(".claude/settings.json")
+        try "stale local content".write(to: settingsURL, atomically: true, encoding: .utf8)
+
+        let second = OrchestrationInstaller.installProject(root: root)
+        #expect(second.errors.isEmpty, "errors: \(second.errors)")
+
+        let localSettings = try String(contentsOf: settingsURL, encoding: .utf8)
+        #expect(localSettings == globalContent)
+        #expect(localSettings != "stale local content")
     }
 }
