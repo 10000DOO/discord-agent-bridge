@@ -44,6 +44,10 @@ struct DabMain {
             let ok = await runServiceCommand(Array(args.dropFirst()))
             exit(ok ? 0 : 1)
         }
+        if args.first == "rag" {
+            let ok = await runProjectRagCommand(Array(args.dropFirst()))
+            exit(ok ? 0 : 1)
+        }
         if args.first == "sidecar-smoke" {
             await runSidecarSmoke()
             return
@@ -1243,8 +1247,15 @@ struct EventHandler: GatewayEventHandler {
                 )
                 return
             }
+            let ragResult = await ProjectRagCoordinator.shared.ensureIndexed(
+                root: URL(fileURLWithPath: orchCwd),
+                initiator: channelId,
+                profiles: [GenericFileGraphProfile(), AppleNativeProfile(), TypescriptNodeProfile()],
+                notify: { text in _ = await createMessageWithRetry(client: client, channelId: ChannelSnowflake(channelId), payload: .init(content: text)) }
+            )
             let orchEnabled = await SessionLifecycle.shared.enableOrchestrationMode(
-                channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: orchCwd
+                channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: orchCwd,
+                projectRagEnabled: ragResult.projectRagEnabled
             )
             guard orchEnabled else {
                 _ = try? await client.updateOriginalInteractionResponse(

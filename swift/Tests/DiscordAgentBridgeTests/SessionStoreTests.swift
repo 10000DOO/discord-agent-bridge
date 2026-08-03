@@ -169,6 +169,28 @@ struct SessionStoreTests {
         #expect(obj["version"] as? Int == STATE_VERSION)
     }
 
+    // WO-8 (docs/project-rag-generic-indexing.md): a pre-projectRagEnabled file (key absent)
+    // must decode with the flag defaulted to false.
+    @Test func projectRagEnabledDefaultsFalseOnLegacyJSON() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let fixture: [String: Any] = [
+            "version": 2,
+            "channels": [
+                "c1": [
+                    "backend": "claude", "cwd": "/ws", "guildId": "g", "updatedAt": "t", "archived": false,
+                ] as [String: Any],
+            ] as [String: Any],
+        ]
+        try JSONSerialization.data(withJSONObject: fixture).write(to: url)
+
+        let s = SessionStore(fileURL: url)
+        await s.load()
+        #expect(await s.binding(channelId: "c1")?.projectRagEnabled == false)
+    }
+
     @Test func markArchivedSoftDeletesWithoutRemoving() async throws {
         let url = tempStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

@@ -32,6 +32,9 @@ public struct PersistedSession: Codable, Sendable, Equatable {
     /// when true, the next Claude session start uses `settingSources: ['project']` only (no
     /// user/local settings). Decode default false — see `init(from:)`.
     public var projectSettingSourcesOnly: Bool
+    /// Project RAG index feature flag (docs/project-rag-generic-indexing.md §2): flips to true
+    /// only after the first index publish succeeds. Decode default false — see `init(from:)`.
+    public var projectRagEnabled: Bool
 
     public init(
         backend: Backend,
@@ -49,7 +52,8 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         createdAt: String? = nil,
         updatedAt: String,
         archived: Bool = false,
-        projectSettingSourcesOnly: Bool = false
+        projectSettingSourcesOnly: Bool = false,
+        projectRagEnabled: Bool = false
     ) {
         self.backend = backend
         self.backendSessionId = backendSessionId
@@ -67,6 +71,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.updatedAt = updatedAt
         self.archived = archived
         self.projectSettingSourcesOnly = projectSettingSourcesOnly
+        self.projectRagEnabled = projectRagEnabled
     }
 
     // Custom decode so retired mode strings (`grok`, `grok-agent`, `grok-build`) map to Backend.grok
@@ -97,6 +102,7 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.updatedAt = try c.decode(String.self, forKey: .updatedAt)
         self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         self.projectSettingSourcesOnly = try c.decodeIfPresent(Bool.self, forKey: .projectSettingSourcesOnly) ?? false
+        self.projectRagEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectRagEnabled) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -118,12 +124,14 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encode(archived, forKey: .archived)
         try c.encode(projectSettingSourcesOnly, forKey: .projectSettingSourcesOnly)
+        try c.encode(projectRagEnabled, forKey: .projectRagEnabled)
     }
 
     private enum CodingKeys: String, CodingKey {
         case backend, backendSessionId, cwd, guildId, ownerId, model, effort, permMode
         case permissionProfile, projectAuth, lifecycleGeneration, contextGenerationStartedAt, createdAt, updatedAt, archived
         case projectSettingSourcesOnly
+        case projectRagEnabled
     }
 
     /// Map a stored mode/backend string → `Backend` after `normalizeModeId`. `nil` when the

@@ -61,3 +61,4 @@ docs/
 swift/.build/
 **/.build/
 **/.swiftpm/
+.dab-index/

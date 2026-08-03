@@ -113,7 +113,7 @@ private let claudeMdRaw = #"""
 | 이름 | 설명 |
 |---|---|
 | `issue-orchestration` | 이슈 흐름·휴먼 게이트·조건부 스킬/서브 호출 총괄 |
-| `issue-analysis` | 설계 전 최소 조사와 `.dab-index` 후보 지도 확인 |
+| `issue-analysis` | 설계 전 최소 조사와 후보 파일·심볼 지도(`dab rag query`로 조회, LSP/grep 텍스트 캐시 아님) 확인 |
 | `issue-artifacts` | STATUS·DESIGN·IMPACT·REPORT 산출물 형식 |
 | `issue-implementation` | 승인 설계 구현 규칙 |
 | `issue-manager` | 팀 이슈·배포 현황 보고 |
@@ -157,7 +157,7 @@ SDK/라이브러리 개발 (2개)
 | 정식 이슈 밖 시연/검토 | `dry-run` | — |
 
 **선택 원칙**
-- `.dab-index`는 후보 파일·심볼 지도다. 먼저 이 지도로 후보만 고르고, 캐시는 증거가 아니므로 변경 심볼·API·경계 통과는 직접 LSP 또는 grep으로 확인한다.
+- 후보 파일·심볼 지도(`dab rag query`로 조회, LSP/grep 텍스트 캐시 아님)를 먼저 확인해 후보만 고른다. 지도는 증거가 아니므로 변경 심볼·API·경계 통과는 직접 LSP 또는 grep으로 확인한다.
 - 영향도 전체 분석은 사용자 최종 설계 승인 뒤 한 번 수행한다. 이후 설계 변경은 이전 IMPACT의 검증 범위 증거가 있을 때만 delta 분석하고, 그렇지 않으면 전체 분석으로 돌아간다.
 - 서브에이전트는 위 호출 조건을 충족할 때만 사용한다. 범위를 벗어나면 `common-handoff`로 이관한다.
 
@@ -205,6 +205,9 @@ description: "DESIGN·영향도 분석 검토. 구멍·모순·테스트 누락.
 ## 권한
 읽기 전용. 재작성·구현 금지. 1차 설계를 다시 쓰는 것은 메인(오케스트레이션) 몫이다.
 
+## RAG 우선조회 (필수)
+점검 착수 전 `project_search`(`mcp__project_rag__project_search`) 도구가 지금 사용 가능한 도구 목록에 있으면 그 도구를 먼저 호출해 후보를 좁힌다. 그 도구가 없으면(Claude 외 provider이거나 이 프로젝트에 RAG가 아직 활성화되지 않은 경우) `dab rag query --project <cwd> --json`을 직접 실행해 대체한다. 어느 경로든 결과에 없는 파일은 근거 없이 읽지 않는다. 결과가 stale·missing·partial이거나 비어 있으면 전체 탐색으로 승격한다.
+
 ## 임무
 DESIGN.md와 영향도 분석(IMPACT.md) 결과를 대조해 다음을 점검한다: 실현 가능성, 계약 모순, 수정 대상 리스트 불일치, 테스트 누락, 설계서에 미결 사항이 남아있는지.
 
@@ -228,8 +231,8 @@ description: "설계 기준 영향도 분석·수정 리스트. 읽기 전용. �
 ## 권한
 읽기 전용. 기능 코드 수정·커밋·빌드 금지. 정적 분석만 수행한다.
 
-## 진입과 참고문서 캐시
-사용자 최종 설계 승인 뒤 첫 영향도 분석은 항상 전체 분석이다. 분석 시작 전 `.dab-index/PROJECT_INDEX.md` + `.dab-index/fingerprint`를 확인하고 후보 파일·심볼 지도로 먼저 사용한다. 지문(정렬된 소스 파일 경로 목록의 해시)을 재계산해 저장값과 비교한다: 일치하면 그 지도로 후보만 고르고 지도에 없는 파일을 넓게 읽지 않는다. 캐시는 증거가 아니므로 변경 심볼·공개 API·모듈 경계 통과는 직접 LSP 또는 grep으로 확인한다. 없거나 불일치하면 LSP(documentSymbol/workspaceSymbol, 미지원 언어는 grep+디렉터리 트리)로 지도를 재생성해 두 파일을 갱신하고(`.dab-index/`는 `.gitignore`에 반영), 전체 분석으로 진행한다.
+## 진입과 RAG 우선조회 (필수)
+사용자 최종 설계 승인 뒤 첫 영향도 분석은 항상 전체 분석이다. 분석 시작 전 `project_search`(`mcp__project_rag__project_search`) 도구가 지금 사용 가능한 도구 목록에 있으면 그 도구를 먼저 호출해 후보 파일·심볼을 좁힌다. 그 도구가 없으면(Claude 외 provider이거나 이 프로젝트에 RAG가 아직 활성화되지 않은 경우) `dab rag query --project <cwd> --json`을 직접 실행해 대체한다. 어느 경로든 결과에 없는 파일은 근거 없이 읽지 않는다. 결과가 stale·missing·partial이거나 비어 있으면 전체 탐색으로 승격한다. IMPACT 기록에 index version·freshness·query 입력·직접 검증한 파일/심볼을 남긴다.
 
 ## 임무
 최종 설계를 기준으로:
@@ -763,8 +766,8 @@ description: >-
 - 분석 목적의 소스 읽기는 허용한다. 이 스킬 구간에서는 기능 코드 수정·커밋을 하지 않는다.
 - 프로젝트에 설계 원칙 파일(SOLID 등)이 있으면 로드해 준수한다.
 
-## 참고문서 캐시 우선
-착수 전 `.dab-index/PROJECT_INDEX.md` + `.dab-index/fingerprint`를 확인한다. 일치하는 캐시는 후보 파일·공개 심볼 지도일 뿐 증거가 아니다. 먼저 지도에서 이번 요구와 닿는 후보만 고르고 그 파일만 읽는다. 캐시가 없거나 불일치하면 구조 지도만 재생성하고, 직접 LSP/grep은 변경 심볼·API·경계 통과를 확인해야 하는 `impact-analyzer` 단계까지 넓히지 않는다.
+## RAG 우선조회 (필수)
+착수 전 `project_search`(`mcp__project_rag__project_search`) 도구가 지금 사용 가능한 도구 목록에 있으면 그 도구를 먼저 호출해 후보 파일·심볼을 좁힌다. 그 도구가 없으면(Claude 외 provider이거나 이 프로젝트에 RAG가 아직 활성화되지 않은 경우) `dab rag query --project <cwd> --json`을 직접 실행해 대체한다. 어느 경로든 결과에 없는 파일은 근거 없이 읽지 않는다. 결과가 stale·missing·partial이거나 비어 있으면 전체 탐색으로 승격한다.
 
 ## 1. 최소 조사
 - 요구/오류 현상을 정리하고 경미 vs 복잡을 판단한다.

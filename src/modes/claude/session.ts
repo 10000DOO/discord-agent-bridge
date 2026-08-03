@@ -16,6 +16,12 @@ import {
   type SendFileCallback,
   type ShareDocumentCallback,
 } from './mcpFileTool.js';
+import {
+  createMcpProjectRagTool,
+  defaultRunDabRagQuery,
+  PROJECT_SEARCH_TOOL_NAME,
+  type RunDabRagQuery,
+} from './mcpProjectRagTool.js';
 import { resolvePlugins } from './plugins.js';
 import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../shared/turnFiles.js';
 
@@ -35,6 +41,10 @@ export interface ClaudeSessionDeps {
   shareDocument?: ShareDocumentCallback;
   // Existing backend session id to resume; omitted for a fresh session.
   resumeId?: string;
+  // Runs the `dab rag query` CLI for the project_search MCP tool; defaults to the
+  // real subprocess wiring, tests inject a mock (docs/project-rag-generic-indexing.md
+  // WO-15).
+  runDabRagQuery?: RunDabRagQuery;
   // Optional full env override for the SDK subprocess. Used by the `custom` backend
   // to inject env vars extracted from shell aliases without affecting other modes.
   env?: Options['env'];
@@ -125,6 +135,12 @@ export class ClaudeSession implements ModeSession {
       }
       if (deps.shareDocument && !allowedTools.includes(SHARE_DOCUMENT_TOOL_NAME)) {
         allowedTools.push(SHARE_DOCUMENT_TOOL_NAME);
+      }
+    }
+    if (ctx.projectRagEnabled) {
+      mcpServers.project_rag = createMcpProjectRagTool(ctx.cwd, deps.runDabRagQuery ?? defaultRunDabRagQuery, ctx.logger);
+      if (!allowedTools.includes(PROJECT_SEARCH_TOOL_NAME)) {
+        allowedTools.push(PROJECT_SEARCH_TOOL_NAME);
       }
     }
 

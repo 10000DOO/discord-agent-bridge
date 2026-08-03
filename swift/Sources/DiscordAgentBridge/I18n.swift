@@ -575,13 +575,17 @@ public enum I18n {
         "orchestration.project.freshContextNotice":
             "다음 메시지부터 이 채널은 새 세션으로 다시 연결되고, 프로젝트 설정(`.claude/`)만 적용돼요.",
         "orchestration.project.backedUp": "이전 설정을 `{path}`로 백업했어요.",
+        "orchestration.project.ragBuilding": "RAG 시스템을 구성 중입니다.",
+        "orchestration.project.ragReadyFresh": "RAG 구성이 완료됐습니다. (기존 최신 인덱스를 사용합니다.)",
+        "orchestration.project.ragReady": "RAG 구성이 완료됐습니다.",
+        "orchestration.project.ragFailed": "RAG 구성에 실패했습니다. 기존 인덱스는 유지됩니다: {reason}",
     ]
 
     /// English overrides (major slash/error/stream paths). Absent keys fall back to ko.
     private static let en: [String: String] = [
         "auth.denied": "Permission denied: {reason}",
         "auth.denied.bare": "Permission denied.",
-        "router.noSession": "No session bound to this channel. Run `/agent start` first.",
+        "router.noSession": "No session bound to this channel. Run `/dab-agent start` first.",
         "router.turn.queued": "Queued (#{depth}).",
         "cmd.error": "Could not process the command: {error}",
         "cmd.error.generic": "Could not process the command. Please try again shortly.",
@@ -1061,5 +1065,9 @@ public enum I18n {
         "orchestration.project.freshContextNotice":
             "From the next message, this channel reconnects with a fresh session using only the project's `.claude/` settings.",
         "orchestration.project.backedUp": "Backed up the previous configuration to `{path}`.",
+        "orchestration.project.ragBuilding": "Setting up the RAG system…",
+        "orchestration.project.ragReadyFresh": "RAG setup complete. (Using the existing up-to-date index.)",
+        "orchestration.project.ragReady": "RAG setup complete.",
+        "orchestration.project.ragFailed": "Failed to set up RAG. The existing index is kept: {reason}",
     ]
 }

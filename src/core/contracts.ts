@@ -253,6 +253,7 @@ export interface ModeContext {
   // `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.7):
   // when true, ClaudeSession loads only `settingSources: ['project']` (no user/local settings).
   projectSettingSourcesOnly?: boolean;
+  projectRagEnabled?: boolean;
   emit(ev: AgentEvent): void; // → EventBus → Discord renderers
   requestPermission(req: { toolName: string; input: unknown }): Promise<PermissionDecision>;
   config: ModeConfigView; // resolved (layered) view: model, timeouts, codexHome, etc.

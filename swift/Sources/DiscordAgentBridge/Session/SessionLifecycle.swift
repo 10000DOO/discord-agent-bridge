@@ -227,13 +227,15 @@ public struct SessionLifecycle: Sendable {
         actorId: String,
         guildId: String,
         roleTier: String = "execute",
-        defaultCwd: String = NSHomeDirectory()
+        defaultCwd: String = NSHomeDirectory(),
+        projectRagEnabled: Bool = false
     ) async -> Bool {
         guard var session = await resolveSession(
             channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
         ) else { return false }
 
         session.projectSettingSourcesOnly = true
+        session.projectRagEnabled = projectRagEnabled
         session.backendSessionId = nil
         session.lifecycleGeneration = UUID().uuidString
         let startedAt = now()

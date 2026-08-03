@@ -40,6 +40,7 @@ function makeCtx(opts: {
   permissionDecision?: PermissionDecision;
   onSessionIdReady?: (id: string) => void;
   projectSettingSourcesOnly?: boolean;
+  projectRagEnabled?: boolean;
 } = {}): CtxHarness {
   const events: AgentEvent[] = [];
   const permissionCalls: { toolName: string; input: unknown }[] = [];
@@ -53,6 +54,7 @@ function makeCtx(opts: {
     ...(opts.projectSettingSourcesOnly !== undefined
       ? { projectSettingSourcesOnly: opts.projectSettingSourcesOnly }
       : {}),
+    ...(opts.projectRagEnabled !== undefined ? { projectRagEnabled: opts.projectRagEnabled } : {}),
     emit: (ev) => events.push(ev),
     requestPermission: async (req) => {
       permissionCalls.push(req);
@@ -942,6 +944,34 @@ describe('ClaudeSession — query options', () => {
     expect(options.mcpServers?.discord).toBeDefined();
     expect(options.allowedTools).toContain('mcp__discord__share_document');
     await session.stop();
+  });
+
+  it('exposes the project_search MCP tool and allowlists it when projectRagEnabled is true', async () => {
+    const { ctx } = makeCtx({ projectRagEnabled: true });
+    const { queryFn, captured } = fakeQueryFn([]);
+    const session = new ClaudeSession(ctx, { queryFn, runDabRagQuery: async () => '{}' });
+    const options = captured.options as {
+      mcpServers?: Record<string, unknown>;
+      allowedTools?: string[];
+    };
+    expect(options.mcpServers?.project_rag).toBeDefined();
+    expect(options.allowedTools).toContain('mcp__project_rag__project_search');
+    await session.stop();
+  });
+
+  it('omits the project_search MCP tool when projectRagEnabled is false/undefined', async () => {
+    for (const projectRagEnabled of [false, undefined] as const) {
+      const { ctx } = makeCtx({ projectRagEnabled });
+      const { queryFn, captured } = fakeQueryFn([]);
+      const session = new ClaudeSession(ctx, { queryFn });
+      const options = captured.options as {
+        mcpServers?: Record<string, unknown>;
+        allowedTools?: string[];
+      };
+      expect(options.mcpServers?.project_rag).toBeUndefined();
+      expect(options.allowedTools ?? []).not.toContain('mcp__project_rag__project_search');
+      await session.stop();
+    }
   });
 });
 

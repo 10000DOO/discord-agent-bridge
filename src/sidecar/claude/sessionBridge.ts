@@ -177,6 +177,9 @@ export class SessionBridge {
       ...(params.projectSettingSourcesOnly !== undefined
         ? { projectSettingSourcesOnly: params.projectSettingSourcesOnly }
         : {}),
+      ...(params.projectRagEnabled !== undefined
+        ? { projectRagEnabled: params.projectRagEnabled }
+        : {}),
       emit: (ev: AgentEvent) => {
         this.write(event(handle, ev));
       },

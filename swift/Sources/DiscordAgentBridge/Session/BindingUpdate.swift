@@ -113,7 +113,8 @@ public func sessionConfig(from session: PersistedSession) -> SessionConfig {
         model: session.model,
         effort: session.effort,
         permMode: session.permMode,
-        projectSettingSourcesOnly: session.projectSettingSourcesOnly
+        projectSettingSourcesOnly: session.projectSettingSourcesOnly,
+        projectRagEnabled: session.projectRagEnabled
     )
 }
 

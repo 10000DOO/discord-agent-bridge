@@ -71,6 +71,8 @@ public struct SessionStartParams: Sendable, Equatable {
     /// `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.6):
     /// when true, the sidecar loads only `settingSources: ['project']` (no user/local settings).
     public var projectSettingSourcesOnly: Bool
+    /// Project RAG index feature flag (docs/project-rag-generic-indexing.md §2).
+    public var projectRagEnabled: Bool
 
     public struct SessionConfig: Sendable, Equatable {
         public var allowedTools: [String]?
@@ -98,7 +100,8 @@ public struct SessionStartParams: Sendable, Equatable {
         permMode: String,
         config: SessionConfig? = nil,
         env: [String: String?]? = nil,
-        projectSettingSourcesOnly: Bool = false
+        projectSettingSourcesOnly: Bool = false,
+        projectRagEnabled: Bool = false
     ) {
         self.cwd = cwd
         self.guildId = guildId
@@ -110,6 +113,7 @@ public struct SessionStartParams: Sendable, Equatable {
         self.config = config
         self.env = env
         self.projectSettingSourcesOnly = projectSettingSourcesOnly
+        self.projectRagEnabled = projectRagEnabled
     }
 
     public func asParams() -> [String: JSONValue] {
@@ -143,6 +147,7 @@ public struct SessionStartParams: Sendable, Equatable {
             p["env"] = .object(e)
         }
         if projectSettingSourcesOnly { p["projectSettingSourcesOnly"] = .bool(true) }
+        if projectRagEnabled { p["projectRagEnabled"] = .bool(true) }
         return p
     }
 }
