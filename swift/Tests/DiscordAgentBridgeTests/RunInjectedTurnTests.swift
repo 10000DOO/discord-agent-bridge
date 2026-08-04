@@ -60,7 +60,7 @@ struct RunInjectedTurnTests {
 
         let client = RecordingClient()
         let marker = "UNIQUE_PROMPT_MARKER_\(UUID().uuidString)"
-        await runInjectedTurn(
+        let posted = await runInjectedTurn(
             client: client,
             channelId: "test-channel-\(UUID().uuidString)",
             guildId: "g1",
@@ -72,10 +72,15 @@ struct RunInjectedTurnTests {
             roleTier: "execute"
         )
 
+        // postPrompt: false has nothing to confirm — always reports delivered.
+        #expect(posted)
         // Negative: postPrompt: false never posts the prompt body itself.
         #expect(!client.sentContents.contains(marker))
         // Positive: the turn was actually attempted, not just skipped — the forced spawn failure
-        // surfaces through runInjectedTurn's catch block as a posted "⚠️ ..." notice.
+        // surfaces through runInjectedTurn's catch block as a posted "⚠️ ..." notice. The turn
+        // itself now runs in a detached task behind the returned confirmation (only the prompt
+        // post is awaited), so poll for it instead of asserting immediately.
+        await waitUntil { client.sentContents.contains { $0?.hasPrefix("⚠️") == true } }
         #expect(client.sentContents.contains { $0?.hasPrefix("⚠️") == true })
     }
 }

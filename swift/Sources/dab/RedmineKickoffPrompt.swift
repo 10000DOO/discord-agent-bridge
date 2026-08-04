@@ -27,6 +27,15 @@ func redmineKickoffPromptText(issue: RedmineIssueDTO) -> String {
 /// IdleWatchdog) so a bot-authored prompt still looks "alive".
 ///
 /// Callers should fire-and-forget this when they need the interaction ack to return immediately.
+///
+/// Returns whether the prompt was durably posted (or `true` when `postPrompt` is false — nothing
+/// to confirm). `OrchestrationHost.order`/`.report` await only up to this point before answering
+/// their own caller: the message post is bounded (a few retried Discord calls), but the turn
+/// itself is not, so it stays fire-and-forget below this line — same reason `order()` never
+/// blocks its caller on a module's turn. Before this, `order`/`report` fired the whole function
+/// as an untracked `Task` and answered "delivered" immediately, so a post that failed (or a
+/// process restart before this ran at all) was never seen by anyone.
+@discardableResult
 func runInjectedTurn(
     client: any DiscordClient,
     channelId: String,
@@ -37,7 +46,7 @@ func runInjectedTurn(
     announceExtras: Bool,
     actorId: String,
     roleTier: String
-) async {
+) async -> Bool {
     let chId = ChannelSnowflake(channelId)
     // Discord's own client wraps long messages at 2000 chars, but this auto-post path bypasses
     // that, so chunk here — the full `promptText` still goes to the backend turn below unsplit.
@@ -60,6 +69,7 @@ func runInjectedTurn(
         }
         if promptMessageId == nil {
             log.error("injected turn prompt post failed channel=\(channelId)")
+            return false
         }
     }
 
@@ -72,6 +82,31 @@ func runInjectedTurn(
         )
     }
 
+    // The prompt is durably posted (or there was none to post) — answer the caller truthfully
+    // now. Everything below is the actual turn (unbounded LLM think time) and stays
+    // fire-and-forget in its own detached task.
+    Task {
+        await runInjectedTurnBody(
+            client: client, channelId: channelId, guildId: guildId, backend: backend,
+            promptText: promptText, announceExtras: announceExtras, actorId: actorId,
+            roleTier: roleTier, promptMessageId: promptMessageId
+        )
+    }
+    return true
+}
+
+private func runInjectedTurnBody(
+    client: any DiscordClient,
+    channelId: String,
+    guildId: String,
+    backend: Backend,
+    promptText: String,
+    announceExtras: Bool,
+    actorId: String,
+    roleTier: String,
+    promptMessageId: MessageSnowflake?
+) async {
+    let chId = ChannelSnowflake(channelId)
     let sessionConfig = await SessionRegistry.shared.binding(channelId: channelId)
     let caps = await resolveSessionCapabilities(backend: backend, guildId: guildId)
     await ToolActivityHost.shared.setCapabilities(channelId: channelId, caps)

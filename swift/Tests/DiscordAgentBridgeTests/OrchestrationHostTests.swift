@@ -63,15 +63,19 @@ private final class FakeProvisioner: GuildChannelProvisioner, @unchecked Sendabl
     func childChannelIds(categoryId: String) async -> [String] { [] }
 }
 
-/// Records every `runInjectedTurn`-shaped call the host fires (fire-and-forget, so tests
-/// `waitUntil` this instead of asserting immediately after `order`/`report` returns).
+/// Records every `runInjectedTurn`-shaped call the host fires. `order`/`report` now await this
+/// (the prompt-post confirmation, not the turn itself), so a call is recorded before they return —
+/// no `waitUntil` needed anymore, unlike the turn itself in production.
 private final class TurnRecorder: @unchecked Sendable {
     struct Call: Equatable { let channelId: String; let guildId: String; let text: String }
     private let box = LockedBox<[Call]>([])
+    /// Simulates the prompt post's own success/failure (`RunInjectedTurnFn`'s return value).
+    var deliverResult = true
     var calls: [Call] { box.withLock { $0 } }
     func handler() -> OrchestrationHost.RunInjectedTurnFn {
         { channelId, guildId, _, text, _, _, _, _ in
             self.box.withLock { $0.append(Call(channelId: channelId, guildId: guildId, text: text)) }
+            return self.deliverResult
         }
     }
 }
@@ -263,7 +267,9 @@ struct OrchestrationHostTests {
         )
         let decision = await host.order(fromChannelId: "lead", module: "core", path: modulePath.path, text: "again")
         #expect(decision == .ok(channelId: "mod"))
-        await waitUntil { recorder.calls.contains { $0.channelId == "mod" && $0.text == "again" } }
+        // `order` awaits the prompt-post confirmation before returning — already recorded. The
+        // report reminder is appended to every order text, reused channel included.
+        #expect(recorder.calls.contains { $0.channelId == "mod" && $0.text == "again" + orderReportReminder })
     }
 
     /// Review finding #1 (TOCTOU): two `order()` calls for two DIFFERENT new modules, racing
@@ -289,7 +295,7 @@ struct OrchestrationHostTests {
 
         let host = OrchestrationHost(
             store: store, configStore: configStore, lifecycle: lifecycleFor(store), isTurnRunning: { _ in false },
-            runInjectedTurn: { _, _, _, _, _, _, _, _ in }, provisionerFactory: { _ in FakeProvisioner() }
+            runInjectedTurn: { _, _, _, _, _, _, _, _ in true }, provisionerFactory: { _ in FakeProvisioner() }
         )
 
         async let first = host.order(fromChannelId: "lead", module: "core", path: corePath.path, text: "go")
@@ -325,7 +331,7 @@ struct OrchestrationHostTests {
         let provisioner = FakeProvisioner()
         let host = OrchestrationHost(
             store: store, configStore: configStore, lifecycle: lifecycleFor(store), isTurnRunning: { _ in false },
-            runInjectedTurn: { _, _, _, _, _, _, _, _ in }, provisionerFactory: { _ in provisioner }
+            runInjectedTurn: { _, _, _, _, _, _, _, _ in true }, provisionerFactory: { _ in provisioner }
         )
 
         async let first = host.order(fromChannelId: "lead", module: "core", path: modulePath.path, text: "go")
@@ -425,9 +431,35 @@ struct OrchestrationHostTests {
         #expect(bound?.model == "haiku")
 
         // New module channel's first turn must carry the "[역할] Agent:{module}" preamble
-        // (OrchestrationHost.swift order()) so the fresh session learns its role.
-        await waitUntil { recorder.calls.contains { $0.channelId == channelId && $0.text == "[역할] Agent:core\n\nimplement it" } }
-        #expect(recorder.calls.contains { $0.channelId == channelId })
+        // (OrchestrationHost.swift order()) so the fresh session learns its role, plus the
+        // report reminder appended to every order text. `order` now awaits the prompt-post
+        // confirmation before returning, so the call is already recorded.
+        #expect(recorder.calls.contains {
+            $0.channelId == channelId && $0.text == "[역할] Agent:core\n\nimplement it" + orderReportReminder
+        })
+    }
+
+    @Test func orderDeliveryFailedWhenPromptPostFails() async throws {
+        let store = freshTempStore()
+        let configStore = tempConfigStore()
+        let projectDir = tempDir("project-f")
+        let modulePath = projectDir.appendingPathComponent("core", isDirectory: true)
+        try FileManager.default.createDirectory(at: modulePath, withIntermediateDirectories: true)
+
+        try await store.upsert(channelId: "lead", leadSession(cwd: projectDir.path))
+        try await configStore.saveServerConfig(ServerConfig(
+            guildId: "g1", orchestration: ["lead": OrchestrationSet(categoryId: "cat-1")]
+        ))
+
+        let recorder = TurnRecorder()
+        recorder.deliverResult = false
+        let host = OrchestrationHost(
+            store: store, configStore: configStore, lifecycle: lifecycleFor(store), isTurnRunning: { _ in false },
+            runInjectedTurn: recorder.handler(), provisionerFactory: { _ in FakeProvisioner() }
+        )
+
+        let decision = await host.order(fromChannelId: "lead", module: "core", path: modulePath.path, text: "go")
+        #expect(decision == .deliveryFailed)
     }
 
     @Test func reportNotFoundWhenCallerHasNoBinding() async {
@@ -462,6 +494,74 @@ struct OrchestrationHostTests {
 
         let decision = await host.report(fromChannelId: "mod", text: "DONE: implemented")
         #expect(decision == .ok(channelId: "lead"))
-        await waitUntil { recorder.calls.contains { $0.channelId == "lead" && $0.text == "DONE: implemented" } }
+        // `report` now awaits the prompt-post confirmation before returning, so the call is
+        // already recorded — no polling needed.
+        #expect(recorder.calls.contains { $0.channelId == "lead" && $0.text == "DONE: implemented" })
+    }
+
+    @Test func reportDeliveryFailedWhenPromptPostFails() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "lead", leadSession(cwd: "/tmp"))
+        try await store.upsert(channelId: "mod", agentSession(cwd: "/tmp/core", orchestratorChannelId: "lead", moduleName: "core"))
+
+        let recorder = TurnRecorder()
+        recorder.deliverResult = false
+        let host = OrchestrationHost(store: store, configStore: tempConfigStore(), runInjectedTurn: recorder.handler())
+
+        let decision = await host.report(fromChannelId: "mod", text: "DONE: implemented")
+        #expect(decision == .deliveryFailed)
+    }
+
+    @Test func reportBusyWhenOrchestratorChannelIsAlreadyRunning() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "lead", leadSession(cwd: "/tmp"))
+        try await store.upsert(channelId: "mod", agentSession(cwd: "/tmp/core", orchestratorChannelId: "lead", moduleName: "core"))
+
+        let host = OrchestrationHost(
+            store: store, configStore: tempConfigStore(),
+            isTurnRunning: { channelId in channelId == "lead" }
+        )
+        let decision = await host.report(fromChannelId: "mod", text: "DONE: implemented")
+        #expect(decision == .busy)
+    }
+
+    @Test func autoReportIfMissingNoOpsForNonAgentChannel() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "lead", leadSession(cwd: "/tmp"))
+
+        let recorder = TurnRecorder()
+        let host = OrchestrationHost(store: store, configStore: tempConfigStore(), runInjectedTurn: recorder.handler())
+
+        await host.autoReportIfMissing(channelId: "lead", text: "some answer")
+        #expect(recorder.calls.isEmpty)
+    }
+
+    @Test func autoReportIfMissingForwardsWhenModuleNeverCalledReport() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "lead", leadSession(cwd: "/tmp"))
+        try await store.upsert(channelId: "mod", agentSession(cwd: "/tmp/core", orchestratorChannelId: "lead", moduleName: "core"))
+
+        let recorder = TurnRecorder()
+        let host = OrchestrationHost(store: store, configStore: tempConfigStore(), runInjectedTurn: recorder.handler())
+
+        // Module finished its turn without ever calling `report()`.
+        await host.autoReportIfMissing(channelId: "mod", text: "trivial fix done")
+        #expect(recorder.calls.contains { $0.channelId == "lead" && $0.text == "trivial fix done" })
+    }
+
+    @Test func autoReportIfMissingSkipsWhenModuleAlreadyReportedThisTurn() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "lead", leadSession(cwd: "/tmp"))
+        try await store.upsert(channelId: "mod", agentSession(cwd: "/tmp/core", orchestratorChannelId: "lead", moduleName: "core"))
+
+        let recorder = TurnRecorder()
+        let host = OrchestrationHost(store: store, configStore: tempConfigStore(), runInjectedTurn: recorder.handler())
+
+        let decision = await host.report(fromChannelId: "mod", text: "DONE: implemented")
+        #expect(decision == .ok(channelId: "lead"))
+
+        // The turn's own completion hook runs after — must not forward a second, redundant report.
+        await host.autoReportIfMissing(channelId: "mod", text: "DONE: implemented")
+        #expect(recorder.calls.count == 1)
     }
 }

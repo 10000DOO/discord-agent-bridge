@@ -607,6 +607,7 @@ struct SidecarClientTests {
                 .appendingPathComponent("dab-orch-sidecar-report-cfg-\(UUID().uuidString)", isDirectory: true)),
             runInjectedTurn: { channelId, _, _, text, _, _, _, _ in
                 turnRecorder.withLock { $0.append((channelId, text)) }
+                return true
             }
         )
 

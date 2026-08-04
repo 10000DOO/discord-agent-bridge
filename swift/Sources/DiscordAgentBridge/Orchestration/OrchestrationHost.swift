@@ -9,6 +9,11 @@ import Foundation
 
 private let log = Logger(name: "orchestration-host")
 
+/// Appended to every `order()` turn text (new channel or reused alike) — see `order()`'s call site.
+let orderReportReminder =
+    "\n\n작업이 완료되면 반드시 report 도구(mcp__discord__report)를 호출해서 보고하세요. "
+        + "아무리 사소한 수정이라도 report 없이는 미완료로 간주됩니다."
+
 /// Outcome of `OrchestrationHost.order` / `.report` (R3/R4/R6/R7).
 public enum OrchestrationDecision: Sendable, Equatable {
     case ok(channelId: String)
@@ -27,6 +32,10 @@ public enum OrchestrationDecision: Sendable, Equatable {
     /// No session binding at all for the calling channel, or (for `report`) the lead channel it
     /// points at is gone. Also the fallback when a module channel cannot be created/found.
     case notFound
+    /// The message itself never made it to the target channel (Discord API/network failure after
+    /// retries) — unlike `.ok`, which only fires once that post is confirmed. Distinct from
+    /// `.notFound`: the target channel and role are fine, delivery just failed.
+    case deliveryFailed
 }
 
 // MARK: - Pure judgment (no I/O) — WO-4's primary unit-test target.
@@ -106,6 +115,8 @@ public func orchestrationDecisionText(_ decision: OrchestrationDecision) -> (tex
         return ("Refused: this tool cannot be called from this channel's role.", true)
     case .notFound:
         return ("Refused: no matching orchestration session was found for this channel.", true)
+    case .deliveryFailed:
+        return ("Refused: failed to deliver the message to the target channel after retries.", true)
     }
 }
 
@@ -128,11 +139,12 @@ public actor OrchestrationHost {
     public static let shared = OrchestrationHost()
 
     /// Fire a bot-authored turn on `channelId` (mirrors `runInjectedTurn`'s parameter list minus
-    /// `client`).
+    /// `client`). Returns whether the prompt was durably posted — `order`/`report` await this much
+    /// before answering their own caller, but not the turn itself (unbounded LLM think time).
     public typealias RunInjectedTurnFn = @Sendable (
         _ channelId: String, _ guildId: String, _ backend: Backend, _ promptText: String,
         _ postPrompt: Bool, _ announceExtras: Bool, _ actorId: String, _ roleTier: String
-    ) async -> Void
+    ) async -> Bool
 
     /// Build a `GuildChannelProvisioner` for one guild (the concrete `DiscordGuildChannelProvisioner`
     /// lives in `dab`).
@@ -168,6 +180,15 @@ public actor OrchestrationHost {
     /// actor isolation makes that pair atomic. Mirrors `DabSessionBridge.turnDepth`'s
     /// reserve/release-to-nil shape (`Bridges/DabSessionBridge.swift:240,255-257`).
     private var pendingModuleCreations: [String: Set<String>] = [:]
+
+    /// Module (agent-role) channels whose `report()` fired during their current turn — the safety
+    /// net for a module that finishes work but forgets to call `report` (prompt/role-doc guidance
+    /// alone isn't 100% reliable, confirmed in production). `autoReportIfMissing` checks AND
+    /// consumes this (removes on check) instead of needing a separate turn-start reset: R12
+    /// disallows the Task/Agent subagent tool for orchestration sessions, so an agent-role turn can
+    /// never produce more than one `.result` push — "checked once, then cleared" is already a
+    /// correct per-turn reset for this specific channel kind.
+    private var reportedThisTurn: Set<String> = []
 
     public init(
         store: SessionStore = .shared,
@@ -234,7 +255,10 @@ public actor OrchestrationHost {
         } else {
             // Same module already mid-creation from an earlier, still-in-flight `order()` call —
             // refuse rather than race a second `createModuleAgentChannel` for the same name.
-            guard pendingModuleCreations[fromChannelId]?.contains(module) != true else { return .busy }
+            guard pendingModuleCreations[fromChannelId]?.contains(module) != true else {
+                log.warn("order refused: module already mid-creation lead=\(fromChannelId) module=\(module)")
+                return .busy
+            }
 
             let maxConcurrent = runtime?.maxConcurrentAgents ?? ConfigDefaults.orchestrationMaxConcurrentAgents
             let inFlight = pendingModuleCreations[fromChannelId]?.count ?? 0
@@ -252,17 +276,29 @@ public actor OrchestrationHost {
             isNewChannel = true
         }
 
-        if await isTurnRunning(moduleChannelId) { return .busy }
+        if await isTurnRunning(moduleChannelId) {
+            log.warn("order refused: module busy lead=\(fromChannelId) module=\(module) channel=\(moduleChannelId)")
+            return .busy
+        }
         guard let runTurn = runInjectedTurnFn else { return .notFound }
         // New module channel's first turn must carry the role preamble (CLAUDE.md's role table,
         // OrchestrationProjectBundle.swift) so the fresh session knows it's a module agent — a
         // reused channel's session already learned its role on its own first turn.
-        let turnText = isNewChannel ? "[역할] Agent:\(module)\n\n\(text)" : text
-        Task {
-            await runTurn(
-                moduleChannelId, lead.guildId, lead.backend, turnText,
-                true, false, Self.systemActorId, Self.systemRoleTier
-            )
+        // `orderReportReminder` is appended either way (new or reused channel): a one-time role
+        // doc wasn't enough on its own (confirmed in production — a module finished a trivial fix
+        // and answered in-channel without ever calling `report`), a reminder right before every
+        // instruction is stronger (recency).
+        let turnText = (isNewChannel ? "[역할] Agent:\(module)\n\n\(text)" : text) + orderReportReminder
+        // Await only the prompt post (bounded) before answering — the turn itself stays
+        // fire-and-forget inside `runTurn` (see `RunInjectedTurnFn`/`runInjectedTurn` doc comment).
+        // announceExtras: true — a module turn is a normal session turn (usage panel, rate-limit
+        // line, etc. all apply), unlike Redmine's intentionally trimmed one-off kickoff message.
+        guard await runTurn(
+            moduleChannelId, lead.guildId, lead.backend, turnText,
+            true, true, Self.systemActorId, Self.systemRoleTier
+        ) else {
+            log.error("order delivery failed: could not post to module=\(module) channel=\(moduleChannelId)")
+            return .deliveryFailed
         }
         return .ok(channelId: moduleChannelId)
     }
@@ -276,14 +312,50 @@ public actor OrchestrationHost {
         guard let leadId = agent.orchestratorChannelId, let lead = await store.binding(channelId: leadId) else {
             return .notFound
         }
+        // Mirrors order()'s isTurnRunning/.busy check (line 255) — the lead channel can be mid-turn
+        // (its own conversation with the human, or another module's report queued ahead of this
+        // one) when a report arrives. Refuse immediately rather than letting DabSessionBridge.
+        // runTurn's per-channel gate queue it silently: an unbounded wait there (e.g. behind a
+        // turn stuck on an unanswered permission prompt) would make this report vanish with no
+        // error, while the caller already got back a "delivered" .ok.
+        if await isTurnRunning(leadId) {
+            log.warn("report refused: lead busy fromChannel=\(fromChannelId) lead=\(leadId)")
+            return .busy
+        }
 
         roundTripCounts[leadId, default: 0] += 1
 
         guard let runTurn = runInjectedTurnFn else { return .notFound }
-        Task {
-            await runTurn(leadId, lead.guildId, lead.backend, text, true, false, Self.systemActorId, Self.systemRoleTier)
+        // Await only the prompt post (bounded) before answering — see `RunInjectedTurnFn`'s doc
+        // comment. Previously this fired the whole turn as an untracked `Task` and answered
+        // "delivered" immediately, so a post that failed (or a process restart before the Task
+        // ran at all) left the module believing it had reported when nothing ever reached the
+        // lead — no error, no log, nothing.
+        // announceExtras: true — same reasoning as order(): a report-driven lead turn is a normal
+        // session turn, not Redmine's intentionally trimmed one-off kickoff message.
+        guard await runTurn(leadId, lead.guildId, lead.backend, text, true, true, Self.systemActorId, Self.systemRoleTier) else {
+            log.error("report delivery failed: could not post to lead=\(leadId) fromChannel=\(fromChannelId)")
+            return .deliveryFailed
         }
+        reportedThisTurn.insert(fromChannelId)
         return .ok(channelId: leadId)
+    }
+
+    /// Safety net: call once a channel's turn is fully done (`deliverTurnPush`, near the usage-panel
+    /// logic — WO's design note). No-ops for anything that isn't a module (agent-role) channel, or
+    /// where `report()` already fired during this turn (checked via `reportedThisTurn`, consumed on
+    /// check). Otherwise the module finished work but never told its lead — reuse `report()` itself
+    /// so the same delivery-confirmation/logging/busy-retry-visibility already fixed there applies
+    /// here too, rather than a second copy of that logic.
+    ///
+    /// Can't recurse: `report()` only ever fires a turn on the *lead* channel, whose own role is
+    /// "orchestrator", not "agent" — that turn's own eventual `deliverTurnPush` call finds
+    /// `orchestrationRole != "agent"` and no-ops immediately.
+    public func autoReportIfMissing(channelId: String, text: String) async {
+        guard await store.binding(channelId: channelId)?.orchestrationRole == "agent" else { return }
+        if reportedThisTurn.remove(channelId) != nil { return }
+        log.warn("auto-forwarding: module turn ended without a report() call channel=\(channelId)")
+        _ = await report(fromChannelId: channelId, text: text)
     }
 
     /// Create + bind a brand-new module channel (`order`'s not-yet-existing branch). Returns nil
