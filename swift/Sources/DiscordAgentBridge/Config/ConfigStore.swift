@@ -198,21 +198,14 @@ public actor ConfigStore {
     /// Write + read-after-write, up to 3 immediate retries (mirrors addServerPreset).
     public func saveRedmineConfig(guildId: String, section: RedmineSection) throws {
         let existing = loadServerConfig(guildId: guildId)
-        let next = ServerConfig(
-            version: existing?.version ?? CONFIG_VERSION,
-            guildId: guildId,
-            auth: existing?.auth,
-            defaults: existing?.defaults,
-            limits: existing?.limits,
-            locale: existing?.locale,
-            auditChannelId: existing?.auditChannelId,
-            favorites: existing?.favorites,
-            presets: existing?.presets,
-            channels: existing?.channels,
-            notifications: existing?.notifications,
-            capabilities: existing?.capabilities,
-            redmine: section
-        )
+        // Mutate the loaded value instead of re-listing every field (mirrors addServerPreset /
+        // patchNotifications). A field-by-field rebuild silently drops sections added later:
+        // that is how the 5-minute redmine poller's `lastCheckedAt` write used to wipe
+        // `orchestration`, orphaning every set's category id.
+        var next = existing ?? ServerConfig(guildId: guildId)
+        next.version = existing?.version ?? CONFIG_VERSION
+        next.guildId = guildId
+        next.redmine = section
         var lastErr: Error?
         for _ in 0..<3 {
             do {

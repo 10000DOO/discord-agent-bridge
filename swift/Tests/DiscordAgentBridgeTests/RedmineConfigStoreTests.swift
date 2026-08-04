@@ -30,6 +30,29 @@ struct RedmineConfigStoreTests {
         #expect(loaded?.notifications == NotificationsSection(enabled: true, channelId: "chan-1"))
     }
 
+    // The 5-minute poller writes `lastCheckedAt` through this path. A field-by-field rebuild used
+    // to drop `orchestration`/`orchestrationRuntime` here, which orphaned every set's category —
+    // `/orchestration` then made a fresh category on each re-run and `/agent close` could no
+    // longer find the old one to delete.
+    @Test func saveRedmineConfigPreservesOrchestrationSections() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ConfigStore(baseDir: dir)
+        try await store.saveServerConfig(ServerConfig(
+            guildId: "g1",
+            orchestration: ["orc-1": OrchestrationSet(categoryId: "cat-1", moduleModel: "sonnet")],
+            orchestrationRuntime: OrchestrationRuntimeSection(maxConcurrentAgents: 3)
+        ))
+        try await store.saveRedmineConfig(guildId: "g1", section: RedmineSection(
+            url: "https://redmine.example.com",
+            apiKeyEncrypted: Data("cipher".utf8),
+            lastCheckedAt: 42
+        ))
+        let loaded = await store.loadServerConfig(guildId: "g1")
+        #expect(loaded?.orchestration?["orc-1"] == OrchestrationSet(categoryId: "cat-1", moduleModel: "sonnet"))
+        #expect(loaded?.orchestrationRuntime?.maxConcurrentAgents == 3)
+        #expect(loaded?.redmine?.lastCheckedAt == 42)
+    }
+
     @Test func saveRedmineConfigOverwritesPreviousValue() async throws {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
