@@ -558,9 +558,24 @@ public struct SessionLifecycle: Sendable {
     /// save happens first so a write failure leaves the current live bridge and registry intact;
     /// successful replacement always drops every old bridge before publishing the new registry
     /// binding, preventing old handles from being reused by the new configuration.
+    ///
+    /// The orchestration role belongs to the **channel** (its name, its category, and the module
+    /// channels bound to it), not to one session generation, so it is carried across the
+    /// replacement — the same way `/agent resume` does. Without this, `/agent start` landing back
+    /// on a lead channel (`resolveSessionChannelId`'s fallback, taken when the sessions category
+    /// is missing or the channel create fails) silently demoted it: `order` then answered
+    /// `.wrongRole` so no new module session could be opened, and `/agent close` no longer tore
+    /// the set down. Only `enableOrchestrationMode` / `startModuleAgentChannel` / `stopChannel`
+    /// may change a channel's role.
     @discardableResult
     public func replaceBinding(channelId: String, with session: PersistedSession) async -> Bool {
         var replacement = session
+        if let existing = await store.binding(channelId: channelId) {
+            replacement.orchestrationSession = existing.orchestrationSession
+            replacement.orchestrationRole = existing.orchestrationRole
+            replacement.orchestratorChannelId = existing.orchestratorChannelId
+            replacement.moduleName = existing.moduleName
+        }
         replacement.lifecycleGeneration = UUID().uuidString
         replacement.contextGenerationStartedAt = now()
         do {

@@ -639,6 +639,48 @@ struct SessionLifecycleTests {
         ))
     }
 
+    // `/agent start` can land back on the channel it was run in (`resolveSessionChannelId`'s
+    // fallback). The new session must not demote a lead channel — a wiped role makes `order`
+    // answer `.wrongRole`, so the orchestrator can no longer open module sessions, and
+    // `/agent close` stops tearing the set down.
+    @Test func replaceBindingKeepsChannelOrchestrationRole() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "lead", PersistedSession(
+            backend: .claude, cwd: "/repo", guildId: "g", updatedAt: "T0",
+            orchestrationSession: true, orchestrationRole: "orchestrator"
+        ))
+        try await store.upsert(channelId: "mod", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "T0",
+            orchestrationSession: true, orchestrationRole: "agent",
+            orchestratorChannelId: "lead", moduleName: "core"
+        ))
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        // A wizard record never carries these fields — that is exactly the wipe being guarded.
+        let fromWizard = PersistedSession(
+            backend: .claude, cwd: "/repo", guildId: "g", model: "opus", updatedAt: "T1"
+        )
+
+        #expect(await life.replaceBinding(channelId: "lead", with: fromWizard))
+        #expect(await life.replaceBinding(channelId: "mod", with: fromWizard))
+
+        let lead = await store.binding(channelId: "lead")
+        #expect(lead?.orchestrationRole == "orchestrator")
+        #expect(lead?.orchestrationSession == true)
+        #expect(lead?.model == "opus") // the wizard's own choices still take effect
+        let mod = await store.binding(channelId: "mod")
+        #expect(mod?.orchestrationRole == "agent")
+        #expect(mod?.orchestratorChannelId == "lead")
+        #expect(mod?.moduleName == "core")
+
+        // An ordinary channel with no prior row stays roleless.
+        #expect(await life.replaceBinding(channelId: "plain", with: fromWizard))
+        #expect(await store.binding(channelId: "plain")?.orchestrationRole == nil)
+    }
+
     // C4-a: a failed live setModel must not be persisted — the binding stays at its old
     // model/effort and the caller learns the switch failed instead of a silent "success".
     @Test func updateBindingClaudeDoesNotPersistWhenLiveApplyFails() async throws {
