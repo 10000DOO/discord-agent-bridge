@@ -368,6 +368,13 @@ struct OrchestrationHostTests {
 
         let decision = await host.order(fromChannelId: "lead", module: "core", path: modulePath.path, text: "go again")
         #expect(decision == .roundTripLimit(max: 1))
+
+        // `/agent close` and `/orchestration` re-run both give the lead a fresh session, so the
+        // tally must go with it — otherwise the cap outlives the run that filled it and only a
+        // process restart clears it.
+        await host.resetRoundTrips(orchestratorChannelId: "lead")
+        let afterReset = await host.order(fromChannelId: "lead", module: "core", path: modulePath.path, text: "go again")
+        #expect(afterReset == .ok(channelId: "mod"))
     }
 
     @Test func orderBusyWhenTargetModuleChannelIsAlreadyRunning() async throws {

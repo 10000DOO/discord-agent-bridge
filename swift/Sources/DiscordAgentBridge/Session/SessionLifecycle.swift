@@ -236,6 +236,10 @@ public struct SessionLifecycle: Sendable {
 
         session.orchestrationSession = true
         session.orchestrationRole = "orchestrator"
+        // Promoting a module channel to a lead must drop its old set membership — leaving these
+        // set would keep the store pointing this channel at a lead it no longer belongs to.
+        session.orchestratorChannelId = nil
+        session.moduleName = nil
         session.backendSessionId = nil
         session.lifecycleGeneration = UUID().uuidString
         let startedAt = now()
@@ -336,16 +340,10 @@ public struct SessionLifecycle: Sendable {
         provisioner: (any GuildChannelProvisioner)?,
         configStore: ConfigStore = .shared
     ) async -> Int {
-        let moduleChannelIds = await store.all().filter {
-            $0.value.orchestrationRole == "agent" && $0.value.orchestratorChannelId == orchestratorChannelId
-        }.map(\.key)
-
-        for channelId in moduleChannelIds {
-            await stopChannel(channelId: channelId, actorId: actorId, guildId: guildId, roleTier: roleTier)
-            if let provisioner {
-                try? await provisioner.deleteChannel(id: channelId)
-            }
-        }
+        let moduleChannelIds = await stopOrchestrationModules(
+            orchestratorChannelId: orchestratorChannelId, guildId: guildId,
+            actorId: actorId, roleTier: roleTier, provisioner: provisioner
+        )
 
         guard let provisioner,
               let categoryId = await configStore.loadServerConfig(guildId: guildId)?
@@ -367,6 +365,34 @@ public struct SessionLifecycle: Sendable {
             }
         }
         return moduleChannelIds.count
+    }
+
+    /// Stop every module session bound to `orchestratorChannelId` (registry+store, same as
+    /// `stopChannel`) and delete its Discord channel. Returns the channel ids torn down.
+    ///
+    /// Shared by two callers: `closeOrchestrationSet` (which then also removes the now-empty
+    /// category) and `/orchestration` re-run on a channel that is already a lead — a re-run resets
+    /// the lead to a fresh context, so the modules it opened before are orphaned and must go with
+    /// it. Splitting it out is what lets the re-run path keep the category it is about to reuse.
+    @discardableResult
+    public func stopOrchestrationModules(
+        orchestratorChannelId: String,
+        guildId: String,
+        actorId: String,
+        roleTier: String = "execute",
+        provisioner: (any GuildChannelProvisioner)?
+    ) async -> [String] {
+        let moduleChannelIds = await store.all().filter {
+            $0.value.orchestrationRole == "agent" && $0.value.orchestratorChannelId == orchestratorChannelId
+        }.map(\.key)
+
+        for channelId in moduleChannelIds {
+            await stopChannel(channelId: channelId, actorId: actorId, guildId: guildId, roleTier: roleTier)
+            if let provisioner {
+                try? await provisioner.deleteChannel(id: channelId)
+            }
+        }
+        return moduleChannelIds
     }
 
     /// `/mode backend` same-backend: persist then stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.

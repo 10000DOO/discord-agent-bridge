@@ -1302,6 +1302,63 @@ struct SessionLifecycleCloseOrchestrationSetTests {
         #expect(count == 1)
         #expect(await store.binding(channelId: "agent-core") == nil)
     }
+
+    // `/orchestration` re-run on a channel that is already a lead: the previous run's module
+    // channels go, but the category stays because this run is about to reuse it.
+    @Test func stopOrchestrationModulesLeavesCategoryAndConfigEntryIntact() async throws {
+        let store = freshTempStore()
+        let configStore = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let prov = OrchestrationCloseFakeProvisioner(guildId: "g")
+        prov.seed(id: "orc-1", parentId: "cat-1")
+        prov.seed(id: "agent-core", parentId: "cat-1")
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        let closed = await life.stopOrchestrationModules(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u", provisioner: prov
+        )
+
+        #expect(closed == ["agent-core"])
+        #expect(await store.binding(channelId: "agent-core") == nil)
+        #expect(prov.deleted == ["agent-core"])
+        #expect(await configStore.loadServerConfig(guildId: "g")?.orchestration?["orc-1"]?.categoryId == "cat-1")
+    }
+
+    // Promoting a module channel to a lead (`/orchestration` run inside it) must drop its old set
+    // membership — otherwise the old lead's teardown/status still counts it as one of its modules.
+    @Test func enableOrchestrationModeClearsPreviousModuleMembership() async throws {
+        let store = freshTempStore()
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        #expect(await life.enableOrchestrationMode(channelId: "agent-core", actorId: "u", guildId: "g") == true)
+
+        let s = await store.binding(channelId: "agent-core")
+        #expect(s?.orchestrationRole == "orchestrator")
+        #expect(s?.orchestratorChannelId == nil)
+        #expect(s?.moduleName == nil)
+        // The old lead no longer sees it as one of its modules.
+        let stillMine = await life.stopOrchestrationModules(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u", provisioner: nil
+        )
+        #expect(stillMine.isEmpty)
+    }
 }
 
 @Suite("SessionRegistry.list")

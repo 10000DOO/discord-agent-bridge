@@ -948,6 +948,7 @@ struct EventHandler: GatewayEventHandler {
                             roleTier: tier,
                             provisioner: provisioner
                         )
+                        await OrchestrationHost.shared.resetRoundTrips(orchestratorChannelId: channelId)
                     }
                     var chName: String?
                     var parentId: String?
@@ -1958,6 +1959,11 @@ struct EventHandler: GatewayEventHandler {
             }
             let cwd = binding.cwd
             let backend = binding.backend
+            // A re-run on a channel that is already a lead resets it to a fresh context below
+            // (`enableOrchestrationMode`), so the module channels the previous run opened are
+            // orphaned — the new lead has no memory of them. Tear them down here rather than
+            // leaving dead channels under the category this run is about to reuse.
+            let wasOrchestrator = binding.orchestrationRole == "orchestrator"
 
             // Persist the card's module spec into the set BEFORE provisioning, so a category
             // that's created fresh below is saved with the module spec already attached
@@ -2003,6 +2009,21 @@ struct EventHandler: GatewayEventHandler {
             }
 
             let provisioner = resolveGuildProvisioner(client: self.client, guildId: guildId)
+            // Before reusing the category, clear the previous run's module channels out of it
+            // (see `wasOrchestrator` above). Runs after `enableOrchestrationMode` so a failed
+            // reset leaves the old set intact instead of half-destroyed.
+            let closedModules: Int
+            if wasOrchestrator {
+                closedModules = await SessionLifecycle.shared.stopOrchestrationModules(
+                    orchestratorChannelId: channelId, guildId: guildId,
+                    actorId: actorId, roleTier: "execute", provisioner: provisioner
+                ).count
+                // The restarted lead has issued no orders yet — carrying the old tally over would
+                // refuse them against a cap the previous run filled.
+                await OrchestrationHost.shared.resetRoundTrips(orchestratorChannelId: channelId)
+            } else {
+                closedModules = 0
+            }
             let categorySummary: String
             do {
                 let category = try await ensureOrchestrationCategory(
@@ -2042,6 +2063,9 @@ struct EventHandler: GatewayEventHandler {
             )
 
             var lines = [categorySummary, I18n.t("orchestration.project.installed", ["cwd": cwd])]
+            if closedModules > 0 {
+                lines.insert(I18n.t("orchestration.restart.modulesClosed", ["n": "\(closedModules)"]), at: 0)
+            }
             if let backupPath = report.backupPath {
                 lines.append(I18n.t("orchestration.project.backedUp", ["path": backupPath]))
             }

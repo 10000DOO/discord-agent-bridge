@@ -152,8 +152,8 @@ public actor OrchestrationHost {
     /// not separate distinct issues handled back-to-back by the same lead channel. Ceiling: fine
     /// as long as a restart mid-issue is rare and re-hitting the cap after one is an acceptable
     /// (not silent) failure mode. Upgrade path if that ever matters: persist alongside
-    /// `ServerConfig.orchestration[leadId]` and reset it in `closeOrchestrationSet` (WO-7) so it
-    /// is scoped to one issue/set instead of the channel's entire lifetime.
+    /// `ServerConfig.orchestration[leadId]`. Cleared by `resetRoundTrips` when the set is closed
+    /// or restarted, so a lead that hit the cap is usable again without a process restart.
     private var roundTripCounts: [String: Int] = [:]
 
     /// Module names currently mid-creation for a lead channel — not yet persisted to `store`.
@@ -191,6 +191,14 @@ public actor OrchestrationHost {
     public func setRunTurnHandler(_ fn: @escaping RunInjectedTurnFn) { runInjectedTurnFn = fn }
     /// Wired once from `dab`'s boot (WO-5).
     public func setProvisionerFactory(_ fn: @escaping ProvisionerFactory) { provisionerFactory = fn }
+
+    /// Forget the lead channel's order/report round-trip tally. Called when its set is closed or
+    /// restarted (`/agent close`, `/orchestration` re-run): both give the channel a fresh session,
+    /// so carrying the old count over would refuse orders on a lead that has issued none yet — and
+    /// nothing else clears it short of a process restart.
+    public func resetRoundTrips(orchestratorChannelId: String) {
+        roundTripCounts[orchestratorChannelId] = nil
+    }
 
     /// Lead → module. Creates the module channel + session on first order for that module name,
     /// reuses it after. Returns immediately once the turn has been fired (fire-and-forget — the

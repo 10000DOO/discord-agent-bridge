@@ -582,6 +582,8 @@ public enum I18n {
             "`{category}` 카테고리로 이동하고 채널 이름을 `{channel}`로 바꿨어요.",
         "orchestration.category.failed":
             "⚠️ 카테고리 이동에 실패했어요. 채널은 그대로 유지돼요.",
+        "orchestration.restart.modulesClosed":
+            "이전 오케스트레이션의 모듈 채널 {n}개를 정리했어요.",
 
         // design_orchestration_module_agents.md WO-10: start spec card (drop down 4 + 시작/취소)
         "orchestration.wizard.title": "오케스트레이션 시작 스펙",
@@ -1094,6 +1096,8 @@ public enum I18n {
             "Moved into the `{category}` category and renamed the channel to `{channel}`.",
         "orchestration.category.failed":
             "⚠️ Failed to move the category. The channel stays as-is.",
+        "orchestration.restart.modulesClosed":
+            "Cleaned up {n} module channel(s) from the previous orchestration run.",
 
         // design_orchestration_module_agents.md WO-10: start spec card (4 dropdowns + Start/Cancel)
         "orchestration.wizard.title": "Orchestration start spec",
