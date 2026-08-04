@@ -112,9 +112,7 @@ public func sessionConfig(from session: PersistedSession) -> SessionConfig {
         backend: session.backend,
         model: session.model,
         effort: session.effort,
-        permMode: session.permMode,
-        projectSettingSourcesOnly: session.projectSettingSourcesOnly,
-        projectRagEnabled: session.projectRagEnabled
+        permMode: session.permMode
     )
 }
 

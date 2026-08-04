@@ -90,12 +90,28 @@ struct DiscordGuildChannelProvisioner: GuildChannelProvisioner, Sendable {
         }
     }
 
+    func setParent(id: String, parentId: String) async throws {
+        do {
+            _ = try await client.updateGuildChannel(
+                id: ChannelSnowflake(id),
+                payload: .init(parent_id: AnySnowflake(ChannelSnowflake(parentId)))
+            ).decode()
+        } catch {
+            // Best-effort — missing permission / channel must not break provisioning.
+        }
+    }
+
     func deleteChannel(id: String) async throws {
         do {
             _ = try await client.deleteChannel(id: ChannelSnowflake(id))
         } catch {
             // Best-effort — missing channel is not an error.
         }
+    }
+
+    func childChannelIds(categoryId: String) async throws -> [String] {
+        let channels = try await client.listGuildChannels(guildId: GuildSnowflake(guildId)).decode()
+        return channels.filter { $0.parent_id?.rawValue == categoryId }.map(\.id.rawValue)
     }
 }
 

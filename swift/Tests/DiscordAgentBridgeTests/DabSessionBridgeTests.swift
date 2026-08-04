@@ -77,10 +77,10 @@ private actor GateableSidecar {
             if let e = env.params?["effort"]?.stringValue { capture?.withLock { $0["effort"] = e } }
             if let p = env.params?["permMode"]?.stringValue { capture?.withLock { $0["permMode"] = p } }
             if let c = env.params?["cwd"]?.stringValue { capture?.withLock { $0["cwd"] = c } }
-            // design_orchestration_project_scoped_command.md §4.6: absent when false (asParams()
+            // design_orchestration_module_agents.md R12/D18: absent when false (asParams()
             // only adds the key when true), so this only appears in the capture map when set.
-            if let pso = env.params?["projectSettingSourcesOnly"]?.boolValue {
-                capture?.withLock { $0["projectSettingSourcesOnly"] = pso ? "true" : "false" }
+            if let pso = env.params?["orchestrationSession"]?.boolValue {
+                capture?.withLock { $0["orchestrationSession"] = pso ? "true" : "false" }
             }
             // C9: session.start/resume config.{allowedTools,autoAllowClaudeTools,permissionTimeoutSec}
             if let cfg = env.params?["config"]?.objectValue {
@@ -919,27 +919,27 @@ struct DabSessionBridgeTests {
         #expect(cap.withLock { $0["effort"] } == "high")
     }
 
-    // design_orchestration_project_scoped_command.md §4.6: a persisted
-    // projectSettingSourcesOnly=true reaches session.start params so the sidecar narrows to
-    // `settingSources: ['project']`. Default false is omitted entirely (asParams() thrift).
-    @Test func projectSettingSourcesOnlyReachesSessionStartParams() async throws {
+    // design_orchestration_module_agents.md R12/D18: a persisted
+    // orchestrationSession=true reaches session.start params so the sidecar removes the
+    // subagent-launch tool. Default false is omitted entirely (asParams() thrift).
+    @Test func orchestrationSessionReachesSessionStartParams() async throws {
         let store = freshTempStore()
         try await store.upsert(channelId: "c", PersistedSession(
-            backend: .claude, cwd: "/x", guildId: "g", updatedAt: "t", projectSettingSourcesOnly: true
+            backend: .claude, cwd: "/x", guildId: "g", updatedAt: "t", orchestrationSession: true
         ))
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture, store: store)
         let reply = try await runPushes(bridge, ownerId: "o", text: "hi").last
         #expect(reply?.text == "ok:hi")
-        #expect(capture.withLock { $0["projectSettingSourcesOnly"] } == "true")
+        #expect(capture.withLock { $0["orchestrationSession"] } == "true")
     }
 
-    @Test func projectSettingSourcesOnlyDefaultFalseOmitsParam() async throws {
+    @Test func orchestrationSessionDefaultFalseOmitsParam() async throws {
         let capture = LockedBox<[String: String]>([:])
         let (bridge, _) = makeDabBridge(capture: capture)
         let reply = try await runPushes(bridge, ownerId: "o", text: "hi", config: SessionConfig(backend: .claude)).last
         #expect(reply?.text == "ok:hi")
-        #expect(capture.withLock { $0["projectSettingSourcesOnly"] } == nil)
+        #expect(capture.withLock { $0["orchestrationSession"] } == nil)
     }
 
     // W11-b1: model/effort from the bound config reach session.start params (permMode stays env).

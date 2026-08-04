@@ -67,9 +67,20 @@ private final class FakeProvisioner: GuildChannelProvisioner, @unchecked Sendabl
         }
     }
 
+    func setParent(id: String, parentId: String) async throws {
+        if var ch = channels[id] {
+            ch.parent = parentId
+            channels[id] = ch
+        }
+    }
+
     func deleteChannel(id: String) async throws {
         channels.removeValue(forKey: id)
         deleted.append(id)
+    }
+
+    func childChannelIds(categoryId: String) async throws -> [String] {
+        channels.filter { $0.value.parent == categoryId }.map(\.key)
     }
 }
 
@@ -281,19 +292,27 @@ struct GuildChannelsAutoProvisionTests {
 @Suite("GuildChannels session channel")
 struct GuildChannelsSessionTests {
     @Test func sessionChannelNameSlugifies() {
-        #expect(sessionChannelName("/home/me/My_App") == "proj-my-app")
-        #expect(sessionChannelName("/home/me/foo.bar") == "proj-foo-bar")
-        #expect(sessionChannelName("/home/me/repo/") == "proj-repo")
+        #expect(sessionChannelName("/home/me/My_App").hasSuffix("-my-app-proj"))
+        #expect(sessionChannelName("/home/me/foo.bar").hasSuffix("-foo-bar-proj"))
+        #expect(sessionChannelName("/home/me/repo/").hasSuffix("-repo-proj"))
     }
 
     @Test func sessionChannelNameFallback() {
-        #expect(sessionChannelName("/") == "proj-session")
-        #expect(sessionChannelName("///") == "proj-session")
+        #expect(sessionChannelName("/").hasSuffix("-session-proj"))
+        #expect(sessionChannelName("///").hasSuffix("-session-proj"))
     }
 
     @Test func sessionChannelNameCapsAt100() {
         let long = "/x/" + String(repeating: "a", count: 200)
-        #expect(sessionChannelName(long).count <= 100)
+        let name = sessionChannelName(long)
+        #expect(name.count <= 100)
+        #expect(name.hasSuffix("-proj"))
+    }
+
+    @Test func sessionChannelNameIsUniquePerCall() {
+        // Same folder → distinct channel names (random prefix), so repeated sessions from one
+        // project folder don't collide.
+        #expect(sessionChannelName("/home/me/My_App") != sessionChannelName("/home/me/My_App"))
     }
 
     @Test func createSessionChannelParentsUnderCategory() async throws {
@@ -303,7 +322,7 @@ struct GuildChannelsSessionTests {
             folderPath: "/abs/path/My Project",
             sessionsCategoryId: "sessions-cat"
         )
-        #expect(created.name == "proj-my-project")
+        #expect(created.name.hasSuffix("-my-project-proj"))
         #expect(prov.channels[created.id]?.parent == "sessions-cat")
     }
 
@@ -326,7 +345,7 @@ struct GuildChannelsSessionTests {
             fallbackChannelId: "orig-ch"
         )
         #expect(id != "orig-ch")
-        #expect(prov.channels[id]?.name == "proj-myapp")
+        #expect(prov.channels[id]?.name.hasSuffix("-myapp-proj") == true)
         #expect(prov.channels[id]?.parent == "sess-cat")
     }
 
@@ -386,11 +405,11 @@ struct GuildChannelsDeleteSessionTests {
         )
     }
 
-    @Test func shouldDeleteWhenProjNamePrefix() {
+    @Test func shouldDeleteWhenProjNameSuffix() {
         #expect(
             shouldDeleteSessionChannelOnClose(
                 channelId: "sess-1",
-                channelName: "proj-thing",
+                channelName: "a1b2c3-thing-proj",
                 parentId: nil,
                 serverChannels: structure
             )
@@ -398,9 +417,62 @@ struct GuildChannelsDeleteSessionTests {
         #expect(
             shouldDeleteSessionChannelOnClose(
                 channelId: "sess-1",
-                channelName: "proj-thing",
+                channelName: "a1b2c3-thing-proj",
                 parentId: nil,
                 serverChannels: nil
+            )
+        )
+    }
+
+    // Regression guard: pre-update channels used a `proj-` prefix (not the current `-proj` suffix
+    // scheme). Those still-live legacy channels must remain deletable on `/agent close`.
+    @Test func shouldDeleteWhenLegacyProjNamePrefix() {
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1",
+                channelName: "proj-old-session",
+                parentId: nil,
+                serverChannels: structure
+            )
+        )
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1",
+                channelName: "proj-old-session",
+                parentId: nil,
+                serverChannels: nil
+            )
+        )
+    }
+
+    // WO-7 (design_orchestration_module_agents.md, R8): the 3-5 trap this guards against — a lead
+    // ("*-orc") or module ("*-agent") channel matches neither the sessions-category-parent check
+    // nor the `-proj` suffix, so without this it would survive `/agent close`.
+    @Test func shouldDeleteWhenOrcOrAgentNameSuffix() {
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "orc-1", channelName: "a1b2c3-myproj-orc", parentId: nil, serverChannels: structure
+            )
+        )
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "agent-1", channelName: "a1b2c3-core-agent", parentId: nil, serverChannels: structure
+            )
+        )
+    }
+
+    @Test func shouldDeleteWhenUnderOrchestrationCategory() {
+        #expect(
+            shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1", channelName: "weirdly-named-channel", parentId: "orch-cat-1",
+                serverChannels: structure, orchestrationCategoryIds: ["orch-cat-1"]
+            )
+        )
+        // Neither in the set nor -proj/-orc/-agent suffixed → still protected.
+        #expect(
+            !shouldDeleteSessionChannelOnClose(
+                channelId: "sess-1", channelName: "weirdly-named-channel", parentId: "other-cat",
+                serverChannels: structure, orchestrationCategoryIds: ["orch-cat-1"]
             )
         )
     }
@@ -410,9 +482,24 @@ struct GuildChannelsDeleteSessionTests {
             #expect(
                 !shouldDeleteSessionChannelOnClose(
                     channelId: id,
-                    channelName: "proj-spoof",
+                    channelName: "a1b2c3-spoof-proj",
                     parentId: "sess-cat",
                     serverChannels: structure
+                ),
+                "must not delete protected id \(id)"
+            )
+        }
+    }
+
+    // WO-7 completion criterion ②: control/status channels must stay protected even when the
+    // orchestration category machinery is in play (e.g. a stale/misconfigured category id that
+    // happens to collide with a protected parent).
+    @Test func neverDeletesControlStatusCategoryEvenWithOrchestrationCategoryIds() {
+        for id in ["ctrl", "status", "cat", "sess-cat"] {
+            #expect(
+                !shouldDeleteSessionChannelOnClose(
+                    channelId: id, channelName: "a1b2c3-spoof-orc", parentId: "orch-cat-1",
+                    serverChannels: structure, orchestrationCategoryIds: ["orch-cat-1"]
                 ),
                 "must not delete protected id \(id)"
             )
@@ -440,11 +527,11 @@ struct GuildChannelsDeleteSessionTests {
 
     @Test func deleteSessionChannelCallsProvisionerWhenEligible() async {
         let prov = FakeProvisioner()
-        prov.seed(id: "sess-1", name: "proj-thing", type: "text")
+        prov.seed(id: "sess-1", name: "a1b2c3-thing-proj", type: "text")
         await deleteSessionChannel(
             provisioner: prov,
             channelId: "sess-1",
-            channelName: "proj-thing",
+            channelName: "a1b2c3-thing-proj",
             parentId: "sess-cat",
             serverChannels: structure
         )
@@ -452,13 +539,28 @@ struct GuildChannelsDeleteSessionTests {
         #expect(prov.channels["sess-1"] == nil)
     }
 
+    @Test func deleteSessionChannelCallsProvisionerForOrchestrationSetChannel() async {
+        let prov = FakeProvisioner()
+        prov.seed(id: "agent-1", name: "a1b2c3-core-agent", type: "text")
+        await deleteSessionChannel(
+            provisioner: prov,
+            channelId: "agent-1",
+            channelName: "a1b2c3-core-agent",
+            parentId: "orch-cat-1",
+            serverChannels: structure,
+            orchestrationCategoryIds: ["orch-cat-1"]
+        )
+        #expect(prov.deleted == ["agent-1"])
+        #expect(prov.channels["agent-1"] == nil)
+    }
+
     @Test func deleteSessionChannelSkipsControlEvenIfNameLooksLikeSession() async {
         let prov = FakeProvisioner()
-        prov.seed(id: "ctrl", name: "proj-spoof", type: "text")
+        prov.seed(id: "ctrl", name: "a1b2c3-spoof-proj", type: "text")
         await deleteSessionChannel(
             provisioner: prov,
             channelId: "ctrl",
-            channelName: "proj-spoof",
+            channelName: "a1b2c3-spoof-proj",
             parentId: "sess-cat",
             serverChannels: structure
         )
@@ -470,7 +572,7 @@ struct GuildChannelsDeleteSessionTests {
         await deleteSessionChannel(
             provisioner: nil,
             channelId: "sess-1",
-            channelName: "proj-thing",
+            channelName: "a1b2c3-thing-proj",
             parentId: "sess-cat",
             serverChannels: structure
         )
@@ -531,7 +633,11 @@ private final class ThrowingProvisioner: GuildChannelProvisioner, @unchecked Sen
         throw NSError(domain: "test", code: 1)
     }
     func renameChannel(id: String, name: String) async throws {}
+    func setParent(id: String, parentId: String) async throws {}
     func deleteChannel(id: String) async throws {}
+    func childChannelIds(categoryId: String) async throws -> [String] {
+        throw NSError(domain: "test", code: 1)
+    }
 }
 
 // MARK: - alreadyDone async against live fake

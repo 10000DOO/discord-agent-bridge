@@ -31,8 +31,15 @@ public protocol GuildChannelProvisioner: Sendable {
     func createTextChannel(name: String, parentId: String?) async throws -> ProvisionedChannel
     /// Rename by id (control-channel name migration). Best-effort at adapter level.
     func renameChannel(id: String, name: String) async throws
+    /// Move a channel under a new parent category (`/dab-orchestration` category migration).
+    /// Best-effort at adapter level — mirrors `renameChannel`.
+    func setParent(id: String, parentId: String) async throws
     /// Delete by id (/agent close). Best-effort at adapter level.
     func deleteChannel(id: String) async throws
+    /// Ids of channels still parented under `categoryId` (WO-7 category-empty check before delete).
+    /// Throws on a failed query — callers must NOT treat a failure as "empty" (RV: that would let a
+    /// transient API error delete a non-empty category).
+    func childChannelIds(categoryId: String) async throws -> [String]
 }
 
 /// Canonical Discord names (not localized — Discord channel/category names).
@@ -42,6 +49,8 @@ public enum GuildChannelNames {
     public static let statusChannel = "agent-status"
     public static let sessionsCategory = "Agent - Sessions"
     public static let redmineReportChannel = "redmine-report"
+    /// + `<folder-slug>` — one category per orchestration set (design_orchestration_module_agents.md R1).
+    public static let orchestrationCategoryPrefix = "Agent - Orch - "
 }
 
 // MARK: - alreadyDone (pure)
@@ -165,6 +174,51 @@ public func ensureRedmineReportChannel(
     )
 }
 
+// MARK: - Orchestration set category (design_orchestration_module_agents.md WO-1)
+
+/// Idempotently create (or reuse) the orchestration set's category and persist its id into
+/// `ServerConfig.orchestration[orchestratorChannelId]`. Mirrors `ensureGuildChannels`'s
+/// `reuseId` + `ensureCategory` combo. On reuse, never touches `moduleModel`/`moduleEffort` —
+/// those fields belong to the WO-10 start card.
+public func ensureOrchestrationCategory(
+    provisioner: any GuildChannelProvisioner,
+    configStore: ConfigStore,
+    orchestratorChannelId: String,
+    folderPath: String
+) async throws -> ProvisionedChannel {
+    let guildId = provisioner.guildId
+    let server = await configStore.loadServerConfig(guildId: guildId)
+    let existingSet = server?.orchestration?[orchestratorChannelId]
+
+    let slug = slugifyPathComponent(folderPath)
+    let base = GuildChannelNames.orchestrationCategoryPrefix + (slug.isEmpty ? "session" : slug)
+    // Discriminator applies to NEW categories only — `ensureCategory` ignores `name` when
+    // `existingId` is non-nil (reuse path below), so this never renames an already-provisioned
+    // set. Same folder can back multiple concurrent orchestrator sets (distinct
+    // orchestratorChannelId) — D1 allowed identical names since Discord permits duplicates, but
+    // users found identical category names confusing across sets. Mirrors `TurnThread.swift:173`'s
+    // `key.suffix(6)` collision-discriminator convention.
+    let discriminator = " · \(orchestratorChannelId.suffix(6))"
+    let categoryName = base.count + discriminator.count <= 100
+        ? base + discriminator
+        : String(base.prefix(100 - discriminator.count)) + discriminator
+
+    let category = try await provisioner.ensureCategory(
+        name: categoryName,
+        existingId: await reuseId(existingSet?.categoryId, provisioner: provisioner)
+    )
+
+    var nextSet = existingSet ?? OrchestrationSet(categoryId: category.id)
+    nextSet.categoryId = category.id
+    var nextServer = server ?? ServerConfig(guildId: guildId)
+    var sets = nextServer.orchestration ?? [:]
+    sets[orchestratorChannelId] = nextSet
+    nextServer.orchestration = sets
+    try await configStore.saveServerConfig(nextServer)
+
+    return category
+}
+
 // MARK: - Session channel
 
 /// Create a dedicated session channel under the sessions category when available.
@@ -175,6 +229,18 @@ public func createSessionChannel(
 ) async throws -> ProvisionedChannel {
     let name = sessionChannelName(folderPath)
     return try await provisioner.createTextChannel(name: name, parentId: sessionsCategoryId)
+}
+
+/// Create a module agent channel under the orchestration set's category (WO-2, R3). Always a
+/// fresh channel (like `createSessionChannel`) — the caller (WO-4's order handler) decides
+/// reuse-vs-create by checking existing store bindings first; `categoryId` is non-optional here
+/// because this is only called after `ensureOrchestrationCategory` has already produced one.
+public func createModuleAgentChannel(
+    provisioner: any GuildChannelProvisioner,
+    moduleName: String,
+    categoryId: String
+) async throws -> ProvisionedChannel {
+    try await provisioner.createTextChannel(name: moduleAgentChannelName(moduleName), parentId: categoryId)
 }
 
 /// Resolve the channel id to bind after `/agent start` wizard done (W11-b2 A4D).
@@ -207,12 +273,15 @@ public func resolveSessionChannelId(
 /// Whether `/agent close` should delete this channel (A4D dedicated session channel).
 ///
 /// Never deletes control / status / category / sessions-category from server config.
-/// Deletes only when the channel is under the sessions category **or** its name is `proj-*`.
+/// Deletes when the channel is under the sessions category, under an orchestration set's
+/// category (`orchestrationCategoryIds` — design_orchestration_module_agents.md WO-7/R8), or its
+/// name is `*-proj` / `*-orc` / `*-agent`.
 public func shouldDeleteSessionChannelOnClose(
     channelId: String,
     channelName: String?,
     parentId: String?,
-    serverChannels: ServerChannels?
+    serverChannels: ServerChannels?,
+    orchestrationCategoryIds: Set<String> = []
 ) -> Bool {
     if let sc = serverChannels {
         if channelId == sc.controlChannelId { return false }
@@ -226,7 +295,12 @@ public func shouldDeleteSessionChannelOnClose(
        parentId == sessionsCat {
         return true
     }
-    if let channelName, channelName.hasPrefix("proj-") {
+    if let parentId, orchestrationCategoryIds.contains(parentId) {
+        return true
+    }
+    if let channelName,
+       channelName.hasPrefix("proj-")
+        || channelName.hasSuffix("-proj") || channelName.hasSuffix("-orc") || channelName.hasSuffix("-agent") {
         return true
     }
     return false
@@ -240,13 +314,15 @@ public func deleteSessionChannel(
     channelName: String?,
     parentId: String?,
     serverChannels: ServerChannels?,
+    orchestrationCategoryIds: Set<String> = [],
     log: (@Sendable (String) -> Void)? = nil
 ) async {
     guard shouldDeleteSessionChannelOnClose(
         channelId: channelId,
         channelName: channelName,
         parentId: parentId,
-        serverChannels: serverChannels
+        serverChannels: serverChannels,
+        orchestrationCategoryIds: orchestrationCategoryIds
     ) else { return }
     guard let provisioner else { return }
     do {
@@ -276,9 +352,12 @@ public func isControlPlaneChannel(
     return false
 }
 
-/// `proj-<basename>` slug, lowercased, non-alnum → `-`, capped at 100 chars.
-public func sessionChannelName(_ folderPath: String) -> String {
-    var path = folderPath
+/// Shared slug rule for channel/category names derived from a folder path or module name:
+/// last path component, lowercased, non-alnum runs collapsed to a single `-`, leading/trailing
+/// `-` trimmed. Used by `sessionChannelName` / `orchestratorChannelName` / `moduleAgentChannelName`
+/// / the orchestration category name (3-5 규약 — one slug rule, several prefixes).
+private func slugifyPathComponent(_ input: String) -> String {
+    var path = input
     while path.hasSuffix("/") || path.hasSuffix("\\") {
         path = String(path.dropLast())
     }
@@ -297,9 +376,40 @@ public func sessionChannelName(_ folderPath: String) -> String {
     }
     while slug.hasPrefix("-") { slug = String(slug.dropFirst()) }
     while slug.hasSuffix("-") { slug = String(slug.dropLast()) }
-    let name = slug.isEmpty ? "proj-session" : "proj-\(slug)"
+    return slug
+}
+
+/// `<uniq6>-<basename>-proj`, lowercased, non-alnum → `-`, capped at 100 chars. The random
+/// `<uniq6>` prefix (not the slug) tells apart multiple sessions created from the same folder;
+/// the `-proj` suffix is the fixed marker `shouldDeleteSessionChannelOnClose` matches on.
+public func sessionChannelName(_ folderPath: String) -> String {
+    markedChannelName(folderPath, fallback: "session", marker: "proj")
+}
+
+/// `<uniq6>-<folder-slug>-orc` — the orchestration lead channel name
+/// (design_orchestration_module_agents.md R2). Only ever used to rename an already-existing
+/// channel (DabMain.swift), so a fresh `<uniq6>` per call is fine — it need not be stable.
+public func orchestratorChannelName(_ folderPath: String) -> String {
+    markedChannelName(folderPath, fallback: "session", marker: "orc")
+}
+
+/// `<uniq6>-<module-slug>-agent` — a module agent channel name (WO-2 uses this to create the channel).
+public func moduleAgentChannelName(_ moduleName: String) -> String {
+    markedChannelName(moduleName, fallback: "module", marker: "agent")
+}
+
+/// Shared `<uniq6>-<slug>-<marker>` builder for `sessionChannelName` / `orchestratorChannelName` /
+/// `moduleAgentChannelName`. `marker` is the fixed suffix `shouldDeleteSessionChannelOnClose`
+/// checks for, so the 100-char cap trims the slug only — prefix/marker are never truncated.
+private func markedChannelName(_ input: String, fallback: String, marker: String) -> String {
+    let slug = slugifyPathComponent(input)
+    let base = slug.isEmpty ? fallback : slug
+    let prefix = "\(UUID().uuidString.prefix(6).lowercased())-"
+    let suffix = "-\(marker)"
+    let name = prefix + base + suffix
     if name.count <= 100 { return name }
-    return String(name.prefix(100))
+    let maxBaseLen = max(0, 100 - prefix.count - suffix.count)
+    return prefix + String(base.prefix(maxBaseLen)) + suffix
 }
 
 // MARK: - Persist

@@ -7,17 +7,24 @@ public struct OrchestrationInstallReport: Sendable, Equatable {
     /// Path of the `.claude/` backup zip created before this install, or nil when no prior
     /// `.claude/` existed (first run — nothing to back up).
     public var backupPath: String?
+    /// Skill ids skipped because a skill of the same name already exists — globally under
+    /// `~/.claude/skills/` or in this project's own `.claude/skills/` (R13/D19, WO-8 step 8).
+    /// Surfaced here so the ephemeral install response/report can tell the user what was left
+    /// alone instead of silently doing nothing for those ids.
+    public var skippedSkills: [String]
 
     public init(
         removedPaths: [String] = [],
         writtenPaths: [String] = [],
         errors: [String] = [],
-        backupPath: String? = nil
+        backupPath: String? = nil,
+        skippedSkills: [String] = []
     ) {
         self.removedPaths = removedPaths
         self.writtenPaths = writtenPaths
         self.errors = errors
         self.backupPath = backupPath
+        self.skippedSkills = skippedSkills
     }
 }
 
@@ -27,15 +34,17 @@ public struct OrchestrationInstallReport: Sendable, Equatable {
 /// 3-backend (Claude/Codex/Grok) installer was removed (§6 decision ①); this type now owns a
 /// single entry point, `installProject`.
 public enum OrchestrationInstaller {
-    /// `<root>/.claude/{CLAUDE.md, skills/*/SKILL.md, agents/*.md}` only — Codex/Grok and
-    /// `settings.json`/LSP patching are not part of this path (§6 decision ①).
+    /// `<root>/.claude/{CLAUDE.md, roles/*.md, skills/*/SKILL.md, agents/*.md}` only —
+    /// Codex/Grok and `settings.json`/LSP patching are not part of this path (§6 decision ①).
     ///
     /// Step 0 backs up any existing `<root>/.claude/` to a zip before touching it; a backup
     /// failure aborts here with no delete/rewrite (§4.2a). CLAUDE.md is fully overwritten;
-    /// `skills/{id}/` and `agents/{id}.md` are removed then recreated (same idempotent pattern
-    /// the old global installer already used). Safe to call repeatedly — re-running always backs
+    /// `roles/{id}.md`, `skills/{id}/`, and `agents/{id}.md` are removed then recreated (same
+    /// idempotent pattern the old global installer already used) — except skills whose id is
+    /// already installed globally or in this project (R13/D19 below), which are left untouched
+    /// and reported in `skippedSkills` instead. Safe to call repeatedly — re-running always backs
     /// up again (new timestamped zip) and rewrites the same content (§5: no separate "already
-    /// installed" branch needed).
+    /// installed" branch needed for CLAUDE.md/roles/agents).
     public static func installProject(
         root: URL,
         fileManager: FileManager = .default
@@ -53,6 +62,12 @@ public enum OrchestrationInstaller {
         }
         report.backupPath = backup.path
 
+        // R13/D19: collected before the skills loop below removes/recreates anything, so this
+        // project's own already-installed skills still count as "already there" (WO-8 step 8 —
+        // the backup above is a zip copy, not a delete, so `<root>/.claude/skills/` on disk right
+        // now is still the pre-reinstall state).
+        let skipSkillIds = existingSkillIds(root: root, homeDir: NSHomeDirectory(), fm: fileManager)
+
         let claudeRoot = root.appendingPathComponent(".claude", isDirectory: true)
         ensureDir(claudeRoot, fm: fileManager, report: &report)
         writeFile(
@@ -63,9 +78,21 @@ public enum OrchestrationInstaller {
         )
         copyGlobalSettingsJSON(into: claudeRoot, fm: fileManager, report: &report)
 
+        let rolesRoot = claudeRoot.appendingPathComponent("roles", isDirectory: true)
+        ensureDir(rolesRoot, fm: fileManager, report: &report)
+        for role in OrchestrationProjectBundle.roles {
+            let path = rolesRoot.appendingPathComponent("\(role.id).md")
+            removeIfExists(path, fm: fileManager, report: &report)
+            writeFile(path, content: role.markdown, fm: fileManager, report: &report)
+        }
+
         let skillsRoot = claudeRoot.appendingPathComponent("skills", isDirectory: true)
         ensureDir(skillsRoot, fm: fileManager, report: &report)
         for skill in OrchestrationProjectBundle.skills {
+            guard !skipSkillIds.contains(skill.id) else {
+                report.skippedSkills.append(skill.id)
+                continue
+            }
             let dir = skillsRoot.appendingPathComponent(skill.id, isDirectory: true)
             removeIfExists(dir, fm: fileManager, report: &report)
             ensureDir(dir, fm: fileManager, report: &report)
@@ -81,6 +108,26 @@ public enum OrchestrationInstaller {
         }
 
         return report
+    }
+
+    /// Skill ids that already exist under the global `~/.claude/skills/` or this project's own
+    /// `<root>/.claude/skills/` — the R13/D19 "don't clobber what's already there" set (WO-8
+    /// step 8). `orchestration` (the Orca skill symlink, a same-name-different-thing) is always
+    /// excluded regardless of whether it's actually present, so it can never be treated as "this
+    /// bundle's skill is already installed". Read-only — only lists directory entries, never
+    /// writes under either root.
+    public static func existingSkillIds(root: URL, homeDir: String, fm: FileManager) -> Set<String> {
+        let globalSkillsDir = URL(fileURLWithPath: homeDir).appendingPathComponent(".claude/skills", isDirectory: true)
+        let projectSkillsDir = root.appendingPathComponent(".claude/skills", isDirectory: true)
+        var ids = skillDirEntries(at: globalSkillsDir, fm: fm)
+        ids.formUnion(skillDirEntries(at: projectSkillsDir, fm: fm))
+        ids.remove("orchestration")
+        return ids
+    }
+
+    private static func skillDirEntries(at dir: URL, fm: FileManager) -> Set<String> {
+        guard let entries = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+        return Set(entries)
     }
 
     /// `<root>/.claude` → `<root>/.claude-backups/orchestration-{stamp}.zip` (§4.2a). No prior

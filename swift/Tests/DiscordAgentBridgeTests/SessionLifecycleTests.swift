@@ -221,9 +221,10 @@ struct SessionLifecycleTests {
         #expect(stopped.withLock { $0 } == ["claude:c1", "codex:c1", "grok:c1"])
     }
 
-    // design_orchestration_project_scoped_command.md §4.5: enableOrchestrationMode mirrors
-    // clearChannel (store upsert → stop all bridges → registry rebind), plus flips
-    // projectSettingSourcesOnly so the next session start narrows to `settingSources: ['project']`.
+    // design_orchestration_project_scoped_command.md §4.5 / design_orchestration_module_agents.md
+    // R12/D18: enableOrchestrationMode mirrors clearChannel (store upsert → stop all bridges →
+    // registry rebind), plus flips orchestrationSession so the next session start removes the
+    // subagent-launch tool from the model's context.
     @Test func enableOrchestrationModeSetsProjectFlagWipesBackendSessionIdAndStopsBridges() async throws {
         let reg = SessionRegistry()
         let store = freshTempStore()
@@ -253,17 +254,17 @@ struct SessionLifecycleTests {
         )
         #expect(await life.enableOrchestrationMode(channelId: "c1", actorId: "u", guildId: "g") == true)
         let s = await store.binding(channelId: "c1")
-        #expect(s?.projectSettingSourcesOnly == true)
+        #expect(s?.orchestrationSession == true)
+        #expect(s?.orchestrationRole == "orchestrator")
         #expect(s?.backendSessionId == nil)
         #expect(s?.model == "sonnet") // config otherwise preserved, same as clearChannel
         #expect(s?.cwd == "/proj")
         #expect(s?.updatedAt == "T-orch")
-        #expect(await reg.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
         #expect(stopped.withLock { $0 } == ["claude:c1", "codex:c1", "grok:c1"])
 
         // Calling again (re-run of /orchestration) is idempotent — still true, no separate branch.
         #expect(await life.enableOrchestrationMode(channelId: "c1", actorId: "u", guildId: "g") == true)
-        #expect(await store.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
+        #expect(await store.binding(channelId: "c1")?.orchestrationSession == true)
     }
 
     @Test func orchestrationProjectFlagSurvivesSessionPersistenceAcrossClear() async throws {
@@ -290,7 +291,7 @@ struct SessionLifecycleTests {
             cwd: "/proj", model: nil, effort: nil, permMode: nil, backendSessionId: "B-FIRST",
             lifecycleGeneration: firstGeneration
         )
-        #expect(await store.binding(channelId: "c1")?.projectSettingSourcesOnly == true)
+        #expect(await store.binding(channelId: "c1")?.orchestrationSession == true)
 
         #expect(await life.clearChannel(channelId: "c1", actorId: "u", guildId: "g"))
         let secondGeneration = try #require(await store.binding(channelId: "c1")?.lifecycleGeneration)
@@ -302,7 +303,7 @@ struct SessionLifecycleTests {
 
         let persisted = await store.binding(channelId: "c1")
         #expect(persisted?.backendSessionId == "B-SECOND")
-        #expect(persisted?.projectSettingSourcesOnly == true)
+        #expect(persisted?.orchestrationSession == true)
     }
 
     @Test func enableOrchestrationModeNoBindingReturnsFalse() async {
@@ -314,6 +315,79 @@ struct SessionLifecycleTests {
             interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
         )
         #expect(await life.enableOrchestrationMode(channelId: "none", actorId: "u", guildId: "g") == false)
+    }
+
+    // MARK: - WO-2 startModuleAgentChannel
+
+    @Test func startModuleAgentChannelBindsStoreAndRegistryAsAgent() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-agent" }
+        )
+        let config = SessionConfig(backend: .claude, model: "sonnet", effort: "medium", permMode: "acceptEdits")
+        let ok = await life.startModuleAgentChannel(
+            channelId: "agent-core",
+            guildId: "g",
+            ownerId: "owner-1",
+            cwd: "/repo/core",
+            moduleName: "core",
+            orchestratorChannelId: "orc-1",
+            config: config,
+            actorId: "u"
+        )
+        #expect(ok == true)
+        let s = await store.binding(channelId: "agent-core")
+        #expect(s?.orchestrationRole == "agent")
+        #expect(s?.orchestratorChannelId == "orc-1")
+        #expect(s?.moduleName == "core")
+        #expect(s?.backend == .claude)
+        #expect(s?.model == "sonnet")
+        #expect(s?.effort == "medium")
+        #expect(s?.permMode == "acceptEdits")
+        #expect(s?.cwd == "/repo/core")
+        #expect(s?.orchestrationSession == true)
+        #expect(await reg.binding(channelId: "agent-core")?.backend == .claude)
+        #expect(await reg.binding(channelId: "agent-core")?.model == "sonnet")
+    }
+
+    // RV (high): a re-call onto an already-bound module channel must stop any bridge already
+    // live on it before rebinding — same ordering as clearChannel/enableOrchestrationMode — so a
+    // future caller (WO-3/WO-4) can never orphan a process under a new lifecycleGeneration.
+    @Test func startModuleAgentChannelIsIdempotentOnRecall() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let stopped = LockedBox<[String]>([])
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { $0.append("claude:\(ch)") } },
+            stopCodex: { ch in stopped.withLock { $0.append("codex:\(ch)") } },
+            stopGrok: { ch in stopped.withLock { $0.append("grok:\(ch)") } },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false },
+            now: { "T-agent" }
+        )
+        let config = SessionConfig(backend: .claude, model: "sonnet")
+        #expect(await life.startModuleAgentChannel(
+            channelId: "agent-core", guildId: "g", ownerId: "owner-1", cwd: "/repo/core",
+            moduleName: "core", orchestratorChannelId: "orc-1", config: config, actorId: "u"
+        ) == true)
+        // First call already stops all three (nothing was live yet, but the ordering is unconditional).
+        #expect(stopped.withLock { $0 } == ["claude:agent-core", "codex:agent-core", "grok:agent-core"])
+
+        #expect(await life.startModuleAgentChannel(
+            channelId: "agent-core", guildId: "g", ownerId: "owner-1", cwd: "/repo/core",
+            moduleName: "core", orchestratorChannelId: "orc-1", config: config, actorId: "u"
+        ) == true)
+        // Second call (the orphan-risk case) stops all three again before rebinding.
+        #expect(stopped.withLock { $0 } == [
+            "claude:agent-core", "codex:agent-core", "grok:agent-core",
+            "claude:agent-core", "codex:agent-core", "grok:agent-core",
+        ])
+        #expect(await store.all().count == 1)
+        #expect(await store.binding(channelId: "agent-core")?.orchestrationRole == "agent")
     }
 
     @Test func clearNoBindingReturnsFalse() async {
@@ -937,6 +1011,296 @@ struct SessionLifecycleTests {
         #expect(resumedCalls.withLock { $0 }.contains("live2"))
         #expect(!stopped.withLock { $0 }.contains("live2"))
         #expect(await store.binding(channelId: "live2") != nil)
+    }
+}
+
+// MARK: - WO-7 closeOrchestrationSet (design_orchestration_module_agents.md, R8)
+
+/// Minimal provisioner fake for `closeOrchestrationSet`: tracks parent-per-channel-id so
+/// `childChannelIds` can answer the category-empty check for real, mirroring
+/// `OrchestrationChannelsTests.swift`'s `FakeProvisioner` (kept separate — that one is file-private).
+private final class OrchestrationCloseFakeProvisioner: GuildChannelProvisioner, @unchecked Sendable {
+    private enum FakeQueryError: Error { case simulated }
+
+    let guildId: String
+    /// channelId → parentId
+    private(set) var channels: [String: String?] = [:]
+    private(set) var deleted: [String] = []
+    /// When true, `childChannelIds` throws instead of answering (RV: a failed live query must
+    /// never be read as "empty").
+    var failChildQuery = false
+
+    init(guildId: String = "g") { self.guildId = guildId }
+
+    func seed(id: String, parentId: String?) { channels[id] = parentId }
+
+    func canManageChannels() async -> Bool { true }
+    func channelExists(_ id: String) async -> Bool { channels[id] != nil }
+    func ensureCategory(name: String, existingId: String?) async throws -> ProvisionedChannel {
+        ProvisionedChannel(id: existingId ?? "cat", name: name)
+    }
+    func ensureTextChannel(name: String, parentId: String, existingId: String?) async throws -> ProvisionedChannel {
+        ProvisionedChannel(id: existingId ?? "text", name: name)
+    }
+    func createTextChannel(name: String, parentId: String?) async throws -> ProvisionedChannel {
+        ProvisionedChannel(id: "text", name: name)
+    }
+    func renameChannel(id: String, name: String) async throws {}
+    func setParent(id: String, parentId: String) async throws {}
+    func deleteChannel(id: String) async throws {
+        channels.removeValue(forKey: id)
+        deleted.append(id)
+    }
+    func childChannelIds(categoryId: String) async throws -> [String] {
+        if failChildQuery { throw FakeQueryError.simulated }
+        return channels.filter { $0.value == categoryId }.map(\.key)
+    }
+}
+
+private func orchestrationConfigStore(
+    guildId: String, orchestratorChannelId: String, categoryId: String
+) async throws -> ConfigStore {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dab-orch-close-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let store = ConfigStore(baseDir: dir)
+    try await store.saveServerConfig(ServerConfig(
+        guildId: guildId,
+        orchestration: [orchestratorChannelId: OrchestrationSet(categoryId: categoryId)]
+    ))
+    return store
+}
+
+@Suite("SessionLifecycle closeOrchestrationSet")
+struct SessionLifecycleCloseOrchestrationSetTests {
+    private func tempAudit() -> AuditLog {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dab-audit-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("audit.jsonl", isDirectory: false)
+        return AuditLog(fileURL: url, now: { "T" })
+    }
+
+    // Completion criterion ③: total close stops+deletes 2 modules and removes the category.
+    @Test func closesModulesDeletesEmptyCategoryAndRemovesConfigEntry() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let configStore = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let prov = OrchestrationCloseFakeProvisioner(guildId: "g")
+        prov.seed(id: "orc-1", parentId: "cat-1") // lead channel — still physically present here
+        prov.seed(id: "agent-core", parentId: "cat-1")
+        prov.seed(id: "agent-ui", parentId: "cat-1")
+
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        try await store.upsert(channelId: "agent-ui", PersistedSession(
+            backend: .claude, cwd: "/repo/ui", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "ui"
+        ))
+        await reg.bind(channelId: "agent-core", SessionConfig(backend: .claude))
+        await reg.bind(channelId: "agent-ui", SessionConfig(backend: .claude))
+
+        let stopped = LockedBox<Set<String>>([])
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { _ = $0.insert(ch) } },
+            stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        let count = await life.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: prov, configStore: configStore
+        )
+
+        #expect(count == 2)
+        #expect(stopped.withLock { $0 } == ["agent-core", "agent-ui"])
+        #expect(await store.binding(channelId: "agent-core") == nil)
+        #expect(await store.binding(channelId: "agent-ui") == nil)
+        #expect(await reg.binding(channelId: "agent-core") == nil)
+        #expect(Set(prov.deleted) == ["agent-core", "agent-ui", "cat-1"])
+        #expect(await configStore.loadServerConfig(guildId: "g")?.orchestration?["orc-1"] == nil)
+    }
+
+    // The reason Option 1 (real Discord query) was picked over trusting the store alone: a
+    // channel dropped into the category outside of our own bookkeeping must block category
+    // deletion instead of silently vanishing along with it.
+    @Test func doesNotDeleteCategoryWhenStrayChannelRemains() async throws {
+        let reg = SessionRegistry()
+        let store = freshTempStore()
+        let configStore = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let prov = OrchestrationCloseFakeProvisioner(guildId: "g")
+        prov.seed(id: "orc-1", parentId: "cat-1")
+        prov.seed(id: "agent-core", parentId: "cat-1")
+        prov.seed(id: "stray-manual-channel", parentId: "cat-1") // never tracked in the store
+
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+
+        let life = SessionLifecycle(
+            registry: reg, store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        _ = await life.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: prov, configStore: configStore
+        )
+
+        #expect(prov.deleted == ["agent-core"]) // module gone, category left alone
+        #expect(await configStore.loadServerConfig(guildId: "g")?.orchestration?["orc-1"]?.categoryId == "cat-1")
+        #expect(prov.channels["stray-manual-channel"] != nil)
+    }
+
+    // RV: a failed live query must not be read as "empty" — that would delete a category we never
+    // actually confirmed was empty, defeating the whole reason a live check was chosen over
+    // trusting the store alone.
+    @Test func doesNotDeleteCategoryWhenChildQueryFails() async throws {
+        let store = freshTempStore()
+        let configStore = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let prov = OrchestrationCloseFakeProvisioner(guildId: "g")
+        prov.seed(id: "orc-1", parentId: "cat-1")
+        prov.seed(id: "agent-core", parentId: "cat-1")
+        prov.failChildQuery = true
+
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        let count = await life.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: prov, configStore: configStore
+        )
+
+        #expect(count == 1)
+        #expect(prov.deleted == ["agent-core"]) // module still torn down, category untouched
+        #expect(!prov.deleted.contains("cat-1"))
+        #expect(await configStore.loadServerConfig(guildId: "g")?.orchestration?["orc-1"]?.categoryId == "cat-1")
+    }
+
+    // The emptiness check excludes `orchestratorChannelId` itself so this is safe to call whether
+    // the lead channel's own physical delete already ran or not (`case "close":`'s ordering).
+    @Test func categoryDeletionIgnoresLeadChannelRegardlessOfDeleteOrder() async throws {
+        // Case A: lead channel already deleted by the time closeOrchestrationSet runs.
+        let storeA = freshTempStore()
+        let configStoreA = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let provA = OrchestrationCloseFakeProvisioner(guildId: "g")
+        provA.seed(id: "agent-core", parentId: "cat-1") // "orc-1" NOT seeded — already gone
+        try await storeA.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        let lifeA = SessionLifecycle(
+            registry: SessionRegistry(), store: storeA, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        _ = await lifeA.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: provA, configStore: configStoreA
+        )
+        #expect(provA.deleted.contains("cat-1"))
+
+        // Case B: lead channel still physically present (not deleted yet) — same result.
+        let storeB = freshTempStore()
+        let configStoreB = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let provB = OrchestrationCloseFakeProvisioner(guildId: "g")
+        provB.seed(id: "orc-1", parentId: "cat-1")
+        provB.seed(id: "agent-core", parentId: "cat-1")
+        try await storeB.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        let lifeB = SessionLifecycle(
+            registry: SessionRegistry(), store: storeB, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        _ = await lifeB.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: provB, configStore: configStoreB
+        )
+        #expect(provB.deleted.contains("cat-1"))
+    }
+
+    // Only the sessions bound to THIS orchestratorChannelId are torn down — a module belonging to
+    // a different set (and its category) must survive.
+    @Test func onlyTearsDownModulesForGivenOrchestrator() async throws {
+        let store = freshTempStore()
+        let configStore = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        let prov = OrchestrationCloseFakeProvisioner(guildId: "g")
+        prov.seed(id: "orc-1", parentId: "cat-1")
+        prov.seed(id: "agent-core", parentId: "cat-1")
+        prov.seed(id: "other-agent", parentId: "cat-2")
+
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        try await store.upsert(channelId: "other-agent", PersistedSession(
+            backend: .claude, cwd: "/repo/other", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-2", moduleName: "other"
+        ))
+
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        let count = await life.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: prov, configStore: configStore
+        )
+
+        #expect(count == 1)
+        #expect(await store.binding(channelId: "other-agent") != nil) // untouched — completion ④
+        #expect(!prov.deleted.contains("other-agent"))
+    }
+
+    @Test func stopsModuleSessionsEvenWithoutProvisioner() async throws {
+        let store = freshTempStore()
+        let configStore = try await orchestrationConfigStore(
+            guildId: "g", orchestratorChannelId: "orc-1", categoryId: "cat-1"
+        )
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { _ in }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+        let count = await life.closeOrchestrationSet(
+            orchestratorChannelId: "orc-1", guildId: "g", actorId: "u",
+            provisioner: nil, configStore: configStore
+        )
+        #expect(count == 1)
+        #expect(await store.binding(channelId: "agent-core") == nil)
     }
 }
 

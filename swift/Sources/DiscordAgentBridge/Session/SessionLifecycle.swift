@@ -218,24 +218,24 @@ public struct SessionLifecycle: Sendable {
     }
 
     /// `/orchestration`: same rebind mechanism as `clearChannel` (design_orchestration_project_scoped_command.md
-    /// §4.5), but also flips `projectSettingSourcesOnly` so the next session start loads only the
-    /// project's `.claude/` settings (no user/local). Safe to call repeatedly — setting `true` again
-    /// is a no-op, and the underlying stop/rebind is already idempotent like `clearChannel`.
+    /// §4.5), but also flips `orchestrationSession` so the next session start removes the
+    /// subagent-launch tool from the model's context (R12/D18). Safe to call repeatedly —
+    /// setting `true` again is a no-op, and the underlying stop/rebind is already idempotent
+    /// like `clearChannel`.
     @discardableResult
     public func enableOrchestrationMode(
         channelId: String,
         actorId: String,
         guildId: String,
         roleTier: String = "execute",
-        defaultCwd: String = NSHomeDirectory(),
-        projectRagEnabled: Bool = false
+        defaultCwd: String = NSHomeDirectory()
     ) async -> Bool {
         guard var session = await resolveSession(
             channelId: channelId, guildId: guildId, defaultCwd: defaultCwd
         ) else { return false }
 
-        session.projectSettingSourcesOnly = true
-        session.projectRagEnabled = projectRagEnabled
+        session.orchestrationSession = true
+        session.orchestrationRole = "orchestrator"
         session.backendSessionId = nil
         session.lifecycleGeneration = UUID().uuidString
         let startedAt = now()
@@ -258,6 +258,115 @@ public struct SessionLifecycle: Sendable {
             status: "ok"
         ))
         return true
+    }
+
+    /// Bind a module agent channel's session state (design_orchestration_module_agents.md WO-2, R3).
+    /// The channel itself is created by the caller (`createModuleAgentChannel` + WO-4's reuse check)
+    /// **before** this is invoked — this method only publishes registry/store state, it never
+    /// creates a channel. A fresh process is not started here either (the channel's first injected
+    /// turn does that — same ensure-on-turn principle as `clearChannel`), but any bridge already
+    /// live on this channelId IS stopped before rebinding — same ordering as `clearChannel`/
+    /// `enableOrchestrationMode` — so a re-call can never orphan an old process under a new
+    /// `lifecycleGeneration`. Re-calling with the same `channelId` is idempotent.
+    @discardableResult
+    public func startModuleAgentChannel(
+        channelId: String,
+        guildId: String,
+        ownerId: String,
+        cwd: String,
+        moduleName: String,
+        orchestratorChannelId: String,
+        config: SessionConfig,
+        actorId: String,
+        roleTier: String = "execute"
+    ) async -> Bool {
+        let startedAt = now()
+        let session = PersistedSession(
+            backend: config.backend,
+            cwd: cwd,
+            guildId: guildId,
+            ownerId: ownerId,
+            model: config.model,
+            effort: config.effort,
+            permMode: config.permMode,
+            contextGenerationStartedAt: startedAt,
+            updatedAt: startedAt,
+            orchestrationSession: true,   // R12: module sessions are subagent-blocking targets too
+            orchestrationRole: "agent",
+            orchestratorChannelId: orchestratorChannelId,
+            moduleName: moduleName
+        )
+        do {
+            try await store.upsert(channelId: channelId, session)
+        } catch {
+            return false
+        }
+        // A re-call onto an already-live module channel (once WO-3/WO-4 wire a caller) must not
+        // let the old process survive under a new lifecycleGeneration — same ordering as
+        // clearChannel/enableOrchestrationMode: persist, then drop every bridge, then rebind.
+        await stopAllBridges(channelId: channelId)
+        await registry.bind(channelId: channelId, sessionConfig(from: session))
+        await audit.record(AuditEntry(
+            actorId: actorId,
+            roleTier: roleTier,
+            guildId: guildId,
+            channelId: channelId,
+            action: "orchestration.agent.start",
+            mode: config.backend.rawValue,
+            status: "ok"
+        ))
+        return true
+    }
+
+    /// Tear down an entire orchestration set (design_orchestration_module_agents.md WO-7, R8):
+    /// every module session bound to `orchestratorChannelId` is stopped (registry+store, same as
+    /// `stopChannel`) and its channel deleted, then — once no channel other than the lead channel
+    /// itself remains under the set's category — the category is deleted and its
+    /// `ServerConfig.orchestration` entry is dropped. The emptiness check excludes
+    /// `orchestratorChannelId` on purpose so this can run before or after the lead channel's own
+    /// deletion in `case "close":` without caring which happened first. Returns the number of
+    /// module channels torn down. Only ever called for the **lead** ("orchestrator") channel — a
+    /// module channel's own `/agent close` never reaches this (R8 completion criterion ④).
+    @discardableResult
+    public func closeOrchestrationSet(
+        orchestratorChannelId: String,
+        guildId: String,
+        actorId: String,
+        roleTier: String = "execute",
+        provisioner: (any GuildChannelProvisioner)?,
+        configStore: ConfigStore = .shared
+    ) async -> Int {
+        let moduleChannelIds = await store.all().filter {
+            $0.value.orchestrationRole == "agent" && $0.value.orchestratorChannelId == orchestratorChannelId
+        }.map(\.key)
+
+        for channelId in moduleChannelIds {
+            await stopChannel(channelId: channelId, actorId: actorId, guildId: guildId, roleTier: roleTier)
+            if let provisioner {
+                try? await provisioner.deleteChannel(id: channelId)
+            }
+        }
+
+        guard let provisioner,
+              let categoryId = await configStore.loadServerConfig(guildId: guildId)?
+                  .orchestration?[orchestratorChannelId]?.categoryId
+        else { return moduleChannelIds.count }
+
+        // RV: a failed query must NOT be treated as "empty" — that would delete a category we
+        // never actually confirmed was empty, defeating the reason a live Discord check (rather
+        // than trusting the store alone) was chosen in the first place.
+        guard let children = try? await provisioner.childChannelIds(categoryId: categoryId) else {
+            return moduleChannelIds.count
+        }
+        let remaining = children.filter { $0 != orchestratorChannelId }
+        if remaining.isEmpty {
+            try? await provisioner.deleteChannel(id: categoryId)
+            if var server = await configStore.loadServerConfig(guildId: guildId) {
+                server.orchestration?[orchestratorChannelId] = nil
+                try? await configStore.saveServerConfig(server)
+            }
+        }
+        return moduleChannelIds.count
     }
 
     /// `/mode backend` same-backend: persist then stop live, rebind to `backend` keeping cwd/owner; clear backendSessionId.

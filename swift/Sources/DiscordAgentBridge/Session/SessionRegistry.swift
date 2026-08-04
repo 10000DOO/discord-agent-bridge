@@ -16,25 +16,17 @@ public struct SessionConfig: Sendable, Equatable {
     public var model: String?
     public var effort: String?
     public var permMode: String?
-    /// Mirrors `PersistedSession.projectSettingSourcesOnly` (design_orchestration_project_scoped_command.md §4.4).
-    public var projectSettingSourcesOnly: Bool
-    /// Mirrors `PersistedSession.projectRagEnabled` (docs/project-rag-generic-indexing.md §2).
-    public var projectRagEnabled: Bool
 
     public init(
         backend: Backend,
         model: String? = nil,
         effort: String? = nil,
-        permMode: String? = nil,
-        projectSettingSourcesOnly: Bool = false,
-        projectRagEnabled: Bool = false
+        permMode: String? = nil
     ) {
         self.backend = backend
         self.model = model
         self.effort = effort
         self.permMode = permMode
-        self.projectSettingSourcesOnly = projectSettingSourcesOnly
-        self.projectRagEnabled = projectRagEnabled
     }
 }
 

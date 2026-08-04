@@ -199,7 +199,7 @@ Typical flow: **`/dab-setup` → `/dab-config` → `/dab-agent start`**, then no
 
 1. **`/dab-setup`** (admin) — control channel, sessions category, status channel (reuses existing).
 2. **`/dab-config`** (admin) — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides.
-3. **`/dab-agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/dab-setup`, can create an A4D `proj-<folder>` channel under the sessions category and bind it.
+3. **`/dab-agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/dab-setup`, can create an A4D `<random-id>-<folder>-proj` channel under the sessions category and bind it.
 4. In a bound channel, **send normal messages**. Prefix shortcuts also work without the full wizard:
 
 ```text

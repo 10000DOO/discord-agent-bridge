@@ -67,9 +67,20 @@ private final class FakeProvisioner: GuildChannelProvisioner, @unchecked Sendabl
         }
     }
 
+    func setParent(id: String, parentId: String) async throws {
+        if var ch = channels[id] {
+            ch.parent = parentId
+            channels[id] = ch
+        }
+    }
+
     func deleteChannel(id: String) async throws {
         channels.removeValue(forKey: id)
         deleted.append(id)
+    }
+
+    func childChannelIds(categoryId: String) async throws -> [String] {
+        channels.filter { $0.value.parent == categoryId }.map(\.key)
     }
 }
 

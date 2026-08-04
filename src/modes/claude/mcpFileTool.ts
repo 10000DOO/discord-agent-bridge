@@ -5,6 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { Logger } from '../../core/contracts.js';
 import type { ShareResult } from '../../discord/documentShare.js';
+import { createSendOrderTool, createReportTool, type SendOrderCallback, type ReportCallback } from './mcpOrchestrationTool.js';
 
 // In-process MCP server exposing a single `attach_file` tool so Claude can push a
 // file into the Discord channel this session is bound to (§5a, §7.5). Two
@@ -86,6 +87,12 @@ export function createMcpFileTool(
   sendFile: SendFileCallback,
   shareDocument?: ShareDocumentCallback,
   logger?: Logger,
+  // Orchestration star-topology tools (design_orchestration_module_agents.md D4):
+  // join the SAME `discord` server rather than a new one, so tool names stay
+  // `mcp__discord__*`. Wired only when the Discord layer supplies the host RPC
+  // callback (WO-6).
+  sendOrder?: SendOrderCallback,
+  report?: ReportCallback,
 ) {
   const attachFile = tool(
     'attach_file',
@@ -124,6 +131,14 @@ export function createMcpFileTool(
       { annotations: { readOnlyHint: false } },
     );
     tools.push(shareDoc);
+  }
+
+  if (sendOrder) {
+    tools.push(createSendOrderTool(sendOrder, logger));
+  }
+
+  if (report) {
+    tools.push(createReportTool(report, logger));
   }
 
   return createSdkMcpServer({ name: 'discord', version: '1.0.0', tools });

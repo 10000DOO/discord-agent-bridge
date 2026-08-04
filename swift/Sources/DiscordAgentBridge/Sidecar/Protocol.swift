@@ -68,11 +68,11 @@ public struct SessionStartParams: Sendable, Equatable {
     public var permMode: String
     public var config: SessionConfig?
     public var env: [String: String?]?
-    /// `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.6):
-    /// when true, the sidecar loads only `settingSources: ['project']` (no user/local settings).
-    public var projectSettingSourcesOnly: Bool
-    /// Project RAG index feature flag (docs/project-rag-generic-indexing.md §2).
-    public var projectRagEnabled: Bool
+    /// Orchestration-role session flag (design_orchestration_module_agents.md R12/D18): when
+    /// true, the sidecar removes the subagent-launch tool from the model's context
+    /// (`disallowedTools`). Renamed from `projectSettingSourcesOnly` (D18) — no on-disk
+    /// backward-compat needed here since this is a live sidecar RPC param, not persisted state.
+    public var orchestrationSession: Bool
 
     public struct SessionConfig: Sendable, Equatable {
         public var allowedTools: [String]?
@@ -100,8 +100,7 @@ public struct SessionStartParams: Sendable, Equatable {
         permMode: String,
         config: SessionConfig? = nil,
         env: [String: String?]? = nil,
-        projectSettingSourcesOnly: Bool = false,
-        projectRagEnabled: Bool = false
+        orchestrationSession: Bool = false
     ) {
         self.cwd = cwd
         self.guildId = guildId
@@ -112,8 +111,7 @@ public struct SessionStartParams: Sendable, Equatable {
         self.permMode = permMode
         self.config = config
         self.env = env
-        self.projectSettingSourcesOnly = projectSettingSourcesOnly
-        self.projectRagEnabled = projectRagEnabled
+        self.orchestrationSession = orchestrationSession
     }
 
     public func asParams() -> [String: JSONValue] {
@@ -146,8 +144,7 @@ public struct SessionStartParams: Sendable, Equatable {
             }
             p["env"] = .object(e)
         }
-        if projectSettingSourcesOnly { p["projectSettingSourcesOnly"] = .bool(true) }
-        if projectRagEnabled { p["projectRagEnabled"] = .bool(true) }
+        if orchestrationSession { p["orchestrationSession"] = .bool(true) }
         return p
     }
 }

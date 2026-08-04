@@ -414,7 +414,7 @@ public actor ConfigStore {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         try rejectNulls(
             in: root,
-            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities", "redmine"],
+            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities", "redmine", "orchestration"],
             allowing: ["auditChannelId"]
         )
 

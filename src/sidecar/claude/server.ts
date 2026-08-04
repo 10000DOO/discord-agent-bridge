@@ -138,7 +138,7 @@ function parseStartParams(params: Record<string, unknown>): SessionStartParams {
     }
     env = envRaw as Record<string, string | undefined>;
   }
-  const projectSettingSourcesOnly = optionalBoolean(params, 'projectSettingSourcesOnly');
+  const orchestrationSession = optionalBoolean(params, 'orchestrationSession');
   return {
     cwd: requireString(params, 'cwd'),
     guildId: requireString(params, 'guildId'),
@@ -155,7 +155,7 @@ function parseStartParams(params: Record<string, unknown>): SessionStartParams {
     permMode: requireString(params, 'permMode'),
     ...(config !== undefined ? { config } : {}),
     ...(env !== undefined ? { env } : {}),
-    ...(projectSettingSourcesOnly !== undefined ? { projectSettingSourcesOnly } : {}),
+    ...(orchestrationSession !== undefined ? { orchestrationSession } : {}),
   };
 }
 
@@ -432,6 +432,8 @@ export class SidecarServer {
         return this.getCatalog({ logger: this.logger });
       case 'host.file.attach':
       case 'host.file.share':
+      case 'host.orchestration.order':
+      case 'host.orchestration.report':
         // Reverse-RPC is Host-bound; if Host sends these, reject.
         throw Object.assign(new Error(`${method} is host-bound reverse RPC`), {
           code: 'unsupported',

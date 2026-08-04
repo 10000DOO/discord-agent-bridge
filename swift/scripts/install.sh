@@ -30,6 +30,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SWIFT_DIR="$REPO_ROOT/swift"
 ENV_EXAMPLE="$SWIFT_DIR/deploy/env.example"
 BUILT_BIN="$SWIFT_DIR/.build/release/dab"
+BUILT_SIDECAR="$REPO_ROOT/dist/sidecar/claude/cli.js"
 
 # Capture the Node that built/installed this launcher while the interactive shell still has its
 # full PATH. launchd later starts with a minimal PATH, and this is only used if nvm has no usable
@@ -179,6 +180,11 @@ if [ "$DRY_RUN" = "1" ]; then
   log "dry-run OK"
   exit 0
 fi
+
+log "== build (sidecar) =="
+command -v npm >/dev/null 2>&1 || { log "FATAL: npm is required to build the TypeScript sidecar (dist/)" >&2; exit 1; }
+(cd "$REPO_ROOT" && npm run build)
+[ -f "$BUILT_SIDECAR" ] || { log "FATAL: build produced no $BUILT_SIDECAR" >&2; exit 1; }
 
 log "== build (release) =="
 swift build -c release --package-path "$SWIFT_DIR"

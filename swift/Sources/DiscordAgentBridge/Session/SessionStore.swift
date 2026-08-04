@@ -28,13 +28,18 @@ public struct PersistedSession: Codable, Sendable, Equatable {
     public var createdAt: String?
     public var updatedAt: String
     public var archived: Bool
-    /// `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.4):
-    /// when true, the next Claude session start uses `settingSources: ['project']` only (no
-    /// user/local settings). Decode default false — see `init(from:)`.
-    public var projectSettingSourcesOnly: Bool
-    /// Project RAG index feature flag (docs/project-rag-generic-indexing.md §2): flips to true
-    /// only after the first index publish succeeds. Decode default false — see `init(from:)`.
-    public var projectRagEnabled: Bool
+    /// Marks this channel as an orchestration-role session (design_orchestration_module_agents.md
+    /// R12/D18): when true, the session's subagent-launch tool is removed from the model's
+    /// context (`disallowedTools`). Renamed from `projectSettingSourcesOnly` (D18) — decode also
+    /// accepts that legacy key for existing session files. Decode default false — see `init(from:)`.
+    public var orchestrationSession: Bool
+    /// Orchestration role for this channel (design_orchestration_module_agents.md WO-2):
+    /// "orchestrator" (lead channel) | "agent" (module channel) | nil (ordinary session).
+    public var orchestrationRole: String?
+    /// Module channel's own lead channel id. Set only when `orchestrationRole == "agent"`.
+    public var orchestratorChannelId: String?
+    /// Module name. Set only when `orchestrationRole == "agent"`.
+    public var moduleName: String?
 
     public init(
         backend: Backend,
@@ -52,8 +57,10 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         createdAt: String? = nil,
         updatedAt: String,
         archived: Bool = false,
-        projectSettingSourcesOnly: Bool = false,
-        projectRagEnabled: Bool = false
+        orchestrationSession: Bool = false,
+        orchestrationRole: String? = nil,
+        orchestratorChannelId: String? = nil,
+        moduleName: String? = nil
     ) {
         self.backend = backend
         self.backendSessionId = backendSessionId
@@ -70,8 +77,10 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.archived = archived
-        self.projectSettingSourcesOnly = projectSettingSourcesOnly
-        self.projectRagEnabled = projectRagEnabled
+        self.orchestrationSession = orchestrationSession
+        self.orchestrationRole = orchestrationRole
+        self.orchestratorChannelId = orchestratorChannelId
+        self.moduleName = moduleName
     }
 
     // Custom decode so retired mode strings (`grok`, `grok-agent`, `grok-build`) map to Backend.grok
@@ -101,8 +110,16 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         self.createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
         self.updatedAt = try c.decode(String.self, forKey: .updatedAt)
         self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
-        self.projectSettingSourcesOnly = try c.decodeIfPresent(Bool.self, forKey: .projectSettingSourcesOnly) ?? false
-        self.projectRagEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectRagEnabled) ?? false
+        // D18: prefer the renamed key; fall back to the pre-rename `projectSettingSourcesOnly`
+        // so a channel that already had orchestration mode on doesn't lose that state on load.
+        if let renamed = try c.decodeIfPresent(Bool.self, forKey: .orchestrationSession) {
+            self.orchestrationSession = renamed
+        } else {
+            self.orchestrationSession = try c.decodeIfPresent(Bool.self, forKey: .projectSettingSourcesOnlyLegacy) ?? false
+        }
+        self.orchestrationRole = try c.decodeIfPresent(String.self, forKey: .orchestrationRole)
+        self.orchestratorChannelId = try c.decodeIfPresent(String.self, forKey: .orchestratorChannelId)
+        self.moduleName = try c.decodeIfPresent(String.self, forKey: .moduleName)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -123,15 +140,18 @@ public struct PersistedSession: Codable, Sendable, Equatable {
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encode(archived, forKey: .archived)
-        try c.encode(projectSettingSourcesOnly, forKey: .projectSettingSourcesOnly)
-        try c.encode(projectRagEnabled, forKey: .projectRagEnabled)
+        try c.encode(orchestrationSession, forKey: .orchestrationSession)
+        try c.encodeIfPresent(orchestrationRole, forKey: .orchestrationRole)
+        try c.encodeIfPresent(orchestratorChannelId, forKey: .orchestratorChannelId)
+        try c.encodeIfPresent(moduleName, forKey: .moduleName)
     }
 
     private enum CodingKeys: String, CodingKey {
         case backend, backendSessionId, cwd, guildId, ownerId, model, effort, permMode
         case permissionProfile, projectAuth, lifecycleGeneration, contextGenerationStartedAt, createdAt, updatedAt, archived
-        case projectSettingSourcesOnly
-        case projectRagEnabled
+        case orchestrationSession
+        case projectSettingSourcesOnlyLegacy = "projectSettingSourcesOnly"
+        case orchestrationRole, orchestratorChannelId, moduleName
     }
 
     /// Map a stored mode/backend string → `Backend` after `normalizeModeId`. `nil` when the

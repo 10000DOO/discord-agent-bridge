@@ -255,12 +255,14 @@ public func redmineIssueSelectCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(name: "redmine-issue-select", description: LocalizedText(ko: "조건에 맞는 레드마인 이슈를 선택합니다", en: "Select a matching Redmine issue"))
 }
 
-/// `/orchestration` — install project-scoped issue-orchestration rules, skills, and subagents
-/// into this session channel's project `.claude/` folder (Claude only).
+/// `/orchestration` — install project-scoped orchestration role manuals (`roles/`) and skills
+/// into this session channel's project `.claude/` folder (Claude only). No subagents are
+/// installed — WO-8 absorbed all 6 into the role manuals or dropped them, so
+/// `OrchestrationProjectBundle.subagents` is always empty.
 public func orchestrationCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "orchestration",
-        description: LocalizedText(ko: "이 세션의 프로젝트 폴더에 이슈 오케스트레이션 규칙·스킬·서브에이전트를 설치합니다 (Claude 전용)", en: "Install issue-orchestration rules, skills, and subagents into this project's folder (Claude only)")
+        description: LocalizedText(ko: "이 세션의 프로젝트 폴더에 오케스트레이션 역할 규약과 스킬을 설치합니다 (Claude 전용)", en: "Install orchestration role manuals and skills into this project's folder (Claude only)")
     )
 }
 

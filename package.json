@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build": "tsc",
     "test": "vitest run",
     "verify": "bash verify.sh",
     "lint": "eslint src/",
@@ -15,7 +16,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.221",
     "mermaid": "^11.16.0",
     "zod": "^4.4.3"
   },

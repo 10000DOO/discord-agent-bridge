@@ -56,7 +56,10 @@ func persistSession(
         createdAt: existing?.createdAt,
         updatedAt: iso8601Now(),
         archived: existing?.archived ?? false,
-        projectSettingSourcesOnly: existing?.projectSettingSourcesOnly ?? false
+        orchestrationSession: existing?.orchestrationSession ?? false,
+        orchestrationRole: existing?.orchestrationRole,
+        orchestratorChannelId: existing?.orchestratorChannelId,
+        moduleName: existing?.moduleName
     )
     do {
         try await store.upsert(channelId: channelId, record)

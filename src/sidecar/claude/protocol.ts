@@ -50,10 +50,11 @@ export interface SessionStartParams {
     permissionTimeoutSec?: number;
   };
   env?: Record<string, string | undefined>;
-  // `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md §4.7):
-  // when true, the session loads only `settingSources: ['project']` (no user/local settings).
-  projectSettingSourcesOnly?: boolean;
-  projectRagEnabled?: boolean;
+  // Orchestration-role session flag (design_orchestration_module_agents.md R12/D18): when true,
+  // the session removes the subagent-launch tool from the model's context (`disallowedTools`).
+  // Renamed from `projectSettingSourcesOnly` (D18) — no on-disk backward-compat needed here
+  // since this is a live sidecar RPC param, not persisted state.
+  orchestrationSession?: boolean;
 }
 
 export interface SessionResumeParams extends SessionStartParams {

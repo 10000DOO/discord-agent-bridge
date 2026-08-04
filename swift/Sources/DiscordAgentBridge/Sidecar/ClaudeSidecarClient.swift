@@ -10,17 +10,28 @@ public struct SidecarSessionHandlers: Sendable {
     public var onFileAttach: (@Sendable (_ path: String, _ name: String?) async throws -> String)?
     /// host.file.share — ShareResult for the model-facing mapper.
     public var onFileShare: (@Sendable (_ path: String) async throws -> ShareResult)?
+    /// host.orchestration.order — lead → module (WO-5, design_orchestration_module_agents.md).
+    /// Unlike onFileAttach/onFileShare this never throws: every `OrchestrationDecision` —
+    /// including refusals like `.busy`/`.outsideWorkspace` — is a normal outcome (R7), not a
+    /// transport-level error, so the model-facing sentence + ok flag come back as a plain value.
+    public var onOrchestrationOrder: (@Sendable (_ module: String, _ path: String, _ text: String) async -> (text: String, isError: Bool))?
+    /// host.orchestration.report — module → lead. No target-channel argument (R4 enforced by omission).
+    public var onOrchestrationReport: (@Sendable (_ text: String) async -> (text: String, isError: Bool))?
 
     public init(
         onEvent: @escaping @Sendable (AgentEvent) -> Void,
         onBackendId: (@Sendable (String) -> Void)? = nil,
         onFileAttach: (@Sendable (_ path: String, _ name: String?) async throws -> String)? = nil,
-        onFileShare: (@Sendable (_ path: String) async throws -> ShareResult)? = nil
+        onFileShare: (@Sendable (_ path: String) async throws -> ShareResult)? = nil,
+        onOrchestrationOrder: (@Sendable (_ module: String, _ path: String, _ text: String) async -> (text: String, isError: Bool))? = nil,
+        onOrchestrationReport: (@Sendable (_ text: String) async -> (text: String, isError: Bool))? = nil
     ) {
         self.onEvent = onEvent
         self.onBackendId = onBackendId
         self.onFileAttach = onFileAttach
         self.onFileShare = onFileShare
+        self.onOrchestrationOrder = onOrchestrationOrder
+        self.onOrchestrationReport = onOrchestrationReport
     }
 }
 
@@ -281,6 +292,76 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
                 }
                 let shareResult = try await onFileShare(path)
                 try await write(res(id: id, method: method, result: shareResult.asJSONValue(), session: session))
+                return
+            }
+
+            if method == "host.orchestration.order" {
+                guard let onOrchestrationOrder = handlers?.onOrchestrationOrder else {
+                    try await write(resError(
+                        id: id,
+                        method: method,
+                        error: makeError(code: "unsupported", message: "host.orchestration.order not wired for session"),
+                        session: session
+                    ))
+                    return
+                }
+                guard let module = params["module"]?.stringValue, !module.isEmpty else {
+                    try await write(resError(
+                        id: id, method: method,
+                        error: makeError(code: "invalid_request", message: "params.module required"),
+                        session: session
+                    ))
+                    return
+                }
+                guard let path = params["path"]?.stringValue, !path.isEmpty else {
+                    try await write(resError(
+                        id: id, method: method,
+                        error: makeError(code: "invalid_request", message: "params.path required"),
+                        session: session
+                    ))
+                    return
+                }
+                guard let orderText = params["text"]?.stringValue, !orderText.isEmpty else {
+                    try await write(resError(
+                        id: id, method: method,
+                        error: makeError(code: "invalid_request", message: "params.text required"),
+                        session: session
+                    ))
+                    return
+                }
+                let outcome = await onOrchestrationOrder(module, path, orderText)
+                try await write(res(
+                    id: id, method: method,
+                    result: .object(["ok": .bool(!outcome.isError), "message": .string(outcome.text)]),
+                    session: session
+                ))
+                return
+            }
+
+            if method == "host.orchestration.report" {
+                guard let onOrchestrationReport = handlers?.onOrchestrationReport else {
+                    try await write(resError(
+                        id: id,
+                        method: method,
+                        error: makeError(code: "unsupported", message: "host.orchestration.report not wired for session"),
+                        session: session
+                    ))
+                    return
+                }
+                guard let reportText = params["text"]?.stringValue, !reportText.isEmpty else {
+                    try await write(resError(
+                        id: id, method: method,
+                        error: makeError(code: "invalid_request", message: "params.text required"),
+                        session: session
+                    ))
+                    return
+                }
+                let outcome = await onOrchestrationReport(reportText)
+                try await write(res(
+                    id: id, method: method,
+                    result: .object(["ok": .bool(!outcome.isError), "message": .string(outcome.text)]),
+                    session: session
+                ))
                 return
             }
 

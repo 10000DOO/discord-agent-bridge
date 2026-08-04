@@ -474,6 +474,36 @@ public struct RedmineSection: Codable, Sendable, Equatable {
     }
 }
 
+/// Orchestration set state, persisted per lead ("orchestrator") channel id
+/// (design_orchestration_module_agents.md WO-1). Only `categoryId` is populated by WO-1 —
+/// `moduleModel`/`moduleEffort` are filled in later by the WO-10 start card.
+public struct OrchestrationSet: Codable, Sendable, Equatable {
+    public var categoryId: String
+    /// nil → inherit the lead channel's value (WO-10 start card owns non-nil values).
+    public var moduleModel: String?
+    public var moduleEffort: String?
+    public init(categoryId: String, moduleModel: String? = nil, moduleEffort: String? = nil) {
+        self.categoryId = categoryId
+        self.moduleModel = moduleModel
+        self.moduleEffort = moduleEffort
+    }
+}
+
+/// Guild-wide orchestration guardrails (design_orchestration_module_agents.md WO-4, R6/R7).
+/// Distinct from `ServerConfig.orchestration` (per-set state keyed by lead channel id) — these
+/// three knobs are global overrides shared by every set in the guild.
+public struct OrchestrationRuntimeSection: Codable, Sendable, Equatable {
+    /// Overrides the computed default (lead channel cwd's parent, narrowed by D12). Nil → computed.
+    public var workspaceRoot: String?
+    public var maxConcurrentAgents: Int?
+    public var maxRoundTrips: Int?
+    public init(workspaceRoot: String? = nil, maxConcurrentAgents: Int? = nil, maxRoundTrips: Int? = nil) {
+        self.workspaceRoot = workspaceRoot
+        self.maxConcurrentAgents = maxConcurrentAgents
+        self.maxRoundTrips = maxRoundTrips
+    }
+}
+
 public struct ServerConfig: Codable, Sendable, Equatable {
     public var version: Int
     public var guildId: String
@@ -489,6 +519,11 @@ public struct ServerConfig: Codable, Sendable, Equatable {
     /// Per-guild render-capability overrides (merged over global; under DAB_CAPS).
     public var capabilities: CapabilitiesPartial?
     public var redmine: RedmineSection?
+    /// Orchestration sets, keyed by lead ("orchestrator") channel id.
+    public var orchestration: [String: OrchestrationSet]?
+    /// Orchestration guardrails (workspace root override + concurrency/round-trip caps) — one
+    /// shared set for the whole guild, unlike `orchestration` above (per-set).
+    public var orchestrationRuntime: OrchestrationRuntimeSection?
 
     public init(
         version: Int = CONFIG_VERSION,
@@ -503,7 +538,9 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         channels: ServerChannels? = nil,
         notifications: NotificationsSection? = nil,
         capabilities: CapabilitiesPartial? = nil,
-        redmine: RedmineSection? = nil
+        redmine: RedmineSection? = nil,
+        orchestration: [String: OrchestrationSet]? = nil,
+        orchestrationRuntime: OrchestrationRuntimeSection? = nil
     ) {
         self.version = version
         self.guildId = guildId
@@ -518,6 +555,8 @@ public struct ServerConfig: Codable, Sendable, Equatable {
         self.notifications = notifications
         self.capabilities = capabilities
         self.redmine = redmine
+        self.orchestration = orchestration
+        self.orchestrationRuntime = orchestrationRuntime
     }
 }
 
@@ -538,6 +577,10 @@ public enum ConfigDefaults {
     public static let logLevel = "info"
     public static let favorites: [String] = []
     public static let autoUpdate = AutoUpdateSection()
+    /// R7 defaults (design_orchestration_module_agents.md 4장 설정표) — `ServerConfig.orchestrationRuntime`
+    /// overrides either one per-guild.
+    public static let orchestrationMaxConcurrentAgents = 3
+    public static let orchestrationMaxRoundTrips = 20
 }
 
 // MARK: - Validation helpers

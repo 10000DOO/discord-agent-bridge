@@ -17,11 +17,11 @@ import {
   type ShareDocumentCallback,
 } from './mcpFileTool.js';
 import {
-  createMcpProjectRagTool,
-  defaultRunDabRagQuery,
-  PROJECT_SEARCH_TOOL_NAME,
-  type RunDabRagQuery,
-} from './mcpProjectRagTool.js';
+  SEND_ORDER_TOOL_NAME,
+  REPORT_TOOL_NAME,
+  type SendOrderCallback,
+  type ReportCallback,
+} from './mcpOrchestrationTool.js';
 import { resolvePlugins } from './plugins.js';
 import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../shared/turnFiles.js';
 
@@ -39,12 +39,20 @@ export interface ClaudeSessionDeps {
   // Wired by the Discord layer alongside sendFile; when absent, share_document is not
   // exposed. Posts a workspace markdown file into a Discord thread (path-only, §D2).
   shareDocument?: ShareDocumentCallback;
+  // Orchestrator → module order (design_orchestration_module_agents.md R4/D4/D11).
+  // Wired whenever the host RPC channel exists — same as sendFile/shareDocument,
+  // regardless of this session's role. Role enforcement is NOT this layer's job:
+  // OrchestrationHost.order (Swift) rejects with .wrongRole at call time if the
+  // caller isn't the orchestrator (D4 — enforce in exactly one place). Do not add
+  // role gating here.
+  sendOrder?: SendOrderCallback;
+  // Module → orchestrator report (same design, R4/D4). Wired whenever the host RPC
+  // channel exists, regardless of role — OrchestrationHost.report (Swift) rejects
+  // with .wrongRole at call time if the caller isn't a module agent. Do not add
+  // role gating here.
+  report?: ReportCallback;
   // Existing backend session id to resume; omitted for a fresh session.
   resumeId?: string;
-  // Runs the `dab rag query` CLI for the project_search MCP tool; defaults to the
-  // real subprocess wiring, tests inject a mock (docs/project-rag-generic-indexing.md
-  // WO-15).
-  runDabRagQuery?: RunDabRagQuery;
   // Optional full env override for the SDK subprocess. Used by the `custom` backend
   // to inject env vars extracted from shell aliases without affecting other modes.
   env?: Options['env'];
@@ -129,18 +137,25 @@ export class ClaudeSession implements ModeSession {
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     const allowedTools = [...(ctx.config.allowedTools ?? [])];
     if (deps.sendFile) {
-      mcpServers.discord = createMcpFileTool(ctx.cwd, deps.sendFile, deps.shareDocument, ctx.logger);
+      mcpServers.discord = createMcpFileTool(
+        ctx.cwd,
+        deps.sendFile,
+        deps.shareDocument,
+        ctx.logger,
+        deps.sendOrder,
+        deps.report,
+      );
       if (!allowedTools.includes(ATTACH_FILE_TOOL_NAME)) {
         allowedTools.push(ATTACH_FILE_TOOL_NAME);
       }
       if (deps.shareDocument && !allowedTools.includes(SHARE_DOCUMENT_TOOL_NAME)) {
         allowedTools.push(SHARE_DOCUMENT_TOOL_NAME);
       }
-    }
-    if (ctx.projectRagEnabled) {
-      mcpServers.project_rag = createMcpProjectRagTool(ctx.cwd, deps.runDabRagQuery ?? defaultRunDabRagQuery, ctx.logger);
-      if (!allowedTools.includes(PROJECT_SEARCH_TOOL_NAME)) {
-        allowedTools.push(PROJECT_SEARCH_TOOL_NAME);
+      if (deps.sendOrder && !allowedTools.includes(SEND_ORDER_TOOL_NAME)) {
+        allowedTools.push(SEND_ORDER_TOOL_NAME);
+      }
+      if (deps.report && !allowedTools.includes(REPORT_TOOL_NAME)) {
+        allowedTools.push(REPORT_TOOL_NAME);
       }
     }
 
@@ -171,16 +186,13 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
       includePartialMessages: true,
       abortController: this.abortController,
       canUseTool: makeCanUseTool(ctx),
-      // Load the project's .claude/ (subagents, hooks, MCP, CLAUDE.md) plus user
-      // and local settings, exactly like the terminal `claude`. 'project' is
-      // required for CLAUDE.md; all three cover subagents/hooks/skills/MCP.
-      // `/orchestration` project-scoped mode (design_orchestration_project_scoped_command.md
-      // §4.7) narrows this to 'project' only, so the channel runs strictly on the
-      // project's own `.claude/` without the user's global `~/.claude/` layered on top.
-      settingSources: ctx.projectSettingSourcesOnly ? ['project'] : ['user', 'project', 'local'],
-      // `resolvePlugins` reads ~/.claude directly, outside the SDK setting-source
-      // boundary. Do not inject those global plugins into project-only sessions.
-      plugins: ctx.projectSettingSourcesOnly ? [] : resolvePlugins(ctx.logger),
+      // Load the project's .claude/ (subagents, hooks, MCP, CLAUDE.md) plus user and local
+      // settings, exactly like the terminal `claude` — always, for every session (R11: the
+      // project bundle must work whether or not the user's global ~/.claude/ exists, but
+      // there's no reason to cut the global layer off when it does). 'project' is required
+      // for CLAUDE.md; all three cover subagents/hooks/skills/MCP.
+      settingSources: ['user', 'project', 'local'],
+      plugins: resolvePlugins(ctx.logger),
       ...(ctx.model !== undefined ? { model: ctx.model } : {}),
       // Reasoning effort chosen in the wizard (§9). The wizard only sets a valid Claude
       // EffortLevel for the Claude backend; empty/absent lets the SDK use its default.
@@ -189,6 +201,15 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
         : {}),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
       ...(allowedTools.length > 0 ? { allowedTools } : {}),
+      // WO-11 (R12): an orchestration-role session (lead or module channel) must not be able
+      // to reach for a subagent to impersonate a different role — the tool is removed from
+      // the model's context entirely, not just discouraged in prose. 'Agent' is the name
+      // confirmed live against the installed SDK (2026-08-03: `claude -p "…" --model haiku`
+      // replied "Agent"); 'Task' is the pre-rename name kept as a second guard — an absent
+      // tool name is simply ignored (sdk.d.ts: "removed from the model's context … even if
+      // it would otherwise be allowed"), so listing both is harmless (8장 14번: never trust a
+      // name copied from a doc without checking the live SDK).
+      ...(ctx.orchestrationSession ? { disallowedTools: ['Task', 'Agent'] } : {}),
       // The `custom` backend injects env vars from shell aliases here. Spreading after
       // the fixed options lets the alias env override the subprocess environment.
       ...(deps.env !== undefined ? { env: deps.env } : {}),

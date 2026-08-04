@@ -227,7 +227,7 @@ describe('SidecarServer with fake session factory', () => {
     await h.endInput();
   });
 
-  it('passes projectSettingSourcesOnly through session.start', async () => {
+  it('passes orchestrationSession through session.start', async () => {
     const { createSession, created } = makeFakeSessionFactory();
     const h = await startServer({ createSession });
 
@@ -236,16 +236,16 @@ describe('SidecarServer with fake session factory', () => {
       guildId: 'g1',
       channelId: 'c1',
       permMode: 'default',
-      projectSettingSourcesOnly: true,
+      orchestrationSession: true,
     });
 
     expect(startRes.error).toBeUndefined();
     expect(created).toHaveLength(1);
-    expect(created[0]!.ctx.projectSettingSourcesOnly).toBe(true);
+    expect(created[0]!.ctx.orchestrationSession).toBe(true);
     await h.endInput();
   });
 
-  it('preserves false projectSettingSourcesOnly and rejects non-boolean values', async () => {
+  it('preserves false orchestrationSession and rejects non-boolean values', async () => {
     const { createSession, created } = makeFakeSessionFactory();
     const h = await startServer({ createSession });
 
@@ -254,17 +254,17 @@ describe('SidecarServer with fake session factory', () => {
       guildId: 'g1',
       channelId: 'c1',
       permMode: 'default',
-      projectSettingSourcesOnly: false,
+      orchestrationSession: false,
     });
     expect(falseRes.error).toBeUndefined();
-    expect(created[0]!.ctx.projectSettingSourcesOnly).toBe(false);
+    expect(created[0]!.ctx.orchestrationSession).toBe(false);
 
     const invalidRes = await h.rpc('session.start', {
       cwd: '/tmp/invalid-settings',
       guildId: 'g1',
       channelId: 'c1',
       permMode: 'default',
-      projectSettingSourcesOnly: 'true',
+      orchestrationSession: 'true',
     });
     expect(invalidRes.error?.code).toBe('invalid_request');
     expect(created).toHaveLength(1);
@@ -484,6 +484,102 @@ describe('SidecarServer with fake session factory', () => {
       threadName: '📄 notes.md',
       path: 'notes.md',
     });
+
+    await h.endInput();
+  });
+
+  it('host.orchestration.order reverse RPC: sendOrder deps → host res', async () => {
+    let captured: string | undefined;
+    const { createSession, created } = makeFakeSessionFactory({
+      onSend: async () => {
+        const deps = created[0]!.deps;
+        expect(deps.sendOrder).toBeTypeOf('function');
+        captured = await deps.sendOrder!('core', '/ws/core', 'implement #1234', '1234');
+      },
+    });
+
+    const h = await startServer({ createSession });
+    const startRes = await h.rpc('session.start', {
+      cwd: '/tmp/ws',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+    });
+    const handle = (startRes.result as { session: string }).session;
+
+    const sendPromise = h.rpc('session.send', { session: handle, text: 'go' });
+
+    await h.out.waitFor((ls) =>
+      envs(ls).some(
+        (e) => e.type === 'req' && e.method === 'host.orchestration.order' && e.session === handle,
+      ),
+    );
+    const orderReq = envs(h.out.lines).find(
+      (e) => e.type === 'req' && e.method === 'host.orchestration.order',
+    )!;
+    expect(orderReq.params).toEqual({ module: 'core', path: '/ws/core', text: 'implement #1234', issue: '1234' });
+
+    h.send(
+      res(orderReq.id!, 'host.orchestration.order', { ok: true, message: 'Order delivered to #agent-core.' }, handle),
+    );
+
+    const sendRes = await sendPromise;
+    expect(sendRes.result).toEqual({ ok: true });
+    expect(captured).toBe('Order delivered to #agent-core.');
+
+    await h.endInput();
+  });
+
+  it('host.orchestration.report reverse RPC: report deps → host res', async () => {
+    let captured: string | undefined;
+    const { createSession, created } = makeFakeSessionFactory({
+      onSend: async () => {
+        const deps = created[0]!.deps;
+        expect(deps.report).toBeTypeOf('function');
+        captured = await deps.report!('done implementing', 'DONE');
+      },
+    });
+
+    const h = await startServer({ createSession });
+    const startRes = await h.rpc('session.start', {
+      cwd: '/ws/core',
+      guildId: 'g1',
+      channelId: 'c2',
+      permMode: 'default',
+    });
+    const handle = (startRes.result as { session: string }).session;
+
+    const sendPromise = h.rpc('session.send', { session: handle, text: 'go' });
+
+    await h.out.waitFor((ls) =>
+      envs(ls).some(
+        (e) => e.type === 'req' && e.method === 'host.orchestration.report' && e.session === handle,
+      ),
+    );
+    const reportReq = envs(h.out.lines).find(
+      (e) => e.type === 'req' && e.method === 'host.orchestration.report',
+    )!;
+    expect(reportReq.params).toEqual({ text: 'done implementing', marker: 'DONE' });
+
+    h.send(
+      res(reportReq.id!, 'host.orchestration.report', { ok: true, message: 'Report relayed to #orc-myproj.' }, handle),
+    );
+
+    const sendRes = await sendPromise;
+    expect(sendRes.result).toEqual({ ok: true });
+    expect(captured).toBe('Report relayed to #orc-myproj.');
+
+    await h.endInput();
+  });
+
+  it('host.orchestration.order/report are host-bound reverse RPC — rejected if sent to the sidecar', async () => {
+    const h = await startServer({ createSession: makeFakeSessionFactory().createSession });
+
+    const orderRes = await h.rpc('host.orchestration.order', { module: 'core', path: '/ws/core', text: 'go' });
+    expect(orderRes.error?.code).toBe('unsupported');
+
+    const reportRes = await h.rpc('host.orchestration.report', { text: 'done' });
+    expect(reportRes.error?.code).toBe('unsupported');
 
     await h.endInput();
   });

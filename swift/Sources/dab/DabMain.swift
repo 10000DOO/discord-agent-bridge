@@ -44,10 +44,6 @@ struct DabMain {
             let ok = await runServiceCommand(Array(args.dropFirst()))
             exit(ok ? 0 : 1)
         }
-        if args.first == "rag" {
-            let ok = await runProjectRagCommand(Array(args.dropFirst()))
-            exit(ok ? 0 : 1)
-        }
         if args.first == "sidecar-smoke" {
             await runSidecarSmoke()
             return
@@ -173,6 +169,21 @@ struct DabMain {
         // host.file.attach reverse RPC → confined path + channel attachment upload.
         await FileAttachHost.shared.setAttachHandler { channelId, path, name in
             try await postFileAttach(client: client, channelId: channelId, path: path, name: name)
+        }
+        // WO-5 (design_orchestration_module_agents.md): host.orchestration.order/.report reverse
+        // RPC — bot-authored turn drive + a per-guild channel provisioner for the module
+        // channel's first-order creation. Same "no in-library default, wired once at boot" seam
+        // shape as FileAttachHost/DocumentShareHost above.
+        await OrchestrationHost.shared.setRunTurnHandler {
+            channelId, guildId, backend, promptText, postPrompt, announceExtras, actorId, roleTier in
+            await runInjectedTurn(
+                client: client, channelId: channelId, guildId: guildId, backend: backend,
+                promptText: promptText, postPrompt: postPrompt, announceExtras: announceExtras,
+                actorId: actorId, roleTier: roleTier
+            )
+        }
+        await OrchestrationHost.shared.setProvisionerFactory { guildId in
+            resolveGuildProvisioner(client: client, guildId: guildId)
         }
         // W16-g: tool_use / tool_result → Discord work threads (+ diffs) via createThread.
         await ToolActivityHost.shared.setChannelFactory { channelId in
@@ -530,6 +541,12 @@ struct EventHandler: GatewayEventHandler {
                     issueId: redmineIssue.issueId,
                     targetChannelId: redmineIssue.targetChannelId
                 )
+                return
+            }
+            // (A2e) Orchestration start-spec card (WO-10) — separate `orch:` namespace + registry
+            // so it never collides with the /dab-agent start wizard on the same channel (8장 11번).
+            if isOrchestrationWizardCustomId(comp.custom_id) {
+                try await handleOrchestrationWizardComponent(payload, comp: comp)
                 return
             }
             // (A2) W11-b2 wizard components (folder browser + select steps; owner-gated).
@@ -901,6 +918,11 @@ struct EventHandler: GatewayEventHandler {
                     payload: .deferredChannelMessageWithSource(isEphemeral: true)
                 )
                 guard closeDeferred != nil else { return }
+                // WO-7 (design_orchestration_module_agents.md, R8): stopChannel below hard-removes
+                // the store binding, so the orchestration role must be captured before that call —
+                // otherwise there is no way to tell a lead ("orchestrator") channel close from an
+                // ordinary one by the time cleanup runs.
+                let priorSession = await SessionStore.shared.binding(channelId: channelId)
                 // W14: real stop (backend + unbind) — was unbind-only and leaked processes.
                 _ = await life.stopChannel(
                     channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier
@@ -913,8 +935,20 @@ struct EventHandler: GatewayEventHandler {
                 )
                 // G-P0-04: A4D dedicated session channel best-effort delete (never control/status/category).
                 if let realGuildId = payload.guild_id?.rawValue {
-                    let serverChannels = await ConfigStore.shared
-                        .loadServerConfig(guildId: realGuildId)?.channels
+                    let provisioner = resolveGuildProvisioner(client: client, guildId: realGuildId)
+                    let serverConfig = await ConfigStore.shared.loadServerConfig(guildId: realGuildId)
+                    // WO-7/R8: closing the lead channel tears down its whole set (module channels +
+                    // category) first, then the existing single-channel delete below removes the
+                    // lead channel itself — both stages run after the reply above.
+                    if priorSession?.orchestrationRole == "orchestrator" {
+                        _ = await life.closeOrchestrationSet(
+                            orchestratorChannelId: channelId,
+                            guildId: realGuildId,
+                            actorId: actorId,
+                            roleTier: tier,
+                            provisioner: provisioner
+                        )
+                    }
                     var chName: String?
                     var parentId: String?
                     if let ch = try? await client.getChannel(id: ChannelSnowflake(channelId)).decode() {
@@ -922,11 +956,12 @@ struct EventHandler: GatewayEventHandler {
                         parentId = ch.parent_id?.rawValue
                     }
                     await deleteSessionChannel(
-                        provisioner: resolveGuildProvisioner(client: client, guildId: realGuildId),
+                        provisioner: provisioner,
                         channelId: channelId,
                         channelName: chName,
                         parentId: parentId,
-                        serverChannels: serverChannels
+                        serverChannels: serverConfig?.channels,
+                        orchestrationCategoryIds: Set(serverConfig?.orchestration?.values.map(\.categoryId) ?? [])
                     )
                 }
             case "resume":
@@ -1216,6 +1251,7 @@ struct EventHandler: GatewayEventHandler {
             }
 
         case "orchestration":
+            // WO-10 (R10/D15/D16): show the start spec card only — no side effects until [시작].
             // Project-scoped install: session channels only, `.claude/` local to the bound cwd
             // (design_orchestration_project_scoped_command.md §4.8). Filesystem work + a session
             // restart can take a moment — defer ephemeral first (3s window), as the old install did.
@@ -1238,7 +1274,7 @@ struct EventHandler: GatewayEventHandler {
                 )
                 return
             }
-            guard let orchCwd = await SessionStore.shared.binding(channelId: channelId)?.cwd else {
+            guard let orchBinding = await SessionStore.shared.binding(channelId: channelId) else {
                 _ = try? await client.updateOriginalInteractionResponse(
                     appId: payload.application_id,
                     token: payload.token,
@@ -1246,45 +1282,37 @@ struct EventHandler: GatewayEventHandler {
                 )
                 return
             }
-            let report = OrchestrationInstaller.installProject(root: URL(fileURLWithPath: orchCwd))
-            guard report.errors.isEmpty else {
+            // D16: the card only ever offers Claude models — reject a non-Claude-bound lead
+            // channel up front (2-2 scope: Claude-only; this guard didn't exist before WO-10).
+            guard orchestrationCardAllowed(backend: orchBinding.backend) else {
                 _ = try? await client.updateOriginalInteractionResponse(
                     appId: payload.application_id,
                     token: payload.token,
-                    payload: .init(content: I18n.t(
-                        "orchestration.project.installFailed",
-                        ["errors": report.errors.joined(separator: "\n")]
-                    ))
+                    payload: .init(content: I18n.t("orchestration.wizard.backendNotClaude"))
                 )
                 return
             }
-            let ragResult = await ProjectRagCoordinator.shared.ensureIndexed(
-                root: URL(fileURLWithPath: orchCwd),
-                initiator: channelId,
-                profiles: [GenericFileGraphProfile(), AppleNativeProfile(), TypescriptNodeProfile()],
-                notify: { text in _ = await createMessageWithRetry(client: client, channelId: ChannelSnowflake(channelId), payload: .init(content: text)) }
-            )
-            let orchEnabled = await SessionLifecycle.shared.enableOrchestrationMode(
-                channelId: channelId, actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: orchCwd,
-                projectRagEnabled: ragResult.projectRagEnabled
-            )
-            guard orchEnabled else {
-                _ = try? await client.updateOriginalInteractionResponse(
-                    appId: payload.application_id,
-                    token: payload.token,
-                    payload: .init(content: I18n.t("orchestration.project.installFailed", ["errors": "session reset failed"]))
+            // R10/D15: seed leads from the current binding, modules from the saved set (falling
+            // back to the lead values) — the card always opens, but re-runs reuse last picks.
+            let orchOptionSource = await loadWizardOptionSource()
+            let orchExistingSet = orchServerConfig?.orchestration?[channelId]
+            let orchestratorModel = orchBinding.model ?? providerDefaultModelSelection
+            let orchestratorEffort = orchBinding.effort ?? orchOptionSource.defaultEffort(for: .claude)
+            let orchWizard = OrchestrationWizard(
+                options: orchOptionSource,
+                initial: OrchestrationSpec(
+                    orchestratorModel: orchestratorModel,
+                    orchestratorEffort: orchestratorEffort,
+                    moduleModel: orchExistingSet?.moduleModel ?? orchestratorModel,
+                    moduleEffort: orchExistingSet?.moduleEffort ?? orchestratorEffort
                 )
-                return
-            }
-            var orchLines = [I18n.t("orchestration.project.installed", ["cwd": orchCwd])]
-            if let backupPath = report.backupPath {
-                orchLines.append(I18n.t("orchestration.project.backedUp", ["path": backupPath]))
-            }
-            orchLines.append(I18n.t("orchestration.project.freshContextNotice"))
+            )
+            await OrchestrationWizardRegistry.shared.put(orchWizard, channelId: channelId)
+            let (orchEmbeds, orchComponents) = discordPayload(from: orchWizard.render())
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: orchLines.joined(separator: "\n"))
+                payload: .init(embeds: orchEmbeds, components: orchComponents)
             )
 
         case "redmine":
@@ -1858,6 +1886,185 @@ struct EventHandler: GatewayEventHandler {
                 try await bindResumedSession(params)
             }
         ))
+    }
+
+    /// WO-10: orchestration start-spec card routing (drop down 4 + [시작]/[취소]; no owner gate —
+    /// the card is posted on the same ephemeral response as `/dab-orchestration`, so only the
+    /// invoker can even see or click it). Mirrors `handleResumeComponent`'s shape: defer →
+    /// enqueue on the card's own registry → re-fetch the still-live instance inside the job →
+    /// branch on the click.
+    private func handleOrchestrationWizardComponent(_ payload: Interaction, comp: Interaction.MessageComponent) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        guard await OrchestrationWizardRegistry.shared.get(channelId: channelId) != nil else {
+            _ = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .channelMessageWithSource(.init(
+                    content: I18n.t("orchestration.wizard.sessionMissing"),
+                    flags: [.ephemeral]
+                ))
+            )
+            return
+        }
+
+        // A queued click can wait behind a slow one (orch:start runs install + indexing) — defer
+        // before queueing so Discord's 3-second ack deadline is never at risk (mirrors
+        // handleResumeComponent/handleWizardComponent, DabMain.swift:1802-1806/1959-1963).
+        _ = try? await client.createInteractionResponse(
+            id: payload.id, token: payload.token,
+            payload: .deferredUpdateMessage()
+        )
+
+        await OrchestrationWizardRegistry.shared.enqueue(channelId: channelId) {
+            // A previously queued job may have completed/cancelled the card while this job
+            // waited its turn — re-fetch at execution time (mirrors handleWizardComponent's
+            // WizardRegistry re-fetch, DabMain.swift:1972).
+            guard let wizard = await OrchestrationWizardRegistry.shared.get(channelId: channelId) else { return }
+            await wizard.handle(customId: comp.custom_id, values: comp.values ?? [])
+
+            func sendCard() async {
+                let (embeds, components) = discordPayload(from: wizard.render())
+                _ = try? await self.client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(embeds: embeds, components: components)
+                )
+            }
+
+            guard comp.custom_id == "orch:start" else {
+                if comp.custom_id == "orch:cancel" {
+                    await OrchestrationWizardRegistry.shared.remove(channelId: channelId)
+                }
+                await sendCard()
+                return
+            }
+            guard let spec = wizard.confirmed else {
+                // Defensive — `handle` always sets `confirmed` on `orch:start`. Re-render rather
+                // than silently drop the click.
+                await sendCard()
+                return
+            }
+            await OrchestrationWizardRegistry.shared.remove(channelId: channelId)
+
+            // WO-1's provisioning block, relocated behind [시작] so [취소]/an unopened card leaves
+            // zero side effects (R10). Everything from here down used to run unconditionally right
+            // after the old case "orchestration": guards.
+            let guildId = payload.guild_id?.rawValue ?? ""
+            let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+            guard let binding = await SessionStore.shared.binding(channelId: channelId) else {
+                _ = try? await self.client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(content: I18n.t("router.noSession"))
+                )
+                return
+            }
+            let cwd = binding.cwd
+            let backend = binding.backend
+
+            // Persist the card's module spec into the set BEFORE provisioning, so a category
+            // that's created fresh below is saved with the module spec already attached
+            // (ensureOrchestrationCategory only ever reads/creates `categoryId`, never touches
+            // moduleModel/moduleEffort — GuildChannels.swift:177).
+            var nextServer = await ConfigStore.shared.loadServerConfig(guildId: guildId) ?? ServerConfig(guildId: guildId)
+            var sets = nextServer.orchestration ?? [:]
+            var set = sets[channelId] ?? OrchestrationSet(categoryId: "")
+            set.moduleModel = spec.moduleModel
+            set.moduleEffort = spec.moduleEffort
+            sets[channelId] = set
+            nextServer.orchestration = sets
+            do {
+                try await ConfigStore.shared.saveServerConfig(nextServer)
+            } catch {
+                log.warn("orchestration module spec save failed channel=\(channelId) err=\(error)")
+            }
+
+            // R10.1: install + role-persist must both succeed BEFORE the channel is touched
+            // (renamed/moved into the category) — otherwise a failed install/enable leaves a
+            // channel that *looks* like an orchestrator (name + category) but never actually
+            // saved the role, and role-gated tools like send_order reject it forever.
+            let report = OrchestrationInstaller.installProject(root: URL(fileURLWithPath: cwd))
+            guard report.errors.isEmpty else {
+                _ = try? await self.client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(content: I18n.t(
+                        "orchestration.project.installFailed",
+                        ["errors": report.errors.joined(separator: "\n")]
+                    ))
+                )
+                return
+            }
+            let enabled = await SessionLifecycle.shared.enableOrchestrationMode(
+                channelId: channelId, actorId: actorId, guildId: guildId, roleTier: "execute", defaultCwd: cwd
+            )
+            guard enabled else {
+                _ = try? await self.client.updateOriginalInteractionResponse(
+                    appId: payload.application_id, token: payload.token,
+                    payload: .init(content: I18n.t("orchestration.project.installFailed", ["errors": "session reset failed"]))
+                )
+                return
+            }
+
+            let provisioner = resolveGuildProvisioner(client: self.client, guildId: guildId)
+            let categorySummary: String
+            do {
+                let category = try await ensureOrchestrationCategory(
+                    provisioner: provisioner,
+                    configStore: ConfigStore.shared,
+                    orchestratorChannelId: channelId,
+                    folderPath: cwd
+                )
+                let channelName = orchestratorChannelName(cwd)
+                do {
+                    // The production adapter's setParent/renameChannel are themselves
+                    // best-effort — they swallow the underlying Discord error and never throw
+                    // (GuildChannelProvisionerAdapter.swift:82-102, WO-1 설계 §3단계). This
+                    // do/catch is still the honest local tracking a test fake (or a future
+                    // stricter adapter) can surface a real failure through — strictly more
+                    // correct than `try?`, even though today's adapter never exercises the catch.
+                    try await provisioner.setParent(id: channelId, parentId: category.id)
+                    try await provisioner.renameChannel(id: channelId, name: channelName)
+                    categorySummary = I18n.t(
+                        "orchestration.category.moved",
+                        ["category": category.name, "channel": channelName]
+                    )
+                } catch {
+                    log.warn("orchestration channel move/rename failed channel=\(channelId) err=\(error)")
+                    categorySummary = I18n.t("orchestration.category.failed")
+                }
+            } catch {
+                log.warn("orchestration category provisioning failed channel=\(channelId) err=\(error)")
+                categorySummary = I18n.t("orchestration.category.failed")
+            }
+            // R10 step 5: apply the card's lead model/effort to the lead binding itself (module
+            // channels get their spec straight from the set when they're created on-demand, WO-2/4).
+            let appliedResult = await SessionLifecycle.shared.updateBinding(
+                channelId: channelId,
+                patch: BindingPatch(model: spec.orchestratorModel, effort: spec.orchestratorEffort),
+                actorId: actorId, guildId: guildId, roleTier: "execute", defaultCwd: cwd
+            )
+
+            var lines = [categorySummary, I18n.t("orchestration.project.installed", ["cwd": cwd])]
+            if let backupPath = report.backupPath {
+                lines.append(I18n.t("orchestration.project.backedUp", ["path": backupPath]))
+            }
+            // Category/install/index already succeeded and the session is live at this point —
+            // a failed patch here means only the lead model/effort didn't take, not that the
+            // whole command failed, so say exactly that instead of a blanket "applied" claim
+            // (mirrors the /dab-model /dab-effort ok-vs-failed branching, DabMain.swift:721-726/751-754).
+            lines.append(orchestrationAppliedSpecLine(appliedResult, spec: spec))
+            lines.append(I18n.t("orchestration.project.freshContextNotice"))
+            _ = try? await self.client.updateOriginalInteractionResponse(
+                appId: payload.application_id, token: payload.token,
+                payload: .init(content: lines.joined(separator: "\n"))
+            )
+
+            // Session's first turn must carry the role preamble (CLAUDE.md's role table,
+            // OrchestrationProjectBundle.swift) so it knows it's the orchestrator — same
+            // postPrompt/announceExtras pairing `order()` uses for a module channel's first turn.
+            await runInjectedTurn(
+                client: self.client, channelId: channelId, guildId: guildId, backend: backend,
+                promptText: "[역할] 오케스트레이터", postPrompt: true, announceExtras: false,
+                actorId: actorId, roleTier: "execute"
+            )
+        }
     }
 
     /// W11-b2: drive the channel's agent-start wizard from a select/button click (dir:* + choice steps).
@@ -3300,7 +3507,10 @@ func bindResumedSession(_ params: ResumeParams) async throws -> ResumeResult {
         contextGenerationStartedAt: existing?.contextGenerationStartedAt,
         createdAt: existing?.createdAt,
         updatedAt: ISO8601DateFormatter().string(from: Date()),
-        archived: existing?.archived ?? false
+        archived: existing?.archived ?? false,
+        orchestrationRole: existing?.orchestrationRole,
+        orchestratorChannelId: existing?.orchestratorChannelId,
+        moduleName: existing?.moduleName
     )
     try await SessionStore.shared.upsert(channelId: params.channelId, record)
     return ResumeResult(channelId: params.channelId)

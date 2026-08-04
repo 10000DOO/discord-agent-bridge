@@ -18,6 +18,7 @@ import type {
 } from '../../core/contracts.js';
 import type { ShareResult } from '../../discord/documentShare.js';
 import type { SendFileCallback, ShareDocumentCallback } from './mcpFileTool.js';
+import type { SendOrderCallback, ReportCallback } from './mcpOrchestrationTool.js';
 import {
   type Envelope,
   type SessionStartParams,
@@ -40,6 +41,10 @@ export interface SidecarSessionHandlers {
   onFileAttach?: (path: string, name?: string) => Promise<string>;
   /** host.file.share — returns ShareResult for the model-facing mapper. */
   onFileShare?: (path: string) => Promise<ShareResult>;
+  /** host.orchestration.order — returns the host's decision sentence for the model. */
+  onOrchestrationOrder?: (module: string, path: string, text: string, issue?: string) => Promise<string>;
+  /** host.orchestration.report — returns the host's decision sentence for the model. */
+  onOrchestrationReport?: (text: string, marker?: string) => Promise<string>;
 }
 
 export interface SidecarTransport {
@@ -316,6 +321,67 @@ export class ClaudeSidecarClient {
         return;
       }
 
+      if (method === 'host.orchestration.order') {
+        if (!handlers?.onOrchestrationOrder) {
+          this.write(
+            resError(
+              id,
+              method,
+              makeError('unsupported', 'host.orchestration.order not wired for session'),
+              session,
+            ),
+          );
+          return;
+        }
+        const orderModule = params.module;
+        const orderPath = params.path;
+        const orderText = params.text;
+        if (
+          typeof orderModule !== 'string' || orderModule.length === 0 ||
+          typeof orderPath !== 'string' || orderPath.length === 0 ||
+          typeof orderText !== 'string' || orderText.length === 0
+        ) {
+          this.write(
+            resError(
+              id,
+              method,
+              makeError('invalid_request', 'params.module/path/text required'),
+              session,
+            ),
+          );
+          return;
+        }
+        const issue = typeof params.issue === 'string' ? params.issue : undefined;
+        const message = await handlers.onOrchestrationOrder(orderModule, orderPath, orderText, issue);
+        this.write(res(id, method, { ok: true, message }, session));
+        return;
+      }
+
+      if (method === 'host.orchestration.report') {
+        if (!handlers?.onOrchestrationReport) {
+          this.write(
+            resError(
+              id,
+              method,
+              makeError('unsupported', 'host.orchestration.report not wired for session'),
+              session,
+            ),
+          );
+          return;
+        }
+        const reportText = params.text;
+        if (typeof reportText !== 'string' || reportText.length === 0) {
+          this.write(
+            resError(id, method, makeError('invalid_request', 'params.text required'), session),
+          );
+          return;
+        }
+        const marker = typeof params.marker === 'string' ? params.marker : undefined;
+        const message = await handlers.onOrchestrationReport(reportText, marker);
+        this.write(res(id, method, { ok: true, message }, session));
+        return;
+      }
+
       this.write(
         resError(
           id,
@@ -463,6 +529,8 @@ export class ClaudeSidecarClient {
       env?: Record<string, string | undefined>;
       sendFile?: SendFileCallback;
       shareDocument?: ShareDocumentCallback;
+      sendOrder?: SendOrderCallback;
+      report?: ReportCallback;
     } = {},
   ): Promise<ModeSession> {
     await this.connect();
@@ -474,8 +542,8 @@ export class ClaudeSidecarClient {
       permMode: ctx.permMode,
       ...(ctx.model !== undefined ? { model: ctx.model } : {}),
       ...(ctx.effort !== undefined ? { effort: ctx.effort } : {}),
-      ...(ctx.projectSettingSourcesOnly !== undefined
-        ? { projectSettingSourcesOnly: ctx.projectSettingSourcesOnly }
+      ...(ctx.orchestrationSession !== undefined
+        ? { orchestrationSession: ctx.orchestrationSession }
         : {}),
       config: {
         ...(ctx.config.allowedTools !== undefined
@@ -499,6 +567,8 @@ export class ClaudeSidecarClient {
     return new SidecarModeSession(this, ctx, started.session, started.backendSessionId, {
       ...(opts.sendFile !== undefined ? { sendFile: opts.sendFile } : {}),
       ...(opts.shareDocument !== undefined ? { shareDocument: opts.shareDocument } : {}),
+      ...(opts.sendOrder !== undefined ? { sendOrder: opts.sendOrder } : {}),
+      ...(opts.report !== undefined ? { report: opts.report } : {}),
     });
   }
 
@@ -543,6 +613,8 @@ export class SidecarModeSession implements ModeSession {
     fileCbs: {
       sendFile?: SendFileCallback;
       shareDocument?: ShareDocumentCallback;
+      sendOrder?: SendOrderCallback;
+      report?: ReportCallback;
     } = {},
   ) {
     this.client = client;
@@ -566,6 +638,17 @@ export class SidecarModeSession implements ModeSession {
       ...(fileCbs.shareDocument !== undefined
         ? {
             onFileShare: async (path: string) => fileCbs.shareDocument!(path),
+          }
+        : {}),
+      ...(fileCbs.sendOrder !== undefined
+        ? {
+            onOrchestrationOrder: async (mod: string, path: string, text: string, issue?: string) =>
+              fileCbs.sendOrder!(mod, path, text, issue),
+          }
+        : {}),
+      ...(fileCbs.report !== undefined
+        ? {
+            onOrchestrationReport: async (text: string, marker?: string) => fileCbs.report!(text, marker),
           }
         : {}),
     });
