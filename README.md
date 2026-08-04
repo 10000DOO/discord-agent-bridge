@@ -200,14 +200,16 @@ Typical flow: **`/dab-setup` → `/dab-config` → `/dab-agent start`**, then no
 1. **`/dab-setup`** (admin) — control channel, sessions category, status channel (reuses existing).
 2. **`/dab-config`** (admin) — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides.
 3. **`/dab-agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/dab-setup`, can create an A4D `<random-id>-<folder>-proj` channel under the sessions category and bind it.
-4. In a bound channel, **send normal messages**. Prefix shortcuts also work without the full wizard:
+4. In a bound channel, **send normal messages** — plain text goes to the channel's own backend. Message prefixes send one turn to a specific backend instead:
 
 ```text
 !claude what files are in the current directory?
 !codex summarize the last commit
 !grok explain this error
-!custom <prompt>
+!custom <prompt>          # Claude path + the configured shell-env overlay
 ```
+
+Prefixes only work in a channel that is **already bound** — an unbound channel can never start a backend by typing one, and DMs are ignored outright. A prefix with an empty prompt just prints its usage line.
 
 ### Slash commands
 
@@ -227,7 +229,14 @@ Typical flow: **`/dab-setup` → `/dab-config` → `/dab-agent start`**, then no
 | `/dab-stop` | Execute+ | Hard-stop this channel’s session |
 | `/dab-stop-all` | Admin | Hard-stop every bound session |
 | `/dab-doc path:` | Execute+ | Share a workspace markdown file into a document thread |
+| `/dab-orchestration` | Execute+ | Turn this session channel into an orchestration lead (Claude only) — see below |
+| `/dab-redmine` | Execute+ | Modal (URL / API key / project) to connect Redmine notifications |
+| `/dab-redmine-issue-select` | Execute+ | Pick a New/Doing Redmine issue from a dropdown and kick a session off it |
 | `/dab-update` | Admin | Check for a newer release and offer install / restart |
+
+Every command is registered with the `dab-` prefix, so it never collides with another bot's `/agent`, `/stop`, or `/config`. `/dab-setup`, `/dab-config`, `/dab-stop-all`, and `/dab-update` need the admin tier (or Discord's Administrator permission); everything else needs execute or higher. `/dab-setup` has a one-time bootstrap exception: on a guild with no admins configured yet, whoever runs it first claims admin.
+
+Commands that act on *this channel's* session (`/dab-model`, `/dab-effort`, `/dab-mode`, `/dab-clear`, `/dab-stop`, `/dab-orchestration`) reply "no session" unless the channel is bound.
 
 ### Permission modes
 
@@ -265,6 +274,26 @@ GFM tables and fenced `mermaid` blocks become PNG attachments when:
 Implementation: **headless Chrome CLI** screenshots of local HTML (not an in-process browser runtime). Failures fall back to raw markdown. Caps: ~15s timeout, size/cell limits, limited concurrency.
 
 Env overrides: `DAB_RENDER=0|1`, `DAB_MERMAID_JS`, `DAB_CHROMIUM_CACHE`, `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH`.
+
+### Orchestration mode (Claude only)
+
+`/dab-orchestration` promotes the current session channel into a **lead** channel that can hand work to module channels of its own.
+
+Running it opens a card with four dropdowns — model and effort for the lead, model and effort for the modules it spawns — plus **Start / Cancel**. Nothing is touched until Start. On Start the bot:
+
+1. Zips the project's existing `.claude/` as a backup, then installs the orchestration role manuals and skills into it (skills whose name already exists globally or in the project are left alone and reported).
+2. Creates (or reuses) a Discord category for this lead and renames/moves the channel into it.
+3. Restarts the channel's session in orchestration mode with the chosen lead model/effort; module channels the lead opens later inherit the module model/effort.
+
+The lead and its modules talk over MCP tools the install provides (`send_order` / `report`), with a default cap of 50 instruction↔report round trips. Re-running the command on a channel that is already a lead resets it to a fresh context and cleans up the previous run's module channels. Requires the channel to be bound to the **Claude** backend — the card refuses to open otherwise, and it is rejected in control-plane channels.
+
+### Redmine integration
+
+`/dab-redmine` opens a modal for **URL**, **API key**, and optional **project**. Once saved, a per-guild poller checks every 5 minutes for issues in a New/Doing status and posts an issue card (title with number, link, description, project, target version) into the configured report channel. Status IDs are resolved per instance rather than hardcoded, and bilingual labels like `신규(New)` / `진행(Doing)` match.
+
+An issue card offers **Start / Cancel**: Start either opens the session wizard seeded with that issue, or kicks the issue off into an existing session after a confirm step. `/dab-redmine-issue-select` reaches the same dropdown on demand (same status filter, no "since last check" cutoff); Discord caps a dropdown at 25 options, so longer lists are split across several messages instead of truncated.
+
+API keys are encrypted at rest with `DAB_REDMINE_KEY_SECRET` — generated into `~/.dab/env` on first boot if absent. Without it, encrypt and decrypt both fail rather than falling back to plaintext.
 
 ### Auth & multi-server
 
@@ -327,7 +356,10 @@ dab service restart     # macOS launchd restart
 dab sidecar-smoke       # Claude sidecar protocol handshake
 dab codex-smoke         # Codex app-server initialize (exit 0 if CLI missing)
 dab grok-smoke          # Grok ACP smoke (exit 0 if CLI missing)
+dab attach-mcp          # stdio MCP server (file attach / doc share / order / report tools)
 ```
+
+Only `dab` with no subcommand boots the gateway; every subcommand above runs and exits.
 
 Install / uninstall remain shell/PowerShell scripts under `swift/scripts/`.
 
