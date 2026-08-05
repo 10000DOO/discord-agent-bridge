@@ -248,10 +248,13 @@ public actor OrchestrationHost {
         // the cap exists to bound how many NEW sessions can be opened, not to block re-sending to
         // one that already exists (that ordering bug is what review finding #2 fixed).
         let moduleChannelId: String
-        let isNewChannel: Bool
+        let needsRolePreamble: Bool
         if let existing = activeModules.first(where: { $0.value.moduleName == module }) {
             moduleChannelId = existing.key
-            isNewChannel = false
+            // A reused channel whose context was wiped (`/dab-clear` on the module itself or on its
+            // lead) no longer remembers the role doc its first turn carried, so it needs the
+            // preamble again — `backendSessionId == nil` is exactly that state.
+            needsRolePreamble = existing.value.backendSessionId == nil
         } else {
             // Same module already mid-creation from an earlier, still-in-flight `order()` call —
             // refuse rather than race a second `createModuleAgentChannel` for the same name.
@@ -273,7 +276,7 @@ public actor OrchestrationHost {
                 lead: lead, leadChannelId: fromChannelId, module: module, path: path
             ) else { return .notFound }
             moduleChannelId = created
-            isNewChannel = true
+            needsRolePreamble = true
         }
 
         if await isTurnRunning(moduleChannelId) {
@@ -281,14 +284,14 @@ public actor OrchestrationHost {
             return .busy
         }
         guard let runTurn = runInjectedTurnFn else { return .notFound }
-        // New module channel's first turn must carry the role preamble (CLAUDE.md's role table,
-        // OrchestrationProjectBundle.swift) so the fresh session knows it's a module agent — a
-        // reused channel's session already learned its role on its own first turn.
+        // A fresh module session's first turn must carry the role preamble (CLAUDE.md's role table,
+        // OrchestrationProjectBundle.swift) so it knows it's a module agent — a reused channel that
+        // still holds its context already learned its role on its own first turn.
         // `orderReportReminder` is appended either way (new or reused channel): a one-time role
         // doc wasn't enough on its own (confirmed in production — a module finished a trivial fix
         // and answered in-channel without ever calling `report`), a reminder right before every
         // instruction is stronger (recency).
-        let turnText = (isNewChannel ? "[역할] Agent:\(module)\n\n\(text)" : text) + orderReportReminder
+        let turnText = (needsRolePreamble ? "[역할] Agent:\(module)\n\n\(text)" : text) + orderReportReminder
         // Await only the prompt post (bounded) before answering — the turn itself stays
         // fire-and-forget inside `runTurn` (see `RunInjectedTurnFn`/`runInjectedTurn` doc comment).
         // announceExtras: true — a module turn is a normal session turn (usage panel, rate-limit

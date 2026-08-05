@@ -96,6 +96,8 @@ public enum I18n {
         "cmd.stop.done": "세션을 중지했어요.",
         "cmd.stopAll.done": "모든 세션을 중지했어요 ({count}개).",
         "cmd.clear.done": "대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했습니다.",
+        "cmd.clear.doneWithModules":
+            "대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했고, 하위 모듈 세션 {count}개도 함께 비웠습니다.",
         "cmd.clear.public": "🧹 이 채널 대화 컨텍스트를 비웠어요. 이전 맥락은 이어지지 않습니다.",
         "cmd.close.done": "세션을 종료하고 보관했어요.",
         "cmd.resume.none": "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/dab-agent start` 를 사용하세요.",
@@ -626,6 +628,8 @@ public enum I18n {
         "cmd.stopAll.done": "Stopped all sessions ({count}).",
         "cmd.clear.done":
             "Cleared conversation context. Started a fresh session with the same folder and settings.",
+        "cmd.clear.doneWithModules":
+            "Cleared conversation context and started a fresh session with the same folder and settings. Also cleared {count} module session(s).",
         "cmd.clear.public":
             "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
         "cmd.close.done": "Closed the session and archived it.",

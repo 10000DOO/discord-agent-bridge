@@ -685,24 +685,61 @@ struct EventHandler: GatewayEventHandler {
                 payload: .deferredChannelMessageWithSource(isEphemeral: true)
             )
             guard clearDeferred != nil else { return }
+            // Read before the clear: the role survives it, but the backend is needed below for the
+            // lead's role-marker turn, so one lookup covers both.
+            let priorBinding = await SessionStore.shared.binding(channelId: channelId)
+            let wasLead = priorBinding?.orchestrationRole == "orchestrator"
             // PLAN §14.6: keep config, wipe backendSessionId + live bridges (not full unbind).
             let ok = await life.clearChannel(
                 channelId: channelId, actorId: actorId, guildId: guildId,
                 roleTier: tier, defaultCwd: stubCwd
             )
+            // Clearing a lead wipes its memory of the set it opened, so its modules get the same
+            // wipe — otherwise they answer the next order out of a conversation the lead no longer
+            // has. Their channels stay (unlike `/orchestration` re-run, which orphans them).
+            var clearedModules = 0
+            if ok && wasLead {
+                clearedModules = await life.clearOrchestrationModules(
+                    orchestratorChannelId: channelId, actorId: actorId, roleTier: tier
+                ).count
+                // Fresh lead context has issued no orders yet — carrying the old tally over would
+                // refuse them against a cap the previous context filled.
+                await OrchestrationHost.shared.resetRoundTrips(orchestratorChannelId: channelId)
+            }
             // clear keeps the binding but drops the live bridges, so the channel would sit bound
             // with no open session until its next message — /model and /effort would then have
             // nothing live to apply to. Reopen now (same soft ensure the /agent resume paths use),
             // and do it BEFORE the done reply so a user acting on that reply always finds a live
-            // session instead of racing the in-flight start.
-            if ok {
+            // session instead of racing the in-flight start. Skipped for a lead: its role-marker
+            // turn below opens the session anyway, so a soft ensure here would only start one that
+            // turn immediately takes over.
+            if ok && !wasLead {
                 _ = await life.softEnsureLive(channelId: channelId)
             }
             _ = try? await client.updateOriginalInteractionResponse(
                 appId: payload.application_id,
                 token: payload.token,
-                payload: .init(content: ok ? I18n.t("cmd.clear.done") : noSession)
+                payload: .init(content: ok
+                    ? (clearedModules > 0
+                        ? I18n.t("cmd.clear.doneWithModules", ["count": "\(clearedModules)"])
+                        : I18n.t("cmd.clear.done"))
+                    : noSession)
             )
+            // The store keeps `orchestrationRole`, but the fresh session only learns it's the lead
+            // from this marker — CLAUDE.md's role index maps it to `.claude/roles/ORCHESTRATOR.md`
+            // (OrchestrationProjectBundle.swift). Without it a cleared lead behaves like an
+            // ordinary session and never picks its role manual back up. Same
+            // promptText/postPrompt/announceExtras as `/orchestration`'s own first turn, and after
+            // the reply for the same reason: the turn is slow, the ack is not.
+            // Module channels need no equivalent turn — `order()` re-adds their `[역할] Agent:{module}`
+            // preamble on the next order, so their role costs nothing until they're actually used.
+            if ok, wasLead, let leadBackend = priorBinding?.backend {
+                await runInjectedTurn(
+                    client: client, channelId: channelId, guildId: guildId, backend: leadBackend,
+                    promptText: "[역할] 오케스트레이터", postPrompt: true, announceExtras: false,
+                    actorId: actorId, roleTier: tier
+                )
+            }
 
         case "model":
             guard let value = try? cmd.requireOption(named: "value").requireString(), !value.isEmpty else {

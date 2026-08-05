@@ -1,5 +1,7 @@
 import Foundation
 
+private let log = Logger(name: "session-lifecycle")
+
 /// Outcome of `updateBinding` (C4-a/M11). TS `orchestrator.setModel`/`setEffort` collapse to
 /// `'ok' | 'no-session' | 'unsupported' | 'error'`; this collapses to what this layer can tell
 /// apart without touching the bridges. `DabMain` (WO-7) maps each case to a user-facing i18n key.
@@ -215,6 +217,41 @@ public struct SessionLifecycle: Sendable {
             status: "ok"
         ))
         return true
+    }
+
+    /// `/clear` on a lead channel: wipe every module session in its set the same way
+    /// `clearChannel` wipes the lead — context gone, channel + binding kept (unlike
+    /// `stopOrchestrationModules`, which unbinds and deletes them). A cleared lead has no memory of
+    /// what it ordered, so modules left on their old context would answer the next order out of a
+    /// conversation the lead no longer shares. Archived rows are skipped, matching
+    /// `OrchestrationHost.order`'s active-module filter. Returns the channel ids cleared.
+    @discardableResult
+    public func clearOrchestrationModules(
+        orchestratorChannelId: String,
+        actorId: String,
+        roleTier: String = "execute"
+    ) async -> [String] {
+        let modules = await store.all().filter {
+            !$0.value.archived
+                && $0.value.orchestrationRole == "agent"
+                && $0.value.orchestratorChannelId == orchestratorChannelId
+        }
+        var cleared: [String] = []
+        for (channelId, session) in modules {
+            let ok = await clearChannel(
+                channelId: channelId, actorId: actorId, guildId: session.guildId,
+                roleTier: roleTier, defaultCwd: session.cwd
+            )
+            if ok {
+                cleared.append(channelId)
+            } else {
+                // A module left on its old context while its lead is fresh is the exact mismatch
+                // this method exists to prevent, and `order()` won't re-send its role preamble
+                // either (its backendSessionId survived) — never let that pass silently.
+                log.warn("module context clear failed lead=\(orchestratorChannelId) channel=\(channelId)")
+            }
+        }
+        return cleared
     }
 
     /// `/orchestration`: same rebind mechanism as `clearChannel` (design_orchestration_project_scoped_command.md

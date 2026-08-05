@@ -87,9 +87,9 @@ private func leadSession(cwd: String, guildId: String = "g1") -> PersistedSessio
     )
 }
 
-private func agentSession(cwd: String, orchestratorChannelId: String, moduleName: String, guildId: String = "g1") -> PersistedSession {
+private func agentSession(cwd: String, orchestratorChannelId: String, moduleName: String, guildId: String = "g1", backendSessionId: String? = nil) -> PersistedSession {
     PersistedSession(
-        backend: .claude, cwd: cwd, guildId: guildId, updatedAt: "t",
+        backend: .claude, backendSessionId: backendSessionId, cwd: cwd, guildId: guildId, updatedAt: "t",
         orchestrationRole: "agent", orchestratorChannelId: orchestratorChannelId, moduleName: moduleName
     )
 }
@@ -254,7 +254,9 @@ struct OrchestrationHostTests {
         try FileManager.default.createDirectory(at: modulePath, withIntermediateDirectories: true)
 
         try await store.upsert(channelId: "lead", leadSession(cwd: projectDir.path))
-        try await store.upsert(channelId: "mod", agentSession(cwd: modulePath.path, orchestratorChannelId: "lead", moduleName: "core"))
+        // backendSessionId set: the module still holds the context its first turn established, so
+        // no role preamble is due (see orderReAddsRolePreambleAfterModuleContextCleared).
+        try await store.upsert(channelId: "mod", agentSession(cwd: modulePath.path, orchestratorChannelId: "lead", moduleName: "core", backendSessionId: "sid-core"))
         try await configStore.saveServerConfig(ServerConfig(
             // One module already active, cap is exactly 1 — a NEW module would be refused, but
             // re-ordering the SAME ("core") module must still go through.
@@ -270,6 +272,31 @@ struct OrchestrationHostTests {
         // `order` awaits the prompt-post confirmation before returning — already recorded. The
         // report reminder is appended to every order text, reused channel included.
         #expect(recorder.calls.contains { $0.channelId == "mod" && $0.text == "again" + orderReportReminder })
+    }
+
+    /// A module whose context was wiped (`/dab-clear` on the module or on its lead) keeps its
+    /// channel, so `order` reuses it — but the fresh session never saw the role doc, so the
+    /// preamble must go out again or it answers in-channel and never calls `report`.
+    @Test func orderReAddsRolePreambleAfterModuleContextCleared() async throws {
+        let store = freshTempStore()
+        let configStore = tempConfigStore()
+        let projectDir = tempDir("project-cleared-module")
+        let modulePath = projectDir.appendingPathComponent("core", isDirectory: true)
+        try FileManager.default.createDirectory(at: modulePath, withIntermediateDirectories: true)
+
+        try await store.upsert(channelId: "lead", leadSession(cwd: projectDir.path))
+        // backendSessionId nil == cleared context.
+        try await store.upsert(channelId: "mod", agentSession(cwd: modulePath.path, orchestratorChannelId: "lead", moduleName: "core"))
+
+        let recorder = TurnRecorder()
+        let host = OrchestrationHost(
+            store: store, configStore: configStore, isTurnRunning: { _ in false }, runInjectedTurn: recorder.handler()
+        )
+        let decision = await host.order(fromChannelId: "lead", module: "core", path: modulePath.path, text: "again")
+        #expect(decision == .ok(channelId: "mod"))
+        #expect(recorder.calls.contains {
+            $0.channelId == "mod" && $0.text == "[역할] Agent:core\n\nagain" + orderReportReminder
+        })
     }
 
     /// Review finding #1 (TOCTOU): two `order()` calls for two DIFFERENT new modules, racing

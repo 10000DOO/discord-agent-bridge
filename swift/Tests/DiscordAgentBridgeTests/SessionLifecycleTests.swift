@@ -1375,6 +1375,42 @@ struct SessionLifecycleCloseOrchestrationSetTests {
         #expect(await configStore.loadServerConfig(guildId: "g")?.orchestration?["orc-1"]?.categoryId == "cat-1")
     }
 
+    // `/dab-clear` on a lead: modules keep their channel + binding but lose their context, and a
+    // module belonging to another lead (or an archived one) is left alone.
+    @Test func clearOrchestrationModulesWipesContextButKeepsBindings() async throws {
+        let store = freshTempStore()
+        let stopped = LockedBox<[String]>([])
+        try await store.upsert(channelId: "agent-core", PersistedSession(
+            backend: .claude, backendSessionId: "sid-core", cwd: "/repo/core", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "core"
+        ))
+        try await store.upsert(channelId: "agent-old", PersistedSession(
+            backend: .claude, backendSessionId: "sid-old", cwd: "/repo/old", guildId: "g", updatedAt: "t",
+            archived: true,
+            orchestrationRole: "agent", orchestratorChannelId: "orc-1", moduleName: "old"
+        ))
+        try await store.upsert(channelId: "other-agent", PersistedSession(
+            backend: .claude, backendSessionId: "sid-other", cwd: "/repo/x", guildId: "g", updatedAt: "t",
+            orchestrationRole: "agent", orchestratorChannelId: "orc-2", moduleName: "x"
+        ))
+        let life = SessionLifecycle(
+            registry: SessionRegistry(), store: store, audit: tempAudit(),
+            stopClaude: { ch in stopped.withLock { $0.append(ch) } }, stopCodex: { _ in }, stopGrok: { _ in },
+            interruptClaude: { _ in false }, interruptCodex: { _ in false }, interruptGrok: { _ in false }
+        )
+
+        let cleared = await life.clearOrchestrationModules(orchestratorChannelId: "orc-1", actorId: "u")
+
+        #expect(cleared == ["agent-core"])
+        let core = await store.binding(channelId: "agent-core")
+        #expect(core?.backendSessionId == nil)
+        #expect(core?.orchestratorChannelId == "orc-1")  // binding kept, unlike stopOrchestrationModules
+        #expect(core?.cwd == "/repo/core")
+        #expect(stopped.withLock { $0 } == ["agent-core"])
+        #expect(await store.binding(channelId: "agent-old")?.backendSessionId == "sid-old")
+        #expect(await store.binding(channelId: "other-agent")?.backendSessionId == "sid-other")
+    }
+
     // Promoting a module channel to a lead (`/orchestration` run inside it) must drop its old set
     // membership — otherwise the old lead's teardown/status still counts it as one of its modules.
     @Test func enableOrchestrationModeClearsPreviousModuleMembership() async throws {

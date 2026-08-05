@@ -225,7 +225,7 @@ ready: username=<bot> id=<snowflake> app=<application id>
 | `/dab-mode perm` | execute+ | 권한 모드 전환 (세션 유지) |
 | `/dab-model` | execute+ | 모델 전환 (프로바이더 카탈로그 자동완성) |
 | `/dab-effort` | execute+ | 추론 강도 전환 (자동완성) |
-| `/dab-clear` | execute+ | 동일 폴더/설정으로 새 대화 |
+| `/dab-clear` | execute+ | 동일 폴더/설정으로 새 대화 (오케스트레이터 채널이면 하위 모듈 세션도 함께 비움) |
 | `/dab-stop` | execute+ | 이 채널 세션 hard-stop |
 | `/dab-stop-all` | 관리자 | 모든 바인딩 세션 hard-stop |
 | `/dab-doc path:` | execute+ | 작업 공간 마크다운을 문서 스레드로 공유 |

@@ -225,7 +225,7 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 | `/dab-mode perm` | Execute+ | Switch permission mode (session kept) |
 | `/dab-model` | Execute+ | Switch model (autocomplete from provider catalog) |
 | `/dab-effort` | Execute+ | Switch reasoning effort (autocomplete) |
-| `/dab-clear` | Execute+ | Fresh conversation, same folder/settings |
+| `/dab-clear` | Execute+ | Fresh conversation, same folder/settings (on an orchestrator channel, its module sessions are cleared too) |
 | `/dab-stop` | Execute+ | Hard-stop this channel’s session |
 | `/dab-stop-all` | Admin | Hard-stop every bound session |
 | `/dab-doc path:` | Execute+ | Share a workspace markdown file into a document thread |
