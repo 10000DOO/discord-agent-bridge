@@ -37,10 +37,6 @@ public func toolSummary(toolName: String, input: JSONValue, limit: Int = 60) -> 
 
 /// Widest summary the call line will show before clipping.
 let toolCallSummaryLimit = 200
-/// Successful output at or under this length is inlined verbatim; longer output collapses to its size.
-let toolResultInlineLimit = 300
-/// A failed result is always shown, but never beyond this much of its head.
-let toolResultErrorLimit = 1000
 
 /// Collapse to a single line and neutralize backticks so an inline code span can't break out.
 private func inlineSafe(_ s: String) -> String {
@@ -63,9 +59,9 @@ public func formatToolCallLine(toolName: String, input: JSONValue) -> String {
     return "● **\(toolName)** `\(summary)`"
 }
 
-/// One-line tool result, CLI transcript style: `⎿ Bash · 7줄`.
-/// Success collapses to its size (short output is inlined verbatim); failure always keeps its
-/// body, clipped — an error message is the one result a human actually has to read.
+/// Tool result, CLI transcript style: `⎿ Bash · 7줄` plus the whole output in a fence.
+/// Nothing is clipped here — `DiscordText.chunkMessage` splits an over-long body across
+/// messages and rebalances the fence, so a long result costs extra messages, not content.
 /// `toolName` is repeated here because parallel tool calls interleave call and result lines.
 public func formatToolResult(toolName: String?, content: String, ok: Bool) -> String {
     let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -82,13 +78,7 @@ public func formatToolResult(toolName: String?, content: String, ok: Bool) -> St
     parts.append(I18n.t("tool.lines", ["n": "\(lineCount)"]))
     let head = "⎿ \(parts.joined(separator: " · "))"
 
-    if !ok {
-        return "\(head)\n\(fenced(DiscordText.truncate(trimmed, toolResultErrorLimit)))"
-    }
-    if DiscordText.utf16Len(trimmed) <= toolResultInlineLimit {
-        return "\(head)\n\(fenced(trimmed))"
-    }
-    return head
+    return "\(head)\n\(fenced(trimmed))"
 }
 
 /// Format tool input for the thread's opening message (TS toolThread `formatInput`).

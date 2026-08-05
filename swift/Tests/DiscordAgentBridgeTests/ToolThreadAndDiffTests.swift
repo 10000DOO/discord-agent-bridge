@@ -83,15 +83,20 @@ struct ToolFormatTests {
         #expect(short.hasPrefix("⎿ Bash · 3줄"))
         #expect(short.contains("```\na\nb\nc\n```"))
 
-        // Long success → size only, body dropped.
-        let long = formatToolResult(toolName: "Read", content: String(repeating: "line\n", count: 200), ok: true)
-        #expect(long == "⎿ Read · 200줄")
+        // Long success → size + the whole body, nothing clipped.
+        let long = formatToolResult(toolName: "Read", content: String(repeating: "line\n", count: 600), ok: true)
+        #expect(long.hasPrefix("⎿ Read · 600줄"))
+        #expect(!long.contains("…"))
+        #expect(long.components(separatedBy: "line").count - 1 == 600)
+        // Over 2000 chars → chunked, not truncated: the pieces still hold every line.
+        let chunks = DiscordText.chunkMessage(long)
+        #expect(chunks.count > 1)
+        #expect(chunks.joined().components(separatedBy: "line").count - 1 == 600)
 
-        // Failure → always keeps the body, however long.
+        // Failure → same, body kept in full.
         let failed = formatToolResult(toolName: "Bash", content: String(repeating: "boom\n", count: 200), ok: false)
         #expect(failed.hasPrefix("⎿ Bash · 오류 · 200줄"))
-        #expect(failed.contains("boom"))
-        #expect(DiscordText.utf16Len(failed) < 1200)
+        #expect(failed.components(separatedBy: "boom").count - 1 == 200)
 
         #expect(formatToolResult(toolName: "Bash", content: "   ", ok: true) == "⎿ Bash · 출력 없음")
         #expect(formatToolResult(toolName: nil, content: "x", ok: true).hasPrefix("⎿ 1줄"))
