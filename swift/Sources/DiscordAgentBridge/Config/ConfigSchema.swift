@@ -579,8 +579,10 @@ public enum ConfigDefaults {
     public static let autoUpdate = AutoUpdateSection()
     /// R7 defaults (design_orchestration_module_agents.md 4장 설정표) — `ServerConfig.orchestrationRuntime`
     /// overrides either one per-guild.
-    public static let orchestrationMaxConcurrentAgents = 3
-    public static let orchestrationMaxRoundTrips = 50
+    /// Raised from the design table's 3/50 (사용자 지시 2026-08-06) — the guardrail stays a
+    /// runaway backstop, not a cost budget; cost is controlled by the module model/effort card.
+    public static let orchestrationMaxConcurrentAgents = 30
+    public static let orchestrationMaxRoundTrips = 800
 }
 
 // MARK: - Validation helpers
