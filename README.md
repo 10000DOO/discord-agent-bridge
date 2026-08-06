@@ -230,6 +230,7 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 | `/stop` | Execute+ | Hard-stop this channel’s session |
 | `/stop-all` | Admin | Hard-stop every bound session |
 | `/doc path:` | Execute+ | Share a workspace markdown file into a document thread |
+| `/diff` | Execute+ | Open a thread with this folder's uncommitted changes (file picker + expand all) |
 | `/orchestration` | Execute+ | Turn this session channel into an orchestration lead (Claude only) — see below |
 | `/redmine` | Execute+ | Modal (URL / API key / project) to connect Redmine notifications |
 | `/redmine-issue-select` | Execute+ | Pick a New/Doing Redmine issue from a dropdown and kick a session off it |
@@ -277,6 +278,10 @@ All three backends publish a task list as they work (Claude `TodoWrite`, Codex `
 It is pinned **once** and edited from then on: Discord posts a system line on every pin and caps a channel at 50 pins, so re-pinning each update would spam the channel. A turn that publishes no list leaves the previous one standing; `/clear`, `/stop`, and unbinding remove the panel. After a restart the bot re-attaches to the panel already pinned in the channel rather than pinning a second one.
 
 Pinning needs the `Manage Messages` permission. Without it the panel is posted as a normal message and the bot explains once how to fix it — including a ready-made re-authorization link. Discord refuses to let a bot grant itself a permission it lacks, so one click is the minimum; there is no fully automatic path.
+
+### Uncommitted changes (`/diff`)
+
+`/diff` opens a thread for the channel's folder holding a summary (file list with `+`/`-` counts, repo and branch) and a **file picker** plus **Expand all**. Diff bodies are posted in ```diff``` fences and never clipped — a long one costs extra messages, not content. More than 25 changed files means more than one picker, not a truncated list. A folder with no uncommitted changes, or one that isn't a git repository, gets a one-line answer and no thread.
 
 ### Image render (tables & Mermaid)
 

@@ -595,6 +595,11 @@ struct EventHandler: GatewayEventHandler {
                 await handleTaskPanelRecheckComponent(client: client, payload: payload)
                 return
             }
+            // (A4d) /diff file picker + "전부 펼치기" (WO-8) — own `diff:` namespace.
+            if let diffAction = parseDiffComponentId(comp.custom_id) {
+                await handleDiffComponent(client: client, payload: payload, comp: comp, action: diffAction)
+                return
+            }
             // (A5) Interrupt "stop" button: interrupt:<guildId>:<channelId> (drive; does NOT unbind).
             if let interruptTarget = parseInterruptId(comp.custom_id) {
                 try await handleInterruptComponent(
@@ -1277,6 +1282,39 @@ struct EventHandler: GatewayEventHandler {
                     payload: .init(content: I18n.t("doc.error.shareFailed"))
                 )
             }
+
+        case "diff":
+            // WO-7: uncommitted changes of this channel's folder, inside a thread. Needs a binding
+            // for the folder, same gate as /doc.
+            let diffRegBound = await SessionRegistry.shared.binding(channelId: channelId) != nil
+            let diffStored = await SessionStore.shared.binding(channelId: channelId)
+            guard diffRegBound || (diffStored.map { !$0.archived } ?? false) else {
+                try await respondEphemeral(payload, I18n.t("router.noSession"))
+                return
+            }
+            let diffCwd = diffStored.map(\.cwd)
+                ?? ProcessInfo.processInfo.environment["DAB_CWD"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? NSHomeDirectory()
+            // Several git calls plus a thread create — ack first (same reason as /doc).
+            let diffDeferred = try? await client.createInteractionResponse(
+                id: payload.id,
+                token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard diffDeferred != nil else { return }
+            let outcome = await postDiffThread(client: client, channelId: channelId, cwd: diffCwd)
+            let reply: String
+            switch outcome {
+            case .notARepo: reply = I18n.t("diff.notARepo")
+            case .noChanges: reply = I18n.t("diff.noChanges")
+            case .failed: reply = I18n.t("diff.failed")
+            case .posted(let fileCount): reply = I18n.t("diff.posted", ["n": "\(fileCount)"])
+            }
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id,
+                token: payload.token,
+                payload: .init(content: reply)
+            )
 
         case "update":
             // W16-h: admin version check; if available, show Yes/No prompt ephemerally.

@@ -238,6 +238,16 @@ public func docCommandSpec() -> SlashCommandSpec {
     )
 }
 
+/// `/diff` — uncommitted changes in the session folder, inside a thread (drive tier; WO-7).
+/// No options: it reports on the folder the channel is already bound to.
+/// Same description ceilings as every other spec (ko ≤32 scalars, en ≤100).
+public func diffCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "diff",
+        description: LocalizedText(ko: "작업 폴더의 변경 내용을 봅니다", en: "Show uncommitted changes in this channel's folder")
+    )
+}
+
 /// `/config` — role tiers + defaults panel (admin; TS `setDefaultMemberPermissions(Administrator)`).
 public func configCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
@@ -343,6 +353,7 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         stopAllCommandSpec(),
         setupCommandSpec(),
         docCommandSpec(),
+        diffCommandSpec(),
         configCommandSpec(),
         updateCommandSpec(),
         redmineCommandSpec(),
