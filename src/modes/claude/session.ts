@@ -24,6 +24,7 @@ import {
   type ReportCallback,
 } from './mcpOrchestrationTool.js';
 import { resolvePlugins } from './plugins.js';
+import { rebuildLocalCommandOutput, type ClaudeSessionFacts } from './localCommands.js';
 import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../shared/turnFiles.js';
 
 // The signature of the SDK's query() — narrowed to what we call. Injectable so
@@ -116,6 +117,10 @@ export class ClaudeSession implements ModeSession {
   // Count of connected MCP servers from the init message, carried on
   // context_usage for the panel's "session composition" line.
   private mcpServerCount: number | null = null;
+
+  // Session facts from init (+ memory/context topped up at each result), used to rebuild the
+  // slash-command screens the CLI only draws inside its own UI (localCommands.ts).
+  private facts: ClaudeSessionFacts = {};
 
   private readonly ctx: ModeContext;
   private readonly query: Query;
@@ -288,6 +293,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
           if (msg.mcp_servers) {
             this.mcpServerCount = msg.mcp_servers.filter((s: { name: string; status: string }) => s.status === 'connected').length;
           }
+          this.captureInitFacts(msg);
           this.captureModelDisplayName();
           const first = this.sessionId === null;
           this.sessionId = msg.session_id;
@@ -307,6 +313,11 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
             ...(msg.usage?.duration_ms !== undefined ? { durationMs: msg.usage.duration_ms } : {}),
             ...(msg.usage?.tool_uses !== undefined ? { toolUses: msg.usage.tool_uses } : {}),
           });
+        } else if (msg.subtype === 'local_command_output') {
+          // A local command that produced its own stdout (SDKLocalCommandOutputMessage). It
+          // arrives outside the assistant stream, so without this it is dropped and the user
+          // sees an empty turn.
+          if (msg.content.length > 0) this.ctx.emit({ kind: 'text', text: msg.content, delta: false });
         } else if (msg.subtype === 'session_state_changed' && msg.state === 'idle') {
           // SDK declaration: idle fires after heldBackResult has flushed and the
           // background agent exits. Do not synthesize this with a timer.
@@ -352,6 +363,28 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     }
   }
 
+  // Everything init tells us about this session, kept for the rebuilt `/status`, `/mcp`,
+  // `/memory`, `/skills` and `/plugin` screens (localCommands.ts). Tools/commands/agents are
+  // kept as counts — that is all any rebuilt screen shows of them.
+  private captureInitFacts(msg: SDKMessage & { type: 'system'; subtype: 'init' }): void {
+    this.facts = {
+      ...this.facts,
+      version: msg.claude_code_version,
+      cwd: msg.cwd,
+      sessionId: msg.session_id,
+      model: msg.model,
+      permissionMode: msg.permissionMode,
+      apiKeySource: msg.apiKeySource,
+      outputStyle: msg.output_style,
+      ...(msg.mcp_servers ? { mcpServers: msg.mcp_servers } : {}),
+      ...(msg.tools ? { toolCount: msg.tools.length } : {}),
+      ...(msg.slash_commands ? { commandCount: msg.slash_commands.length } : {}),
+      ...(msg.skills ? { skills: msg.skills } : {}),
+      ...(msg.plugins ? { plugins: msg.plugins } : {}),
+      ...(msg.agents ? { agentCount: msg.agents.length } : {}),
+    };
+  }
+
   // Resolve observedModel to its human-readable displayName via ONE supportedModels()
   // control request after the first init (same defensive posture as providerCatalog's
   // fetchClaudeModels: any failure — including a test double without the method —
@@ -366,6 +399,7 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
         const active = this.observedModel;
         if (!active || !Array.isArray(models)) return;
         this.modelDisplayName = resolveModelDisplayName(active, models);
+        this.facts.modelDisplayName = this.modelDisplayName;
       } catch {
         // Best-effort: the usage panel shows the raw model id instead.
       }
@@ -458,6 +492,10 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
           : undefined;
         const clearableTokens = typeof messages?.tokens === 'number' ? messages.tokens : undefined;
         const memoryFileCount = Array.isArray(ctx.memoryFiles) ? ctx.memoryFiles.length : undefined;
+        // The same snapshot feeds the rebuilt `/memory` and `/status` screens below.
+        if (Array.isArray(ctx.memoryFiles)) this.facts.memoryFiles = ctx.memoryFiles;
+        this.facts.totalTokens = ctx.totalTokens;
+        this.facts.maxTokens = ctx.maxTokens;
         this.ctx.emit({
           kind: 'context_usage',
           totalTokens: ctx.totalTokens,
@@ -474,9 +512,12 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
       if (timeout) clearTimeout(timeout);
       // Best-effort: no context panel this turn if the SDK cannot report it.
     }
+    // A locally-handled command's whole reply rides this text (there are no stream deltas for
+    // one), so this is where a terminal-only screen gets rebuilt — after the facts above landed.
+    const text = resultText === undefined ? undefined : rebuildLocalCommandOutput(resultText, this.facts);
     this.ctx.emit({
       kind: 'result',
-      ...(resultText !== undefined ? { text: resultText } : {}),
+      ...(text !== undefined ? { text } : {}),
       ...(msg.total_cost_usd !== undefined ? { costUsd: msg.total_cost_usd } : {}),
       ...(usage.input_tokens !== undefined ? { tokensIn: usage.input_tokens } : {}),
       ...(usage.output_tokens !== undefined ? { tokensOut: usage.output_tokens } : {}),

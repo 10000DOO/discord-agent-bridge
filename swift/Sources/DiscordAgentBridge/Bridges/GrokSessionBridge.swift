@@ -267,7 +267,6 @@ public actor GrokSessionBridge {
             throw error
         }
         let out = buf.withLock { $0 }
-        let textOut = out.isEmpty ? "(no text)" : out
         let (tools, agents) = statsBox.withLock { ($0.toolsSnapshot(), $0.agentsSnapshot()) }
         // W16-g: turn boundary for tool threads.
         await ToolActivityHost.shared.resetTurn(channelId: channelId)
@@ -288,6 +287,12 @@ public actor GrokSessionBridge {
         // TODO(DAB-DIAG-GROK-CTX): temporary diagnostic log for docs/grok-context-usage-panel-missing.md
         // WO-1 — remove once H1/H2/H3 are confirmed from real Grok session output.
         log.info("[DAB-DIAG-GROK-CTX] rawTotalTokens=\(String(describing: rawTotalTokens)) resultModelId=\(String(describing: resultModelId)) model=\(model) maxTokens=\(String(describing: maxTokens))")
+        // `/context` sends nothing back over ACP, so its screen is rebuilt from the facts just
+        // computed above; every other empty turn keeps the plain stand-in.
+        let screen = out.isEmpty
+            ? grokLocalCommandScreen(prompt: text, model: model, totalTokens: rawTotalTokens, maxTokens: maxTokens)
+            : nil
+        let textOut = out.isEmpty ? (screen ?? "(no text)") : out
         return TurnResult(
             text: textOut,
             usage: turnUsage(fromGrokPromptResult: promptResult),
