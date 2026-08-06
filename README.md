@@ -30,7 +30,7 @@ The product is a **Swift** binary (`dab`). Claude Code still uses a thin **Node 
 | **macOS 13+** (primary), or Linux / Windows with Swift | Product binary is SwiftPM `dab` |
 | **Swift 6.1+** | Xcode or Command Line Tools (Windows: Swift toolchain) |
 | **Node.js 20+** | **Claude only** — spawns the Claude sidecar; not needed for Codex/Grok |
-| Backend CLIs, installed & logged in | **Claude Code** (`claude` login or `ANTHROPIC_API_KEY`); **Codex** CLI; **Grok** CLI as needed |
+| Backend CLIs, installed & logged in | **Claude Code** (`claude` login or `ANTHROPIC_API_KEY`); **Codex** CLI; **Grok** CLI as needed. Resolved from `PATH`, then the usual user bin dirs (`~/.local/bin`, `~/.dab/bin`, `~/.cargo/bin`, `~/.grok/bin`, Homebrew) — a service started with a minimal `PATH` still finds them |
 | **Discord bot token** | Step 1 below |
 
 ---
@@ -240,6 +240,8 @@ Commands register under their bare name, with no prefix. `/setup`, `/config`, `/
 
 Commands that act on *this channel's* session (`/model`, `/effort`, `/mode`, `/clear`, `/stop`, `/orchestration`) reply "no session" unless the channel is bound.
 
+A few backend commands only exist inside the CLI's own interactive screen, so asking for them over the protocol returns a one-line summary or "isn't available in this environment" — for those (`/status`, `/mcp`, `/memory`, `/skills`, `/plugin` on Claude; `/context` on Grok) the bridge rebuilds the screen from the live session's own facts (version, cwd, model, permission mode, MCP servers, skills/plugins, memory files) and posts that instead. When a fact never arrived, the backend's original text passes through unchanged — nothing is invented.
+
 ### Permission modes
 
 `default` · `acceptEdits` · `plan` · `bypassPermissions` (plus backend-specific profiles when catalogued).
@@ -260,11 +262,12 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 ### Live session UX
 
 - Streaming status embed (text / tool progress).
-- Tool activity → Discord work threads with formatted tool output and **diff** views.
+- Tool activity → Discord work threads with formatted tool output and **diff** views. The activity log line is a one-line CLI-style summary; the thread carries the **whole** result body — output longer than one message is split across several instead of being cut off.
 - Status-channel notifications for key events (configurable in `/config`).
 - Usage embeds (Claude OAuth, Codex rate limits, Grok weekly) from `/agent stats`.
 - Idle watchdog notice if a turn goes quiet for a few minutes.
 - Host file attach / document share from the agent (`host.file.attach` / share) into the channel, path-confined.
+- **Attachments you drop in the channel** are downloaded into `<workspace>/.dab-attachments/<uuid>/` (realpath-confined, one directory per message so concurrent turns can't clobber each other). Images become vision input for backends that take it; everything else is passed as an absolute-path hint appended to the prompt.
 
 ### Image render (tables & Mermaid)
 
@@ -307,6 +310,8 @@ API keys are encrypted at rest with `DAB_REDMINE_KEY_SECRET` — generated into 
 
 `/update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config. **Needs a full repo checkout** (the manual/from-source install above) — it does not work for a Homebrew install; use `brew upgrade` instead (see Homebrew install steps above).
 
+The same `autoUpdate.enabled` switch also keeps the **backend runtimes** current. Once an hour the bot checks the Claude Agent SDK, the Codex CLI and the Grok CLI and upgrades whichever is behind — npm-global installs and Homebrew casks are supported; any other install layout reports `unsupported` and is left alone. A swap only starts when no turn is running anywhere, and new turns wait just for its duration. After a swap the runtime restarts and its model catalog is probed; a broken upgrade rolls back. One `dab` process at a time does this (cross-process lock file), and an update interrupted by a kill is rolled forward or back on the next boot. Results go to the log as `provider-runtime: …` lines, not to Discord.
+
 ---
 
 ## Paths & configuration
@@ -340,12 +345,15 @@ Prefer putting the Discord token in **`~/.dab/env`** for service installs. First
 | `DAB_PERM_MODE` | `bypassPermissions` | Prefer `default` with permission UI |
 | `DAB_TURN_TIMEOUT_SEC` | `120` | Wait for turn result |
 | `DAB_DEV_GUILD_ID` | — | Instant guild slash registration (else global, up to ~1h) |
+| `DAB_HOME` | `~/.discord-agent-bridge` | Config + state root |
+| `DAB_CAPS` | (config) | Render-capability overrides (`toolThreads` / `fileDiff` / `usagePanel` / `streaming`); outranks global + server config |
 | `DAB_CLAUDE_SIDECAR_CMD` | auto | Override Claude sidecar spawn command |
 | `DAB_RENDER` | (config) | `0` force off PNG; `1` prefer on when Chrome present |
 | `DAB_MERMAID_JS` | auto | Path to `mermaid.min.js` |
 | `DAB_CHROMIUM_CACHE` | `~/.dab/chromium` | Provisioned browser cache |
 | `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | system scan | Override Chrome binary |
-| `CODEX_CMD` | `codex` | Codex CLI override (smokes / discovery) |
+| `CODEX_CMD` | `codex` | Codex CLI override (spawn + smokes) |
+| `GROK_CMD` | `grok` | Grok CLI override (spawn + smokes) |
 
 ### CLI surface (`dab`)
 

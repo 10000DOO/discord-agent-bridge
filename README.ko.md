@@ -30,7 +30,7 @@
 | **macOS 13+** (1차), 또는 Linux / Windows + Swift | 제품 바이너리는 SwiftPM `dab` |
 | **Swift 6.1+** | Xcode 또는 Command Line Tools (Windows: Swift 툴체인) |
 | **Node.js 20+** | **Claude 전용** — 사이드카 기동용. Codex/Grok에는 불필요 |
-| 백엔드 CLI 설치·로그인 | **Claude Code** (`claude` 로그인 또는 `ANTHROPIC_API_KEY`); **Codex** CLI; 필요 시 **Grok** CLI |
+| 백엔드 CLI 설치·로그인 | **Claude Code** (`claude` 로그인 또는 `ANTHROPIC_API_KEY`); **Codex** CLI; 필요 시 **Grok** CLI. `PATH` → 사용자 bin 디렉터리(`~/.local/bin`, `~/.dab/bin`, `~/.cargo/bin`, `~/.grok/bin`, Homebrew) 순으로 찾으므로 `PATH`가 빈약한 서비스에서도 잡힙니다 |
 | **Discord 봇 토큰** | 아래 1단계 |
 
 ---
@@ -240,6 +240,8 @@ ready: username=<bot> id=<snowflake> app=<application id>
 
 **이 채널의 세션**을 대상으로 하는 명령(`/model` · `/effort` · `/mode` · `/clear` · `/stop` · `/orchestration`)은 채널이 바인딩되지 않았으면 "세션 없음"으로 응답합니다.
 
+백엔드 명령 중 일부는 CLI가 자기 대화형 화면에만 그리는 것이어서, 프로토콜로 물으면 한 줄 요약이나 "이 환경에서는 안 됨" 문구만 돌아옵니다. 그런 명령(Claude의 `/status` · `/mcp` · `/memory` · `/skills` · `/plugin`, Grok의 `/context`)은 브리지가 살아 있는 세션이 이미 들고 있는 사실(버전 · cwd · 모델 · 권한 모드 · MCP 서버 · 스킬/플러그인 · 메모리 파일)로 화면을 재구성해 대신 올립니다. 받아둔 사실이 없으면 백엔드 원문을 그대로 통과시킵니다 — 없는 값을 만들지는 않습니다.
+
 ### 권한 모드
 
 `default` · `acceptEdits` · `plan` · `bypassPermissions` (카탈로그된 백엔드별 프로필 포함).
@@ -260,11 +262,12 @@ ready: username=<bot> id=<snowflake> app=<application id>
 ### 라이브 세션 UX
 
 - 스트리밍 상태 임베드 (텍스트 / 툴 진행).
-- 툴 활동 → Discord 작업 스레드 + 포맷된 출력·**diff**.
+- 툴 활동 → Discord 작업 스레드 + 포맷된 출력·**diff**. 활동 로그 줄은 CLI 형식 한 줄 요약이고, 스레드에는 결과 본문이 **전부** 들어갑니다 — 한 메시지를 넘기면 잘라내지 않고 여러 메시지로 나눠 보냅니다.
 - 상태 채널 알림(주요 이벤트, `/config`에서 설정).
 - `/agent stats`의 사용량 임베드 (Claude OAuth, Codex rate limit, Grok weekly).
 - 턴이 수 분간 조용하면 idle watchdog 안내.
 - 에이전트 → 채널 파일 첨부/문서 공유(`host.file.attach` / share), 경로 confinement.
+- **채널에 올린 첨부파일**은 `<작업공간>/.dab-attachments/<uuid>/` 로 내려받습니다(realpath confinement, 메시지마다 별 디렉터리라 동시 턴끼리 덮어쓰지 않음). 이미지는 이를 받는 백엔드에 비전 입력으로 들어가고, 나머지는 절대 경로 힌트로 프롬프트에 덧붙습니다.
 
 ### 이미지 렌더 (표 · Mermaid)
 
@@ -307,6 +310,8 @@ API 키는 `DAB_REDMINE_KEY_SECRET`으로 암호화해서 저장하며, 이 값�
 
 `/update`가 릴리스 레지스트리를 확인하고, 승인 시 플랫폼 설치 경로 실행 후 서비스를 재시작합니다(macOS: `install.sh` + launchctl). config의 `autoUpdate.enabled`로 끌 수 있습니다. **저장소 체크아웃이 있어야 동작합니다**(위 수동/소스 빌드 설치) — Homebrew 설치에서는 동작하지 않으니 `brew upgrade`를 쓰세요(위 Homebrew 설치 절 참고).
 
+같은 `autoUpdate.enabled` 스위치가 **백엔드 실행 환경**도 함께 최신으로 유지합니다. 한 시간마다 Claude Agent SDK · Codex CLI · Grok CLI 버전을 확인해 뒤처진 것만 올립니다 — npm 전역 설치와 Homebrew cask는 지원하고, 그 밖의 설치 형태는 `unsupported`로 보고하고 건드리지 않습니다. 교체는 어느 채널에서도 턴이 돌지 않을 때만 시작하고, 새 턴은 교체가 끝날 때까지만 기다립니다. 교체 후 런타임을 재시작해 모델 카탈로그를 확인하며, 깨진 업그레이드는 롤백합니다. 프로세스 간 락 파일로 한 번에 한 `dab`만 수행하고, 강제 종료로 중단된 업데이트는 다음 부팅에서 롤포워드/롤백합니다. 결과는 Discord가 아니라 로그의 `provider-runtime: …` 줄로 남습니다.
+
 ---
 
 ## 경로 & 설정
@@ -340,12 +345,15 @@ API 키는 `DAB_REDMINE_KEY_SECRET`으로 암호화해서 저장하며, 이 값�
 | `DAB_PERM_MODE` | `bypassPermissions` | 권한 UI 쓸 때는 `default` 권장 |
 | `DAB_TURN_TIMEOUT_SEC` | `120` | 턴 결과 대기 |
 | `DAB_DEV_GUILD_ID` | — | 길드 단위 슬래시 즉시 등록 (없으면 global, 최대 ~1시간) |
+| `DAB_HOME` | `~/.discord-agent-bridge` | 설정·상태 루트 |
+| `DAB_CAPS` | (config) | 렌더 기능 오버라이드(`toolThreads` / `fileDiff` / `usagePanel` / `streaming`), 전역·서버 설정보다 우선 |
 | `DAB_CLAUDE_SIDECAR_CMD` | auto | Claude 사이드카 스폰 명령 오버라이드 |
 | `DAB_RENDER` | (config) | `0` PNG 강제 끔 · `1` Chrome 있으면 켬 |
 | `DAB_MERMAID_JS` | auto | `mermaid.min.js` 경로 |
 | `DAB_CHROMIUM_CACHE` | `~/.dab/chromium` | 프로비저닝 브라우저 캐시 |
 | `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH` | 시스템 스캔 | Chrome 바이너리 지정 |
-| `CODEX_CMD` | `codex` | Codex CLI 오버라이드 (스모크/디스커버리) |
+| `CODEX_CMD` | `codex` | Codex CLI 오버라이드 (스폰·스모크) |
+| `GROK_CMD` | `grok` | Grok CLI 오버라이드 (스폰·스모크) |
 
 ### CLI (`dab`)
 
