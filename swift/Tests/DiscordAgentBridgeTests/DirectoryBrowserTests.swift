@@ -314,20 +314,23 @@ struct DirectoryBrowserTests {
         #expect(buttonIds.contains("dir:create"))
     }
 
-    @Test func renderFollowsActiveLocale() throws {
+    /// Locale is pinned to THIS test's task (`I18n.withLocale`), never set globally.
+    /// `I18n.setLocale` mutates process-wide state that leaks into the suites running
+    /// in parallel, which made Korean-asserting tests fail intermittently (C30).
+    /// Do not switch this back to `I18n.setLocale`.
+    @Test func renderFollowsActiveLocale() async throws {
         let root = try makeTempTree()
         defer { cleanup(root) }
-        let prevLocale = I18n.getLocale()
-        defer { I18n.setLocale(prevLocale) }
         let b = DirectoryBrowser(allowedRoots: [root.path], startPath: root.path)
 
-        I18n.setLocale(.ko)
-        #expect(b.render().title == "1/5단계 · 폴더")
-        #expect(b.render().description.contains("현재 위치"))
-
-        I18n.setLocale(.en)
-        #expect(b.render().title == "Step 1/5 · Folder")
-        #expect(b.render().description.contains("Current location"))
+        await I18n.withLocale(.ko) {
+            #expect(b.render().title == "1/5단계 · 폴더")
+            #expect(b.render().description.contains("현재 위치"))
+        }
+        await I18n.withLocale(.en) {
+            #expect(b.render().title == "Step 1/5 · Folder")
+            #expect(b.render().description.contains("Current location"))
+        }
     }
 }
 

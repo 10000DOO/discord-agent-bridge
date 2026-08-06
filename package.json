@@ -1,6 +1,6 @@
 {
   "name": "discord-agent-bridge",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, and more — per channel. Role-based access, multi-server, extensible.",
   "type": "module",
   "scripts": {
@@ -16,7 +16,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.222",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.223",
     "mermaid": "^11.16.0",
     "zod": "^4.4.3"
   },

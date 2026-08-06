@@ -94,7 +94,8 @@ struct RunCommandSpecTests {
         #expect(spec.options.count == 1)
         #expect(spec.subcommands.isEmpty)
         let option = spec.options.first
-        #expect(option?.name == "command")
+        // `name`, not `command` — `/command command:…` stutters in Discord's UI.
+        #expect(option?.name == "name")
         #expect(option?.autocomplete == true)
         #expect(option?.required == true)
         // Autocomplete and static choices are mutually exclusive on Discord (stringOption drops

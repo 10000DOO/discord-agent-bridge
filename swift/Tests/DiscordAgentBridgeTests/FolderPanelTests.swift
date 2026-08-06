@@ -117,13 +117,17 @@ struct FolderPanelTests {
         }
     }
 
-    @Test func folderPanelPromptFollowsActiveLocale() {
-        let prevLocale = I18n.getLocale()
-        defer { I18n.setLocale(prevLocale) }
-        I18n.setLocale(.ko)
-        #expect(folderPanelPrompt == "Discord 세션 프로젝트 폴더 선택")
-        I18n.setLocale(.en)
-        #expect(folderPanelPrompt == "Choose the project folder for the Discord session")
+    /// Locale is pinned to THIS test's task (`I18n.withLocale`), never set globally.
+    /// `I18n.setLocale` mutates process-wide state that leaks into the suites running
+    /// in parallel, which made Korean-asserting tests fail intermittently (C30).
+    /// Do not switch this back to `I18n.setLocale`.
+    @Test func folderPanelPromptFollowsActiveLocale() async {
+        await I18n.withLocale(.ko) {
+            #expect(folderPanelPrompt == "Discord 세션 프로젝트 폴더 선택")
+        }
+        await I18n.withLocale(.en) {
+            #expect(folderPanelPrompt == "Choose the project folder for the Discord session")
+        }
     }
 
     @Test func folderPanelBusyIsOneAtATime() async {

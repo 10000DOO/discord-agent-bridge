@@ -298,8 +298,10 @@ public func runCommandSpec() -> SlashCommandSpec {
         name: "command",
         description: LocalizedText(ko: "이 채널의 백엔드가 지원하는 명령을 실행합니다", en: "Run a slash command this channel's backend supports"),
         options: [
+            // `name`, not `command`: Discord renders the option label next to the command, and
+            // `/command command:context` stutters. `/command name:context` reads as a sentence.
             .init(
-                name: "command",
+                name: "name",
                 description: LocalizedText(ko: "실행할 명령", en: "Command to run"),
                 required: true,
                 choices: [],

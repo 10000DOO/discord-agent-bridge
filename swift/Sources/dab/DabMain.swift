@@ -1401,7 +1401,7 @@ struct EventHandler: GatewayEventHandler {
             // C7: showModal is this interaction's ONLY ack — no defer above it, and no backend or
             // store lookup either (§3-5-4, dir:create precedent at DabMain.swift:2163). The
             // "still available?" check (C8) waits for the submit, where a defer IS allowed.
-            let runValue = (try? cmd.requireOption(named: "command").requireString()) ?? ""
+            let runValue = (try? cmd.requireOption(named: "name").requireString()) ?? ""
             switch slashRunOpenDecision(commandValue: runValue) {
             case .noSession:
                 try await respondEphemeral(payload, I18n.t("run.noSession"))

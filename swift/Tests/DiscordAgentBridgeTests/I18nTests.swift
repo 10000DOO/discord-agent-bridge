@@ -3,12 +3,12 @@ import Testing
 
 @Suite("I18n", .serialized)
 struct I18nTests {
-    /// Reset process locale after each test (shared mutable active locale).
-    private func withLocale(_ locale: AppLocale, _ body: () -> Void) {
-        let prev = I18n.getLocale()
-        I18n.setLocale(locale)
-        defer { I18n.setLocale(prev) }
-        body()
+    /// Pin the locale to the calling test's task only. This used to swap the process-wide
+    /// locale via `I18n.setLocale` and restore it afterwards, but the suites of this package
+    /// run in parallel, so every other suite saw English for the duration and Korean-asserting
+    /// tests failed intermittently (C30). Do not switch this back to `I18n.setLocale`.
+    private func withLocale(_ locale: AppLocale, _ body: () -> Void) async {
+        await I18n.withLocale(locale) { body() }
     }
 
     @Test func defaultsToKorean() {
@@ -19,8 +19,8 @@ struct I18nTests {
         #expect(I18n.t("auth.denied", ["reason": "DM"]) == "권한이 없습니다: DM")
     }
 
-    @Test func englishOverridesMajorKeys() {
-        withLocale(.en) {
+    @Test func englishOverridesMajorKeys() async {
+        await withLocale(.en) {
             #expect(I18n.t("stream.responding") == "Responding…")
             #expect(I18n.t("stream.thinking") == "Thinking…")
             #expect(I18n.t("stream.responded") == "Response complete")
@@ -40,20 +40,20 @@ struct I18nTests {
         }
     }
 
-    @Test func fallsBackToKeyForMissing() {
-        withLocale(.ko) {
+    @Test func fallsBackToKeyForMissing() async {
+        await withLocale(.ko) {
             #expect(I18n.t("this.key.does.not.exist") == "this.key.does.not.exist")
         }
     }
 
-    @Test func interpolatesPlaceholders() {
-        withLocale(.ko) {
+    @Test func interpolatesPlaceholders() async {
+        await withLocale(.ko) {
             #expect(
                 I18n.t("cmd.mode.switched", ["backend": "claude"])
                     == "백엔드를 claude 로 바꿨어요."
             )
         }
-        withLocale(.en) {
+        await withLocale(.en) {
             #expect(
                 I18n.t("cmd.mode.switched", ["backend": "claude"])
                     == "Switched backend to claude."
@@ -61,8 +61,8 @@ struct I18nTests {
         }
     }
 
-    @Test func leavesUnknownPlaceholderVisible() {
-        withLocale(.ko) {
+    @Test func leavesUnknownPlaceholderVisible() async {
+        await withLocale(.ko) {
             #expect(I18n.t("stream.thought") == "{sec}초 동안 생각함")
         }
     }
@@ -91,29 +91,42 @@ struct I18nTests {
         #expect(I18n.resolveLocale("ko") == .ko)
     }
 
-    @Test func missingGuildLocaleKeepsGlobalFallback() {
-        withLocale(.en) {
+    @Test func missingGuildLocaleKeepsGlobalFallback() async {
+        await withLocale(.en) {
             #expect(I18n.resolveServerLocale(nil) == .en)
             #expect(I18n.resolveServerLocale("") == .en)
             #expect(I18n.resolveServerLocale("ko") == .ko)
         }
     }
 
+    /// The only test here that writes the process-wide locale, because landing in the
+    /// process-wide locale IS the contract of `applyFromConfigLocale` — a task-local
+    /// `I18n.withLocale` would shadow the very write under test, and asserting only
+    /// values that resolve back to `ko` would still pass if `setLocale` broke for
+    /// non-default locales.
+    ///
+    /// The two reads are CAPTURED here and asserted after the locale is back to `ko`, on
+    /// purpose: `#expect` does non-trivial recording work, so evaluating it while the
+    /// global still says `en` widens the window in which the suites running in parallel
+    /// observe English and their Korean assertions fail (C30). Keep `#expect` out of the
+    /// window — do not "tidy" these captures back into inline assertions.
     @Test func applyFromConfigLocale() {
         I18n.applyFromConfigLocale("en")
-        #expect(I18n.getLocale() == .en)
+        let afterEn = I18n.getLocale()
         I18n.applyFromConfigLocale("ko")
-        #expect(I18n.getLocale() == .ko)
+        let afterKo = I18n.getLocale()
+        #expect(afterEn == .en)
+        #expect(afterKo == .ko)
     }
 
-    @Test func modeUnavailableInterpolatesBackend() {
-        withLocale(.ko) {
+    @Test func modeUnavailableInterpolatesBackend() async {
+        await withLocale(.ko) {
             #expect(
                 I18n.t("cmd.mode.unavailable", ["backend": "grok"])
                     == "`grok` 백엔드는 사용할 수 없어요. 현재 세션은 그대로 유지했어요."
             )
         }
-        withLocale(.en) {
+        await withLocale(.en) {
             #expect(
                 I18n.t("cmd.mode.unavailable", ["backend": "grok"])
                     == "The `grok` backend is unavailable. Kept the current session unchanged."
@@ -141,8 +154,8 @@ struct I18nTests {
         #expect(I18n.t("wizard.step.folder", locale: .en) == "Step 1/5 · Folder")
     }
 
-    @Test func labelEnumsFollowActiveLocale() {
-        withLocale(.en) {
+    @Test func labelEnumsFollowActiveLocale() async {
+        await withLocale(.en) {
             #expect(StreamEmbedLabels.thinking == "Thinking…")
             #expect(StreamEmbedLabels.responding == "Responding…")
             #expect(InterruptLabels.button == "⏹️ Stop")
@@ -152,7 +165,7 @@ struct I18nTests {
             #expect(UpdateLabels.denied.contains("Administrator"))
             #expect(ToolThreadLabels.workThread == "Work log")
         }
-        withLocale(.ko) {
+        await withLocale(.ko) {
             #expect(StreamEmbedLabels.thinking == "생각 중…")
             #expect(formatStreamEmbed(phase: .thinking).title == "생각 중…")
             #expect(formatStreamEmbed().title == "응답 중…")

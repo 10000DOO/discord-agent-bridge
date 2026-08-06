@@ -346,20 +346,23 @@ struct ChannelWizardTests {
         #expect(ids2.contains("wizard.back"))
     }
 
+    /// Locale is pinned to THIS test's task (`I18n.withLocale`), never set globally.
+    /// `I18n.setLocale` mutates process-wide state that leaks into the suites running
+    /// in parallel, which made Korean-asserting tests fail intermittently (C30).
+    /// Do not switch this back to `I18n.setLocale`.
     @Test func renderFollowsActiveLocaleOnBackendStep() async throws {
         let (w, root) = try makeWizard()
         defer { try? FileManager.default.removeItem(at: root) }
-        let prevLocale = I18n.getLocale()
-        defer { I18n.setLocale(prevLocale) }
         await pastFolder(w)
 
-        I18n.setLocale(.ko)
-        #expect(w.render().title == "세션 시작")
-        #expect(w.render().description == "2/5단계 · 백엔드를 선택하고 \"다음\"을 누르세요.")
-
-        I18n.setLocale(.en)
-        #expect(w.render().title == "Start session")
-        #expect(w.render().description == "Step 2/5 · Pick a backend and press \"Next\".")
+        await I18n.withLocale(.ko) {
+            #expect(w.render().title == "세션 시작")
+            #expect(w.render().description == "2/5단계 · 백엔드를 선택하고 \"다음\"을 누르세요.")
+        }
+        await I18n.withLocale(.en) {
+            #expect(w.render().title == "Start session")
+            #expect(w.render().description == "Step 2/5 · Pick a backend and press \"Next\".")
+        }
     }
 
     @Test func isWizardCustomIdRecognizesFolderAndSelectIds() {

@@ -272,9 +272,9 @@ struct ConfigPanelTests {
         #expect(server?.defaults?.permissionMode == "acceptEdits")
     }
 
+    /// No locale guard needed: the panel's locale autosave writes config files only,
+    /// it never touches the process-wide `I18n` locale.
     @Test func autosaveLocaleWritesOnlyThisGuildConfig() async throws {
-        let prevLocale = I18n.getLocale()
-        defer { I18n.setLocale(prevLocale) }
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
         try await seedGlobal(store)
@@ -306,18 +306,22 @@ struct ConfigPanelTests {
         #expect(global.locale == "ko")
     }
 
+    /// Locale is pinned to THIS test's task (`I18n.withLocale`), never set globally.
+    /// `I18n.setLocale` mutates process-wide state that leaks into the suites running
+    /// in parallel, which made Korean-asserting tests fail intermittently (C30).
+    /// Do not switch this back to `I18n.setLocale`.
     @Test func viewTitleFollowsActiveLocale() async throws {
-        let prevLocale = I18n.getLocale()
-        defer { I18n.setLocale(prevLocale) }
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = ConfigStore(baseDir: dir)
         try await seedGlobal(store)
         let panel = try await makePanel(store: store)
 
-        I18n.setLocale(.ko)
-        #expect(panel.render().title == "역할·기본값 설정")
-        I18n.setLocale(.en)
-        #expect(panel.render().title == "Roles & defaults settings")
+        await I18n.withLocale(.ko) {
+            #expect(panel.render().title == "역할·기본값 설정")
+        }
+        await I18n.withLocale(.en) {
+            #expect(panel.render().title == "Roles & defaults settings")
+        }
     }
 
     @Test func localeLabelKoEn() {
