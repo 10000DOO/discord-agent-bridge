@@ -273,7 +273,7 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 
 ### Task panel (pinned)
 
-All three backends publish a task list as they work (Claude `TodoWrite`, Codex `update_plan`, Grok ACP plan updates). That list becomes **one pinned message per channel** — a checklist with `✓` done / `▶` in progress / `•` pending, plus a `done/total` count that turns green when everything is finished. Open it from the channel's 📌 at any time instead of scrolling back.
+All three backends publish a task list as they work (Claude `TaskCreate`/`TaskUpdate` — or `TodoWrite` on older CLIs, Codex `update_plan`, Grok ACP plan updates). That list becomes **one pinned message per channel** — a checklist with `✓` done / `▶` in progress / `•` pending, plus a `done/total` count that turns green when everything is finished. Open it from the channel's 📌 at any time instead of scrolling back.
 
 It is pinned **once** and edited from then on: Discord posts a system line on every pin and caps a channel at 50 pins, so re-pinning each update would spam the channel. A turn that publishes no list leaves the previous one standing; `/clear`, `/stop`, and unbinding remove the panel. After a restart the bot re-attaches to the panel already pinned in the channel rather than pinning a second one.
 

@@ -51,6 +51,50 @@ import Foundation
         #expect(parseTaskPanelInput(name: "TodoWrite", input: blank) == nil)
     }
 
+    @Test func parsesClaudeTaskCreateAndUpdate() {
+        // claude-agent-sdk 0.3.223 replaced the whole-list TodoWrite with these two.
+        let create = JSONValue.object([
+            "subject": .string("액터 추가"),
+            "description": .string("TaskPanelHost 를 만든다"),
+            "activeForm": .string("액터 추가 중"),
+        ])
+        #expect(parseTaskCreateSubject(name: "TaskCreate", input: create) == "액터 추가")
+        #expect(parseTaskCreateSubject(name: "TaskUpdate", input: create) == nil)
+        #expect(parseTaskCreateSubject(name: "TaskCreate", input: .object(["subject": .string("  ")])) == nil)
+
+        let update = parseTaskUpdateInput(
+            name: "TaskUpdate",
+            input: .object(["taskId": .string("3"), "status": .string("in_progress")])
+        )
+        #expect(update?.taskId == "3")
+        #expect(update?.status == .inProgress)
+        #expect(update?.deleted == false)
+
+        let deletion = parseTaskUpdateInput(
+            name: "TaskUpdate",
+            input: .object(["taskId": .string("3"), "status": .string("deleted")])
+        )
+        #expect(deletion?.deleted == true)
+        #expect(deletion?.status == nil, "deleted is not a display state")
+    }
+
+    @Test func ignoresTaskUpdatesThatChangeNothingVisible() {
+        // Owner/blocker/metadata edits must not force a panel redraw.
+        #expect(parseTaskUpdateInput(name: "TaskUpdate", input: .object([
+            "taskId": .string("3"), "owner": .string("someone"),
+        ])) == nil)
+        #expect(parseTaskUpdateInput(name: "TaskUpdate", input: .object(["status": .string("completed")])) == nil)
+    }
+
+    @Test func readsTaskIdFromTheCreateResult() {
+        // Measured shape (0.3.223) — a sentence, not JSON.
+        #expect(parseTaskCreateResultId("Task #1 created successfully: 형식 확인용 임시 작업") == "1")
+        #expect(parseTaskCreateResultId("Task #42 created successfully: x") == "42")
+        // The SDK's declared type is JSON, so a future CLI switching to it still works.
+        #expect(parseTaskCreateResultId("{\"task\":{\"id\":\"7\",\"subject\":\"x\"}}") == "7")
+        #expect(parseTaskCreateResultId("no id here") == nil)
+    }
+
     @Test func parsesGrokPlanUpdate() {
         let params = JSONValue.object([
             "update": .object([
@@ -269,6 +313,77 @@ private final class FakePanelSink: @unchecked Sendable {
         try await settle()
         #expect(fake.calls.count == 2)
         #expect(fake.calls.allSatisfy { $0.messageId == nil })
+    }
+
+    @Test func claudeIncrementalTasksBuildAndAdvanceTheList() async throws {
+        let fake = FakePanelSink()
+        let host = await makeHost(fake)
+        await host.noteTaskCreated(channelId: "c1", toolUseId: "tu-1", subject: "구조 파악")
+        await host.noteTaskResult(channelId: "c1", toolUseId: "tu-1", content: "Task #1 created successfully: 구조 파악")
+        await host.noteTaskCreated(channelId: "c1", toolUseId: "tu-2", subject: "구현")
+        await host.noteTaskResult(channelId: "c1", toolUseId: "tu-2", content: "Task #2 created successfully: 구현")
+        try await settle()
+        #expect(fake.calls.last?.description == "• 구조 파악\n• 구현")
+
+        await host.noteTaskUpdated(channelId: "c1", update: TaskPanelUpdate(taskId: "1", status: .completed))
+        await host.noteTaskUpdated(channelId: "c1", update: TaskPanelUpdate(taskId: "2", status: .inProgress))
+        try await settle()
+        #expect(fake.calls.last?.description == "✓ 구조 파악\n▶ 구현")
+        #expect(fake.calls.last?.title.contains("1/2") == true)
+    }
+
+    @Test func deletedTaskLeavesTheList() async throws {
+        let fake = FakePanelSink()
+        let host = await makeHost(fake)
+        await host.noteTaskCreated(channelId: "c1", toolUseId: "tu-1", subject: "남을 것")
+        await host.noteTaskResult(channelId: "c1", toolUseId: "tu-1", content: "Task #1 created successfully: 남을 것")
+        await host.noteTaskCreated(channelId: "c1", toolUseId: "tu-2", subject: "지울 것")
+        await host.noteTaskResult(channelId: "c1", toolUseId: "tu-2", content: "Task #2 created successfully: 지울 것")
+        try await settle()
+        await host.noteTaskUpdated(channelId: "c1", update: TaskPanelUpdate(taskId: "2", deleted: true))
+        try await settle()
+        #expect(fake.calls.last?.description == "• 남을 것")
+    }
+
+    @Test func deletingEveryTaskKeepsTheLastDrawnPanel() async throws {
+        // An empty embed body is not a valid message, so the panel holds its previous content.
+        let fake = FakePanelSink()
+        let host = await makeHost(fake)
+        await host.noteTaskCreated(channelId: "c1", toolUseId: "tu-1", subject: "하나")
+        await host.noteTaskResult(channelId: "c1", toolUseId: "tu-1", content: "Task #1 created successfully: 하나")
+        try await settle()
+        let before = fake.calls.count
+        await host.noteTaskUpdated(channelId: "c1", update: TaskPanelUpdate(taskId: "1", deleted: true))
+        try await settle()
+        #expect(fake.calls.count == before)
+    }
+
+    @Test func unknownTaskIdIsAdoptedOnlyWhenItCarriesASubject() async throws {
+        // After a restart the ids in flight were never seen created.
+        let fake = FakePanelSink()
+        let host = await makeHost(fake)
+        await host.noteTaskUpdated(channelId: "c1", update: TaskPanelUpdate(taskId: "9", status: .inProgress))
+        try await settle()
+        #expect(fake.calls.isEmpty)
+        await host.noteTaskUpdated(
+            channelId: "c1",
+            update: TaskPanelUpdate(taskId: "9", status: .inProgress, subject: "복구된 작업")
+        )
+        try await settle()
+        #expect(fake.calls.last?.description == "▶ 복구된 작업")
+    }
+
+    @Test func unparsableCreateResultStillLeavesTheTaskVisible() async throws {
+        let fake = FakePanelSink()
+        let host = await makeHost(fake)
+        await host.noteTaskCreated(channelId: "c1", toolUseId: "tu-1", subject: "보이긴 함")
+        await host.noteTaskResult(channelId: "c1", toolUseId: "tu-1", content: "unexpected format")
+        try await settle()
+        #expect(fake.calls.last?.description == "• 보이긴 함")
+        // Without an id its later status changes can't be followed — but nothing breaks.
+        await host.noteTaskUpdated(channelId: "c1", update: TaskPanelUpdate(taskId: "1", status: .completed))
+        try await settle()
+        #expect(fake.calls.last?.description == "• 보이긴 함")
     }
 
     @Test func channelsAreIndependent() async throws {

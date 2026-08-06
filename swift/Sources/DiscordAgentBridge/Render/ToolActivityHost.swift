@@ -65,10 +65,7 @@ public actor ToolActivityHost {
         // Task checklist panel (WO-3): a task list arrives as an ordinary tool call, and the panel
         // is not a tool renderer — so it runs before, and independently of, the caps gate below.
         // Someone who turned tool threads off still wants to see what the agent is working through.
-        if case .toolUse(_, let name, let input, _) = event,
-           let items = parseTaskPanelInput(name: name, input: input) {
-            await TaskPanelHost.shared.noteItems(channelId: channelId, items: items)
-        }
+        await noteTaskPanel(channelId: channelId, event: event)
         let caps = capsByChannel[channelId] ?? .allEnabled
         if !caps.toolThreads && !caps.fileDiff { return }
         switch event {
@@ -109,6 +106,28 @@ public actor ToolActivityHost {
             state.registry.reset()
             state.toolThread.resetTurn()
             state.diff.resetTurn()
+        }
+    }
+
+    /// Route a tool event into the task panel. Three shapes reach us: a whole list in one call
+    /// (TodoWrite / update_plan), and Claude's incremental `TaskCreate` + `TaskUpdate`. The create's
+    /// task id only exists in its result, so results are inspected too — the host ignores any that
+    /// don't belong to a row it is waiting on.
+    private func noteTaskPanel(channelId: String, event: AgentEvent) async {
+        switch event {
+        case .toolUse(let id, let name, let input, _):
+            if let items = parseTaskPanelInput(name: name, input: input) {
+                await TaskPanelHost.shared.noteItems(channelId: channelId, items: items)
+            } else if let subject = parseTaskCreateSubject(name: name, input: input) {
+                await TaskPanelHost.shared.noteTaskCreated(channelId: channelId, toolUseId: id, subject: subject)
+            } else if let update = parseTaskUpdateInput(name: name, input: input) {
+                await TaskPanelHost.shared.noteTaskUpdated(channelId: channelId, update: update)
+            }
+        case .toolResult(let id, let ok, let content, _):
+            guard ok, !content.isEmpty else { return }
+            await TaskPanelHost.shared.noteTaskResult(channelId: channelId, toolUseId: id, content: content)
+        default:
+            break
         }
     }
 

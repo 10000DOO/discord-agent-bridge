@@ -29,8 +29,17 @@ public actor TaskPanelHost {
     private var remover: TaskPanelRemover?
     private var states: [String: ChannelState] = [:]
 
+    /// One row of the panel. Whole-list backends (TodoWrite / update_plan / grok plan) leave both
+    /// keys nil; Claude's incremental tools need them to find the row a later call refers to.
+    private struct Entry: Equatable {
+        /// Set while a `TaskCreate` is in flight — its result carries the task id.
+        var toolUseId: String?
+        var taskId: String?
+        var item: TaskPanelItem
+    }
+
     private struct ChannelState {
-        var items: [TaskPanelItem] = []
+        var entries: [Entry] = []
         var messageId: String?
         var lastFlush: Date?
         var flushTask: Task<Void, Never>?
@@ -54,14 +63,66 @@ public actor TaskPanelHost {
         self.remover = remover
     }
 
-    /// Replace this channel's checklist. Every backend publishes the whole list on each update,
-    /// so this is a wholesale replacement, never a merge.
+    /// Replace this channel's checklist wholesale (TodoWrite / update_plan / grok plan — each of
+    /// those republishes the entire list on every call).
     public func noteItems(channelId: String, items: [TaskPanelItem]) {
         guard !items.isEmpty else { return }
         var state = states[channelId] ?? ChannelState()
-        guard state.items != items else { return }
-        state.items = items
+        let entries = items.map { Entry(item: $0) }
+        guard state.entries != entries else { return }
+        state.entries = entries
         states[channelId] = state
+        scheduleFlush(channelId: channelId)
+    }
+
+    /// A `TaskCreate` call: append one pending row. `toolUseId` is remembered so the task id from
+    /// the tool's result can be attached to this row (`noteTaskResult`).
+    public func noteTaskCreated(channelId: String, toolUseId: String, subject: String) {
+        var state = states[channelId] ?? ChannelState()
+        state.entries.append(Entry(
+            toolUseId: toolUseId,
+            item: TaskPanelItem(text: subject, status: .pending)
+        ))
+        states[channelId] = state
+        scheduleFlush(channelId: channelId)
+    }
+
+    /// Link a created row to its task id. Display is unchanged, so this never triggers a redraw.
+    public func noteTaskResult(channelId: String, toolUseId: String, content: String) {
+        guard var state = states[channelId],
+              let index = state.entries.firstIndex(where: { $0.toolUseId == toolUseId }),
+              let taskId = parseTaskCreateResultId(content)
+        else { return }
+        state.entries[index].taskId = taskId
+        state.entries[index].toolUseId = nil
+        states[channelId] = state
+    }
+
+    /// A `TaskUpdate` call: change (or remove) the row with that task id.
+    /// An id we never saw created — a restart mid-session, or tasks that predate this panel — is
+    /// adopted when the update carries a subject, and otherwise ignored.
+    public func noteTaskUpdated(channelId: String, update: TaskPanelUpdate) {
+        var state = states[channelId] ?? ChannelState()
+        guard let index = state.entries.firstIndex(where: { $0.taskId == update.taskId }) else {
+            guard !update.deleted, let subject = update.subject else { return }
+            state.entries.append(Entry(
+                taskId: update.taskId,
+                item: TaskPanelItem(text: subject, status: update.status ?? .pending)
+            ))
+            states[channelId] = state
+            scheduleFlush(channelId: channelId)
+            return
+        }
+        if update.deleted {
+            state.entries.remove(at: index)
+        } else {
+            if let status = update.status { state.entries[index].item.status = status }
+            if let subject = update.subject { state.entries[index].item.text = subject }
+        }
+        states[channelId] = state
+        // Removing the last row leaves nothing to draw; the panel keeps its previous content until
+        // a new task arrives (an empty embed body is not a valid message).
+        guard !state.entries.isEmpty else { return }
         scheduleFlush(channelId: channelId)
     }
 
@@ -113,7 +174,7 @@ public actor TaskPanelHost {
     }
 
     private func flushNow(channelId: String) async {
-        guard var state = states[channelId], let sink else { return }
+        guard var state = states[channelId], let sink, !state.entries.isEmpty else { return }
         if state.sending {
             // Fold this flush into the in-flight one instead of racing it.
             state.dirty = true
@@ -125,7 +186,7 @@ public actor TaskPanelHost {
         state.lastFlush = Date()
         states[channelId] = state
 
-        let spec = formatTaskPanel(items: state.items)
+        let spec = formatTaskPanel(items: state.entries.map(\.item))
         let posted = await sink(channelId, state.messageId, spec)
 
         // dispose() may have run while the sink was in flight. Its own removal saw no message id

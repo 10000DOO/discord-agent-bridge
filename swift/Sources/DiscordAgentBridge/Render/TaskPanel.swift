@@ -48,9 +48,17 @@ public struct TaskPanelSpec: Sendable, Equatable {
     }
 }
 
-/// Tool names whose input carries a task list. Backend-specific, deliberately not extensible:
-/// a name that is not here falls through to the normal tool rendering untouched.
+/// Tool names whose input carries a WHOLE task list, replaced on every call.
+/// `TodoWrite` is Claude's older shape; `update_plan` is Codex's. A name that is not here falls
+/// through to the normal tool rendering untouched.
 public let taskPanelTools: Set<String> = ["TodoWrite", "update_plan"]
+
+/// Claude's current task tools (measured on claude-agent-sdk 0.3.223): instead of resending the
+/// whole list, `TaskCreate` adds one task and `TaskUpdate` mutates one by id. The id is not in
+/// either input — it only comes back in `TaskCreate`'s result — so the panel has to keep the list
+/// itself and link ids as results arrive (`TaskPanelHost`).
+public let taskCreateToolName = "TaskCreate"
+public let taskUpdateToolName = "TaskUpdate"
 
 /// Discord embed description limit, shared with the stream embed.
 let taskPanelDescLimit = streamEmbedDescLimit
@@ -70,6 +78,67 @@ public func parseTaskPanelInput(name: String, input: JSONValue) -> [TaskPanelIte
     guard let entries else { return nil }
     let items = taskPanelItems(entries: entries, textKeys: ["content", "step"])
     return items.isEmpty ? nil : items
+}
+
+/// One task's title from a `TaskCreate` call. `nil` for any other tool or a blank subject.
+public func parseTaskCreateSubject(name: String, input: JSONValue) -> String? {
+    guard name == taskCreateToolName, let obj = input.objectValue else { return nil }
+    let subject = (obj["subject"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return subject.isEmpty ? nil : subject
+}
+
+/// A `TaskUpdate` call reduced to what the panel shows. `status: "deleted"` is not a display state,
+/// so it is carried separately rather than smuggled into `TaskPanelStatus`.
+public struct TaskPanelUpdate: Sendable, Equatable {
+    public var taskId: String
+    public var status: TaskPanelStatus?
+    public var deleted: Bool
+    public var subject: String?
+
+    public init(taskId: String, status: TaskPanelStatus? = nil, deleted: Bool = false, subject: String? = nil) {
+        self.taskId = taskId
+        self.status = status
+        self.deleted = deleted
+        self.subject = subject
+    }
+}
+
+/// Parse a `TaskUpdate` call. `nil` for any other tool, a blank id, or an update that changes
+/// nothing the panel displays (owner, blockers, metadata — those must not force a redraw).
+public func parseTaskUpdateInput(name: String, input: JSONValue) -> TaskPanelUpdate? {
+    guard name == taskUpdateToolName, let obj = input.objectValue else { return nil }
+    let taskId = (obj["taskId"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !taskId.isEmpty else { return nil }
+    let rawStatus = obj["status"]?.stringValue
+    let subject = obj["subject"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let update = TaskPanelUpdate(
+        taskId: taskId,
+        status: rawStatus.flatMap { TaskPanelStatus(rawValue: $0) },
+        deleted: rawStatus == "deleted",
+        subject: (subject?.isEmpty ?? true) ? nil : subject
+    )
+    guard update.status != nil || update.deleted || update.subject != nil else { return nil }
+    return update
+}
+
+/// `Task #12 created successfully: <subject>` — the measured shape of a `TaskCreate` tool result
+/// (claude-agent-sdk 0.3.223). The declared SDK type is `{ task: { id, subject } }`, so a future CLI
+/// may send JSON instead; both are accepted and anything else yields nil (the panel then keeps
+/// showing the task, it just can't follow later status changes for it).
+public func parseTaskCreateResultId(_ content: String) -> String? {
+    if let hash = content.firstIndex(of: "#") {
+        let digits = content[content.index(after: hash)...].prefix { $0.isNumber }
+        if !digits.isEmpty { return String(digits) }
+    }
+    guard let data = content.data(using: .utf8),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    let task = root["task"] as? [String: Any]
+    if let id = task?["id"] ?? root["id"] {
+        let text = String(describing: id)
+        return text.isEmpty ? nil : text
+    }
+    return nil
 }
 
 /// Parse a task list out of a grok ACP `session/update` notification. `nil` when this update is
