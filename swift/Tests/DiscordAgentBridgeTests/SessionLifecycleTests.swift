@@ -1375,7 +1375,7 @@ struct SessionLifecycleCloseOrchestrationSetTests {
         #expect(await configStore.loadServerConfig(guildId: "g")?.orchestration?["orc-1"]?.categoryId == "cat-1")
     }
 
-    // `/dab-clear` on a lead: modules keep their channel + binding but lose their context, and a
+    // `/clear` on a lead: modules keep their channel + binding but lose their context, and a
     // module belonging to another lead (or an archived one) is left alone.
     @Test func clearOrchestrationModulesWipesContextButKeepsBindings() async throws {
         let store = freshTempStore()

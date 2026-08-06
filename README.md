@@ -16,7 +16,7 @@ The product is a **Swift** binary (`dab`). Claude Code still uses a thin **Node 
 - 📱 **Not tied to your desk.** Start a task from Discord on your phone — streaming output, tool logs, and permission prompts land in the channel.
 - 🗂️ **One channel = one project = one session.** Each channel binds its own folder, backend, model, effort, and permission mode.
 - 👥 **Team-friendly.** Anyone in the channel can watch the session. A 3-tier role system (admin / execute / read-only) controls who can run things.
-- 🔀 **Claude ⇄ Codex ⇄ Grok (and custom) on the fly.** Switch backends with `/dab-mode` when a session is bound.
+- 🔀 **Claude ⇄ Codex ⇄ Grok (and custom) on the fly.** Switch backends with `/mode` when a session is bound.
 - ⚙️ **Same power as the terminal.** Project `.claude/` / `.codex/` configs are used as-is — subagents, skills, hooks, MCP, and plugin commands behave like the CLI.
 - 💾 **Session presets.** Save backend/model/effort/perm combos per guild and restart sessions in two steps (folder → preset).
 - 🖼 **Rich answers.** GFM tables and Mermaid diagrams can render as PNG; tool runs open work threads with diffs; usage panels show Claude / Codex / Grok limits.
@@ -98,7 +98,7 @@ brew upgrade 10000DOO/discord-agent-bridge/dab
 brew services restart dab   # only needed if running as a service — brew upgrade alone doesn't restart it
 ```
 
-The in-Discord `/dab-update` command (see Features → Auto-update below) does **not** work for a Homebrew install — it looks for a `swift/scripts/install.sh` checkout, which a Homebrew install doesn't have. Always use `brew upgrade` for this install method.
+The in-Discord `/update` command (see Features → Auto-update below) does **not** work for a Homebrew install — it looks for a `swift/scripts/install.sh` checkout, which a Homebrew install doesn't have. Always use `brew upgrade` for this install method.
 
 > ⚠️ **Don't run two instances with the same bot token at the same time.** `dab` (foreground, `brew services`, or the manual/from-source install below) all read the same `DISCORD_BOT_TOKEN`. Starting a second instance with that token opens a second gateway connection to the same bot account — it won't crash, it'll just run alongside the first one and cause duplicate/conflicting replies. Pick exactly one install method per bot token.
 
@@ -136,7 +136,7 @@ dab service status    # or: ~/.dab/bin/dab service status
 dab service restart
 ```
 
-Update: from Discord, `/dab-update` checks the release registry and rebuilds/restarts automatically (Features → Auto-update below). To do it manually instead:
+Update: from Discord, `/update` checks the release registry and rebuilds/restarts automatically (Features → Auto-update below). To do it manually instead:
 
 ```bash
 cd discord-agent-bridge   # repo root
@@ -159,7 +159,7 @@ systemctl --user restart discord-agent-bridge
 systemctl --user status discord-agent-bridge
 ```
 
-Update: `git pull && bash swift/scripts/install-linux.sh` (or `/dab-update` from Discord).
+Update: `git pull && bash swift/scripts/install-linux.sh` (or `/update` from Discord).
 
 Uninstall: `bash swift/scripts/uninstall-linux.sh`
 
@@ -171,7 +171,7 @@ powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
 schtasks /Run /TN discord-agent-bridge
 ```
 
-Update: `git pull` then re-run `install-windows.ps1` (or `/dab-update` from Discord).
+Update: `git pull` then re-run `install-windows.ps1` (or `/update` from Discord).
 
 Uninstall: `install-windows.ps1 -Uninstall`
 
@@ -195,11 +195,11 @@ ready: username=<bot> id=<snowflake> app=<application id>
 
 ## Step 3 — Use it in Discord
 
-Typical flow: **`/dab-setup` → `/dab-config` → `/dab-agent start`**, then normal messages in the session channel.
+Typical flow: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel.
 
-1. **`/dab-setup`** (admin) — control channel, sessions category, status channel (reuses existing).
-2. **`/dab-config`** (admin) — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides.
-3. **`/dab-agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/dab-setup`, can create an A4D `<random-id>-<folder>-proj` channel under the sessions category and bind it.
+1. **`/setup`** (admin) — control channel, sessions category, status channel (reuses existing).
+2. **`/config`** (admin) — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides.
+3. **`/agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/setup`, can create an A4D `<random-id>-<folder>-proj` channel under the sessions category and bind it.
 4. In a bound channel, **send normal messages** — plain text goes to the channel's own backend. Message prefixes send one turn to a specific backend instead:
 
 ```text
@@ -215,28 +215,30 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 
 | Command | Who | Description |
 |---|---|---|
-| `/dab-setup` | Admin | Provision control + sessions category + status channel |
-| `/dab-config` | Admin | Roles, defaults, locale, notifications, render, access panel |
-| `/dab-agent start` | Execute+ | Wizard: bind folder / backend / model / effort / perm (+ presets) |
-| `/dab-agent resume` | Execute+ | Re-bind stored session, post status, soft reconnect |
-| `/dab-agent close` | Execute+ | Stop backend and unbind this channel |
-| `/dab-agent stats` | Execute+ | Active bindings + Claude / Codex / Grok usage when available |
-| `/dab-mode backend` | Execute+ | Switch backend (fresh context) |
-| `/dab-mode perm` | Execute+ | Switch permission mode (session kept) |
-| `/dab-model` | Execute+ | Switch model (autocomplete from provider catalog) |
-| `/dab-effort` | Execute+ | Switch reasoning effort (autocomplete) |
-| `/dab-clear` | Execute+ | Fresh conversation, same folder/settings (on an orchestrator channel, its module sessions are cleared too) |
-| `/dab-stop` | Execute+ | Hard-stop this channel’s session |
-| `/dab-stop-all` | Admin | Hard-stop every bound session |
-| `/dab-doc path:` | Execute+ | Share a workspace markdown file into a document thread |
-| `/dab-orchestration` | Execute+ | Turn this session channel into an orchestration lead (Claude only) — see below |
-| `/dab-redmine` | Execute+ | Modal (URL / API key / project) to connect Redmine notifications |
-| `/dab-redmine-issue-select` | Execute+ | Pick a New/Doing Redmine issue from a dropdown and kick a session off it |
-| `/dab-update` | Admin | Check for a newer release and offer install / restart |
+| `/setup` | Admin | Provision control + sessions category + status channel |
+| `/config` | Admin | Roles, defaults, locale, notifications, render, access panel |
+| `/agent start` | Execute+ | Wizard: bind folder / backend / model / effort / perm (+ presets) |
+| `/agent resume` | Execute+ | Re-bind stored session, post status, soft reconnect |
+| `/agent close` | Execute+ | Stop backend and unbind this channel |
+| `/agent stats` | Execute+ | Active bindings + Claude / Codex / Grok usage when available |
+| `/mode backend` | Execute+ | Switch backend (fresh context) |
+| `/mode perm` | Execute+ | Switch permission mode (session kept) |
+| `/model` | Execute+ | Switch model (autocomplete from provider catalog) |
+| `/effort` | Execute+ | Switch reasoning effort (autocomplete) |
+| `/clear` | Execute+ | Fresh conversation, same folder/settings (on an orchestrator channel, its module sessions are cleared too) |
+| `/stop` | Execute+ | Hard-stop this channel’s session |
+| `/stop-all` | Admin | Hard-stop every bound session |
+| `/doc path:` | Execute+ | Share a workspace markdown file into a document thread |
+| `/orchestration` | Execute+ | Turn this session channel into an orchestration lead (Claude only) — see below |
+| `/redmine` | Execute+ | Modal (URL / API key / project) to connect Redmine notifications |
+| `/redmine-issue-select` | Execute+ | Pick a New/Doing Redmine issue from a dropdown and kick a session off it |
+| `/command` | Execute+ | Run a slash command this channel's backend itself advertises (autocomplete + prompt modal) |
+| `/command-list` | Execute+ | List every slash command this channel's backend supports |
+| `/update` | Admin | Check for a newer release and offer install / restart |
 
-Every command is registered with the `dab-` prefix, so it never collides with another bot's `/agent`, `/stop`, or `/config`. `/dab-setup`, `/dab-config`, `/dab-stop-all`, and `/dab-update` need the admin tier (or Discord's Administrator permission); everything else needs execute or higher. `/dab-setup` has a one-time bootstrap exception: on a guild with no admins configured yet, whoever runs it first claims admin.
+Commands register under their bare name, with no prefix. `/setup`, `/config`, `/stop-all`, and `/update` need the admin tier (or Discord's Administrator permission); everything else needs execute or higher. `/setup` has a one-time bootstrap exception: on a guild with no admins configured yet, whoever runs it first claims admin.
 
-Commands that act on *this channel's* session (`/dab-model`, `/dab-effort`, `/dab-mode`, `/dab-clear`, `/dab-stop`, `/dab-orchestration`) reply "no session" unless the channel is bound.
+Commands that act on *this channel's* session (`/model`, `/effort`, `/mode`, `/clear`, `/stop`, `/orchestration`) reply "no session" unless the channel is bound.
 
 ### Permission modes
 
@@ -251,7 +253,7 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 ### Session wizard & presets
 
 - Folder browser: navigate, create folders, favorites roots (`config.favorites`), native pick where available.
-- **Presets** (per guild): after a normal start, save backend/model/effort/perm as a named preset. Next `/dab-agent start` can pick a preset then only choose the folder.
+- **Presets** (per guild): after a normal start, save backend/model/effort/perm as a named preset. Next `/agent start` can pick a preset then only choose the folder.
 - **Resume** and **reconfigure** paths from the start flow / slash commands.
 - Bot restart restores bindings from `swift-state.json` (optional one-time import from older `state.json` if present).
 
@@ -259,8 +261,8 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 
 - Streaming status embed (text / tool progress).
 - Tool activity → Discord work threads with formatted tool output and **diff** views.
-- Status-channel notifications for key events (configurable in `/dab-config`).
-- Usage embeds (Claude OAuth, Codex rate limits, Grok weekly) from `/dab-agent stats`.
+- Status-channel notifications for key events (configurable in `/config`).
+- Usage embeds (Claude OAuth, Codex rate limits, Grok weekly) from `/agent stats`.
 - Idle watchdog notice if a turn goes quiet for a few minutes.
 - Host file attach / document share from the agent (`host.file.attach` / share) into the channel, path-confined.
 
@@ -268,8 +270,8 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 
 GFM tables and fenced `mermaid` blocks become PNG attachments when:
 
-1. Render is enabled (`/dab-config` → 🖼 render, default on), and  
-2. A browser is available: system Chrome/Edge/Chromium, or provisioned under `~/.dab/chromium` (Install Chromium from `/dab-config` or post-`/dab-setup` prompt; needs Node for the download helper).
+1. Render is enabled (`/config` → 🖼 render, default on), and  
+2. A browser is available: system Chrome/Edge/Chromium, or provisioned under `~/.dab/chromium` (Install Chromium from `/config` or post-`/setup` prompt; needs Node for the download helper).
 
 Implementation: **headless Chrome CLI** screenshots of local HTML (not an in-process browser runtime). Failures fall back to raw markdown. Caps: ~15s timeout, size/cell limits, limited concurrency.
 
@@ -277,7 +279,7 @@ Env overrides: `DAB_RENDER=0|1`, `DAB_MERMAID_JS`, `DAB_CHROMIUM_CACHE`, `PUPPET
 
 ### Orchestration mode (Claude only)
 
-`/dab-orchestration` promotes the current session channel into a **lead** channel that can hand work to module channels of its own.
+`/orchestration` promotes the current session channel into a **lead** channel that can hand work to module channels of its own.
 
 Running it opens a card with four dropdowns — model and effort for the lead, model and effort for the modules it spawns — plus **Start / Cancel**. Nothing is touched until Start. On Start the bot:
 
@@ -289,21 +291,21 @@ The lead and its modules talk over MCP tools the install provides (`send_order` 
 
 ### Redmine integration
 
-`/dab-redmine` opens a modal for **URL**, **API key**, and optional **project**. Once saved, a per-guild poller checks every 5 minutes for issues in a New/Doing status and posts an issue card (title with number, link, description, project, target version) into the configured report channel. Status IDs are resolved per instance rather than hardcoded, and bilingual labels like `신규(New)` / `진행(Doing)` match.
+`/redmine` opens a modal for **URL**, **API key**, and optional **project**. Once saved, a per-guild poller checks every 5 minutes for issues in a New/Doing status and posts an issue card (title with number, link, description, project, target version) into the configured report channel. Status IDs are resolved per instance rather than hardcoded, and bilingual labels like `신규(New)` / `진행(Doing)` match.
 
-An issue card offers **Start / Cancel**: Start either opens the session wizard seeded with that issue, or kicks the issue off into an existing session after a confirm step. `/dab-redmine-issue-select` reaches the same dropdown on demand (same status filter, no "since last check" cutoff); Discord caps a dropdown at 25 options, so longer lists are split across several messages instead of truncated.
+An issue card offers **Start / Cancel**: Start either opens the session wizard seeded with that issue, or kicks the issue off into an existing session after a confirm step. `/redmine-issue-select` reaches the same dropdown on demand (same status filter, no "since last check" cutoff); Discord caps a dropdown at 25 options, so longer lists are split across several messages instead of truncated.
 
 API keys are encrypted at rest with `DAB_REDMINE_KEY_SECRET` — generated into `~/.dab/env` on first boot if absent. Without it, encrypt and decrypt both fail rather than falling back to plaintext.
 
 ### Auth & multi-server
 
 - Global config + per-guild `servers/<guildId>.json` overrides (3-layer: global → server → channel binding).
-- Role tiers and optional **user-id** tier grants; member default tier + per-member exceptions in `/dab-config` Access.
+- Role tiers and optional **user-id** tier grants; member default tier + per-member exceptions in `/config` Access.
 - DM policy, audit log channel, path confinement for file ops.
 
 ### Auto-update
 
-`/dab-update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config. **Needs a full repo checkout** (the manual/from-source install above) — it does not work for a Homebrew install; use `brew upgrade` instead (see Homebrew install steps above).
+`/update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config. **Needs a full repo checkout** (the manual/from-source install above) — it does not work for a Homebrew install; use `brew upgrade` instead (see Homebrew install steps above).
 
 ---
 

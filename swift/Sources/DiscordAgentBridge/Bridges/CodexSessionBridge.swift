@@ -742,6 +742,25 @@ public actor CodexSessionBridge {
         await ch.client.close()
     }
 
+    /// Backend slash commands (codex skills) advertised for this channel — `/command`'s candidates
+    /// (WO-4). No live session yet → empty list, NOT an error: sessions spawn lazily on the first
+    /// turn, so a bound-but-idle channel simply has nobody to ask. Same judgement as
+    /// `DabSessionBridge.setModel` (:815), which treats "nothing live to apply to" as success.
+    /// A failed RPC is an empty list too — the autocomplete surface has nothing useful to do with a
+    /// thrown error.
+    ///
+    /// Deliberately uncached here: freshness is the autocomplete layer's TTL cache, shared by all
+    /// three backends (see `skillsList`'s note on `skills/changed`).
+    public func slashCatalog(channelId: String) async -> [SlashCatalogEntry] {
+        guard let channel = channels[channelId], !channel.client.isClosed else { return [] }
+        do {
+            return codexSlashCatalog(try await channel.client.skillsList())
+        } catch {
+            log.warn("skills/list failed channel=\(channelId) error=\(error)")
+            return []
+        }
+    }
+
     /// Cancel the in-flight turn via `turn/interrupt` without closing the client/thread
     /// (TS CodexSession.interrupt). Returns `true` when a live channel session existed.
     /// Bumps turn generation so a late turn/start result cannot re-stamp activeTurnId.

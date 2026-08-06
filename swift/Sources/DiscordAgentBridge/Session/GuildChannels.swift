@@ -31,7 +31,7 @@ public protocol GuildChannelProvisioner: Sendable {
     func createTextChannel(name: String, parentId: String?) async throws -> ProvisionedChannel
     /// Rename by id (control-channel name migration). Best-effort at adapter level.
     func renameChannel(id: String, name: String) async throws
-    /// Move a channel under a new parent category (`/dab-orchestration` category migration).
+    /// Move a channel under a new parent category (`/orchestration` category migration).
     /// Best-effort at adapter level — mirrors `renameChannel`.
     func setParent(id: String, parentId: String) async throws
     /// Delete by id (/agent close). Best-effort at adapter level.

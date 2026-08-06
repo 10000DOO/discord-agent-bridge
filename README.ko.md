@@ -16,7 +16,7 @@
 - 📱 **책상 앞에 없어도 됩니다.** 폰 Discord로 작업을 던지면 스트리밍 응답, 툴 로그, 권한 승인 버튼이 채널에 뜹니다.
 - 🗂️ **채널 하나 = 프로젝트 하나 = 세션 하나.** 채널마다 작업 폴더 · 백엔드 · 모델 · 추론 강도 · 권한 모드가 따로 붙습니다.
 - 👥 **팀 관전 친화적.** 같은 채널을 보는 사람은 세션 진행을 그대로 봅니다. 3단계 역할(admin / execute / read-only)로 실행 권한만 통제합니다.
-- 🔀 **Claude ⇄ Codex ⇄ Grok (및 custom) 즉시 전환.** 세션 바인딩 후 `/dab-mode` 등으로 백엔드를 바꿉니다.
+- 🔀 **Claude ⇄ Codex ⇄ Grok (및 custom) 즉시 전환.** 세션 바인딩 후 `/mode` 등으로 백엔드를 바꿉니다.
 - ⚙️ **터미널과 동등한 기능.** 프로젝트 `.claude/` · `.codex/` 설정을 그대로 써서 서브에이전트 · 스킬 · 훅 · MCP · 플러그인 명령이 CLI와 같이 동작합니다.
 - 💾 **세션 프리셋.** 백엔드/모델/추론/권한 조합을 길드 단위로 저장해 두고, 다음엔 폴더만 고르면 시작할 수 있습니다.
 - 🖼 **풍부한 응답.** GFM 표·Mermaid를 PNG로, 툴 실행은 작업 스레드+diff, 사용량 패널로 Claude / Codex / Grok 한도를 보여 줍니다.
@@ -98,7 +98,7 @@ brew upgrade 10000DOO/discord-agent-bridge/dab
 brew services restart dab   # 서비스로 켜둔 경우에만 필요 — brew upgrade만으로는 재시작 안 됨
 ```
 
-디스코드 안의 `/dab-update` 명령(아래 Features → Auto-update 참고)은 Homebrew 설치에서는 **동작하지 않습니다** — `swift/scripts/install.sh`가 있는 저장소 체크아웃을 찾는 방식이라, Homebrew 설치엔 그게 없기 때문입니다. 이 설치 방식에서는 항상 `brew upgrade`를 쓰세요.
+디스코드 안의 `/update` 명령(아래 Features → Auto-update 참고)은 Homebrew 설치에서는 **동작하지 않습니다** — `swift/scripts/install.sh`가 있는 저장소 체크아웃을 찾는 방식이라, Homebrew 설치엔 그게 없기 때문입니다. 이 설치 방식에서는 항상 `brew upgrade`를 쓰세요.
 
 > ⚠️ **같은 봇 토큰으로 두 개를 동시에 켜지 마세요.** 포그라운드 실행, `brew services`, 아래 수동(소스 빌드) 설치 전부 같은 `DISCORD_BOT_TOKEN`을 읽습니다. 같은 토큰으로 두 번째 인스턴스를 켜면 같은 봇 계정에 게이트웨이 연결이 하나 더 생깁니다 — 에러 없이 그냥 둘 다 떠 있으면서 응답이 중복되거나 꼬입니다. 봇 토큰 하나당 설치 방식은 하나만 쓰세요.
 
@@ -136,7 +136,7 @@ dab service status    # 또는: ~/.dab/bin/dab service status
 dab service restart
 ```
 
-업데이트: 디스코드에서 `/dab-update`를 치면 릴리스 레지스트리를 확인해서 자동으로 다시 빌드하고 재시작합니다(아래 Features → Auto-update 참고). 수동으로 하려면:
+업데이트: 디스코드에서 `/update`를 치면 릴리스 레지스트리를 확인해서 자동으로 다시 빌드하고 재시작합니다(아래 Features → Auto-update 참고). 수동으로 하려면:
 
 ```bash
 cd discord-agent-bridge   # 저장소 루트
@@ -159,7 +159,7 @@ systemctl --user restart discord-agent-bridge
 systemctl --user status discord-agent-bridge
 ```
 
-업데이트: `git pull && bash swift/scripts/install-linux.sh` (또는 디스코드에서 `/dab-update`).
+업데이트: `git pull && bash swift/scripts/install-linux.sh` (또는 디스코드에서 `/update`).
 
 제거: `bash swift/scripts/uninstall-linux.sh`
 
@@ -171,7 +171,7 @@ powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
 schtasks /Run /TN discord-agent-bridge
 ```
 
-업데이트: `git pull` 후 `install-windows.ps1` 다시 실행 (또는 디스코드에서 `/dab-update`).
+업데이트: `git pull` 후 `install-windows.ps1` 다시 실행 (또는 디스코드에서 `/update`).
 
 제거: `install-windows.ps1 -Uninstall`
 
@@ -195,11 +195,11 @@ ready: username=<bot> id=<snowflake> app=<application id>
 
 ## 3단계 — Discord에서 사용하기
 
-기본 흐름: **`/dab-setup` → `/dab-config` → `/dab-agent start`**, 이후 세션 채널에서 일반 메시지.
+기본 흐름: **`/setup` → `/config` → `/agent start`**, 이후 세션 채널에서 일반 메시지.
 
-1. **`/dab-setup`** (관리자) — 컨트롤 채널 · 세션 카테고리 · 상태 채널 (기존 재사용).
-2. **`/dab-config`** (관리자) — 역할 티어, 기본값(백엔드/모델/추론/권한), 로케일, 알림, 이미지/Chromium 렌더, 유저별 접근 예외.
-3. **`/dab-agent start`** — 마법사: **폴더 → [프리셋 있으면] → 백엔드 → 모델 → 추론 → 권한**. `/dab-setup` 후 세션 카테고리 아래 A4D `<임의ID>-<folder>-proj` 채널을 만들고 바인딩할 수 있습니다.
+1. **`/setup`** (관리자) — 컨트롤 채널 · 세션 카테고리 · 상태 채널 (기존 재사용).
+2. **`/config`** (관리자) — 역할 티어, 기본값(백엔드/모델/추론/권한), 로케일, 알림, 이미지/Chromium 렌더, 유저별 접근 예외.
+3. **`/agent start`** — 마법사: **폴더 → [프리셋 있으면] → 백엔드 → 모델 → 추론 → 권한**. `/setup` 후 세션 카테고리 아래 A4D `<임의ID>-<folder>-proj` 채널을 만들고 바인딩할 수 있습니다.
 4. 바인딩된 채널에서 **일반 메시지**로 대화 — 접두사 없는 평문은 그 채널에 붙은 백엔드로 갑니다. 접두사를 붙이면 그 한 턴만 지정한 백엔드로 보냅니다:
 
 ```text
@@ -215,28 +215,30 @@ ready: username=<bot> id=<snowflake> app=<application id>
 
 | 명령 | 권한 | 설명 |
 |---|---|---|
-| `/dab-setup` | 관리자 | 컨트롤 + 세션 카테고리 + 상태 채널 프로비저닝 |
-| `/dab-config` | 관리자 | 역할·기본값·로케일·알림·렌더·접근 패널 |
-| `/dab-agent start` | execute+ | 마법사: 폴더/백엔드/모델/추론/권한 바인딩 (+ 프리셋) |
-| `/dab-agent resume` | execute+ | 저장된 세션 재바인딩, 상태 표시, soft reconnect |
-| `/dab-agent close` | execute+ | 백엔드 중지 + 이 채널 언바인드 |
-| `/dab-agent stats` | execute+ | 활성 바인딩 + Claude / Codex / Grok 사용량(가능 시) |
-| `/dab-mode backend` | execute+ | 백엔드 전환 (새 컨텍스트) |
-| `/dab-mode perm` | execute+ | 권한 모드 전환 (세션 유지) |
-| `/dab-model` | execute+ | 모델 전환 (프로바이더 카탈로그 자동완성) |
-| `/dab-effort` | execute+ | 추론 강도 전환 (자동완성) |
-| `/dab-clear` | execute+ | 동일 폴더/설정으로 새 대화 (오케스트레이터 채널이면 하위 모듈 세션도 함께 비움) |
-| `/dab-stop` | execute+ | 이 채널 세션 hard-stop |
-| `/dab-stop-all` | 관리자 | 모든 바인딩 세션 hard-stop |
-| `/dab-doc path:` | execute+ | 작업 공간 마크다운을 문서 스레드로 공유 |
-| `/dab-orchestration` | execute+ | 이 세션 채널을 오케스트레이션 리드로 전환 (Claude 전용) — 아래 참고 |
-| `/dab-redmine` | execute+ | 레드마인 알림 연동 모달 (URL / API 키 / 프로젝트) |
-| `/dab-redmine-issue-select` | execute+ | 신규·진행 상태 레드마인 이슈를 드롭다운에서 골라 세션 시작 |
-| `/dab-update` | 관리자 | 새 릴리스 확인 후 설치·재시작 제안 |
+| `/setup` | 관리자 | 컨트롤 + 세션 카테고리 + 상태 채널 프로비저닝 |
+| `/config` | 관리자 | 역할·기본값·로케일·알림·렌더·접근 패널 |
+| `/agent start` | execute+ | 마법사: 폴더/백엔드/모델/추론/권한 바인딩 (+ 프리셋) |
+| `/agent resume` | execute+ | 저장된 세션 재바인딩, 상태 표시, soft reconnect |
+| `/agent close` | execute+ | 백엔드 중지 + 이 채널 언바인드 |
+| `/agent stats` | execute+ | 활성 바인딩 + Claude / Codex / Grok 사용량(가능 시) |
+| `/mode backend` | execute+ | 백엔드 전환 (새 컨텍스트) |
+| `/mode perm` | execute+ | 권한 모드 전환 (세션 유지) |
+| `/model` | execute+ | 모델 전환 (프로바이더 카탈로그 자동완성) |
+| `/effort` | execute+ | 추론 강도 전환 (자동완성) |
+| `/clear` | execute+ | 동일 폴더/설정으로 새 대화 (오케스트레이터 채널이면 하위 모듈 세션도 함께 비움) |
+| `/stop` | execute+ | 이 채널 세션 hard-stop |
+| `/stop-all` | 관리자 | 모든 바인딩 세션 hard-stop |
+| `/doc path:` | execute+ | 작업 공간 마크다운을 문서 스레드로 공유 |
+| `/orchestration` | execute+ | 이 세션 채널을 오케스트레이션 리드로 전환 (Claude 전용) — 아래 참고 |
+| `/redmine` | execute+ | 레드마인 알림 연동 모달 (URL / API 키 / 프로젝트) |
+| `/redmine-issue-select` | execute+ | 신규·진행 상태 레드마인 이슈를 드롭다운에서 골라 세션 시작 |
+| `/command` | execute+ | 이 채널의 백엔드가 지원하는 슬래시 명령 실행 (자동완성 + 프롬프트 모달) |
+| `/command-list` | execute+ | 이 채널의 백엔드가 지원하는 명령 전체 목록 |
+| `/update` | 관리자 | 새 릴리스 확인 후 설치·재시작 제안 |
 
-모든 명령은 `dab-` 접두사로 등록되므로 다른 봇의 `/agent` · `/stop` · `/config`와 충돌하지 않습니다. `/dab-setup` · `/dab-config` · `/dab-stop-all` · `/dab-update`는 관리자 티어(또는 디스코드 Administrator 권한)가 필요하고, 나머지는 execute 이상이면 됩니다. `/dab-setup`에는 최초 1회 예외가 있습니다 — 관리자가 아직 하나도 설정되지 않은 서버에서는 먼저 실행한 사람이 관리자를 가져갑니다.
+모든 명령은 접두사 없이 그대로 등록됩니다. `/setup` · `/config` · `/stop-all` · `/update`는 관리자 티어(또는 디스코드 Administrator 권한)가 필요하고, 나머지는 execute 이상이면 됩니다. `/setup`에는 최초 1회 예외가 있습니다 — 관리자가 아직 하나도 설정되지 않은 서버에서는 먼저 실행한 사람이 관리자를 가져갑니다.
 
-**이 채널의 세션**을 대상으로 하는 명령(`/dab-model` · `/dab-effort` · `/dab-mode` · `/dab-clear` · `/dab-stop` · `/dab-orchestration`)은 채널이 바인딩되지 않았으면 "세션 없음"으로 응답합니다.
+**이 채널의 세션**을 대상으로 하는 명령(`/model` · `/effort` · `/mode` · `/clear` · `/stop` · `/orchestration`)은 채널이 바인딩되지 않았으면 "세션 없음"으로 응답합니다.
 
 ### 권한 모드
 
@@ -251,7 +253,7 @@ ready: username=<bot> id=<snowflake> app=<application id>
 ### 세션 마법사 & 프리셋
 
 - 폴더 브라우저: 이동 · 폴더 생성 · favorites 루트(`config.favorites`) · 가능한 경우 네이티브 선택.
-- **프리셋**(길드 단위): 일반 시작 후 백엔드/모델/추론/권한을 이름으로 저장. 다음 `/dab-agent start`에서는 프리셋 선택 → 폴더만 고르면 됩니다.
+- **프리셋**(길드 단위): 일반 시작 후 백엔드/모델/추론/권한을 이름으로 저장. 다음 `/agent start`에서는 프리셋 선택 → 폴더만 고르면 됩니다.
 - **재개(resume)** · **재구성(reconfigure)** 경로 지원.
 - 봇 재시작 시 `swift-state.json`에서 바인딩 복구 (예전 `state.json`이 있으면 1회 임포트 가능).
 
@@ -259,8 +261,8 @@ ready: username=<bot> id=<snowflake> app=<application id>
 
 - 스트리밍 상태 임베드 (텍스트 / 툴 진행).
 - 툴 활동 → Discord 작업 스레드 + 포맷된 출력·**diff**.
-- 상태 채널 알림(주요 이벤트, `/dab-config`에서 설정).
-- `/dab-agent stats`의 사용량 임베드 (Claude OAuth, Codex rate limit, Grok weekly).
+- 상태 채널 알림(주요 이벤트, `/config`에서 설정).
+- `/agent stats`의 사용량 임베드 (Claude OAuth, Codex rate limit, Grok weekly).
 - 턴이 수 분간 조용하면 idle watchdog 안내.
 - 에이전트 → 채널 파일 첨부/문서 공유(`host.file.attach` / share), 경로 confinement.
 
@@ -268,8 +270,8 @@ ready: username=<bot> id=<snowflake> app=<application id>
 
 GFM 표와 fenced `mermaid` 블록을 PNG 첨부로 올릴 수 있습니다. 조건:
 
-1. 렌더 켜짐 (`/dab-config` → 🖼 렌더, 기본 on), 그리고  
-2. 브라우저 사용 가능: 시스템 Chrome/Edge/Chromium, 또는 `~/.dab/chromium`에 프로비저닝 ( `/dab-config` 또는 `/dab-setup` 직후 Install Chromium; 다운로드 헬퍼에 Node 필요).
+1. 렌더 켜짐 (`/config` → 🖼 렌더, 기본 on), 그리고  
+2. 브라우저 사용 가능: 시스템 Chrome/Edge/Chromium, 또는 `~/.dab/chromium`에 프로비저닝 ( `/config` 또는 `/setup` 직후 Install Chromium; 다운로드 헬퍼에 Node 필요).
 
 구현: 로컬 HTML을 **headless Chrome CLI**로 스크린샷 (프로세스 내 브라우저 런타임 없음). 실패 시 raw 마크다운으로 폴백. 타임아웃·크기·동시성 상한 있음.
 
@@ -277,7 +279,7 @@ GFM 표와 fenced `mermaid` 블록을 PNG 첨부로 올릴 수 있습니다. 조
 
 ### 오케스트레이션 모드 (Claude 전용)
 
-`/dab-orchestration`은 현재 세션 채널을 **리드** 채널로 승격시켜서, 자기 밑에 모듈 채널을 만들어 일을 나눠줄 수 있게 합니다.
+`/orchestration`은 현재 세션 채널을 **리드** 채널로 승격시켜서, 자기 밑에 모듈 채널을 만들어 일을 나눠줄 수 있게 합니다.
 
 실행하면 드롭다운 4개(리드의 모델·추론 강도, 리드가 만들 모듈의 모델·추론 강도)와 **[시작] / [취소]** 카드가 뜹니다. [시작]을 누르기 전까지는 아무것도 건드리지 않습니다. [시작] 시:
 
@@ -289,21 +291,21 @@ GFM 표와 fenced `mermaid` 블록을 PNG 첨부로 올릴 수 있습니다. 조
 
 ### 레드마인 연동
 
-`/dab-redmine`은 **URL** · **API 키** · **프로젝트(선택)** 모달을 띄웁니다. 저장하면 서버(길드)별 폴러가 5분마다 신규·진행 상태 이슈를 확인해서 이슈 카드(이슈번호 포함 제목 · 링크 · 설명 · 소속 프로젝트 · 목표 버전)를 지정된 보고 채널에 게시합니다. 상태 ID를 하드코딩하지 않고 인스턴스마다 조회해서 맞추며, `신규(New)` · `진행(Doing)` 같은 이중 표기도 매칭합니다.
+`/redmine`은 **URL** · **API 키** · **프로젝트(선택)** 모달을 띄웁니다. 저장하면 서버(길드)별 폴러가 5분마다 신규·진행 상태 이슈를 확인해서 이슈 카드(이슈번호 포함 제목 · 링크 · 설명 · 소속 프로젝트 · 목표 버전)를 지정된 보고 채널에 게시합니다. 상태 ID를 하드코딩하지 않고 인스턴스마다 조회해서 맞추며, `신규(New)` · `진행(Doing)` 같은 이중 표기도 매칭합니다.
 
-이슈 카드에는 **[시작] / [취소]** 가 붙습니다. [시작]은 해당 이슈를 채워 넣은 세션 마법사를 열거나, 확인 단계를 거쳐 기존 세션에 이슈를 투입합니다. `/dab-redmine-issue-select`는 같은 드롭다운을 원할 때 직접 띄웁니다(상태 필터는 동일, "마지막 확인 시점" 기준은 없음). 디스코드 드롭다운은 25개가 한계라, 그보다 많으면 잘라내지 않고 메시지를 여러 개로 나눠 보냅니다.
+이슈 카드에는 **[시작] / [취소]** 가 붙습니다. [시작]은 해당 이슈를 채워 넣은 세션 마법사를 열거나, 확인 단계를 거쳐 기존 세션에 이슈를 투입합니다. `/redmine-issue-select`는 같은 드롭다운을 원할 때 직접 띄웁니다(상태 필터는 동일, "마지막 확인 시점" 기준은 없음). 디스코드 드롭다운은 25개가 한계라, 그보다 많으면 잘라내지 않고 메시지를 여러 개로 나눠 보냅니다.
 
 API 키는 `DAB_REDMINE_KEY_SECRET`으로 암호화해서 저장하며, 이 값이 없으면 최초 부팅 때 `~/.dab/env`에 생성합니다. 없는 상태에서는 암·복호화 둘 다 평문으로 넘어가지 않고 실패합니다.
 
 ### 인가 & 멀티 서버
 
 - 전역 config + 길드별 `servers/<guildId>.json` 오버라이드 (global → server → 채널 바인딩 3계층).
-- 역할 티어 + 선택적 **유저 ID** 티어; 멤버 기본 티어와 예외는 `/dab-config` Access.
+- 역할 티어 + 선택적 **유저 ID** 티어; 멤버 기본 티어와 예외는 `/config` Access.
 - DM 정책, 감사 로그 채널, 파일 작업 경로 confinement.
 
 ### 자동 업데이트
 
-`/dab-update`가 릴리스 레지스트리를 확인하고, 승인 시 플랫폼 설치 경로 실행 후 서비스를 재시작합니다(macOS: `install.sh` + launchctl). config의 `autoUpdate.enabled`로 끌 수 있습니다. **저장소 체크아웃이 있어야 동작합니다**(위 수동/소스 빌드 설치) — Homebrew 설치에서는 동작하지 않으니 `brew upgrade`를 쓰세요(위 Homebrew 설치 절 참고).
+`/update`가 릴리스 레지스트리를 확인하고, 승인 시 플랫폼 설치 경로 실행 후 서비스를 재시작합니다(macOS: `install.sh` + launchctl). config의 `autoUpdate.enabled`로 끌 수 있습니다. **저장소 체크아웃이 있어야 동작합니다**(위 수동/소스 빌드 설치) — Homebrew 설치에서는 동작하지 않으니 `brew upgrade`를 쓰세요(위 Homebrew 설치 절 참고).
 
 ---
 

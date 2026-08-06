@@ -45,6 +45,9 @@ function makeFakeSessionFactory(script: {
   supportInterrupt?: boolean;
   supportSetModel?: boolean;
   supportSetEffort?: boolean;
+  /** Omitted → the session has no supportedCommands at all (older mode / test double). */
+  commands?: unknown[];
+  commandsError?: string;
 } = {}) {
   const created: Array<{ ctx: ModeContext; deps: ClaudeSessionDeps; session: ModeSession }> = [];
 
@@ -79,6 +82,14 @@ function makeFakeSessionFactory(script: {
         ? {
             async setEffort(_effort?: string) {
               /* ok */
+            },
+          }
+        : {}),
+      ...(script.commands !== undefined || script.commandsError !== undefined
+        ? {
+            async supportedCommands() {
+              if (script.commandsError !== undefined) throw new Error(script.commandsError);
+              return script.commands as { name: string; description: string }[];
             },
           }
         : {}),
@@ -611,5 +622,92 @@ describe('SidecarServer with fake session factory', () => {
     expect(catalogFn).toHaveBeenCalledTimes(1);
 
     await h.endInput();
+  });
+
+  it('claude.slashCommands maps the live session list and drops empty argumentHints', async () => {
+    const { createSession } = makeFakeSessionFactory({
+      commands: [
+        { name: 'context', description: 'Show context usage', argumentHint: '' },
+        { name: 'impact-analysis', description: 'Trace callers', argumentHint: '<symbol>' },
+        // Namespaced plugin command: name passes through verbatim (no '/' prefixing).
+        { name: 'ponytail:ponytail-help', description: 'Quick reference', argumentHint: '  ' },
+        // Unusable rows are skipped, not fatal.
+        { description: 'no name' },
+        null,
+      ],
+    });
+    const h = await startServer({ createSession });
+    const startRes = await h.rpc('session.start', {
+      cwd: '/tmp/ws',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+    });
+    const handle = (startRes.result as { session: string }).session;
+
+    const r = await h.rpc('claude.slashCommands', { session: handle });
+    expect(r.error).toBeUndefined();
+    expect(r.result).toEqual({
+      commands: [
+        { name: 'context', description: 'Show context usage' },
+        { name: 'impact-analysis', description: 'Trace callers', argumentHint: '<symbol>' },
+        { name: 'ponytail:ponytail-help', description: 'Quick reference' },
+      ],
+    });
+
+    await h.endInput();
+  });
+
+  it('claude.slashCommands is empty (not an error) without a handle, after stop, or on a session that lacks it', async () => {
+    // Session implements the capability, so an empty answer can only come from the handle.
+    const { createSession } = makeFakeSessionFactory({ commands: [{ name: 'context', description: 'd' }] });
+    const h = await startServer({ createSession });
+
+    // No handle at all: lazy spawn — the channel is bound but has not talked yet.
+    const noHandle = await h.rpc('claude.slashCommands');
+    expect(noHandle.error).toBeUndefined();
+    expect(noHandle.result).toEqual({ commands: [] });
+
+    // Unknown handle is an empty list too, unlike every other session-scoped method.
+    const unknown = await h.rpc('claude.slashCommands', { session: 's-nope' });
+    expect(unknown.error).toBeUndefined();
+    expect(unknown.result).toEqual({ commands: [] });
+
+    // A stopped session: the handle is gone, so this is the closed-session path.
+    const startRes = await h.rpc('session.start', {
+      cwd: '/tmp/ws',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+    });
+    const handle = (startRes.result as { session: string }).session;
+    await h.rpc('session.stop', { session: handle });
+    const afterStop = await h.rpc('claude.slashCommands', { session: handle });
+    expect(afterStop.error).toBeUndefined();
+    expect(afterStop.result).toEqual({ commands: [] });
+
+    await h.endInput();
+  });
+
+  it('claude.slashCommands is empty when the session does not implement it or the SDK throws', async () => {
+    const bare = makeFakeSessionFactory();
+    const h1 = await startServer({ createSession: bare.createSession });
+    const s1 = await h1.rpc('session.start', { cwd: '/w', guildId: 'g', channelId: 'c', permMode: 'default' });
+    const r1 = await h1.rpc('claude.slashCommands', {
+      session: (s1.result as { session: string }).session,
+    });
+    expect(r1.error).toBeUndefined();
+    expect(r1.result).toEqual({ commands: [] });
+    await h1.endInput();
+
+    const failing = makeFakeSessionFactory({ commandsError: 'control request failed' });
+    const h2 = await startServer({ createSession: failing.createSession });
+    const s2 = await h2.rpc('session.start', { cwd: '/w', guildId: 'g', channelId: 'c', permMode: 'default' });
+    const r2 = await h2.rpc('claude.slashCommands', {
+      session: (s2.result as { session: string }).session,
+    });
+    expect(r2.error).toBeUndefined();
+    expect(r2.result).toEqual({ commands: [] });
+    await h2.endInput();
   });
 });

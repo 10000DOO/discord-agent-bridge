@@ -1,6 +1,6 @@
 import Foundation
 
-/// Embedded project-scoped orchestration content for `/dab-orchestration` (design
+/// Embedded project-scoped orchestration content for `/orchestration` (design
 /// design_orchestration_project_scoped_command.md §4.3). Hand-ported verbatim from
 /// `docs/sample/` — same manual hand-porting convention already used by `OrchestrationBundle`
 /// for the (now removed) global 3-backend installer. Unlike that type, this bundle is
@@ -165,7 +165,7 @@ private let roleOrchestrator = #"""
 
 - **모듈끼리 직접 통신 금지** — 모듈 채널끼리 직접 통신을 중개하지 않는다. 항상 총괄을 거친다(별형/스타 토폴로지). 다른 모듈 정보가 필요한 모듈은 지시서 첨부(계약 등)를 근거로 하고, 부족하면 총괄에게 요청한다.
 - 지시를 보낼 때는 **본문을 대화나 지시 도구 인자에 실어 보내지 않는다.** 지시서 본문은 `docs/issues/{이슈}/DESIGN.md`·`IMPACT.md` 등 파일에 미리 써두고, 모듈에는 **경로 + 한 줄 요지**만 보낸다. 지시는 **`send_order` 도구(`mcp__discord__send_order`)를 실제로 호출해서** 보낸다 — 채팅 응답에 "지시를 보냈다"·"채널을 만들었다"는 설명문만 쓰고 도구를 호출하지 않으면 아무 일도 일어나지 않는다. 도구 호출 없이는 지시가 전달된 게 아니다.
-- **모듈 세션의 모델·추론정도에 관여하지 않는다** — 그 값은 `/dab-orchestration` 시작 카드에서 사람이 이미 정했다. "등급을 낮춰라/올려라" 같은 지침을 모듈에 내리지 않는다. 조정이 필요하다고 판단되면 총괄이 직접 바꾸지 말고 사람에게 알린다.
+- **모듈 세션의 모델·추론정도에 관여하지 않는다** — 그 값은 `/orchestration` 시작 카드에서 사람이 이미 정했다. "등급을 낮춰라/올려라" 같은 지침을 모듈에 내리지 않는다. 조정이 필요하다고 판단되면 총괄이 직접 바꾸지 말고 사람에게 알린다.
 - 지시 대상 모듈 채널이 **`busy`를 반환하면 재시도**한다(즉시 다른 경로로 우회하지 않는다).
 
 ## 4. 영향도 1차 판정 · 공통/범위 밖 이관

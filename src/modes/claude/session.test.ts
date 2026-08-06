@@ -489,6 +489,31 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(events.some((e) => e.kind === 'error')).toBe(false);
   });
 
+  it('supportedCommands passes the SDK list through and goes empty once closed', async () => {
+    const { ctx } = makeCtx();
+    const state = { calls: 0 };
+    const { query } = makeFakeQuery([{ type: 'result', subtype: 'success', result: 'done' }]);
+    const queryFn: QueryFn = () =>
+      ({
+        ...query,
+        async supportedCommands() {
+          state.calls++;
+          return [{ name: 'context', description: 'Show usage', argumentHint: '' }];
+        },
+      }) as unknown as ReturnType<QueryFn>;
+
+    const session = new ClaudeSession(ctx, { queryFn });
+    await expect(session.supportedCommands()).resolves.toEqual([
+      { name: 'context', description: 'Show usage', argumentHint: '' },
+    ]);
+
+    // A stopped session must not reach the aborted query — lazy spawn and session teardown
+    // overlap in practice, and this path is reached with no live turn.
+    await session.stop();
+    await expect(session.supportedCommands()).resolves.toEqual([]);
+    expect(state.calls).toBe(1);
+  });
+
   it('does not present a setModel alias as SDK-observed model provenance', async () => {
     const { ctx, events } = makeCtx();
     const state = { supportedModelsCalls: 0, setModelCalls: [] as Array<string | undefined> };

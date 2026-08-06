@@ -20,6 +20,7 @@ import type {
   SessionsListResult,
 } from './protocol.js';
 import { event, notify, type Envelope } from './protocol.js';
+import { toSlashCommandEntries, type ClaudeSlashCommandsResult } from './slashCommands.js';
 
 const DEFAULT_LIST_LIMIT = 25;
 
@@ -286,6 +287,23 @@ export class SessionBridge {
       throw err;
     }
     await live.session.setEffort(effort);
+  }
+
+  /**
+   * Slash commands the live session accepts. Never throws — every miss is an empty list:
+   * an absent handle (lazy spawn: the channel has not talked yet), an unknown/stopped
+   * handle, a session that does not implement the capability, or a failing SDK call.
+   * Same fail-soft posture as listSessions; the Host renders "no candidates" either way.
+   */
+  async slashCommands(handle?: string): Promise<ClaudeSlashCommandsResult> {
+    const live = handle !== undefined ? this.sessions.get(handle) : undefined;
+    if (!live || typeof live.session.supportedCommands !== 'function') return { commands: [] };
+    try {
+      return { commands: toSlashCommandEntries(await live.session.supportedCommands()) };
+    } catch (err) {
+      this.logger.warn('claude.slashCommands failed; returning empty', { err: String(err) });
+      return { commands: [] };
+    }
   }
 
   resolvePermission(

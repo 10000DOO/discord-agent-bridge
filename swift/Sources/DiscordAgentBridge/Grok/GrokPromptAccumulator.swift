@@ -23,6 +23,47 @@ public func grokUpdateStep(method: String, params: JSONValue?) -> GrokUpdateStep
     return text.isEmpty ? .ignore : .appendText(text)
 }
 
+// MARK: - available_commands_update → slash catalog (WO-3, docs/cli-slash-command-parity.md §3-5-3)
+
+/// Map grok ACP `session/update` → the slash commands this session advertises. Pure; never throws.
+///
+/// Returns nil for every other notification, so a caller can tell "not a catalog push" apart from
+/// "a catalog push that happens to be empty" — grok re-pushes the WHOLE list on every change, so an
+/// empty array means "no commands", not "no news".
+///
+/// Wire shape (grok 0.2.118, measured 2026-08-05 — the deleted TS `AcpAvailableCommandsUpdate` was a
+/// field-less stub, so this envelope existed nowhere in the repo and was captured off a live
+/// `grok agent stdio` child; same "measured" convention as `AppServerClient.swift`'s header):
+///
+///     params.update = {
+///       "sessionUpdate": "available_commands_update",
+///       "availableCommands": [ {"name": …, "description": …, "input": {"hint": …} | null}, … ],
+///       "_meta": {…}
+///     }
+///
+/// The array key is `availableCommands` (camelCase) and the hint lives one level down under `input`,
+/// which is `null` for commands that take no argument. Pushed right after `session/new` — i.e.
+/// OUTSIDE any turn.
+///
+/// STORED ONLY. This is the echo path the file header warns about (`user_message_chunk` /
+/// `available_commands_update` stay out of the reply path): nothing here reaches a render path.
+public func grokSlashCatalog(method: String, params: JSONValue?) -> [SlashCatalogEntry]? {
+    guard method == "session/update" || method == "x.ai/session/update" else { return nil }
+    guard let update = params?["update"],
+          update["sessionUpdate"]?.stringValue == "available_commands_update",
+          let items = update["availableCommands"]?.arrayValue
+    else { return nil }
+    return items.compactMap { item in
+        guard let name = item["name"]?.stringValue, !name.isEmpty else { return nil }
+        let hint = item["input"]?["hint"]?.stringValue
+        return SlashCatalogEntry(
+            name: name,
+            description: item["description"]?.stringValue ?? "",
+            argumentHint: (hint?.isEmpty ?? true) ? nil : hint
+        )
+    }
+}
+
 // MARK: - Thought / plan → AgentEvent (W16-g gap / TS acpSession mapUpdate)
 
 /// Map grok ACP session/update → thinking / progress. Pure; never throws.

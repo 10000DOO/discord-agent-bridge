@@ -274,7 +274,7 @@ struct OrchestrationHostTests {
         #expect(recorder.calls.contains { $0.channelId == "mod" && $0.text == "again" + orderReportReminder })
     }
 
-    /// A module whose context was wiped (`/dab-clear` on the module or on its lead) keeps its
+    /// A module whose context was wiped (`/clear` on the module or on its lead) keeps its
     /// channel, so `order` reuses it — but the fresh session never saw the role doc, so the
     /// preamble must go out again or it answers in-channel and never calls `report`.
     @Test func orderReAddsRolePreambleAfterModuleContextCleared() async throws {

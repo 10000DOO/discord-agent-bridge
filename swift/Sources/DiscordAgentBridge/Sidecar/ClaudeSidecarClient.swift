@@ -532,6 +532,18 @@ public final class ClaudeSidecarClient: @unchecked Sendable {
         _ = try await request(method: "session.setModel", params: params, session: session)
     }
 
+    /// Runtime slash-command catalog for one live session (WO-2b, docs/cli-slash-command-parity.md §6).
+    /// The sidecar never answers this with an `error` — an absent or unknown handle is
+    /// `{"commands":[]}` — so a throw out of here means transport, not "this session has no commands".
+    public func claudeSlashCommands(session: String) async throws -> [SlashCatalogEntry] {
+        let result = try await request(
+            method: "claude.slashCommands",
+            params: ["session": .string(session)],
+            session: session
+        )
+        return claudeSlashCatalog(result)
+    }
+
     /// Live effort switch (CLAUDE_SIDECAR_PROTOCOL.md §3.6). Sidecar may return `unsupported`.
     public func sessionSetEffort(session: String, effort: String? = nil) async throws {
         var params: [String: JSONValue] = ["session": .string(session)]

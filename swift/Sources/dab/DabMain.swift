@@ -289,6 +289,15 @@ struct EventHandler: GatewayEventHandler {
             "resume-on-boot complete resumed=\(resumeSummary.resumed) "
                 + "cleaned=\(resumeSummary.cleaned) total=\(resumeSummary.total)"
         )
+        // WO-9: the `/command` command cache lives in this process, so a restart empties it — which
+        // is exactly how a channel that has been talking for hours still opened an empty picker.
+        // Refill it for every restored channel. Detached and sequential: boot must not wait on it,
+        // and there is no reason to probe every backend at once.
+        Task {
+            for (channelId, ps) in await SessionStore.shared.active() {
+                await warmSlashCatalog(channelId: channelId, backend: ps.backend)
+            }
+        }
         // W16-h: version check schedule (posts to control channels when a newer stable exists).
         await startAutoUpdater(client: client)
         // Provider binaries/SDKs use the same operator master switch, but only swap after every
@@ -544,7 +553,7 @@ struct EventHandler: GatewayEventHandler {
                 return
             }
             // (A2e) Orchestration start-spec card (WO-10) — separate `orch:` namespace + registry
-            // so it never collides with the /dab-agent start wizard on the same channel (8장 11번).
+            // so it never collides with the /agent start wizard on the same channel (8장 11번).
             if isOrchestrationWizardCustomId(comp.custom_id) {
                 try await handleOrchestrationWizardComponent(payload, comp: comp)
                 return
@@ -588,7 +597,8 @@ struct EventHandler: GatewayEventHandler {
         let channelId = payload.channel_id?.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
         let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
-        // Discord sends the prefixed name (`dab-update`); everything below routes on the bare one.
+        // Names register bare now; a stale client may still send the legacy `dab-update` form, and
+        // `bareCommandName` strips it so both land on the same case below.
         let commandName = bareCommandName(cmd.name)
         let authAction: AuthAction = (commandName == "stop-all" || commandName == "setup" || commandName == "config" || commandName == "update")
             ? .admin : .drive
@@ -1385,6 +1395,67 @@ struct EventHandler: GatewayEventHandler {
                 ))
             )
 
+        case "command":
+            // WO-7: the picked command opens a paragraph modal for the prompt; the composed
+            // `"/{command}\n{prompt}"` then rides the ordinary turn pipeline at submit.
+            // C7: showModal is this interaction's ONLY ack — no defer above it, and no backend or
+            // store lookup either (§3-5-4, dir:create precedent at DabMain.swift:2163). The
+            // "still available?" check (C8) waits for the submit, where a defer IS allowed.
+            let runValue = (try? cmd.requireOption(named: "command").requireString()) ?? ""
+            switch slashRunOpenDecision(commandValue: runValue) {
+            case .noSession:
+                try await respondEphemeral(payload, I18n.t("run.noSession"))
+            case .nameTooLong:
+                try await respondEphemeral(payload, I18n.t("run.nameTooLong", ["command": runValue]))
+            case .openModal(let runCustomId, let runCommand):
+                _ = try? await client.createInteractionResponse(
+                    id: payload.id, token: payload.token,
+                    payload: .modal(.init(
+                        custom_id: runCustomId,
+                        title: slashRunModalTitle(command: runCommand),
+                        textInputs: [
+                            .init(
+                                custom_id: "prompt",
+                                style: .paragraph,
+                                label: I18n.t("run.modal.label"),
+                                required: false,
+                                placeholder: I18n.t("run.modal.placeholder")
+                            ),
+                        ]
+                    ))
+                )
+            }
+
+        case "command-list":
+            // WO-10: the whole backend catalog in one ephemeral embed, because `/command`'s picker
+            // is capped at 25 by Discord and the built-ins sit well past that (`compact` 62nd).
+            //
+            // A slash handler MAY defer — autocomplete may not (C17) — so unlike the picker this
+            // path is allowed to wait on the backend, and it warms the very cache the picker reads.
+            let helpDeferred = try? await client.createInteractionResponse(
+                id: payload.id, token: payload.token,
+                payload: .deferredChannelMessageWithSource(isEphemeral: true)
+            )
+            guard helpDeferred != nil else { return }
+            // Unbound → claude, exactly like handleAutocomplete's fallback. Never a silent guess:
+            // the body names the backend it listed.
+            let helpBackend = await SessionRegistry.shared.binding(channelId: channelId)?.backend ?? .claude
+            // ORDER MATTERS — warm BEFORE reading, never the other way round.
+            // `autocompleteSlashCommands` claims the channel's fill slot itself
+            // (`AutocompleteSlashCatalogCache.commands` → `filling.insert`), so a read placed first
+            // makes the warm-up below a no-op that returns instantly, and a channel whose session
+            // has not spawned yet then stays stuck on "still loading" for every invocation.
+            // Reversing these two lines is the natural-looking refactor that breaks it; the fix is
+            // pinned by `warmingBeforeReadingFillsTheList` / `readingBeforeWarmingLosesTheFillSlot`.
+            await warmSlashCatalog(channelId: channelId, backend: helpBackend)
+            let helpCommands = autocompleteSlashCommands(channelId: channelId, backend: helpBackend)
+            _ = try? await client.updateOriginalInteractionResponse(
+                appId: payload.application_id, token: payload.token,
+                payload: .init(embeds: [Embed(
+                    description: slashHelpDescription(backend: helpBackend, commands: helpCommands)
+                )])
+            )
+
         case "redmine-issue-select":
             // WO-13: R9 dropdown — same status/assignee filter as the poller (R5), but `since`
             // is nil (D5, WO-5) since this command has no "last checked" concept.
@@ -1595,8 +1666,9 @@ struct EventHandler: GatewayEventHandler {
         )
     }
 
-    /// G-P1-03: `/model` · `/effort` autocomplete from providerCatalog (channel binding backend,
-    /// else claude). Best-effort respond — Discord's ~3s window has no defer.
+    /// G-P1-03: `/model` · `/effort` autocomplete from providerCatalog, plus `/run` (WO-6) from the
+    /// channel's backend command catalog — all keyed off the channel binding backend, else claude.
+    /// Best-effort respond — Discord's ~3s window has no defer.
     private func handleAutocomplete(_ payload: Interaction) async {
         let empty: Payloads.InteractionResponse = .autocompleteResult(.init(choices: []))
         guard let cmd = try? payload.data?.requireApplicationCommand() else {
@@ -1626,6 +1698,9 @@ struct EventHandler: GatewayEventHandler {
             }
             let efforts = catalog.runtimeEffortChoices(modelLevels: levels)
             suggestions = filterAutocompleteChoices(efforts, query: query)
+        case "command":
+            // C17: cached read only — this path must never await the backend inside the ~3s budget.
+            suggestions = slashCatalogSuggestions(channelId: channelId, backend: backend, query: query)
         default:
             suggestions = []
         }
@@ -1927,7 +2002,7 @@ struct EventHandler: GatewayEventHandler {
     }
 
     /// WO-10: orchestration start-spec card routing (drop down 4 + [시작]/[취소]; no owner gate —
-    /// the card is posted on the same ephemeral response as `/dab-orchestration`, so only the
+    /// the card is posted on the same ephemeral response as `/orchestration`, so only the
     /// invoker can even see or click it). Mirrors `handleResumeComponent`'s shape: defer →
     /// enqueue on the card's own registry → re-fetch the still-live instance inside the job →
     /// branch on the click.
@@ -2109,7 +2184,7 @@ struct EventHandler: GatewayEventHandler {
             // Category/install/index already succeeded and the session is live at this point —
             // a failed patch here means only the lead model/effort didn't take, not that the
             // whole command failed, so say exactly that instead of a blanket "applied" claim
-            // (mirrors the /dab-model /dab-effort ok-vs-failed branching, DabMain.swift:721-726/751-754).
+            // (mirrors the /model /effort ok-vs-failed branching, DabMain.swift:721-726/751-754).
             lines.append(orchestrationAppliedSpecLine(appliedResult, spec: spec))
             lines.append(I18n.t("orchestration.project.freshContextNotice"))
             _ = try? await self.client.updateOriginalInteractionResponse(
@@ -2237,6 +2312,12 @@ struct EventHandler: GatewayEventHandler {
                             guildId: p.guildId.isEmpty ? (payload.guild_id?.rawValue ?? "") : p.guildId,
                             defaultCwd: p.cwd
                         )
+                        // WO-9: the channel now answers to a DIFFERENT backend, and its old command
+                        // list was dropped on sight (C26) — refill with the new one now so the next
+                        // `/command` is not empty-handed. Detached: it opens a session (seconds).
+                        if ok {
+                            Task { await warmSlashCatalog(channelId: p.channelId, backend: p.backend) }
+                        }
                         let text = ok
                             ? I18n.t("cmd.mode.switched", ["backend": p.backend.rawValue])
                             : I18n.t("wizard.recfg.noSession")
@@ -2292,6 +2373,11 @@ struct EventHandler: GatewayEventHandler {
                         )
                         return
                     }
+                    // WO-9: a fresh binding has no session yet, so its `/command` picker would be
+                    // empty until something else opened one. Open it now and cache the list, so the
+                    // FIRST picker open shows real commands. Detached — this takes seconds and the
+                    // wizard still owes Discord a reply.
+                    Task { await warmSlashCatalog(channelId: bindChannelId, backend: p.backend) }
 
                     let sessionCaps = await resolveSessionCapabilities(
                         backend: p.backend, guildId: guildId
@@ -2565,6 +2651,13 @@ struct EventHandler: GatewayEventHandler {
             return
         }
 
+        // run:{command} (WO-7): the standalone /command modal. Same reason as redmine:config —
+        // no WizardRegistry involvement, so it must not fall into the wizard-owner gate below.
+        if let runCommand = parseSlashRunModalCustomId(modal.custom_id) {
+            try await handleSlashRunModal(payload, modal: modal, command: runCommand)
+            return
+        }
+
         guard let wizard = await WizardRegistry.shared.get(channelId: channelId),
               wizard.ownerId == clicker
         else {
@@ -2650,6 +2743,45 @@ struct EventHandler: GatewayEventHandler {
                 payload: .channelMessageWithSource(.init(content: I18n.t("wizard.unknownModal"), flags: [.ephemeral]))
             )
         }
+    }
+
+    /// `/command` modal submit (WO-7): compose `"/{command}\n{prompt}"` and push it through the
+    /// SAME turn pipeline a typed message uses (`runInjectedTurn`). All three backends take slash
+    /// commands as ordinary prompt text (§3-5-2 실측), so there is no separate send path to build.
+    ///
+    /// Unlike the opener, a submit MAY ack first — so this is where the C8 re-check lives: the
+    /// command name rode here inside `custom_id`, and `/mode backend …` may have changed what
+    /// this channel can run since the picker was drawn. The check is a cache read, not a probe, so
+    /// it stays instant.
+    ///
+    /// Authorization already happened on the `/command` interaction that opened this modal (drive
+    /// tier), and Discord only ever delivers the submit from that same user — the same trust chain
+    /// `dir:create`/`redmine:config` rely on, hence the `"execute"` tier those paths also pass.
+    private func handleSlashRunModal(_ payload: Interaction, modal: Interaction.ModalSubmit, command: String) async throws {
+        let channelId = payload.channel_id?.rawValue ?? ""
+        let guildId = payload.guild_id?.rawValue ?? "dm"
+        let actorId = payload.member?.user?.id.rawValue ?? payload.user?.id.rawValue ?? ""
+        // Deliberately NOT trimmed here: `slashRunPromptText` clips only the outer whitespace and
+        // keeps every interior newline, which is the whole point of using a modal (§3-5-1).
+        let typed = (try? modal.components.requireComponent(customId: "prompt").requireTextInput().value)
+        let prompt = typed.flatMap { $0 } ?? ""
+        // Unbound channel → claude, exactly like handleAutocomplete's fallback.
+        let backend = await SessionRegistry.shared.binding(channelId: channelId)?.backend ?? .claude
+        guard slashRunCommandStillAvailable(channelId: channelId, backend: backend, command: command) else {
+            try await respondEphemeral(payload, I18n.t("run.unavailable", ["command": command]))
+            return
+        }
+        try await respondEphemeral(payload, I18n.t("run.started", ["command": command]))
+        // postPrompt: true — the composed text is posted to the channel so the ⏳/✅ decoration has
+        // an anchor and the channel can see what was run (mirrors runRedmineKickoffPrompt).
+        // announceExtras: true — this is a human driving a turn, so it keeps the full
+        // mention/usage-panel UX a typed message gets, unlike the bot-authored Redmine kickoff.
+        await runInjectedTurn(
+            client: client, channelId: channelId, guildId: guildId, backend: backend,
+            promptText: slashRunPromptText(command: command, prompt: prompt),
+            postPrompt: true, announceExtras: true,
+            actorId: actorId, roleTier: "execute"
+        )
     }
 
     /// redmine:config modal submit (WO-12c): extract the 3 fields → ack immediately (channel

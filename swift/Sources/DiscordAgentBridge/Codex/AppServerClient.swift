@@ -221,6 +221,21 @@ public final class CodexAppServerClient: @unchecked Sendable {
         try await request(method: "turn/interrupt", params: params)
     }
 
+    /// `skills/list` — this session's codex skill catalog, mapped by `codexSlashCatalog` (WO-4,
+    /// docs/cli-slash-command-parity.md §3-4-2). Empty params means "the session's own cwd",
+    /// which is always what we want here.
+    ///
+    /// ponytail: no invalidation subscription. codex pushes an invalidation notification whose WIRE
+    /// method is `skills/changed` (NOT `SkillsChangedNotification` — that is only the schema type's
+    /// title), and we deliberately ignore it: freshness is owned by the autocomplete layer's TTL
+    /// cache, one cache for all three backends, same trade-off the model catalog already takes. If
+    /// instant invalidation is ever needed, handle `skills/changed` in
+    /// `CodexSessionBridge.onNotification` — **above** its `turns[channelId]` guard, which drops
+    /// every notification arriving between turns.
+    public func skillsList(params: JSONValue? = nil) async throws -> JSONValue {
+        try await request(method: "skills/list", params: params)
+    }
+
     /// Low-level JSON-RPC request/response. Response may omit jsonrpc.
     public func request(method: String, params: JSONValue? = nil) async throws -> JSONValue {
         let closed = state.withLock { $0.closed }
@@ -475,6 +490,31 @@ func extractTurnId(_ result: JSONValue) -> String? {
     if let id = obj["turnId"]?.stringValue, !id.isEmpty { return id }
     if let id = obj["id"]?.stringValue, !id.isEmpty { return id }
     return nil
+}
+
+/// `skills/list` result → the shared slash catalog (WO-4, §3-5-3). Shape (measured, codex 0.146.0
+/// `app-server generate-json-schema`): `{data: [{cwd, skills: SkillMetadata[], errors}]}`.
+///
+/// Disabled skills are dropped, and the SKILL.json blurb (`interface.shortDescription`) wins over
+/// the long `description` when present. codex advertises no argument hint, so `argumentHint` stays
+/// nil. `name` keeps the backend's own namespacing verbatim (`browser-use:browser`) — it is what
+/// gets sent back as `/name`.
+///
+/// codex built-ins (compact/review/undo/status) are NOT here and must not be added: they are
+/// dedicated RPCs, so listing them would only make the model try to read them as text (§3-5-5, §8).
+func codexSlashCatalog(_ result: JSONValue) -> [SlashCatalogEntry] {
+    guard case .array(let groups)? = result["data"] else { return [] }
+    return groups.flatMap { group -> [SlashCatalogEntry] in
+        guard case .array(let skills)? = group["skills"] else { return [] }
+        return skills.compactMap { skill -> SlashCatalogEntry? in
+            guard let name = skill["name"]?.stringValue, !name.isEmpty else { return nil }
+            // `enabled` is required by the schema; only an explicit false excludes.
+            guard skill["enabled"]?.boolValue != false else { return nil }
+            let short = skill["interface"]?["shortDescription"]?.stringValue
+            let description = (short?.isEmpty == false ? short : skill["description"]?.stringValue) ?? ""
+            return SlashCatalogEntry(name: name, description: description)
+        }
+    }
 }
 
 /// Mirrors TS `parseDynamicToolCallParams` (appServerClient.ts:442-458) — tool/callId/threadId/

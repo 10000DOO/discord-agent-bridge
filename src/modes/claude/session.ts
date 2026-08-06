@@ -5,6 +5,7 @@ import {
   type Query,
   type SDKMessage,
   type SDKUserMessage,
+  type SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ModeContext, ModeSession, SessionPermMode, TurnInput } from '../../core/contracts.js';
 import { isClaudeRuntimeEffort } from '../../core/providerCatalog.js';
@@ -517,6 +518,16 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     this.observedModel = null;
     this.modelDisplayName = null;
     this.modelDisplayNameRequested = false;
+  }
+
+  // The slash commands this LIVE session accepts (built-ins + user skills + plugin
+  // commands). Callable before the first turn — unlike system/init's slash_commands, which
+  // only arrives WITH the first turn. The SDK re-pushes the list when skills are discovered
+  // mid-session, so every call reads the latest. Same defensive posture as
+  // captureModelDisplayName: a closed session is an empty list, not an error.
+  async supportedCommands(): Promise<SlashCommand[]> {
+    if (this.closed) return [];
+    return this.query.supportedCommands();
   }
 
   // Change the reasoning effort on the LIVE query mid-session via applyFlagSettings (the

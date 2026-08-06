@@ -110,7 +110,7 @@ struct OrchestrationWizardTests {
         #expect(w.confirmed == nil)
     }
 
-    // ④ re-running `/dab-orchestration` seeds the module dropdowns from the previously saved set
+    // ④ re-running `/orchestration` seeds the module dropdowns from the previously saved set
     // (ServerConfig.orchestration[channel].moduleModel/moduleEffort), not from the lead's values —
     // DabMain builds `initial` that way; here we just confirm the wizard renders whatever it's given.
     @Test func rendersStoredModuleSpecAsInitialSelectionOnRerun() {

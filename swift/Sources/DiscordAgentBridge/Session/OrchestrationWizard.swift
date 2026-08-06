@@ -164,7 +164,7 @@ private func taggedOptionLabel(_ label: String, tag: String) -> String {
 
 // MARK: Component id recognition (DabMain routing)
 
-/// Distinct `orch:` namespace so this card never collides with the `/dab-agent start` wizard's
+/// Distinct `orch:` namespace so this card never collides with the `/agent start` wizard's
 /// `WizardRegistry` dispatch on the same channel (8장 11번).
 public func isOrchestrationWizardCustomId(_ customId: String) -> Bool {
     customId.hasPrefix("orch:")

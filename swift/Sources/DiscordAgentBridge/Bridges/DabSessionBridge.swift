@@ -836,6 +836,27 @@ public actor DabSessionBridge {
         }
     }
 
+    /// Runtime slash-command catalog for this channel's live Claude session (WO-2b, §3-5-3).
+    ///
+    /// No live session, a closed client, and a failed RPC all mean an empty list, never a throw:
+    /// sessions spawn lazily on the first turn, so a channel that is bound but has not talked yet
+    /// simply has nobody to ask, and the autocomplete caller must answer inside Discord's ~3s budget
+    /// and cannot wait for a spawn. Same policy as `setModel(channelId:)` above, where "nothing to
+    /// apply to" is success rather than failure — and the same shape as
+    /// `CodexSessionBridge.slashCatalog` / `GrokSessionBridge.slashCatalog`.
+    ///
+    /// Deliberately uncached here: freshness is the autocomplete layer's TTL cache, shared by all
+    /// three backends.
+    public func slashCatalog(channelId: String) async -> [SlashCatalogEntry] {
+        guard let handle = sessions[channelId], let client, !client.isClosed else { return [] }
+        do {
+            return try await client.claudeSlashCommands(session: handle)
+        } catch {
+            log.warn("claude.slashCommands failed channel=\(channelId) error=\(error)")
+            return []
+        }
+    }
+
     /// Test/inspection: whether this channel still holds a live sidecar session handle.
     public func isLive(channelId: String) -> Bool {
         sessions[channelId] != nil

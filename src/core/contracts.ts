@@ -143,6 +143,10 @@ export interface ModeSession {
   // param). Optional so existing modes/test doubles stay valid; callers duck-type.
   // Takes effect on the next turn of the same session.
   setEffort?(effort?: string): Promise<void>;
+  // The slash commands THIS live session accepts (built-ins + user skills + plugin
+  // commands, all cwd-dependent). Optional so existing modes/test doubles stay valid;
+  // callers duck-type. A closed session reports an empty list rather than throwing.
+  supportedCommands?(): Promise<{ name: string; description: string; argumentHint?: string }[]>;
   // Modes that support permissionPrompts call ctx.requestPermission; Discord resolves it.
 }
 

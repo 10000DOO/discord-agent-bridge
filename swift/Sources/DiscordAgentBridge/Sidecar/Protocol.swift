@@ -278,6 +278,35 @@ public struct ClaudeCatalogResult: Sendable, Equatable {
     }
 }
 
+/// `claude.slashCommands` result → the shared slash catalog (WO-2b, docs/cli-slash-command-parity.md
+/// §3-5-3). Wire shape, fixed by the sidecar (src/sidecar/claude/slashCommands.ts
+/// `ClaudeSlashCommandsResult`): `{commands: [{name, description, argumentHint?}]}`.
+///
+/// A free function that does not throw, unlike every other response in this file, and deliberately
+/// so: this RPC has no error path at all — an absent or unknown session handle is answered with
+/// `{"commands":[]}` rather than an `error` (server.ts `case 'claude.slashCommands'`) — so a bad
+/// shape here can only be version skew, and the one surface it feeds (autocomplete) can express
+/// nothing worse than "no suggestions". That also makes it the same shape as its two siblings,
+/// `codexSlashCatalog` / `grokSlashCatalog`, which is what the consumer sees side by side.
+///
+/// `argumentHint` is optional on the wire: the sidecar omits the key when the SDK reports an empty
+/// string, so absent and blank both become nil. `name` is passed through verbatim — no leading
+/// slash is added and `plugin:command` namespacing is never split (it is what gets sent as `/name`).
+func claudeSlashCatalog(_ result: JSONValue) -> [SlashCatalogEntry] {
+    guard let arr = result["commands"]?.arrayValue else { return [] }
+    return arr.compactMap { item -> SlashCatalogEntry? in
+        guard let o = item.objectValue,
+              let name = o["name"]?.stringValue, !name.isEmpty
+        else { return nil }
+        let hint = o["argumentHint"]?.stringValue
+        return SlashCatalogEntry(
+            name: name,
+            description: o["description"]?.stringValue ?? "",
+            argumentHint: (hint?.isEmpty ?? true) ? nil : hint
+        )
+    }
+}
+
 // MARK: - Parse / serialize
 
 public enum ProtocolParseError: Error, Equatable, CustomStringConvertible {

@@ -2,24 +2,35 @@ import Foundation
 
 // MARK: - Discord-visible command prefix
 
-/// Prefix on every Discord-visible top-level command (`/dab-update`, `/dab-agent`), so this bot's
-/// commands cannot be shadowed by another bot — or a client-mod plugin — owning the same bare name.
+/// Empty on purpose — this bot registers bare names (`/update`, `/agent`, `/command`).
 ///
-/// Specs, routing switches, and tests all keep the BARE name (`update`). The prefix is added once
-/// at registration (`dabCommandName`) and removed once on dispatch (`bareCommandName`), so adding a
-/// command needs no prefix bookkeeping. Subcommand names are never prefixed — they are already
-/// namespaced by their parent (`/dab-agent start`).
-public let dabCommandPrefix = "dab-"
+/// The old `dab-` prefix existed so another bot, or a client-mod plugin, owning the same bare name
+/// could not shadow ours. **That protection was dropped deliberately (user decision, 2026-08-06):**
+/// this bot is the only one on the server, and every command read as `/dab-…` noise instead of what
+/// it does. So the absence of a prefix is a decision, not an oversight — do not "restore" it
+/// without first deciding that shadowing has become a real risk again.
+///
+/// Specs, routing switches, and tests still keep the BARE name (`update`), and registration still
+/// goes through `dabCommandName` / dispatch through `bareCommandName`. Those two functions remain
+/// the only places a prefix is applied or removed, so reintroducing one stays a one-line change
+/// here. Subcommand names were never prefixed — they are namespaced by their parent (`/agent start`).
+public let dabCommandPrefix = ""
+
+/// The prefix commands carried until 2026-08-06. Still stripped on dispatch: renaming a global
+/// command takes up to an hour to propagate (§8-1 C33), so during that window a stale client can
+/// still send `dab-agent`, and dropping it on the floor would look like the bot was broken.
+public let legacyDabCommandPrefix = "dab-"
 
 /// Discord-visible name for a bare spec name.
 public func dabCommandName(_ bare: String) -> String { dabCommandPrefix + bare }
 
-/// Bare name to route on. A missing prefix is tolerated so an interaction from a stale client cache
-/// — or a leftover unprefixed registration mid-propagation — still routes instead of silently
-/// falling through to the unknown-command branch.
+/// Bare name to route on. The legacy `dab-` prefix is tolerated so an interaction from a client
+/// that still has the old names cached routes to the same handler instead of silently falling
+/// through to the unknown-command branch. Renamed commands (`dab-run`, `dab-help`) cannot be
+/// rescued this way — only the twelve that kept their bare name.
 public func bareCommandName(_ received: String) -> String {
-    received.hasPrefix(dabCommandPrefix)
-        ? String(received.dropFirst(dabCommandPrefix.count))
+    received.hasPrefix(legacyDabCommandPrefix)
+        ? String(received.dropFirst(legacyDabCommandPrefix.count))
         : received
 }
 
@@ -108,7 +119,7 @@ public func agentCommandSpec() -> SlashCommandSpec {
             // W14: close is a real stop (backend + unbind), not unbind-only.
             .init(name: "close", description: LocalizedText(ko: "이 채널의 세션을 중지하고 연결을 해제합니다", en: "Stop and unbind this channel's session"), options: []),
             // G-P1-05: re-bind + status intro + soft ensure (lazy turn still works if soft fails).
-            .init(name: "resume", description: LocalizedText(ko: "저장된 세션을 다시 연결하고 상태를 게시한 뒤 소프트 재연결합니다", en: "Re-bind stored session, post status, soft-reconnect"), options: []),
+            .init(name: "resume", description: LocalizedText(ko: "저장된 세션을 다시 연결하고 상태를 게시합니다", en: "Re-bind stored session, post status, soft-reconnect"), options: []),
             .init(name: "stats", description: LocalizedText(ko: "활성 세션 연결 목록을 표시합니다", en: "List active session bindings"), options: []),
         ]
     )
@@ -192,7 +203,7 @@ public func stopCommandSpec() -> SlashCommandSpec {
 public func clearCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "clear",
-        description: LocalizedText(ko: "대화 컨텍스트를 초기화합니다 (같은 폴더/설정으로 새 세션 시작)", en: "Clear conversation context (fresh session, same folder/settings)")
+        description: LocalizedText(ko: "대화 내용을 비웁니다 (폴더/설정은 유지)", en: "Clear conversation context (fresh session, same folder/settings)")
     )
 }
 
@@ -205,7 +216,7 @@ public func stopAllCommandSpec() -> SlashCommandSpec {
 public func setupCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "setup",
-        description: LocalizedText(ko: "에이전트 제어 채널과 세션 카테고리를 생성합니다 (채널이 이미 있으면 불필요)", en: "Create the agent control channel and sessions category (unnecessary if the channels already exist)"),
+        description: LocalizedText(ko: "제어 채널과 세션 카테고리를 만듭니다", en: "Create the agent control channel and sessions category (unnecessary if the channels already exist)"),
         requiresAdministrator: true
     )
 }
@@ -219,7 +230,7 @@ public func docCommandSpec() -> SlashCommandSpec {
         options: [
             .init(
                 name: "path",
-                description: LocalizedText(ko: "마크다운 파일 경로 (절대 경로 또는 세션 폴더 기준 상대 경로)", en: "Path to the markdown file (absolute, or relative to the session folder)"),
+                description: LocalizedText(ko: "마크다운 파일 경로 (절대 또는 세션 폴더 기준)", en: "Path to the markdown file (absolute, or relative to the session folder)"),
                 required: true,
                 choices: []
             ),
@@ -262,7 +273,59 @@ public func redmineIssueSelectCommandSpec() -> SlashCommandSpec {
 public func orchestrationCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "orchestration",
-        description: LocalizedText(ko: "이 세션의 프로젝트 폴더에 오케스트레이션 역할 규약과 스킬을 설치합니다 (Claude 전용)", en: "Install orchestration role manuals and skills into this project's folder (Claude only)")
+        description: LocalizedText(ko: "오케스트레이션 역할 규약과 스킬을 설치합니다", en: "Install orchestration role manuals and skills into this project's folder (Claude only)")
+    )
+}
+
+/// `/command command:<name>` — run a slash command the channel's backend itself advertises
+/// (docs/cli-slash-command-parity.md §3-5-1). The option is autocomplete-driven: the candidates are
+/// per-channel (claude/codex/grok advertise different commands), resolved from the channel binding
+/// at autocomplete time — same shape as `modelCommandSpec()`.
+///
+/// The Swift symbol keeps the `run` wording it was born with (`runCommandSpec`, `SlashRunModal`,
+/// the `run.*` i18n keys); only the Discord-visible name is `command`, paired with `command-list`
+/// so the two read as a set (run one / list them all).
+///
+/// Deliberately no free-text `args` option. Discord string options cannot hold newlines, and
+/// backend commands routinely take multi-line prompts, so arguments are collected in a modal
+/// (§3-5-1) — a second option here would fork that into two input paths.
+///
+/// Keep the ko description at or under 32 scalars: `SlashSupport.localizations()` drops any longer
+/// locale value wholesale (DiscordBM 1.16.2 length-check bug), which would silently show Korean
+/// clients the English string. `RunCommandSpecTests` guards this.
+public func runCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "command",
+        description: LocalizedText(ko: "이 채널의 백엔드가 지원하는 명령을 실행합니다", en: "Run a slash command this channel's backend supports"),
+        options: [
+            .init(
+                name: "command",
+                description: LocalizedText(ko: "실행할 명령", en: "Command to run"),
+                required: true,
+                choices: [],
+                autocomplete: true
+            ),
+        ]
+    )
+}
+
+/// `/command-list` — the whole command list for this channel's backend, as a message instead of a
+/// picker. Named to pair with `/command`: run one, or list them all.
+///
+/// `/command`'s autocomplete is capped at 25 by Discord, and the backends list skills and plugins
+/// first, so the built-ins people actually reach for never make that first page (measured on this
+/// repo: `clear` 60th, `compact` 62nd, `context` 64th, `usage` 79th). A message has no such cap.
+///
+/// No options: it lists what the channel's own binding already decides. Not admin-gated either —
+/// anyone who may drive the channel may read what it can run.
+///
+/// Same description ceilings as every other spec (ko ≤32 scalars or that locale is silently dropped
+/// and Korean clients see English; en ≤100 or the ENTIRE bulk registration fails and NO command
+/// registers) — `SlashCommandDescriptionLimitTests`, §8-1 C15·C32.
+public func helpCommandSpec() -> SlashCommandSpec {
+    SlashCommandSpec(
+        name: "command-list",
+        description: LocalizedText(ko: "이 채널에서 쓸 수 있는 명령을 보여줍니다", en: "Show every slash command this channel's backend supports")
     )
 }
 
@@ -283,6 +346,8 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         redmineCommandSpec(),
         redmineIssueSelectCommandSpec(),
         orchestrationCommandSpec(),
+        runCommandSpec(),
+        helpCommandSpec(),
     ]
 }
 

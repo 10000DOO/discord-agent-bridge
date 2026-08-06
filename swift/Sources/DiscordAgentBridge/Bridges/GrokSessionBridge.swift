@@ -162,6 +162,17 @@ public actor GrokSessionBridge {
         max(0, (turnDepth[channelId] ?? 0) - 1)
     }
 
+    /// WO-3: slash commands the live grok session advertises (`available_commands_update`, captured
+    /// by `GrokAcpClient` itself — see its `availableCommands`).
+    ///
+    /// No live session → EMPTY, not an error. Sessions spawn lazily on the first turn, so a channel
+    /// that is bound but has not talked yet simply has nobody to ask; the autocomplete caller must
+    /// answer inside Discord's ~3s budget and cannot wait for a spawn. Same policy as
+    /// `DabSessionBridge.setModel(channelId:)`, where "nothing to apply to" is success, not failure.
+    public func slashCatalog(channelId: String) -> [SlashCatalogEntry] {
+        channels[channelId]?.client.availableCommands ?? []
+    }
+
     private func executeTurn(channelId: String, ownerId: String?, guildId: String, text: String, config: SessionConfig?, files: [TurnFile]) async throws -> TurnResult {
         let channel = try await ensureChannel(channelId: channelId, config: config, ownerId: ownerId, guildId: guildId)
         // Multimodal: images → ACP `image` blocks (base64); everything else → text hint.

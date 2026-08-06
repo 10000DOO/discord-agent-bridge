@@ -430,6 +430,15 @@ export class SidecarServer {
       case 'claude.catalog':
         // Session-scoped: no. No params. Never throws (fallback is internal).
         return this.getCatalog({ logger: this.logger });
+      case 'claude.slashCommands': {
+        // Session-scoped but never fails: an absent or unknown handle is an empty list,
+        // not an error (sessions spawn lazily, so a bound-but-silent channel has nothing
+        // to ask). Mirrors the Host treating "no live session" as a no-op, not a failure.
+        const handle =
+          optionalString(params, 'session') ??
+          (typeof env.session === 'string' && env.session.length > 0 ? env.session : undefined);
+        return this.bridge.slashCommands(handle);
+      }
       case 'host.file.attach':
       case 'host.file.share':
       case 'host.orchestration.order':

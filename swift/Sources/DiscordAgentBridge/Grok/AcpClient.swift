@@ -185,6 +185,10 @@ public final class GrokAcpClient: @unchecked Sendable {
         var sessionId: String?
         var promptInFlight = false
         var lastPromptResult: JSONValue?
+        /// WO-3: latest `available_commands_update`. grok pushes it right after session/new — i.e.
+        /// OUTSIDE any turn — so it is captured here (alongside sessionId/lastPromptResult) instead of
+        /// by a turn-scoped `onNotification` subscriber, which unsubscribes when the turn ends.
+        var availableCommands: [SlashCatalogEntry] = []
     }
 
     private let state = LockedBox(State())
@@ -259,6 +263,12 @@ public final class GrokAcpClient: @unchecked Sendable {
     /// stopReason/usage from the most recent completed prompt turn (nil until one completes).
     public var lastPromptResult: JSONValue? {
         state.withLock { $0.lastPromptResult }
+    }
+
+    /// Slash commands this session advertises; empty until grok pushes the first
+    /// `available_commands_update`. Read-only snapshot — stored, never rendered (WO-3).
+    public var availableCommands: [SlashCatalogEntry] {
+        state.withLock { $0.availableCommands }
     }
 
     // Multicast notification subscription. Returns unsubscribe.
@@ -572,6 +582,12 @@ public final class GrokAcpClient: @unchecked Sendable {
     }
 
     private func dispatchNotification(method: String, params: JSONValue?) {
+        // WO-3: record the command catalog, then fan out UNCHANGED — subscribers still see every
+        // notification exactly as before, so the "grok echoes its command list; do not re-render"
+        // contract is untouched. A later push replaces the list wholesale (grok sends the full set).
+        if let catalog = grokSlashCatalog(method: method, params: params) {
+            state.withLock { $0.availableCommands = catalog }
+        }
         let handlers = state.withLock { Array($0.notificationHandlers.values) }
         for h in handlers {
             h(method, params)

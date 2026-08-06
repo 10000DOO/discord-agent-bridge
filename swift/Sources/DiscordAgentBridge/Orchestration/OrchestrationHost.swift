@@ -251,7 +251,7 @@ public actor OrchestrationHost {
         let needsRolePreamble: Bool
         if let existing = activeModules.first(where: { $0.value.moduleName == module }) {
             moduleChannelId = existing.key
-            // A reused channel whose context was wiped (`/dab-clear` on the module itself or on its
+            // A reused channel whose context was wiped (`/clear` on the module itself or on its
             // lead) no longer remembers the role doc its first turn carried, so it needs the
             // preamble again — `backendSessionId == nil` is exactly that state.
             needsRolePreamble = existing.value.backendSessionId == nil
