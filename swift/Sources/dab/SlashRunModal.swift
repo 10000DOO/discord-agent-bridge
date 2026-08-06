@@ -28,7 +28,10 @@ enum SlashRunOpen: Equatable {
 }
 
 func slashRunOpenDecision(commandValue: String) -> SlashRunOpen {
-    let command = commandValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    // The value can arrive as the picker's display text rather than the choice value, so strip the
+    // ` — description · hint` decoration back off before anything measures or runs it.
+    let command = slashCommandNameFromOptionValue(commandValue)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !command.isEmpty, command != slashCatalogNoSessionValue else { return .noSession }
     let customId = slashRunModalPrefix + command
     guard customId.count <= discordCustomIdLimit else { return .nameTooLong }

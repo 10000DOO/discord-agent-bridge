@@ -41,6 +41,22 @@ struct SlashRunModalTests {
         #expect(slashRunOpenDecision(commandValue: overflows) == .nameTooLong)
     }
 
+    /// The client can hand back the picker's display text instead of the choice value, which used to
+    /// hit the C21 refusal above for any command with a long blurb (`cocoa-patterns` did).
+    @Test func thePickersDisplayTextResolvesBackToTheBareCommandName() {
+        let display = "cocoa-patterns — Activate when using NSNotificationCenter, KVO, or NSError in Objective-C. Covers on"
+        #expect(display.count == 100)  // exactly what the 100-char clamp produces
+        #expect(
+            slashRunOpenDecision(commandValue: display)
+                == .openModal(customId: "run:cocoa-patterns", command: "cocoa-patterns")
+        )
+        // Hint-only decoration (no blurb) peels off too.
+        #expect(
+            slashRunOpenDecision(commandValue: "compact · <instructions>")
+                == .openModal(customId: "run:compact", command: "compact")
+        )
+    }
+
     @Test func theModalTitleShowsTheCommandAndRespectsDiscordsFortyFiveCharLimit() {
         #expect(slashRunModalTitle(command: "context") == "/context")
         let long = String(repeating: "y", count: 80)

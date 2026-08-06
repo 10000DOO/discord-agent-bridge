@@ -58,10 +58,26 @@ public func filterSlashCatalogChoices(
 private func slashChoiceName(_ entry: SlashCatalogEntry) -> String {
     var name = entry.name
     if !entry.description.isEmpty {
-        name += " — \(entry.description)"
+        name += slashChoiceDescriptionSeparator + entry.description
     }
     if let hint = entry.argumentHint, !hint.isEmpty {
-        name += " · \(hint)"
+        name += slashChoiceHintSeparator + hint
     }
     return name.count <= 100 ? name : String(name.prefix(100))
+}
+
+private let slashChoiceDescriptionSeparator = " — "
+private let slashChoiceHintSeparator = " · "
+
+/// The command name inside a submitted `/command` option value — the inverse of `slashChoiceName`.
+///
+/// The Discord client does not always send the choice's `value` for a picked suggestion; it can
+/// send the text it displayed instead, so the option arrives as `name — description · hint` cut at
+/// 100 chars. Everything past the name is decoration THIS file added, so peeling it back off is
+/// exactly reversible — both separators are spaced, and a backend command name is a single token
+/// (`context`, `ponytail:ponytail-help`). A value that is already a bare name passes through
+/// untouched.
+public func slashCommandNameFromOptionValue(_ value: String) -> String {
+    let head = value.components(separatedBy: slashChoiceDescriptionSeparator)[0]
+    return head.components(separatedBy: slashChoiceHintSeparator)[0]
 }
