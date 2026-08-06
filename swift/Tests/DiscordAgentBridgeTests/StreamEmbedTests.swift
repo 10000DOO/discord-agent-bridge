@@ -170,6 +170,39 @@ struct StreamStatusHostTests {
         await host.dispose(channelId: "c2")
     }
 
+    // The case this host had no answer for: a turn stretch with ZERO events (the model building a
+    // large tool input — measured at 3m35s for a 33KB Write). Every other flush path is
+    // event-driven, so the embed used to sit frozen with no way to tell work from a hang.
+    @Test func heartbeatRerendersElapsedWithoutAnyEvent() async {
+        let host = StreamStatusHost(
+            textFlushInterval: 0.05,
+            thinkingFlushInterval: 0.05,
+            heartbeatInterval: 0.05
+        )
+        let edits = LockedBox<[StreamEmbedSpec]>([])
+        await host.setUpdater { _, _, _, spec in
+            edits.withLock { $0.append(spec) }
+        }
+        await host.begin(channelId: "c-hb", guildId: "g", messageId: "m")
+        // Deliberately no noteText / noteThinking / noteToolUse / noteProgress at all.
+        for _ in 0..<100 where edits.withLock({ $0.count < 2 }) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let got = edits.withLock { $0 }
+        // More than one edit proves it re-rendered on the timer, not once at begin.
+        #expect(got.count >= 2)
+        #expect(got.last?.title == "응답 중…")
+        // Elapsed comes from the turn's own start, so the clock runs with zero deltas counted.
+        #expect(got.last?.footer?.hasSuffix("s · 0") == true)
+
+        // end() must stop the timer, or a finished turn would keep editing forever.
+        await host.end(channelId: "c-hb")
+        let after = edits.withLock { $0.count }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        #expect(edits.withLock { $0.count } == after)
+        await host.dispose(channelId: "c-hb")
+    }
+
     // G-P0-03: thinking buffer is separate from answer text; purple title while active.
     @Test func thinkingFlushIsPurpleAndSeparateFromText() async {
         let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)

@@ -55,7 +55,7 @@ export type AgentEvent =
   | { kind: 'tool_use'; id: string; name: string; input: unknown; parentToolUseId?: string }
   | { kind: 'tool_result'; id: string; ok: boolean; content: string; parentToolUseId?: string }
   | { kind: 'permission_request'; id: string; toolName: string; input: unknown } // resolved via ctx.requestPermission
-  | { kind: 'progress'; label: string; detail?: string } // Codex operation-progress
+  | { kind: 'progress'; label: string; detail?: string } // Codex operation-progress; Claude tool-input progress
   | {
       kind: 'result';
       text?: string;

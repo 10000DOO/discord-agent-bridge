@@ -129,6 +129,18 @@ private func codexProgressForItem(type: String, item: JSONValue) -> AgentEvent? 
     case "collabAgentToolCall", "collab_agent_tool_call":
         let detail = item["agentRole"]?.stringValue ?? item["tool"]?.stringValue
         return .progress(label: CodexProgressLabels.collabAgentToolCall, detail: detail)
+    // A codex turn that delegates emits `subAgentActivity` alongside `collabAgentToolCall`
+    // (measured against codex-cli 0.146.1, 2026-08-06). It was the only `item/started` type a real
+    // delegating turn produced that fell through to nil here, so the channel went quiet for the
+    // whole subagent stretch. Shares the label: from the channel's side both mean the same thing.
+    //
+    // `agentPath` is this item's only human-meaningful field — its siblings are `kind`
+    // ("started", which would just repeat the label) and `agentThreadId` (a uuid). It is read
+    // optionally on purpose: the captured payload was truncated mid-key and the field name comes
+    // from the codex binary's own `ThreadItem` strings, so if it is ever absent or renamed the
+    // line still posts with no detail rather than showing something wrong.
+    case "subAgentActivity", "sub_agent_activity":
+        return .progress(label: CodexProgressLabels.collabAgentToolCall, detail: item["agentPath"]?.stringValue)
     case "image":
         return .progress(label: CodexProgressLabels.image, detail: nil)
     case "fileSearch", "file_search":

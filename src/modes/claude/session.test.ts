@@ -213,6 +213,52 @@ describe('ClaudeSession — SDK message mapping', () => {
     expect(state.contextUsageCalls).toBe(1);
   });
 
+  // A large Write/Edit builds its input over minutes with no other event in flight (measured:
+  // 288 input_json_delta over 3m35s for 33.5KB), so the size is reported as it accumulates.
+  it('reports streaming tool-input size as progress on every 8KB step', async () => {
+    const { ctx, events } = makeCtx();
+    const chunk = 'x'.repeat(1024);
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-ti' },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', name: 'Write' } } },
+      // 9KB total: one step boundary crossed at 8KB, the 9th chunk left unreported.
+      ...Array.from({ length: 9 }, () => ({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: chunk } },
+      })),
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+      // A delta after stop must not resurrect the tracker.
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: chunk.repeat(9) } } },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'result'));
+    await session.stop();
+
+    expect(events.filter((e) => e.kind === 'progress')).toEqual([
+      { kind: 'progress', label: 'Write' },
+      { kind: 'progress', label: 'Write', detail: '8.0KB' },
+    ]);
+  });
+
+  it('reports a small tool input as a single name-only progress line', async () => {
+    const { ctx, events } = makeCtx();
+    const { queryFn } = fakeQueryFn([
+      { type: 'system', subtype: 'init', session_id: 'sess-ti-small' },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name: 'Read' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/tmp/a.txt"}' } } },
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]);
+    const session = new ClaudeSession(ctx, { queryFn });
+
+    await waitFor(() => events.some((e) => e.kind === 'result'));
+    await session.stop();
+
+    expect(events.filter((e) => e.kind === 'progress')).toEqual([{ kind: 'progress', label: 'Read' }]);
+  });
+
   it('emits context_usage WITHOUT a model key when the init message carried none', async () => {
     const { ctx, events } = makeCtx();
     const { queryFn } = fakeQueryFn([

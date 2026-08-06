@@ -263,7 +263,8 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 
 ### Live session UX
 
-- Streaming status embed (text / tool progress).
+- Streaming status embed (text / tool progress). The footer's elapsed clock is re-rendered on a timer, so it keeps moving through a stretch of a turn that emits no events at all — a session that is working never looks the same as one that has hung.
+- **Tool-input progress (Claude).** A tool's input is built before the call itself is announced, so a large `Write`/`Edit` used to leave the channel silent for minutes. The tool's name now posts as soon as its input starts building, with the accumulated size following every 8KB (`Write` → `Write: 8.0KB` → …). Codex reports the equivalent from its own `item/started` notifications; Grok's CLI delivers a tool's input in one final batch, so only the elapsed clock moves there.
 - Tool activity → Discord work threads with formatted tool output and **diff** views. The activity log line is a one-line CLI-style summary; the thread carries the **whole** result body — output longer than one message is split across several instead of being cut off.
 - Status-channel notifications for key events (configurable in `/config`).
 - Usage embeds (Claude OAuth, Codex rate limits, Grok weekly) from `/agent stats`.

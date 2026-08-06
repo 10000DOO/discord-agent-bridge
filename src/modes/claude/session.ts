@@ -32,6 +32,15 @@ import { appendNonImageHints, classifyTurnFiles, readImageBase64 } from '../shar
 // the network (the default is the real SDK query).
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
+// Streamed tool-input bytes between two progress lines (mapStreamEvent / noteToolInputDelta).
+export const TOOL_INPUT_PROGRESS_STEP_BYTES = 8 * 1024;
+
+// Byte count for a progress line's detail. Bytes under 1KB stay bytes so a small tool input does
+// not read as "0.1KB".
+export function formatByteSize(bytes: number): string {
+  return bytes < 1024 ? `${bytes}B` : `${(bytes / 1024).toFixed(1)}KB`;
+}
+
 export interface ClaudeSessionDeps {
   // Defaults to the real SDK query; tests inject a fake.
   queryFn?: QueryFn;
@@ -117,6 +126,12 @@ export class ClaudeSession implements ModeSession {
   // Count of connected MCP servers from the init message, carried on
   // context_usage for the panel's "session composition" line.
   private mcpServerCount: number | null = null;
+
+  // The tool-input content block currently streaming, if any (mapStreamEvent). Anthropic streams
+  // content blocks one at a time, so a single slot is enough; `index` guards against a stray
+  // delta from an already-stopped block.
+  private toolInput: { index: number; name: string; bytes: number; reportedBytes: number } | null =
+    null;
 
   // Session facts from init (+ memory/context topped up at each result), used to rebuild the
   // slash-command screens the CLI only draws inside its own UI (localCommands.ts).
@@ -406,20 +421,61 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
     })();
   }
 
-  // stream_event content_block_delta → text/thinking deltas (§5a). The SDK wraps
+  // stream_event → text/thinking deltas + tool-input progress (§5a). The SDK wraps
   // the raw Anthropic stream event; delta shapes vary by version, so we navigate
   // structurally and defensively (mirrors A4D eventHandler.ts:175-184).
+  //
+  // A tool's input arrives as `input_json_delta` between that content block's start and stop,
+  // while the `tool_use` event (mapAssistant) only lands once the WHOLE input is built. For a
+  // large Write/Edit that gap is the one stretch of a turn with no other event at all — measured
+  // 2026-08-06 against SDK 0.3.223: 288 input_json_delta over 3m35s for a 33.5KB input, ~0.75s
+  // apart. Every one of them used to be dropped here, so the channel showed nothing for minutes.
   private mapStreamEvent(msg: SDKMessage & { type: 'stream_event' }): void {
     const event = (msg as { event?: unknown }).event as
-      | { type?: string; delta?: { type?: string; text?: string; thinking?: string } }
+      | {
+          type?: string;
+          index?: number;
+          content_block?: { type?: string; name?: string };
+          delta?: { type?: string; text?: string; thinking?: string; partial_json?: string };
+        }
       | undefined;
-    if (!event || event.type !== 'content_block_delta' || !event.delta) return;
+    if (!event) return;
+    if (event.type === 'content_block_start') {
+      // Naming the tool the instant its input starts building is the earliest signal available;
+      // the size follows as the input accumulates (noteToolInputDelta).
+      if (event.content_block?.type === 'tool_use') {
+        const name = event.content_block.name ?? 'tool';
+        this.toolInput = { index: event.index ?? -1, name, bytes: 0, reportedBytes: 0 };
+        this.ctx.emit({ kind: 'progress', label: name });
+      }
+      return;
+    }
+    if (event.type === 'content_block_stop') {
+      if (this.toolInput && this.toolInput.index === (event.index ?? -1)) this.toolInput = null;
+      return;
+    }
+    if (event.type !== 'content_block_delta' || !event.delta) return;
     const delta = event.delta;
     if (delta.type === 'text_delta' && typeof delta.text === 'string') {
       this.ctx.emit({ kind: 'text', text: delta.text, delta: true });
     } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
       this.ctx.emit({ kind: 'thinking', text: delta.thinking, delta: true });
+    } else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+      this.noteToolInputDelta(event.index ?? -1, delta.partial_json.length);
     }
+  }
+
+  // Report accumulated tool-input size on a SIZE step, not a time interval: the host appends
+  // every progress line to the stream embed body, so one line per 8KB keeps a small tool input
+  // at a single line (just its name) while a huge one still reports as it grows. Liveness
+  // between steps is the embed footer's own elapsed clock (StreamStatusHost heartbeat).
+  private noteToolInputDelta(index: number, length: number): void {
+    const t = this.toolInput;
+    if (!t || t.index !== index) return;
+    t.bytes += length;
+    if (t.bytes - t.reportedBytes < TOOL_INPUT_PROGRESS_STEP_BYTES) return;
+    t.reportedBytes = t.bytes;
+    this.ctx.emit({ kind: 'progress', label: t.name, detail: formatByteSize(t.bytes) });
   }
 
   // assistant tool_use blocks → tool_use events (§5a). Text blocks arrive via
@@ -471,6 +527,11 @@ When your answer contains GFM tables or \`\`\`mermaid code blocks, DO NOT render
   // cannot lose the panel snapshot or attach it to the following turn.
   // getContextUsage remains best-effort: a failure still emits the result.
   private async mapResult(msg: SDKMessage & { type: 'result' }): Promise<void> {
+    // Drop any tool-input tracker the turn ended on. A turn interrupted mid-input never gets its
+    // content_block_stop, and while the next block's start would overwrite the slot anyway, the
+    // invariant "no tracker outside a live tool block" is worth holding at the turn boundary
+    // rather than relying on that.
+    this.toolInput = null;
     const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage ?? {};
     const resultText = msg.subtype === 'success' ? msg.result : undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;

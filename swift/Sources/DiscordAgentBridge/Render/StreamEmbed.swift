@@ -47,6 +47,8 @@ public struct StreamEmbedSpec: Sendable, Equatable {
 /// - `elapsedSec`/`deltaCount` (H8, TS `streamEmbed.ts:219-222` footer `"{sec}s · {deltaCount}"`):
 ///   absent (nil) until the current phase's kind has actually started (StreamStatusHost only
 ///   passes a value once a matching delta arrived), so a tool-only flush still shows tool-count-only.
+///   The one exception is StreamStatusHost's heartbeat tick, which substitutes the turn's own start
+///   so a turn that has produced NO event at all still renders a moving clock (`deltaCount` 0).
 public func formatStreamEmbed(
     partialText: String = "",
     toolCount: Int = 0,

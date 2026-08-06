@@ -22,10 +22,18 @@ public actor StreamStatusHost {
     public static let defaultTextFlushInterval: TimeInterval = 1.0
     /// Default minimum gap between Discord edits while thinking streams (TS `THINKING_DEBOUNCE_MS` = 2000).
     public static let defaultThinkingFlushInterval: TimeInterval = 2.0
+    /// Default gap between heartbeat re-renders while a turn is live. Every other flush here is
+    /// event-driven, so a stretch of a turn that produces no events at all — the model building a
+    /// large tool input, measured at 3m35s for a 33KB Write — used to leave the embed frozen with
+    /// no way to tell a working session from a dead one. This re-renders on a timer so the footer's
+    /// elapsed clock keeps moving regardless of what the backend does or doesn't send.
+    public static let defaultHeartbeatInterval: TimeInterval = 10.0
 
     /// Per-instance intervals (tests inject short values).
     private let textFlushInterval: TimeInterval
     private let thinkingFlushInterval: TimeInterval
+    /// `<= 0` disables the heartbeat entirely (tests that assert exact edit counts).
+    private let heartbeatInterval: TimeInterval
     private var updater: StreamStatusUpdater?
     private var states: [String: ChannelState] = [:]
 
@@ -42,6 +50,9 @@ public actor StreamStatusHost {
         var active: Bool = true
         var lastFlush: Date?
         var flushTask: Task<Void, Never>?
+        /// Turn start, independent of either kind's first delta — the heartbeat's elapsed source.
+        var turnStartedAt: Date?
+        var heartbeatTask: Task<Void, Never>?
         // H8 footer (TS per-kind `startedAt`/`deltaCount`, `streamEmbed.ts:58-60,87-90`): lazily
         // set on each kind's first delta, independent of the other kind, reset only at begin().
         var textStartedAt: Date?
@@ -52,10 +63,12 @@ public actor StreamStatusHost {
 
     public init(
         textFlushInterval: TimeInterval = StreamStatusHost.defaultTextFlushInterval,
-        thinkingFlushInterval: TimeInterval = StreamStatusHost.defaultThinkingFlushInterval
+        thinkingFlushInterval: TimeInterval = StreamStatusHost.defaultThinkingFlushInterval,
+        heartbeatInterval: TimeInterval = StreamStatusHost.defaultHeartbeatInterval
     ) {
         self.textFlushInterval = textFlushInterval
         self.thinkingFlushInterval = thinkingFlushInterval
+        self.heartbeatInterval = heartbeatInterval
     }
 
     /// Wire Discord edit sink once at startup (dab). Absent → notes no-op.
@@ -66,11 +79,15 @@ public actor StreamStatusHost {
     /// Start tracking a turn's control message (posted by dab before runTurn).
     public func begin(channelId: String, guildId: String, messageId: String) {
         states[channelId]?.flushTask?.cancel()
-        states[channelId] = ChannelState(
+        states[channelId]?.heartbeatTask?.cancel()
+        var s = ChannelState(
             messageId: messageId,
             guildId: guildId,
             active: true
         )
+        s.turnStartedAt = Date()
+        states[channelId] = s
+        startHeartbeat(channelId: channelId)
     }
 
     /// Stop mid-turn edits (turn finished / failed). Does not remove identity until dispose.
@@ -78,6 +95,8 @@ public actor StreamStatusHost {
         guard var s = states[channelId] else { return }
         s.flushTask?.cancel()
         s.flushTask = nil
+        s.heartbeatTask?.cancel()
+        s.heartbeatTask = nil
         s.active = false
         states[channelId] = s
     }
@@ -85,6 +104,7 @@ public actor StreamStatusHost {
     /// Drop all state for a channel (session stop / detach).
     public func dispose(channelId: String) {
         states[channelId]?.flushTask?.cancel()
+        states[channelId]?.heartbeatTask?.cancel()
         states.removeValue(forKey: channelId)
     }
 
@@ -186,7 +206,10 @@ public actor StreamStatusHost {
         states[channelId] = s
     }
 
-    private func flushNow(channelId: String) async {
+    /// `heartbeat: true` is the timer path, which is the only caller allowed to fall back to the
+    /// turn's own start for the elapsed footer. Event-driven flushes keep TS parity exactly (a
+    /// tool-only flush shows the tool count and no clock — see `formatStreamEmbed`'s contract).
+    private func flushNow(channelId: String, heartbeat: Bool = false) async {
         guard var s = states[channelId], s.active else { return }
         s.flushTask = nil
         s.lastFlush = Date()
@@ -194,8 +217,11 @@ public actor StreamStatusHost {
         let guildId = s.guildId
         // Thinking phase shows thinking buffer only; answer text stays in partialText.
         let displayText = s.phase == .thinking ? s.thinkingText : s.partialText
-        // H8: elapsed/delta count are per-kind (nil until that kind's first delta arrived).
-        let startedAt = s.phase == .thinking ? s.thinkingStartedAt : s.textStartedAt
+        // H8: elapsed/delta count are per-kind (nil until that kind's first delta arrived). The
+        // heartbeat additionally falls back to the turn's start, so a tick that lands before any
+        // delta still renders a moving clock instead of a bare title.
+        let kindStartedAt = s.phase == .thinking ? s.thinkingStartedAt : s.textStartedAt
+        let startedAt = heartbeat ? (kindStartedAt ?? s.turnStartedAt) : kindStartedAt
         let deltaCount = s.phase == .thinking ? s.thinkingDeltaCount : s.textDeltaCount
         let spec = formatStreamEmbed(
             partialText: displayText,
@@ -207,6 +233,27 @@ public actor StreamStatusHost {
         states[channelId] = s
         guard let updater else { return }
         await updater(channelId, messageId, guildId, spec)
+    }
+
+    // MARK: - heartbeat
+
+    /// Re-render on a timer for as long as the turn is live, so the embed keeps proving the session
+    /// is alive through a stretch that produces no events. Only the footer's elapsed value changes,
+    /// so this never invents content — a turn with nothing to show still shows nothing but a clock.
+    /// Cancelled by `end()` / `dispose()`; `flushNow`'s own `active` guard covers the race where
+    /// the turn ends between a tick firing and the actor hop.
+    private func startHeartbeat(channelId: String) {
+        guard heartbeatInterval > 0 else { return }
+        let waitNs = UInt64(heartbeatInterval * 1_000_000_000)
+        // Strong self, same as scheduleFlush: the task is owned by ChannelState and cancelled there.
+        let task = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: waitNs)
+                guard !Task.isCancelled else { return }
+                await self.flushNow(channelId: channelId, heartbeat: true)
+            }
+        }
+        states[channelId]?.heartbeatTask = task
     }
 
     // MARK: - H8 thought-complete flash

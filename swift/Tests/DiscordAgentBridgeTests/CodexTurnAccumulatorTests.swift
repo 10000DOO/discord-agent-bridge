@@ -284,6 +284,31 @@ struct CodexTurnStepTests {
         #expect(codexProgressEvents(method: "item/agentMessage/delta", params: nil).isEmpty)
     }
 
+    // A delegating codex turn also emits `subAgentActivity`, which used to fall through to nil and
+    // leave the channel silent for the whole subagent stretch (measured, codex-cli 0.146.1).
+    @Test func progressEventsItemStartedSubAgentActivity() {
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object([
+                "type": .string("subAgentActivity"),
+                "kind": .string("started"),
+                "agentThreadId": .string("019fd57f-971c-7920-b5ce-6d3ac6e87ba0"),
+                "agentPath": .string("reviewer"),
+            ])])
+        ) == [.progress(label: CodexProgressLabels.collabAgentToolCall, detail: "reviewer")])
+
+        // No agentPath → the line still posts, with no detail. Never `kind` ("started" would only
+        // repeat the label) and never `agentThreadId` (a uuid is not a label).
+        #expect(codexProgressEvents(
+            method: "item/started",
+            params: .object(["item": .object([
+                "type": .string("sub_agent_activity"),
+                "kind": .string("started"),
+                "agentThreadId": .string("019fd57f-971c-7920-b5ce-6d3ac6e87ba0"),
+            ])])
+        ) == [.progress(label: CodexProgressLabels.collabAgentToolCall, detail: nil)])
+    }
+
     // C1 / eventMapper.ts:171-184 — item/reasoning/delta(+3 aliases) → kind:'thinking'.
     @Test func progressEventsReasoningDeltaMapsToThinking() {
         for method in [
