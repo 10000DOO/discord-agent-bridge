@@ -44,18 +44,21 @@ public struct StreamEmbedSpec: Sendable, Equatable {
 /// - Live responding: title "응답 중…", yellow, description = clipped partial answer text.
 /// - Live thinking: title "생각 중…", purple (`DiscordColors.thinking`), description = thinking buffer.
 /// - Finalized: title "응답 완료" (+ " · 🛠️ N"), no body (answer is posted separately).
-/// - `elapsedSec`/`deltaCount` (H8, TS `streamEmbed.ts:219-222` footer `"{sec}s · {deltaCount}"`):
-///   absent (nil) until the current phase's kind has actually started (StreamStatusHost only
-///   passes a value once a matching delta arrived), so a tool-only flush still shows tool-count-only.
-///   The one exception is StreamStatusHost's heartbeat tick, which substitutes the turn's own start
-///   so a turn that has produced NO event at all still renders a moving clock (`deltaCount` 0).
+/// - `elapsedSeconds`: the live clock, appended to the *title* as " · 3분 34초". It sat in the footer
+///   next to a raw delta count (H8, TS `streamEmbed.ts:219-222` `"{sec}s · {deltaCount}"`) — the
+///   least legible spot in the embed for the one value that proves the session is still alive, and
+///   `214.3s` is not a duration a person reads. Deliberate divergence from that TS footer contract;
+///   the delta count went with it (a bare number nobody in a channel can interpret).
+///   Absent (nil) until the current phase's kind has actually started (StreamStatusHost only passes
+///   a value once a matching delta arrived), so a tool-only flush still shows tool-count-only. The
+///   one exception is StreamStatusHost's heartbeat tick, which substitutes the turn's own start so a
+///   turn that has produced NO event at all still renders a moving clock.
 public func formatStreamEmbed(
     partialText: String = "",
     toolCount: Int = 0,
     finalized: Bool = false,
     phase: StreamEmbedPhase = .responding,
-    elapsedSec: String? = nil,
-    deltaCount: Int = 0
+    elapsedSeconds: Int? = nil
 ) -> StreamEmbedSpec {
     if finalized {
         return StreamEmbedSpec(
@@ -71,21 +74,19 @@ public func formatStreamEmbed(
     } else {
         desc = DiscordText.truncate(partialText, streamEmbedDescLimit)
     }
-    var footerParts: [String] = []
-    if let elapsedSec { footerParts.append("\(elapsedSec)s · \(deltaCount)") }
-    if toolCount > 0 { footerParts.append("🛠️ \(toolCount)") }
-    let footer: String? = footerParts.isEmpty ? nil : footerParts.joined(separator: " · ")
+    let footer: String? = toolCount > 0 ? "🛠️ \(toolCount)" : nil
+    let clock = elapsedSeconds.map { " · \(formatDurationText(seconds: $0))" } ?? ""
     switch phase {
     case .thinking:
         return StreamEmbedSpec(
-            title: StreamEmbedLabels.thinking,
+            title: StreamEmbedLabels.thinking + clock,
             description: desc,
             color: DiscordColors.thinking,
             footer: footer
         )
     case .responding:
         return StreamEmbedSpec(
-            title: StreamEmbedLabels.responding,
+            title: StreamEmbedLabels.responding + clock,
             description: desc,
             color: DiscordColors.streaming,
             footer: footer
@@ -98,9 +99,9 @@ public func formatStreamEmbed(
 /// this once the turn ends). Swift merged thinking/text into one control message, so the only
 /// point this is ever visible is the instant the phase leaves `.thinking` (StreamStatusHost
 /// flashes it there before the message moves on to the responding content).
-public func formatThoughtCompleteEmbed(elapsedSec: String) -> StreamEmbedSpec {
+public func formatThoughtCompleteEmbed(elapsedSeconds: Int) -> StreamEmbedSpec {
     StreamEmbedSpec(
-        title: I18n.t("stream.thought", ["sec": elapsedSec]),
+        title: I18n.t("stream.thought", ["sec": formatDurationText(seconds: elapsedSeconds)]),
         color: DiscordColors.thinking
     )
 }

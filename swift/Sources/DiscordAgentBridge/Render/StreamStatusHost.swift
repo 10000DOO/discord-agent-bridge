@@ -25,9 +25,9 @@ public actor StreamStatusHost {
     /// Default gap between heartbeat re-renders while a turn is live. Every other flush here is
     /// event-driven, so a stretch of a turn that produces no events at all — the model building a
     /// large tool input, measured at 3m35s for a 33KB Write — used to leave the embed frozen with
-    /// no way to tell a working session from a dead one. This re-renders on a timer so the footer's
+    /// no way to tell a working session from a dead one. This re-renders on a timer so the title's
     /// elapsed clock keeps moving regardless of what the backend does or doesn't send.
-    public static let defaultHeartbeatInterval: TimeInterval = 10.0
+    public static let defaultHeartbeatInterval: TimeInterval = 5.0
 
     /// Per-instance intervals (tests inject short values).
     private let textFlushInterval: TimeInterval
@@ -53,12 +53,10 @@ public actor StreamStatusHost {
         /// Turn start, independent of either kind's first delta — the heartbeat's elapsed source.
         var turnStartedAt: Date?
         var heartbeatTask: Task<Void, Never>?
-        // H8 footer (TS per-kind `startedAt`/`deltaCount`, `streamEmbed.ts:58-60,87-90`): lazily
-        // set on each kind's first delta, independent of the other kind, reset only at begin().
+        // H8 title clock (TS per-kind `startedAt`, `streamEmbed.ts:58-60,87-90`): lazily set on each
+        // kind's first delta, independent of the other kind, reset only at begin().
         var textStartedAt: Date?
-        var textDeltaCount = 0
         var thinkingStartedAt: Date?
-        var thinkingDeltaCount = 0
     }
 
     public init(
@@ -113,7 +111,6 @@ public actor StreamStatusHost {
         guard !delta.isEmpty, var s = states[channelId], s.active else { return }
         flashThoughtCompleteIfLeavingThinking(s, channelId: channelId)
         if s.textStartedAt == nil { s.textStartedAt = Date() }
-        s.textDeltaCount += 1
         s.partialText += delta
         s.phase = .responding
         states[channelId] = s
@@ -127,7 +124,6 @@ public actor StreamStatusHost {
     public func noteThinking(channelId: String, delta: String) {
         guard !delta.isEmpty, var s = states[channelId], s.active else { return }
         if s.thinkingStartedAt == nil { s.thinkingStartedAt = Date() }
-        s.thinkingDeltaCount += 1
         s.thinkingText += delta
         s.phase = .thinking
         states[channelId] = s
@@ -207,7 +203,7 @@ public actor StreamStatusHost {
     }
 
     /// `heartbeat: true` is the timer path, which is the only caller allowed to fall back to the
-    /// turn's own start for the elapsed footer. Event-driven flushes keep TS parity exactly (a
+    /// turn's own start for the title clock. Event-driven flushes keep the per-kind rule (a
     /// tool-only flush shows the tool count and no clock — see `formatStreamEmbed`'s contract).
     private func flushNow(channelId: String, heartbeat: Bool = false) async {
         guard var s = states[channelId], s.active else { return }
@@ -217,18 +213,16 @@ public actor StreamStatusHost {
         let guildId = s.guildId
         // Thinking phase shows thinking buffer only; answer text stays in partialText.
         let displayText = s.phase == .thinking ? s.thinkingText : s.partialText
-        // H8: elapsed/delta count are per-kind (nil until that kind's first delta arrived). The
-        // heartbeat additionally falls back to the turn's start, so a tick that lands before any
-        // delta still renders a moving clock instead of a bare title.
+        // H8: the clock is per-kind (nil until that kind's first delta arrived). The heartbeat
+        // additionally falls back to the turn's start, so a tick that lands before any delta still
+        // renders a moving clock instead of a bare title.
         let kindStartedAt = s.phase == .thinking ? s.thinkingStartedAt : s.textStartedAt
         let startedAt = heartbeat ? (kindStartedAt ?? s.turnStartedAt) : kindStartedAt
-        let deltaCount = s.phase == .thinking ? s.thinkingDeltaCount : s.textDeltaCount
         let spec = formatStreamEmbed(
             partialText: displayText,
             toolCount: s.toolCount,
             phase: s.phase,
-            elapsedSec: startedAt.map { Self.formatElapsedSec(since: $0) },
-            deltaCount: deltaCount
+            elapsedSeconds: startedAt.map { Self.elapsedSeconds(since: $0) }
         )
         states[channelId] = s
         guard let updater else { return }
@@ -238,7 +232,7 @@ public actor StreamStatusHost {
     // MARK: - heartbeat
 
     /// Re-render on a timer for as long as the turn is live, so the embed keeps proving the session
-    /// is alive through a stretch that produces no events. Only the footer's elapsed value changes,
+    /// is alive through a stretch that produces no events. Only the title's elapsed value changes,
     /// so this never invents content — a turn with nothing to show still shows nothing but a clock.
     /// Cancelled by `end()` / `dispose()`; `flushNow`'s own `active` guard covers the race where
     /// the turn ends between a tick firing and the actor hop.
@@ -266,7 +260,7 @@ public actor StreamStatusHost {
     /// mutation, so it still sees the outgoing `.thinking` state.
     private func flashThoughtCompleteIfLeavingThinking(_ state: ChannelState, channelId: String) {
         guard state.phase == .thinking, let startedAt = state.thinkingStartedAt, let updater else { return }
-        let spec = formatThoughtCompleteEmbed(elapsedSec: Self.formatElapsedSec(since: startedAt))
+        let spec = formatThoughtCompleteEmbed(elapsedSeconds: Self.elapsedSeconds(since: startedAt))
         let messageId = state.messageId
         let guildId = state.guildId
         // Fire-and-forget: the caller's own scheduleFlush(force:false) right after re-arms the
@@ -274,7 +268,7 @@ public actor StreamStatusHost {
         Task { await updater(channelId, messageId, guildId, spec) }
     }
 
-    private static func formatElapsedSec(since startedAt: Date) -> String {
-        String(format: "%.1f", Date().timeIntervalSince(startedAt))
+    private static func elapsedSeconds(since startedAt: Date) -> Int {
+        Int(Date().timeIntervalSince(startedAt))
     }
 }

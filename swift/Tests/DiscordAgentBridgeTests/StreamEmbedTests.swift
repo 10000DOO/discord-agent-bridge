@@ -86,23 +86,31 @@ struct FormatStreamEmbedTests {
         #expect(e.description == nil)
     }
 
-    // H8: footer carries "{elapsedSec}s · {deltaCount}" (TS streamEmbed.ts:219-222) once the
-    // caller has a real elapsed value; absent (nil) omits it entirely (unchanged tool-only case).
-    @Test func liveFooterShowsElapsedAndDeltaCount() {
-        let e = formatStreamEmbed(partialText: "hi", elapsedSec: "1.2", deltaCount: 3)
-        #expect(e.footer == "1.2s · 3")
+    // H8: the clock rides the title in 시분초; footer keeps the tool count alone. Absent (nil)
+    // elapsed omits the clock entirely (unchanged tool-only case).
+    @Test func liveTitleShowsElapsedClock() {
+        let e = formatStreamEmbed(partialText: "hi", elapsedSeconds: 12)
+        #expect(e.title == "응답 중… · 12초")
+        #expect(e.footer == nil)
     }
 
-    @Test func liveFooterCombinesElapsedDeltaAndToolCount() {
-        let e = formatStreamEmbed(partialText: "hi", toolCount: 2, elapsedSec: "0.5", deltaCount: 1)
-        #expect(e.footer == "0.5s · 1 · 🛠️ 2")
+    @Test func liveTitleClockSplitsHoursMinutesSeconds() {
+        #expect(formatStreamEmbed(elapsedSeconds: 214).title == "응답 중… · 3분 34초")
+        #expect(formatStreamEmbed(elapsedSeconds: 3_723).title == "응답 중… · 1시간 2분 3초")
+        #expect(formatStreamEmbed(phase: .thinking, elapsedSeconds: 90).title == "생각 중… · 1분 30초")
+    }
+
+    @Test func liveClockInTitleLeavesToolCountInFooter() {
+        let e = formatStreamEmbed(partialText: "hi", toolCount: 2, elapsedSeconds: 30)
+        #expect(e.title == "응답 중… · 30초")
+        #expect(e.footer == "🛠️ 2")
     }
 
     // H8: "Thought for Ns" (TS finalize() kind:'thinking', streamEmbed.ts:158-164) — bare
     // title + color, no description/footer.
     @Test func thoughtCompleteEmbedMatchesTSShape() {
-        let e = formatThoughtCompleteEmbed(elapsedSec: "3.4")
-        #expect(e.title == "3.4초 동안 생각함")
+        let e = formatThoughtCompleteEmbed(elapsedSeconds: 214)
+        #expect(e.title == "3분 34초 동안 생각함")
         #expect(e.color == DiscordColors.thinking)
         #expect(e.description == nil)
         #expect(e.footer == nil)
@@ -191,9 +199,9 @@ struct StreamStatusHostTests {
         let got = edits.withLock { $0 }
         // More than one edit proves it re-rendered on the timer, not once at begin.
         #expect(got.count >= 2)
-        #expect(got.last?.title == "응답 중…")
-        // Elapsed comes from the turn's own start, so the clock runs with zero deltas counted.
-        #expect(got.last?.footer?.hasSuffix("s · 0") == true)
+        // Elapsed comes from the turn's own start, so the title clock runs with no event at all.
+        #expect(got.last?.title.hasPrefix("응답 중… · ") == true)
+        #expect(got.last?.title.hasSuffix("초") == true)
 
         // end() must stop the timer, or a finished turn would keep editing forever.
         await host.end(channelId: "c-hb")
@@ -217,7 +225,8 @@ struct StreamStatusHostTests {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         let thinkEdit = edits.withLock { $0.last }
-        #expect(thinkEdit?.title == "생각 중…")
+        // Title now carries the clock ("생각 중… · 0초"); the elapsed value itself is timing-dependent.
+        #expect(thinkEdit?.title.hasPrefix("생각 중…") == true)
         #expect(thinkEdit?.color == DiscordColors.thinking)
         #expect(thinkEdit?.description == "pondering")
 
@@ -230,7 +239,7 @@ struct StreamStatusHostTests {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         let answerEdit = edits.withLock { $0.last }
-        #expect(answerEdit?.title == "응답 중…")
+        #expect(answerEdit?.title.hasPrefix("응답 중…") == true)
         #expect(answerEdit?.color == DiscordColors.streaming)
         #expect(answerEdit?.description == "Final answer")
         await host.dispose(channelId: "c3")
@@ -271,12 +280,12 @@ struct StreamStatusHostTests {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         let got = edits.withLock { $0.last }
-        #expect(got?.title == "생각 중…")
+        #expect(got?.title.hasPrefix("생각 중…") == true)
         await host.dispose(channelId: "c5")
     }
 
-    // H8: footer carries "{elapsed}s · {deltaCount}" once a real text delta has arrived.
-    @Test func footerShowsElapsedAndDeltaOnceStarted() async {
+    // H8: the title carries the 시분초 clock once a real text delta has arrived.
+    @Test func titleShowsElapsedClockOnceStarted() async {
         let host = StreamStatusHost(textFlushInterval: 0.05, thinkingFlushInterval: 0.05)
         let edits = LockedBox<[StreamEmbedSpec]>([])
         await host.setUpdater { _, _, _, spec in
@@ -288,8 +297,9 @@ struct StreamStatusHostTests {
         for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        let footer = edits.withLock { $0.last?.footer }
-        #expect(footer?.hasSuffix("s · 2") == true)
+        let title = edits.withLock { $0.last?.title }
+        #expect(title?.hasPrefix("응답 중… · ") == true)
+        #expect(title?.hasSuffix("초") == true)
         await host.dispose(channelId: "c6")
     }
 
@@ -307,7 +317,7 @@ struct StreamStatusHostTests {
         for _ in 0..<100 where edits.withLock({ $0.isEmpty }) {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        #expect(edits.withLock { $0.last?.title } == "생각 중…")
+        #expect(edits.withLock { $0.last?.title.hasPrefix("생각 중…") } == true)
 
         await host.noteText(channelId: "c7", delta: "answer")
         var thoughtComplete: StreamEmbedSpec?
@@ -328,7 +338,7 @@ struct StreamStatusHostTests {
             if lastDesc == "answer" { break }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        #expect(edits.withLock { $0.last?.title } == "응답 중…")
+        #expect(edits.withLock { $0.last?.title.hasPrefix("응답 중…") } == true)
         await host.dispose(channelId: "c7")
     }
 }

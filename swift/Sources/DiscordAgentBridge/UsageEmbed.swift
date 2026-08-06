@@ -118,11 +118,19 @@ private let agentsMaxVisible = 5
 // Per-run label budget so one long description cannot eat the whole field.
 private let agentLabelMax = 100
 
+/// "12초" / "3분 12초" / "1시간 3분 12초" — hour/minute/second duration text (`usage.duration.*`).
+/// Shared by the subagent run suffix and the live stream clock (StreamEmbed): a bare second count
+/// stops being readable well before a turn is done (a 33KB tool input measured 3m35s of silence).
+public func formatDurationText(seconds: Int) -> String {
+    let total = max(0, seconds)
+    if total < 60 { return I18n.t("usage.duration.sec", ["s": "\(total)"]) }
+    if total < 3600 { return I18n.t("usage.duration.minSec", ["m": "\(total / 60)", "s": "\(total % 60)"]) }
+    return I18n.t("usage.duration.hourMinSec", ["h": "\(total / 3600)", "m": "\((total % 3600) / 60)", "s": "\(total % 60)"])
+}
+
 /// "(12초)" / "(3분 12초)" duration suffix for a subagent run (TS formatRunDuration).
 public func formatSubagentRunDuration(_ ms: Int) -> String {
-    let totalSec = max(0, Int((Double(ms) / 1000.0).rounded()))
-    if totalSec < 60 { return I18n.t("usage.duration.sec", ["s": "\(totalSec)"]) }
-    return I18n.t("usage.duration.minSec", ["m": "\(totalSec / 60)", "s": "\(totalSec % 60)"])
+    formatDurationText(seconds: Int((Double(ms) / 1000.0).rounded()))
 }
 
 /// "✅ Bash ×20 · ✅ Read ×3 · ❌ Edit ×1 · +N" — top names by count; ❌ when any failure.

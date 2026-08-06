@@ -63,7 +63,7 @@ struct I18nTests {
 
     @Test func leavesUnknownPlaceholderVisible() async {
         await withLocale(.ko) {
-            #expect(I18n.t("stream.thought") == "{sec}초 동안 생각함")
+            #expect(I18n.t("stream.thought") == "{sec} 동안 생각함")
         }
     }
 

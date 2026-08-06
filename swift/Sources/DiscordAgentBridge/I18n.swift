@@ -146,7 +146,7 @@ public enum I18n {
         "stream.responding": "응답 중…",
         "stream.responded": "응답 완료",
         "stream.thinking": "생각 중…",
-        "stream.thought": "{sec}초 동안 생각함",
+        "stream.thought": "{sec} 동안 생각함",
 
         // Status
         "status.title": "세션 상태",
@@ -210,6 +210,7 @@ public enum I18n {
         "usage.elapsed.dayHour": "{d}일 {h}시간",
         "usage.duration.sec": "{s}초",
         "usage.duration.minSec": "{m}분 {s}초",
+        "usage.duration.hourMinSec": "{h}시간 {m}분 {s}초",
         // R3 WO-10: UsageEmbed.swift/UsageFormat.swift — 카탈로그에 없던 개념만 최소 신규 키
         "usage.overage": "추가 사용량",
         "usage.rateLimitAlert": "📊 사용량 한도 알림",
@@ -719,7 +720,7 @@ public enum I18n {
         "stream.responding": "Responding…",
         "stream.responded": "Response complete",
         "stream.thinking": "Thinking…",
-        "stream.thought": "Thought for {sec}s",
+        "stream.thought": "Thought for {sec}",
 
         "status.title": "Session status",
         "status.mode": "Mode",
@@ -778,6 +779,7 @@ public enum I18n {
         "usage.elapsed.dayHour": "{d}d {h}h",
         "usage.duration.sec": "{s}s",
         "usage.duration.minSec": "{m}m {s}s",
+        "usage.duration.hourMinSec": "{h}h {m}m {s}s",
         "usage.overage": "Overage",
         "usage.rateLimitAlert": "📊 Rate limit alert",
         "usage.sessionConfig": "Session settings",
