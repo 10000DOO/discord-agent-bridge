@@ -218,11 +218,18 @@ public actor GrokSessionBridge {
             // W16-g / G-P0-03: agent_thought_chunk → thinking stream (purple); plan → progress.
             // Thought is not part of the reply buffer (TS thinking stream).
             let ch = channelId
+            // WO-3: a plan update feeds the pinned task panel. When it does, the same list must NOT
+            // also be appended to the stream body — one list, one place (docs 8장 중복 표시).
+            let planItems = grokPlanItems(method: method, params: params)
+            if let planItems {
+                Task { await TaskPanelHost.shared.noteItems(channelId: ch, items: planItems) }
+            }
             for pev in grokProgressEvents(method: method, params: params) {
                 switch pev {
                 case .thinking(let text, _):
                     Task { await StreamStatusHost.shared.noteThinking(channelId: ch, delta: text) }
                 case .progress(let label, let detail):
+                    guard planItems == nil else { break }
                     Task {
                         await StreamStatusHost.shared.noteProgress(
                             channelId: ch, label: label, detail: detail
@@ -468,6 +475,7 @@ public actor GrokSessionBridge {
         let ch = channels.removeValue(forKey: channelId)
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
+        await TaskPanelHost.shared.dispose(channelId: channelId)
         await UsageActivityHost.shared.dispose(channelId: channelId)
         await IdleWatchdog.shared.stop(channelId: channelId)
         await unregisterAttach(channelId: channelId)

@@ -205,6 +205,9 @@ struct DabMain {
                 spec: spec
             )
         }
+        // WO-4: task checklist → one pinned panel per channel (created+pinned once, edited after).
+        await TaskPanelHost.shared.setSink(makeTaskPanelSink(client: client))
+        await TaskPanelHost.shared.setRemover(makeTaskPanelRemover(client: client))
         // G-P1-01: turn idle watchdog (~3 min no activity → one channel notice).
         await IdleWatchdog.shared.setPoster { channelId, content in
             // C14: retry-wrapped (no guildId in scope here — onGone omitted, the live
@@ -274,6 +277,8 @@ struct EventHandler: GatewayEventHandler {
         // G-P1-07: remember bot user id for Manage Channels checks on subsequent GuildCreate.
         // READY only carries UnavailableGuild stubs; full guilds arrive as GuildCreate (boot + join).
         await BotGatewayIdentity.shared.setUserId(user.id.rawValue)
+        // WO-5: the re-authorization link the pin-permission notice offers is built from this.
+        await BotGatewayIdentity.shared.setApplicationId(payload.application.id.rawValue)
         signalSuccessorReadyIfRequested()
         log.info("auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
@@ -373,6 +378,11 @@ struct EventHandler: GatewayEventHandler {
             )
         }
         log.info("restored \(active.count) session binding(s) from store")
+        // D3-3: re-attach to each channel's already-pinned task panel, so the first update after a
+        // restart edits it instead of pinning a second one.
+        for channelId in active.keys {
+            await adoptExistingTaskPanel(client: client, channelId: channelId)
+        }
     }
 
     /// C10: TS `wiring.ts`'s `resolveChannelResult` — true only when Discord confirms the channel is
@@ -577,6 +587,12 @@ struct EventHandler: GatewayEventHandler {
             // terminal result)" error text; anyone may act on it — no owner/permission gate).
             if let timeoutAction = parseTurnTimeoutId(comp.custom_id) {
                 try await handleTurnTimeoutComponent(payload, action: timeoutAction)
+                return
+            }
+            // (A4c) Task panel "다시 확인" — retry the pin after the operator granted Manage
+            // Messages (WO-5). No gate: it only re-pins this channel's own panel.
+            if comp.custom_id == taskPanelRecheckCustomId {
+                await handleTaskPanelRecheckComponent(client: client, payload: payload)
                 return
             }
             // (A5) Interrupt "stop" button: interrupt:<guildId>:<channelId> (drive; does NOT unbind).

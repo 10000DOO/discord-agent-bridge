@@ -49,7 +49,8 @@
 4. **OAuth2** → **Client ID (Application ID)** 복사.
 5. **OAuth2 → URL Generator**:
    - **Scopes**: `bot`, `applications.commands`
-   - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`
+   - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`, `Manage Messages`
+   - `Manage Messages`는 작업 목록 패널 고정에만 씁니다(기능 → 작업 목록 패널). 없어도 패널은 일반 메시지로 동작하고, 봇이 한 번만 알려주면서 클릭 한 번으로 해결하는 링크를 같이 줍니다.
    - 생성된 URL로 서버에 초대.
 
 ---
@@ -268,6 +269,14 @@ ready: username=<bot> id=<snowflake> app=<application id>
 - 턴이 수 분간 조용하면 idle watchdog 안내.
 - 에이전트 → 채널 파일 첨부/문서 공유(`host.file.attach` / share), 경로 confinement.
 - **채널에 올린 첨부파일**은 `<작업공간>/.dab-attachments/<uuid>/` 로 내려받습니다(realpath confinement, 메시지마다 별 디렉터리라 동시 턴끼리 덮어쓰지 않음). 이미지는 이를 받는 백엔드에 비전 입력으로 들어가고, 나머지는 절대 경로 힌트로 프롬프트에 덧붙습니다.
+
+### 작업 목록 패널 (고정)
+
+세 백엔드 모두 작업하면서 할 일 목록을 내보냅니다(Claude `TodoWrite`, Codex `update_plan`, Grok ACP plan). 그 목록을 **채널당 고정 메시지 한 개**로 보여줍니다 — `✓` 완료 / `▶` 진행 / `•` 대기 체크리스트에 `완료/전체` 카운트가 붙고, 전부 끝나면 초록색으로 바뀝니다. 스크롤을 되감지 않고 채널 📌에서 바로 열면 됩니다.
+
+고정은 **최초 1회**만 하고 이후에는 그 메시지를 수정합니다. 디스코드는 고정할 때마다 채널에 시스템 알림을 남기고 채널당 50개 상한이 있어서, 갱신마다 재고정하면 채널이 도배됩니다. 목록을 안 내보내는 턴에서는 이전 목록이 그대로 남고, `/clear`·`/stop`·언바인드에서 패널이 사라집니다. 재시작 후에는 채널에 이미 고정돼 있는 패널을 다시 붙잡아 이어 갱신합니다(두 번째 패널을 만들지 않습니다).
+
+고정에는 `Manage Messages` 권한이 필요합니다. 없으면 패널을 일반 메시지로 올리고, 해결 방법을 한 번만 안내합니다 — 바로 쓸 수 있는 재승인 링크를 같이 줍니다. 디스코드는 봇이 자기가 갖지 않은 권한을 스스로 부여하는 것을 막기 때문에 클릭 한 번이 최소치이고, 완전 자동은 불가능합니다.
 
 ### 이미지 렌더 (표 · Mermaid)
 

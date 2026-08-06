@@ -282,12 +282,18 @@ func discordEmbed(from spec: RedmineIssueEmbedSpec) -> Embed {
 
 /// Best-effort pin of a channel message (W16-g residual). Missing Manage Messages / pin
 /// permission or channel pin-cap failures are ignored — intro still stays in the channel.
+/// The result is returned for callers that must react to it: the session intro ignores it, the task
+/// panel uses it to decide whether to explain the missing permission (R9).
+@discardableResult
 func pinMessageBestEffort(
     client: any DiscordClient,
     channelId: ChannelSnowflake,
     messageId: MessageSnowflake
-) async {
-    _ = try? await client.pinMessage(channelId: channelId, messageId: messageId)
+) async -> Bool {
+    guard let response = try? await client.pinMessage(channelId: channelId, messageId: messageId) else {
+        return false
+    }
+    return response.asError() == nil
 }
 
 /// Post session status intro embed and pin it when possible (wizard bind / start).

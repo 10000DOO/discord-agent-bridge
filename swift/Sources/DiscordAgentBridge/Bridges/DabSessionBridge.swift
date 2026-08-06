@@ -758,6 +758,7 @@ public actor DabSessionBridge {
         if let handle { sessionMeta[handle] = nil }
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
+        await TaskPanelHost.shared.dispose(channelId: channelId)
         await UsageActivityHost.shared.dispose(channelId: channelId)
         // H5: cancel the idle watchdog on session teardown too (TS wiring.ts detach() calls
         // idleWatchdog.stop()) — previously only DabMain's own turn-completion path stopped it,

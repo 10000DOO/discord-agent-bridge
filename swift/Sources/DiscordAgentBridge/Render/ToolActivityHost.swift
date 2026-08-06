@@ -62,6 +62,13 @@ public actor ToolActivityHost {
             let ev = event
             Task { await notifier(ch, ctx.guildId, ctx.backend, ev) }
         }
+        // Task checklist panel (WO-3): a task list arrives as an ordinary tool call, and the panel
+        // is not a tool renderer — so it runs before, and independently of, the caps gate below.
+        // Someone who turned tool threads off still wants to see what the agent is working through.
+        if case .toolUse(_, let name, let input, _) = event,
+           let items = parseTaskPanelInput(name: name, input: input) {
+            await TaskPanelHost.shared.noteItems(channelId: channelId, items: items)
+        }
         let caps = capsByChannel[channelId] ?? .allEnabled
         if !caps.toolThreads && !caps.fileDiff { return }
         switch event {

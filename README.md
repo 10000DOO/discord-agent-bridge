@@ -49,7 +49,8 @@ About 5 minutes.
 4. **OAuth2** → copy **Client ID (Application ID)**.
 5. **OAuth2 → URL Generator**:
    - **Scopes**: `bot`, `applications.commands`
-   - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`
+   - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`, `Manage Messages`
+   - `Manage Messages` is only used to pin the task panel (Features → Task panel). Without it the panel still works, as an ordinary message — the bot says so once and offers a one-click fix.
    - Open the generated URL and invite the bot to your server.
 
 ---
@@ -268,6 +269,14 @@ When tools need approval, the bot posts **Allow / Always-Allow / Deny** buttons.
 - Idle watchdog notice if a turn goes quiet for a few minutes.
 - Host file attach / document share from the agent (`host.file.attach` / share) into the channel, path-confined.
 - **Attachments you drop in the channel** are downloaded into `<workspace>/.dab-attachments/<uuid>/` (realpath-confined, one directory per message so concurrent turns can't clobber each other). Images become vision input for backends that take it; everything else is passed as an absolute-path hint appended to the prompt.
+
+### Task panel (pinned)
+
+All three backends publish a task list as they work (Claude `TodoWrite`, Codex `update_plan`, Grok ACP plan updates). That list becomes **one pinned message per channel** — a checklist with `✓` done / `▶` in progress / `•` pending, plus a `done/total` count that turns green when everything is finished. Open it from the channel's 📌 at any time instead of scrolling back.
+
+It is pinned **once** and edited from then on: Discord posts a system line on every pin and caps a channel at 50 pins, so re-pinning each update would spam the channel. A turn that publishes no list leaves the previous one standing; `/clear`, `/stop`, and unbinding remove the panel. After a restart the bot re-attaches to the panel already pinned in the channel rather than pinning a second one.
+
+Pinning needs the `Manage Messages` permission. Without it the panel is posted as a normal message and the bot explains once how to fix it — including a ready-made re-authorization link. Discord refuses to let a bot grant itself a permission it lacks, so one click is the minimum; there is no fully automatic path.
 
 ### Image render (tables & Mermaid)
 

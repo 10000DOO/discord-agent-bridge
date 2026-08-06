@@ -736,6 +736,7 @@ public actor CodexSessionBridge {
         let ch = channels.removeValue(forKey: channelId)
         await ToolActivityHost.shared.dispose(channelId: channelId)
         await StreamStatusHost.shared.dispose(channelId: channelId)
+        await TaskPanelHost.shared.dispose(channelId: channelId)
         await UsageActivityHost.shared.dispose(channelId: channelId)
         await IdleWatchdog.shared.stop(channelId: channelId)
         guard let ch else { return }

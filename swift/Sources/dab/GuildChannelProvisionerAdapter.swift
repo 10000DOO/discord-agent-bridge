@@ -131,9 +131,14 @@ func resolveGuildProvisioner(
 actor BotGatewayIdentity {
     static let shared = BotGatewayIdentity()
     private var userId: String?
+    /// Application (client) id from READY — needed to build the bot's own re-authorization URL
+    /// when a permission it lacks blocks something (task panel pinning, R9).
+    private var applicationId: String?
 
     func setUserId(_ id: String) { userId = id }
     func getUserId() -> String? { userId }
+    func setApplicationId(_ id: String) { applicationId = id }
+    func getApplicationId() -> String? { applicationId }
 }
 
 /// Resolve Manage Channels for the bot from a full GuildCreate payload.
