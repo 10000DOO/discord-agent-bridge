@@ -445,9 +445,9 @@ struct GuildChannelsDeleteSessionTests {
         )
     }
 
-    // WO-7 (design_orchestration_module_agents.md, R8): the 3-5 trap this guards against — a lead
-    // ("*-orc") or module ("*-agent") channel matches neither the sessions-category-parent check
-    // nor the `-proj` suffix, so without this it would survive `/agent close`.
+    // The 3-5 trap this guards against — a lead ("*-orc") or module ("*-agent") channel matches
+    // neither the sessions-category-parent check nor the `-proj` suffix, so without this it would
+    // survive `/agent close`.
     @Test func shouldDeleteWhenOrcOrAgentNameSuffix() {
         #expect(
             shouldDeleteSessionChannelOnClose(
@@ -461,22 +461,6 @@ struct GuildChannelsDeleteSessionTests {
         )
     }
 
-    @Test func shouldDeleteWhenUnderOrchestrationCategory() {
-        #expect(
-            shouldDeleteSessionChannelOnClose(
-                channelId: "sess-1", channelName: "weirdly-named-channel", parentId: "orch-cat-1",
-                serverChannels: structure, orchestrationCategoryIds: ["orch-cat-1"]
-            )
-        )
-        // Neither in the set nor -proj/-orc/-agent suffixed → still protected.
-        #expect(
-            !shouldDeleteSessionChannelOnClose(
-                channelId: "sess-1", channelName: "weirdly-named-channel", parentId: "other-cat",
-                serverChannels: structure, orchestrationCategoryIds: ["orch-cat-1"]
-            )
-        )
-    }
-
     @Test func neverDeletesControlStatusCategory() {
         for id in ["ctrl", "status", "cat", "sess-cat"] {
             #expect(
@@ -485,21 +469,6 @@ struct GuildChannelsDeleteSessionTests {
                     channelName: "a1b2c3-spoof-proj",
                     parentId: "sess-cat",
                     serverChannels: structure
-                ),
-                "must not delete protected id \(id)"
-            )
-        }
-    }
-
-    // WO-7 completion criterion ②: control/status channels must stay protected even when the
-    // orchestration category machinery is in play (e.g. a stale/misconfigured category id that
-    // happens to collide with a protected parent).
-    @Test func neverDeletesControlStatusCategoryEvenWithOrchestrationCategoryIds() {
-        for id in ["ctrl", "status", "cat", "sess-cat"] {
-            #expect(
-                !shouldDeleteSessionChannelOnClose(
-                    channelId: id, channelName: "a1b2c3-spoof-orc", parentId: "orch-cat-1",
-                    serverChannels: structure, orchestrationCategoryIds: ["orch-cat-1"]
                 ),
                 "must not delete protected id \(id)"
             )
@@ -539,21 +508,6 @@ struct GuildChannelsDeleteSessionTests {
         #expect(prov.channels["sess-1"] == nil)
     }
 
-    @Test func deleteSessionChannelCallsProvisionerForOrchestrationSetChannel() async {
-        let prov = FakeProvisioner()
-        prov.seed(id: "agent-1", name: "a1b2c3-core-agent", type: "text")
-        await deleteSessionChannel(
-            provisioner: prov,
-            channelId: "agent-1",
-            channelName: "a1b2c3-core-agent",
-            parentId: "orch-cat-1",
-            serverChannels: structure,
-            orchestrationCategoryIds: ["orch-cat-1"]
-        )
-        #expect(prov.deleted == ["agent-1"])
-        #expect(prov.channels["agent-1"] == nil)
-    }
-
     @Test func deleteSessionChannelSkipsControlEvenIfNameLooksLikeSession() async {
         let prov = FakeProvisioner()
         prov.seed(id: "ctrl", name: "a1b2c3-spoof-proj", type: "text")
@@ -580,7 +534,7 @@ struct GuildChannelsDeleteSessionTests {
     }
 }
 
-// MARK: - isControlPlaneChannel (design_orchestration_project_scoped_command.md §4.1)
+// MARK: - isControlPlaneChannel
 
 @Suite("GuildChannels isControlPlaneChannel")
 struct GuildChannelsIsControlPlaneChannelTests {
