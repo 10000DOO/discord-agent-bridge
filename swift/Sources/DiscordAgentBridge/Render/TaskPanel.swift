@@ -190,22 +190,41 @@ extension TaskPanelStatus {
 
 // MARK: - Pin permission (R9)
 
-/// Discord permission bits the bot needs. Same set the README's invite link asks for, plus
-/// `Manage Messages` (1 << 13) which pinning requires and the original invite never requested.
+/// Discord permission bits the bot asks for. Deliberately broad: every re-authorization costs the
+/// user a manual click in the browser, so a set that only just covers today's features guarantees
+/// another round trip the first time a feature needs one more bit. Everything text/thread-shaped is
+/// requested up front. Member moderation (kick/ban/timeout), voice, and Administrator are left out —
+/// nothing here drives them, and they are what makes a server owner refuse the invite.
 /// Summed here rather than hardcoded so the list stays readable next to the README table.
 public var botRequiredPermissionBits: UInt64 {
     let bits: [UInt64] = [
+        1 << 0,  // Create Instant Invite
         1 << 4,  // Manage Channels
+        1 << 5,  // Manage Guild
         1 << 6,  // Add Reactions
+        1 << 7,  // View Audit Log
         1 << 10, // View Channel
         1 << 11, // Send Messages
-        1 << 13, // Manage Messages — pin/unpin
+        1 << 13, // Manage Messages — pin/unpin on older servers, plus edit/delete
         1 << 14, // Embed Links
         1 << 15, // Attach Files
         1 << 16, // Read Message History
+        1 << 17, // Mention Everyone — @everyone/@here and role pings in alerts
+        1 << 18, // Use External Emojis
+        1 << 26, // Change Nickname
+        1 << 28, // Manage Roles — pairing/allowlist automation
+        1 << 29, // Manage Webhooks
+        1 << 31, // Use Application Commands
         1 << 34, // Manage Threads
         1 << 35, // Create Public Threads
+        1 << 36, // Create Private Threads
+        1 << 37, // Use External Stickers
         1 << 38, // Send Messages in Threads
+        1 << 46, // Send Voice Messages
+        1 << 49, // Send Polls
+        1 << 50, // Use External Apps
+        1 << 51, // Pin Messages — Discord split pinning out of Manage Messages
+        1 << 52, // Bypass Slowmode — a long agent answer must not be rate-limited away
     ]
     return bits.reduce(0, |)
 }

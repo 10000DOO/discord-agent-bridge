@@ -122,7 +122,7 @@ dab 설정을 시작합니다. 물어보는 대로 답하면 나머지는 알아
 What the wizard handles for you:
 
 - **Verifies the token on the spot.** A truncated paste or a Client Secret is caught before anything is saved; on success it prints the bot's name so you can see which bot you just wired up.
-- **Builds the invite URL.** Every required permission is already baked in — no picking checkboxes in the OAuth2 URL Generator.
+- **Builds the invite URL.** Every permission the bot can use is already baked in — no picking checkboxes in the OAuth2 URL Generator, and no second re-authorization click the first time a feature needs one more bit. Member moderation (kick / ban / timeout), voice, and `Administrator` are deliberately **not** requested; Discord shows you the full list before you approve.
 - **Lists the servers your bot is in and lets you pick one.** No Developer Mode, no right-click-copy-id. This is what makes slash commands register **instantly** — without it Discord propagates them globally, which takes up to an hour.
 - **Writes `~/.dab/env` (0600).** Existing lines and comments are preserved; only the relevant keys are updated.
 
@@ -253,7 +253,7 @@ All three backends publish a task list as they work (Claude `TaskCreate`/`TaskUp
 
 It is pinned **once** and edited from then on: Discord posts a system line on every pin and caps a channel at 50 pins, so re-pinning each update would spam the channel. A turn that publishes no list leaves the previous one standing; `/clear`, `/stop`, and unbinding remove the panel. After a restart the bot re-attaches to the panel already pinned in the channel rather than pinning a second one.
 
-Pinning needs the `Manage Messages` permission. Without it the panel is posted as a normal message and the bot explains once how to fix it — including a ready-made re-authorization link. Discord refuses to let a bot grant itself a permission it lacks, so one click is the minimum; there is no fully automatic path.
+Pinning needs the `Manage Messages` permission — or, on servers where Discord has split pinning into its own `Pin Messages` permission, that one. The invite link asks for both. Without either the panel is posted as a normal message and the bot explains once how to fix it — including a ready-made re-authorization link. Discord refuses to let a bot grant itself a permission it lacks, so one click is the minimum; there is no fully automatic path.
 
 ### Uncommitted changes (`/diff`)
 

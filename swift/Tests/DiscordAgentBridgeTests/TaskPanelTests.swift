@@ -170,9 +170,14 @@ import Foundation
     @Test func requiredPermissionsIncludeManageMessages() {
         let bits = botRequiredPermissionBits
         #expect(bits & (1 << 13) != 0, "pinning needs Manage Messages")
+        #expect(bits & (1 << 51) != 0, "newer servers gate pinning on Pin Messages instead")
         // The README's original invite set must still be covered.
         for shift in [4, 6, 10, 11, 14, 15, 16, 34, 35, 38] {
             #expect(bits & (1 << UInt64(shift)) != 0, "missing permission bit \(shift)")
+        }
+        // Never silently request member moderation or Administrator.
+        for shift in [1, 2, 3, 40] {
+            #expect(bits & (1 << UInt64(shift)) == 0, "must not request permission bit \(shift)")
         }
     }
 
