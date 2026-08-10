@@ -100,11 +100,6 @@ func deliverTurnPush(_ turn: TurnResult, ctx: TurnDeliveryContext) async -> Bool
         actorId: ctx.actorId, roleTier: ctx.roleTier, guildId: ctx.guildId, channelId: ctx.channelId.rawValue,
         action: "turn", mode: ctx.backend.rawValue, permMode: ctx.permMode, status: "ok"
     ))
-    // Safety net (not gated by announceExtras — this must fire regardless): a module (agent-role)
-    // channel's turn just ended. If it never called `report()`, forward this answer for it instead
-    // of leaving the lead with nothing (prompt/role-doc guidance alone isn't 100% reliable).
-    await OrchestrationHost.shared.autoReportIfMissing(channelId: ctx.channelId.rawValue, text: body)
-
     guard ctx.announceExtras else { return delivered }
 
     let (usageSnap, usageTitle) = await usageSnapshotAndTitle(backend: ctx.backend)

@@ -276,17 +276,6 @@ public func redmineIssueSelectCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(name: "redmine-issue-select", description: LocalizedText(ko: "조건에 맞는 레드마인 이슈를 선택합니다", en: "Select a matching Redmine issue"))
 }
 
-/// `/orchestration` — install project-scoped orchestration role manuals (`roles/`) and skills
-/// into this session channel's project `.claude/` folder (Claude only). No subagents are
-/// installed — WO-8 absorbed all 6 into the role manuals or dropped them, so
-/// `OrchestrationProjectBundle.subagents` is always empty.
-public func orchestrationCommandSpec() -> SlashCommandSpec {
-    SlashCommandSpec(
-        name: "orchestration",
-        description: LocalizedText(ko: "오케스트레이션 역할 규약과 스킬을 설치합니다", en: "Install orchestration role manuals and skills into this project's folder (Claude only)")
-    )
-}
-
 /// `/command command:<name>` — run a slash command the channel's backend itself advertises
 /// (docs/cli-slash-command-parity.md §3-5-1). The option is autocomplete-driven: the candidates are
 /// per-channel (claude/codex/grok advertise different commands), resolved from the channel binding
@@ -358,7 +347,6 @@ public func allSlashCommandSpecs() -> [SlashCommandSpec] {
         updateCommandSpec(),
         redmineCommandSpec(),
         redmineIssueSelectCommandSpec(),
-        orchestrationCommandSpec(),
         runCommandSpec(),
         helpCommandSpec(),
     ]
