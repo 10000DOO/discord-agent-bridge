@@ -151,24 +151,6 @@ export class SessionBridge {
               );
               return result as ShareResult;
             },
-            sendOrder: async (mod: string, path: string, text: string, issue?: string) => {
-              const result = (await requestHost(
-                'host.orchestration.order',
-                { module: mod, path, text, ...(issue !== undefined ? { issue } : {}) },
-                handle,
-              )) as { ok?: boolean; message?: string } | undefined;
-              if (result && typeof result.message === 'string') return result.message;
-              return 'Order sent.';
-            },
-            report: async (text: string, marker?: string) => {
-              const result = (await requestHost(
-                'host.orchestration.report',
-                { text, ...(marker !== undefined ? { marker } : {}) },
-                handle,
-              )) as { ok?: boolean; message?: string } | undefined;
-              if (result && typeof result.message === 'string') return result.message;
-              return 'Report sent.';
-            },
           }
         : {}),
     };
@@ -193,9 +175,6 @@ export class SessionBridge {
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.effort !== undefined ? { effort: params.effort } : {}),
       permMode: params.permMode as SessionPermMode,
-      ...(params.orchestrationSession !== undefined
-        ? { orchestrationSession: params.orchestrationSession }
-        : {}),
       emit: (ev: AgentEvent) => {
         this.write(event(handle, ev));
       },

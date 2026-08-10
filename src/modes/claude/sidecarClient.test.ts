@@ -146,31 +146,6 @@ describe('ClaudeSidecarClient ↔ SidecarServer (duplex streams)', () => {
     await pair.close();
   });
 
-  it('passes orchestrationSession through start and resume', async () => {
-    const receivedContexts: ModeContext[] = [];
-    const factory = makeFakeFactory({});
-    const pair = await openPairedClient((ctx, deps) => {
-      receivedContexts.push(ctx);
-      return factory(ctx, deps);
-    });
-
-    const { ctx } = makeCtx();
-    ctx.orchestrationSession = true;
-
-    const started = await pair.client.openModeSession(ctx);
-    const resumed = await pair.client.openModeSession(ctx, { resumeId: 'backend-resume-1' });
-
-    expect(receivedContexts).toHaveLength(2);
-    expect(receivedContexts.map((received) => received.orchestrationSession)).toEqual([
-      true,
-      true,
-    ]);
-
-    await started.stop();
-    await resumed.stop();
-    await pair.close();
-  });
-
   it('permission_request event → host requestPermission → session.permission', async () => {
     const pair = await openPairedClient(
       makeFakeFactory({
@@ -279,61 +254,4 @@ describe('ClaudeSidecarClient ↔ SidecarServer (duplex streams)', () => {
     await pair.close();
   });
 
-  it('host.orchestration.order reverse RPC: fake session sendOrder → onOrchestrationOrder', async () => {
-    let orderMsg: string | undefined;
-    const pair = await openPairedClient(
-      makeFakeFactory({
-        onSend: async (_turn, _ctx, deps) => {
-          expect(deps.sendOrder).toBeTypeOf('function');
-          orderMsg = await deps.sendOrder!('core', '/tmp/ws/core', 'implement #1234', '1234');
-        },
-      }),
-    );
-
-    const { ctx } = makeCtx();
-    const session = await pair.client.openModeSession(ctx, {
-      sendOrder: async (mod, path, text, issue) => {
-        expect(mod).toBe('core');
-        expect(path).toBe('/tmp/ws/core');
-        expect(text).toBe('implement #1234');
-        expect(issue).toBe('1234');
-        return 'Order delivered to #agent-core.';
-      },
-    });
-
-    await session.send({ text: 'send order please' });
-    await waitFor(() => orderMsg === 'Order delivered to #agent-core.');
-    expect(orderMsg).toBe('Order delivered to #agent-core.');
-
-    await session.stop();
-    await pair.close();
-  });
-
-  it('host.orchestration.report reverse RPC: fake session report → onOrchestrationReport', async () => {
-    let reportMsg: string | undefined;
-    const pair = await openPairedClient(
-      makeFakeFactory({
-        onSend: async (_turn, _ctx, deps) => {
-          expect(deps.report).toBeTypeOf('function');
-          reportMsg = await deps.report!('done implementing', 'DONE');
-        },
-      }),
-    );
-
-    const { ctx } = makeCtx();
-    const session = await pair.client.openModeSession(ctx, {
-      report: async (text, marker) => {
-        expect(text).toBe('done implementing');
-        expect(marker).toBe('DONE');
-        return 'Report relayed to #orc-myproj.';
-      },
-    });
-
-    await session.send({ text: 'report please' });
-    await waitFor(() => reportMsg === 'Report relayed to #orc-myproj.');
-    expect(reportMsg).toBe('Report relayed to #orc-myproj.');
-
-    await session.stop();
-    await pair.close();
-  });
 });

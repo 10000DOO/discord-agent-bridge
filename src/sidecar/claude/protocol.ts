@@ -50,11 +50,6 @@ export interface SessionStartParams {
     permissionTimeoutSec?: number;
   };
   env?: Record<string, string | undefined>;
-  // Orchestration-role session flag (design_orchestration_module_agents.md R12/D18): when true,
-  // the session removes the subagent-launch tool from the model's context (`disallowedTools`).
-  // Renamed from `projectSettingSourcesOnly` (D18) — no on-disk backward-compat needed here
-  // since this is a live sidecar RPC param, not persisted state.
-  orchestrationSession?: boolean;
 }
 
 export interface SessionResumeParams extends SessionStartParams {

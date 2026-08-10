@@ -39,7 +39,6 @@ function makeCtx(opts: {
   autoAllowClaudeTools?: string[];
   permissionDecision?: PermissionDecision;
   onSessionIdReady?: (id: string) => void;
-  orchestrationSession?: boolean;
 } = {}): CtxHarness {
   const events: AgentEvent[] = [];
   const permissionCalls: { toolName: string; input: unknown }[] = [];
@@ -50,9 +49,6 @@ function makeCtx(opts: {
     ownerId: 'u1',
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     permMode: opts.permMode ?? 'default',
-    ...(opts.orchestrationSession !== undefined
-      ? { orchestrationSession: opts.orchestrationSession }
-      : {}),
     emit: (ev) => events.push(ev),
     requestPermission: async (req) => {
       permissionCalls.push(req);
@@ -893,7 +889,6 @@ describe('ClaudeSession — query options', () => {
       cwd: '/tmp/proj',
       model: 'opus',
       permMode: 'plan',
-      orchestrationSession: false,
     });
     const { queryFn, captured } = fakeQueryFn([]);
     const session = new ClaudeSession(ctx, { queryFn });
@@ -917,49 +912,6 @@ describe('ClaudeSession — query options', () => {
     expect(resolvePluginsMock).toHaveBeenCalledWith(ctx.logger);
     expect(options.plugins).toEqual(globalPlugins);
     expect(typeof options.canUseTool).toBe('function');
-    await session.stop();
-  });
-
-  // WO-11 (R11 revert): settingSources/plugins no longer branch on the orchestration flag at
-  // all — every session, orchestration or not, loads the full global+project+local config
-  // (R11: the project bundle must work standalone, but there's no reason to cut the global
-  // layer off when it's present). Only `disallowedTools` (below) is orchestration-specific.
-  it('keeps settingSources/plugins at their full defaults even when orchestrationSession is set', async () => {
-    const globalPlugins = [{ type: 'local' as const, path: '/tmp/global-claude-plugin' }];
-    resolvePluginsMock.mockClear();
-    resolvePluginsMock.mockReturnValueOnce(globalPlugins);
-    const { ctx } = makeCtx({ orchestrationSession: true });
-    const { queryFn, captured } = fakeQueryFn([]);
-    const session = new ClaudeSession(ctx, { queryFn });
-
-    const options = captured.options as { settingSources: string[]; plugins: unknown[] };
-    expect(options.settingSources).toEqual(['user', 'project', 'local']);
-    expect(resolvePluginsMock).toHaveBeenCalledWith(ctx.logger);
-    expect(options.plugins).toEqual(globalPlugins);
-    await session.stop();
-  });
-
-  // WO-11 (R12): the orchestration flag's only effect is removing the subagent-launch tool
-  // from the model's context — a session with another role can't reach for a subagent to
-  // impersonate it. Verified live against the real SDK separately (see the
-  // `DAB_LIVE_E2E`-gated suite below); this test only pins the array this code assembles.
-  it('adds the subagent tool names to disallowedTools when orchestrationSession is set', async () => {
-    const { ctx } = makeCtx({ orchestrationSession: true });
-    const { queryFn, captured } = fakeQueryFn([]);
-    const session = new ClaudeSession(ctx, { queryFn });
-
-    const options = captured.options as { disallowedTools?: string[] };
-    expect(options.disallowedTools).toEqual(['Task', 'Agent']);
-    await session.stop();
-  });
-
-  it('omits disallowedTools when orchestrationSession is not set', async () => {
-    const { ctx } = makeCtx({ orchestrationSession: false });
-    const { queryFn, captured } = fakeQueryFn([]);
-    const session = new ClaudeSession(ctx, { queryFn });
-
-    const options = captured.options as { disallowedTools?: string[] };
-    expect(options.disallowedTools).toBeUndefined();
     await session.stop();
   });
 
@@ -1043,34 +995,6 @@ describe('ClaudeSession — query options', () => {
     await session.stop();
   });
 
-  it('exposes the send_order/report MCP tools on the SAME discord server and allowlists both when wired (D4)', async () => {
-    const { ctx } = makeCtx();
-    const { queryFn, captured } = fakeQueryFn([]);
-    const session = new ClaudeSession(ctx, {
-      queryFn,
-      sendFile: async () => 'sent',
-      sendOrder: async () => 'Order delivered.',
-      report: async () => 'Report relayed.',
-    });
-    const options = captured.options as {
-      mcpServers?: Record<string, unknown>;
-      allowedTools?: string[];
-    };
-    expect(options.mcpServers?.discord).toBeDefined();
-    expect(options.allowedTools).toContain('mcp__discord__send_order');
-    expect(options.allowedTools).toContain('mcp__discord__report');
-    await session.stop();
-  });
-
-  it('omits send_order/report from allowedTools when neither is wired', async () => {
-    const { ctx } = makeCtx();
-    const { queryFn, captured } = fakeQueryFn([]);
-    const session = new ClaudeSession(ctx, { queryFn, sendFile: async () => 'sent' });
-    const options = captured.options as { allowedTools?: string[] };
-    expect(options.allowedTools ?? []).not.toContain('mcp__discord__send_order');
-    expect(options.allowedTools ?? []).not.toContain('mcp__discord__report');
-    await session.stop();
-  });
 });
 
 // ---- share_document result mapping (path-only, D2) ---------------------------
@@ -1224,40 +1148,3 @@ describe('attachFileConfined — path confinement', () => {
   });
 });
 
-// ---- Live SDK check (opt-in only): WO-11 R12 subagent block -----------------
-// This does NOT use fakeQueryFn — it drives the real SDK (which shells out to the
-// locally-authenticated `claude` binary), the same way the manual CLI check performed for
-// this WO did (`claude -p "…" --model haiku --disallowedTools Task Agent`, which made the
-// model reply "Agent 도구가 현재 이 세션에서 사용 가능하지 않습니다" instead of invoking it).
-// Skipped by default: a name-array assertion (above) is deterministic and free, but whether
-// the SDK actually *honors* disallowedTools is a live question about the installed SDK, not
-// about this code — asserting it on every `npm test` run would make the suite
-// network/model-dependent and cost real API usage for no additional coverage of our own
-// logic. Set DAB_LIVE_E2E=1 to re-run this as a regression check if the SDK's subagent tool
-// name changes again (8장 14번 — `Task` → `Agent` already happened once).
-describe.skipIf(!process.env.DAB_LIVE_E2E)('ClaudeSession — live subagent block (WO-11)', () => {
-  it(
-    'orchestrationSession refuses to actually invoke Agent/Task, for real',
-    async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'dab-live-e2e-'));
-      try {
-        const { ctx, events } = makeCtx({ cwd, model: 'haiku', orchestrationSession: true });
-        const session = new ClaudeSession(ctx); // no queryFn override → real SDK
-        await session.send({
-          text:
-            'Use the Agent tool right now to launch a general-purpose subagent that just ' +
-            'replies with the word PONG. Actually invoke the tool, do not just describe it.',
-        });
-        await waitFor(() => events.some((e) => e.kind === 'result'), 60_000);
-        const subagentCalls = events.filter(
-          (e) => e.kind === 'tool_use' && (e.name === 'Agent' || e.name === 'Task'),
-        );
-        expect(subagentCalls).toHaveLength(0);
-        await session.stop();
-      } finally {
-        fs.rmSync(cwd, { recursive: true, force: true });
-      }
-    },
-    65_000,
-  );
-});

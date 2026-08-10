@@ -254,10 +254,6 @@ export interface ModeContext {
   // Codex → `-c model_reasoning_effort="…"`. Absent → each backend's own default.
   effort?: string;
   permMode: SessionPermMode; // resolved global→server→project (§7A/§8); Codex may carry a sandbox mode
-  // Orchestration-role session flag (design_orchestration_module_agents.md R12/D18): when true,
-  // ClaudeSession removes the subagent-launch tool from the model's context (`disallowedTools`).
-  // Renamed from `projectSettingSourcesOnly` (D18).
-  orchestrationSession?: boolean;
   emit(ev: AgentEvent): void; // → EventBus → Discord renderers
   requestPermission(req: { toolName: string; input: unknown }): Promise<PermissionDecision>;
   config: ModeConfigView; // resolved (layered) view: model, timeouts, codexHome, etc.
