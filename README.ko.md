@@ -25,176 +25,149 @@
 
 ## 준비물
 
+아래 설명은 **macOS 기준**입니다. Linux · Windows는 맨 아래 [그 밖의 운영체제](#그-밖의-운영체제--linux--windows)를 보세요.
+
 | 항목 | 설명 |
 |---|---|
-| **macOS 13+** (1차), 또는 Linux / Windows + Swift | 제품 바이너리는 SwiftPM `dab` |
-| **Swift 6.1+** | Xcode 또는 Command Line Tools (Windows: Swift 툴체인) |
-| **Node.js 20+** | **Claude 전용** — 사이드카 기동용. Codex/Grok에는 불필요 |
+| **macOS 13+** | 제품 바이너리는 SwiftPM `dab` |
+| **Swift 6.1+** | Xcode 또는 Command Line Tools (`xcode-select --install`) |
+| **Node.js 20+** | **Claude 전용** — 사이드카 기동용. Codex/Grok만 쓰면 불필요 |
 | 백엔드 CLI 설치·로그인 | **Claude Code** (`claude` 로그인 또는 `ANTHROPIC_API_KEY`); **Codex** CLI; 필요 시 **Grok** CLI. `PATH` → 사용자 bin 디렉터리(`~/.local/bin`, `~/.dab/bin`, `~/.cargo/bin`, `~/.grok/bin`, Homebrew) 순으로 찾으므로 `PATH`가 빈약한 서비스에서도 잡힙니다 |
 | **Discord 봇 토큰** | 아래 1단계 |
 
 ---
 
-## 1단계 — Discord 봇 만들기
+## 1단계 — Discord 봇 만들고 토큰 받기
 
-약 5분이면 됩니다.
+3분이면 됩니다. 여기서 할 일은 **토큰을 손에 넣는 것 하나**뿐입니다 — 서버 초대 링크는 3단계에서 dab이 만들어 줍니다.
 
 1. **[Discord Developer Portal](https://discord.com/developers/applications)** → **New Application** → 이름 입력(예: `my-agent-bot`) → **Create**.
-2. **Bot** 탭 → **Reset Token** → 토큰을 복사해 안전한 곳에 보관.
-   - ⚠️ 토큰은 비밀번호입니다. 노출되면 즉시 **Reset Token**.
+2. 왼쪽 **Bot** 탭 → **Reset Token** → 화면에 뜬 토큰을 복사.
+   - 디스코드는 토큰을 **이때 한 번만** 보여 줍니다. 다시 보려면 또 Reset 해야 하고, 그러면 기존 토큰은 즉시 무효가 됩니다.
+   - ⚠️ **OAuth2 탭의 Client Secret이 아닙니다.** 봇 토큰은 점(`.`)으로 나뉜 세 조각짜리 70자 내외 문자열이고, Client Secret은 점 없는 32자입니다. dab은 Client Secret을 쓰지 않습니다.
+   - 토큰은 비밀번호입니다. 노출되면 즉시 **Reset Token**.
 3. 같은 **Bot** 탭 **Privileged Gateway Intents**:
-   - ✅ **MESSAGE CONTENT INTENT** — **필수**
+   - ✅ **MESSAGE CONTENT INTENT** — **필수** (없으면 봇이 메시지를 못 읽습니다)
    - ✅ **SERVER MEMBERS INTENT** — 권장 (역할 확인)
    - **Save Changes**.
-4. **OAuth2** → **Client ID (Application ID)** 복사.
-5. **OAuth2 → URL Generator**:
-   - **Scopes**: `bot`, `applications.commands`
-   - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`, `Manage Messages`
-   - `Manage Messages`는 작업 목록 패널 고정에만 씁니다(기능 → 작업 목록 패널). 없어도 패널은 일반 메시지로 동작하고, 봇이 한 번만 알려주면서 클릭 한 번으로 해결하는 링크를 같이 줍니다.
-   - 생성된 URL로 서버에 초대.
+
+서버 초대는 아직 하지 않아도 됩니다. 3단계에서 필요한 권한이 모두 박힌 초대 링크를 만들어 주고, 이미 초대해 두었다면 그 서버를 목록에서 골라 줍니다.
 
 ---
 
-## 2단계 — 설치 & 실행
-
-### macOS (권장 — Homebrew)
+## 2단계 — 설치 (macOS)
 
 ```bash
 brew tap 10000DOO/discord-agent-bridge
 brew install 10000DOO/discord-agent-bridge/dab
 ```
 
-소스에서 `dab`을 빌드하고 Claude 사이드카까지 같이 npm install 해줍니다 — 따로 `npm install`을 돌릴 필요 없습니다. Node.js 20+ / Swift 6.1+ 가 이미 `PATH`에 있어야 합니다(위 준비물 참고) — Formula는 확인만 하고 설치·업그레이드는 해주지 않습니다.
+소스에서 `dab`을 빌드하고 Claude 사이드카까지 같이 설치합니다 — 따로 `npm install`을 돌릴 필요 없습니다. Node.js 20+ / Swift 6.1+ 는 미리 깔려 있어야 합니다(위 준비물). Formula는 확인만 하고 대신 설치해 주지는 않습니다.
 
-시크릿(`DISCORD_BOT_TOKEN` 등)은 아래 수동 설치와 동일하게 `~/.dab/env`(0600 권한) 파일에 넣습니다:
-
-```bash
-mkdir -p ~/.dab && touch ~/.dab/env && chmod 600 ~/.dab/env
-$EDITOR ~/.dab/env
-# DISCORD_BOT_TOKEN=...
-```
-
-한 번 실행(포그라운드):
-
-```bash
-dab
-```
-
-또는 꺼져도(크래시·재부팅) 자동으로 다시 살아나는 백그라운드 서비스로 실행(`brew services`, launchd 기반):
-
-```bash
-brew services start dab      # 시작
-brew services list           # 상태 확인
-brew services restart dab    # ~/.dab/env 수정 후 재시작
-brew services stop dab       # 중지
-```
-
-로그: `$(brew --prefix)/var/log/dab.log` / `dab.error.log`
-
-업데이트:
-
-```bash
-brew update
-brew upgrade 10000DOO/discord-agent-bridge/dab
-brew services restart dab   # 서비스로 켜둔 경우에만 필요 — brew upgrade만으로는 재시작 안 됨
-```
-
-디스코드 안의 `/update` 명령(아래 Features → Auto-update 참고)은 Homebrew 설치에서는 **동작하지 않습니다** — `swift/scripts/install.sh`가 있는 저장소 체크아웃을 찾는 방식이라, Homebrew 설치엔 그게 없기 때문입니다. 이 설치 방식에서는 항상 `brew upgrade`를 쓰세요.
-
-> ⚠️ **같은 봇 토큰으로 두 개를 동시에 켜지 마세요.** 포그라운드 실행, `brew services`, 아래 수동(소스 빌드) 설치 전부 같은 `DISCORD_BOT_TOKEN`을 읽습니다. 같은 토큰으로 두 번째 인스턴스를 켜면 같은 봇 계정에 게이트웨이 연결이 하나 더 생깁니다 — 에러 없이 그냥 둘 다 떠 있으면서 응답이 중복되거나 꼬입니다. 봇 토큰 하나당 설치 방식은 하나만 쓰세요.
-
-### macOS (수동 — 소스 빌드)
+<details>
+<summary>Homebrew 대신 소스에서 직접 빌드하기</summary>
 
 ```bash
 git clone https://github.com/10000DOO/discord-agent-bridge.git
 cd discord-agent-bridge
-
-# Claude 사이드카용 (Codex/Grok만 쓰면 생략 가능)
-npm install
-
-bash swift/scripts/install.sh
-# 최초 설치 시 swift/deploy/env.example → ~/.dab/env (0600) 복사
+npm install                      # Claude 사이드카용 (Codex/Grok만 쓰면 생략 가능)
+bash swift/scripts/install.sh    # 빌드 + 로그인 시 자동 실행 등록(launchd)
 ```
 
-시크릿 편집(토큰은 **여기만** — plist에 넣지 않음):
+디스코드 안의 `/update` 명령은 이 방식에서만 동작합니다. Homebrew 설치는 `brew upgrade`를 쓰세요.
 
-```bash
-$EDITOR ~/.dab/env
-# DISCORD_BOT_TOKEN=...
-```
-
-env 수정 후 재로드:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist
-launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
-```
-
-설치 후 서비스 헬퍼:
-
-```bash
-dab service status    # 또는: ~/.dab/bin/dab service status
-dab service restart
-```
-
-업데이트: 디스코드에서 `/update`를 치면 릴리스 레지스트리를 확인해서 자동으로 다시 빌드하고 재시작합니다(아래 Features → Auto-update 참고). 수동으로 하려면:
-
-```bash
-cd discord-agent-bridge   # 저장소 루트
-git pull
-bash swift/scripts/install.sh   # 다시 빌드 + LaunchAgent 재로드
-```
-
-제거(`~/.dab/env`·로그는 유지):
-
-```bash
-bash swift/scripts/uninstall.sh
-```
-
-### Linux (systemd --user)
-
-```bash
-bash swift/scripts/install-linux.sh
-# ~/.dab/env 편집 후:
-systemctl --user restart discord-agent-bridge
-systemctl --user status discord-agent-bridge
-```
-
-업데이트: `git pull && bash swift/scripts/install-linux.sh` (또는 디스코드에서 `/update`).
-
-제거: `bash swift/scripts/uninstall-linux.sh`
-
-### Windows (작업 스케줄러 / 로그온 시)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
-# %USERPROFILE%\.dab\env 편집
-schtasks /Run /TN discord-agent-bridge
-```
-
-업데이트: `git pull` 후 `install-windows.ps1` 다시 실행 (또는 디스코드에서 `/update`).
-
-제거: `install-windows.ps1 -Uninstall`
-
-### 일회 실행 (서비스 없음)
-
-**저장소 루트**에서 (Claude 사이드카가 체크아웃 기준 경로를 씁니다):
-
-```bash
-export DISCORD_BOT_TOKEN=your_bot_token
-# 선택: DAB_CWD, DAB_PERM_MODE, DAB_TURN_TIMEOUT_SEC, DAB_DEV_GUILD_ID
-swift run --package-path swift dab
-```
-
-성공 시:
-
-```text
-ready: username=<bot> id=<snowflake> app=<application id>
-```
+</details>
 
 ---
 
-## 3단계 — Discord에서 사용하기
+## 3단계 — `dab --setup` 한 줄로 연결하기
+
+```bash
+dab --setup
+```
+
+물어보는 대로 답하면 끝입니다. 파일을 찾아 열거나 서버 ID를 뒤질 필요가 없습니다.
+
+```text
+$ dab --setup
+
+dab 설정을 시작합니다. 물어보는 대로 답하면 나머지는 알아서 처리합니다.
+
+1) 봇 토큰을 붙여넣고 엔터를 누르세요. (입력은 화면에 보이지 않습니다)
+   Discord Developer Portal → 내 애플리케이션 → 왼쪽 [Bot] 탭 → [Reset Token]
+   ⚠️ OAuth2 탭의 Client Secret 이 아닙니다 — 점(.)이 2개 들어간 70자 내외 문자열입니다.
+
+   확인 중…
+   ✓ 확인 완료 — 봇 이름: my-agent-bot
+
+2) 이 봇을 쓸 서버를 고릅니다.
+
+   이 봇이 들어가 있는 서버가 없습니다. 아래 주소를 열어 서버에 초대해 주세요:
+
+   https://discord.com/api/oauth2/authorize?client_id=…&scope=bot%20applications.commands&permissions=…
+
+   초대를 마쳤으면 엔터를 누르세요. (건너뛰려면 s 입력)
+
+   ✓ 우리팀 서버
+
+저장했습니다 → /Users/me/.dab/env
+
+백그라운드 서비스를 재시작해서 지금 적용할까요? [Y/n]
+
+끝났습니다. 디스코드의 우리팀 서버에서 /setup 을 쳐보세요.
+```
+
+마법사가 대신 해 주는 것:
+
+- **토큰을 그 자리에서 검증합니다.** 잘못 복사했거나 Client Secret을 넣으면 저장 전에 잡아냅니다. 통과하면 봇 이름을 보여 주므로 어느 봇에 붙었는지 바로 확인됩니다.
+- **서버 초대 링크를 만들어 줍니다.** 필요한 권한이 이미 박혀 있어서, OAuth2 URL Generator에서 체크박스를 고를 일이 없습니다.
+- **서버를 목록에서 고르게 합니다.** 개발자 모드를 켜고 서버를 우클릭해 ID를 복사하는 과정이 없습니다. 이 값이 있어야 슬래시 명령이 **즉시** 등록됩니다 — 없으면 디스코드가 전역에 퍼뜨리느라 최대 1시간이 걸립니다.
+- **`~/.dab/env`(권한 0600)에 저장합니다.** 기존 줄과 주석은 그대로 두고 필요한 항목만 갱신합니다.
+
+토큰 없이 그냥 `dab`을 실행해도 같은 마법사가 자동으로 뜹니다. 나중에 봇을 바꾸고 싶으면 `dab --setup`을 다시 실행하면 됩니다.
+
+### 잘 안 될 때
+
+| 증상 | 원인 / 해결 |
+|---|---|
+| `✗ 이건 봇 토큰이 아닙니다` | OAuth2 탭의 **Client Secret**을 넣은 경우입니다. **Bot** 탭 → **Reset Token** 값을 넣으세요 |
+| `✗ 디스코드가 거절했습니다` | 토큰이 만료됐거나(Reset Token을 다시 누른 경우) 복사가 잘렸습니다. 다시 발급받아 붙여넣으세요 |
+| 봇은 온라인인데 `/setup`이 목록에 없음 | 2번에서 서버를 건너뛴 경우입니다(최대 1시간 대기). `dab --setup`을 다시 돌려 서버를 고르면 즉시 등록됩니다 |
+| 봇이 계속 오프라인 | 1단계의 **MESSAGE CONTENT INTENT**가 꺼져 있는지 확인하세요 |
+| `~/.discord-agent-bridge/config.json`이 있다 | 예전 TypeScript 버전의 잔재입니다. 지금은 `~/.dab/env`가 우선하므로 그대로 둬도 됩니다 |
+| 토큰이 노출된 것 같음 | Developer Portal → Bot → **Reset Token** 후 `dab --setup`을 다시 실행하세요 |
+
+### 서비스로 항상 켜두기
+
+```bash
+brew services start dab      # 시작 (크래시·재부팅 시 자동 복구)
+brew services list           # 상태 확인
+brew services restart dab    # 설정 변경 후
+brew services stop dab       # 중지
+```
+
+로그: `$(brew --prefix)/var/log/dab.log` · `dab.error.log`
+(소스 설치는 `dab service status` / `dab service restart`, 로그는 `~/.dab/logs/agent.out.log`)
+
+성공하면 로그에 이렇게 찍힙니다:
+
+```text
+ready: username=<봇이름> id=<숫자> app=<숫자>
+registered setup, config, agent, ... to guild <서버ID>
+```
+
+업데이트:
+
+```bash
+brew upgrade 10000DOO/discord-agent-bridge/dab
+brew services restart dab   # 서비스로 켜둔 경우에만 필요
+```
+
+> ⚠️ **같은 봇 토큰으로 두 개를 동시에 켜지 마세요.** 포그라운드 `dab`, `brew services`, 소스 설치가 전부 같은 토큰을 읽습니다. 두 번째 인스턴스는 에러 없이 그냥 같이 떠서 응답이 중복되거나 꼬입니다.
+
+---
+
+## 4단계 — Discord에서 사용하기
 
 기본 흐름: **`/setup` → `/config` → `/agent start`**, 이후 세션 채널에서 일반 메시지.
 
@@ -349,7 +322,7 @@ API 키는 `DAB_REDMINE_KEY_SECRET`으로 암호화해서 저장하며, 이 값�
 | `servers/<guildId>.json` | 서버별 인가·기본값·프리셋·알림 |
 | `swift-state.json` | 세션 바인딩 (버전 관리) |
 
-서비스 설치 시 Discord 토큰은 **`~/.dab/env`** 에 두는 것을 권장합니다. 최초 실행은 config 없이 env / argv만으로도 가능합니다.
+Discord 토큰은 **`~/.dab/env`** 에 둡니다 — `dab --setup`이 여기에 쓰고, `dab`은 서비스든 포그라운드든 매번 이 파일을 읽습니다. 토큰 탐색 순서: 프로세스 환경변수 `DISCORD_BOT_TOKEN` / `DISCORD_TOKEN`(`~/.dab/env`가 채워 줍니다) → 첫 번째 CLI 인자 → 예전 TypeScript 설치를 위한 최후 수단으로 `config.json`의 `discord.token`.
 
 ### 환경 변수
 
@@ -429,6 +402,50 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 백엔드 스모크(`sidecar` / `codex` / `grok`)는 best-effort이며 CLI가 없으면 깨끗이 스킵합니다.
 
 빌드·테스트에 라이브 Discord 토큰은 **필요 없습니다**. 게이트웨이 연결과 실제 에이전트 실행은 자격 증명이 필요하며 수동으로 합니다.
+
+---
+
+## 그 밖의 운영체제 — Linux / Windows
+
+위 본문은 macOS 기준입니다. 1단계(봇 만들기)와 3단계(`dab --setup`)는 어느 운영체제든 똑같고, 설치와 서비스 등록 방법만 다릅니다.
+
+### Linux (systemd --user)
+
+```bash
+git clone https://github.com/10000DOO/discord-agent-bridge.git
+cd discord-agent-bridge
+npm install                              # Claude 사이드카용 (Codex/Grok만 쓰면 생략 가능)
+bash swift/scripts/install-linux.sh
+dab --setup                              # 토큰 입력 → 서버 선택 → 저장
+systemctl --user restart discord-agent-bridge
+```
+
+상태·로그: `systemctl --user status discord-agent-bridge` · `journalctl --user -u discord-agent-bridge -f`
+업데이트: `git pull && bash swift/scripts/install-linux.sh` (또는 디스코드에서 `/update`)
+제거: `bash swift/scripts/uninstall-linux.sh`
+
+### Windows (작업 스케줄러 / 로그온 시)
+
+```powershell
+git clone https://github.com/10000DOO/discord-agent-bridge.git
+cd discord-agent-bridge
+npm install
+powershell -ExecutionPolicy Bypass -File swift\scripts\install-windows.ps1
+dab --setup
+schtasks /Run /TN discord-agent-bridge
+```
+
+설정 파일 위치는 `%USERPROFILE%\.dab\env` 입니다.
+업데이트: `git pull` 후 `install-windows.ps1` 다시 실행 (또는 디스코드에서 `/update`)
+제거: `install-windows.ps1 -Uninstall`
+
+### 서비스 없이 한 번만 실행
+
+```bash
+dab
+```
+
+`~/.dab/env`를 직접 읽으므로 별도 환경변수 설정이 필요 없습니다. 저장된 토큰이 없으면 설정 마법사가 자동으로 뜹니다.
 
 ---
 

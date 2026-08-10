@@ -35,8 +35,13 @@ struct DabMain {
             return
         }
         if args.first == "--setup" {
-            printSetupGuidance()
-            return
+            loadDabEnvFile()
+            guard stdinIsInteractive() else {
+                printSetupGuidance()
+                exit(1)
+            }
+            let done = await runSetupWizard(deps: interactiveWizardDeps(), offerService: true)
+            exit(done == nil ? 1 : 0)
         }
         // C13: `dab service <status|restart>` — never boots the bot (mirrors cli.ts's
         // service dispatch). install/uninstall stay as swift/scripts/install.sh|uninstall.sh.
@@ -61,8 +66,16 @@ struct DabMain {
             return
         }
 
-        // A present config.json is authoritative: surface decode/validation errors instead of
-        // silently booting with an env/argv token. Env/argv remain first-run fallbacks only.
+        // Foreground `dab` gets the same secrets the service does: run.sh sources ~/.dab/env
+        // before exec'ing us, so a bare terminal run had to be prefixed with `set -a; . ~/.dab/env`
+        // or it died on "no token" despite the documented file being right there. Process env
+        // still wins, so an explicit `export` in the caller's shell stays authoritative.
+        loadDabEnvFile()
+
+        // A present config.json is authoritative for decode/validation errors — surface those
+        // instead of silently booting past a broken file. Its token, though, is the LAST resort
+        // (see DiscordToken.resolve): a leftover config.json from the TS bridge must not shadow
+        // the ~/.dab/env token this build documents everywhere.
         let config: AppConfig?
         if await ConfigStore.shared.exists() {
             do {
@@ -74,13 +87,22 @@ struct DabMain {
         } else {
             config = nil
         }
-        let token: String?
-        if let config {
-            token = DiscordToken.resolve(environment: [:], arguments: [], configToken: config.discord.token)
-        } else {
-            token = DiscordToken.resolve()
+        var resolvedToken = DiscordToken.resolve(configToken: config?.discord.token)
+        if resolvedToken == nil {
+            // No token anywhere: walk the user through it instead of printing usage and dying.
+            guard stdinIsInteractive() else {
+                fputs(DiscordToken.usage + "\n", stderr)
+                exit(1)
+            }
+            guard let done = await runSetupWizard(deps: interactiveWizardDeps(), offerService: false) else {
+                exit(1)
+            }
+            resolvedToken = done.token
+            // Pick up DAB_DEV_GUILD_ID the wizard just wrote — slash registration reads it from
+            // the process env, and this boot is the one that would otherwise register globally.
+            loadDabEnvFile()
         }
-        guard let token else {
+        guard let token = resolvedToken else {
             fputs(DiscordToken.usage + "\n", stderr)
             exit(1)
         }
@@ -256,19 +278,51 @@ struct DabMain {
     }
 }
 
-// C12: `dab --setup`. This build has no interactive terminal wizard (unlike the Node
-// CLI's `@inquirer/prompts` flow) — the actual Swift deployment story is env-file based
-// (see swift/scripts/install.sh), so this only points at the ways to provide a token
-// instead of inventing a new config-writing subsystem. Never boots the bot afterward.
+// C12: `dab --setup` runs the interactive wizard (SetupWizard.swift). This text is only the
+// no-TTY fallback — under launchd/systemd there is nobody to answer prompts, so a service that
+// boots without a token must print what to do and exit rather than hang on stdin forever.
 func printSetupGuidance() {
-    print("""
-    dab setup
-      This build has no interactive terminal wizard. Configure the bot token one of these ways, then run `dab` again:
-        1. export DISCORD_BOT_TOKEN=your_bot_token
-        2. Edit config.json → discord.token (~/.discord-agent-bridge/config.json, or $DAB_HOME)
-        3. Pass the token as the first CLI argument: dab <token>
-      Client ID / role setup happens later in Discord via /config.
-    """)
+    fputs("""
+    dab setup — 대화형 설정은 터미널에서만 동작합니다 (지금은 입력이 터미널이 아닙니다).
+
+    터미널에서 아래를 실행하세요:
+      dab --setup
+
+    직접 지정하려면 다음 중 하나:
+      1. ~/.dab/env 에 DISCORD_BOT_TOKEN=... 한 줄
+      2. export DISCORD_BOT_TOKEN=...
+      3. dab <토큰>
+
+    """, stderr)
+}
+
+/// Prompts require a human. Under launchd/systemd stdin is /dev/null, and a read there returns
+/// EOF immediately — enough to loop forever printing prompts if we did not check first.
+func stdinIsInteractive() -> Bool {
+    isatty(FileHandle.standardInput.fileDescriptor) != 0
+}
+
+/// Reads one line with terminal echo off, so a pasted bot token never lands in scrollback or a
+/// screen share. Restores the previous terminal state even when the read fails.
+private func readLineWithoutEcho() -> String? {
+    var original = termios()
+    guard tcgetattr(STDIN_FILENO, &original) == 0 else {
+        return readLine(strippingNewline: true)
+    }
+    var muted = original
+    muted.c_lflag &= ~tcflag_t(ECHO)
+    guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &muted) == 0 else {
+        return readLine(strippingNewline: true)
+    }
+    defer {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &original)
+        print("")
+    }
+    return readLine(strippingNewline: true)
+}
+
+func interactiveWizardDeps() -> SetupWizardDeps {
+    SetupWizardDeps(readSecret: { readLineWithoutEcho() })
 }
 
 struct EventHandler: GatewayEventHandler {

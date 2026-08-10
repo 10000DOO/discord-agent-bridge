@@ -25,176 +25,151 @@ The product is a **Swift** binary (`dab`). Claude Code still uses a thin **Node 
 
 ## Prerequisites
 
+This guide is **macOS-first**. For Linux and Windows see [Other operating systems](#other-operating-systems--linux--windows) at the bottom.
+
 | Requirement | Notes |
 |---|---|
-| **macOS 13+** (primary), or Linux / Windows with Swift | Product binary is SwiftPM `dab` |
-| **Swift 6.1+** | Xcode or Command Line Tools (Windows: Swift toolchain) |
+| **macOS 13+** | Product binary is SwiftPM `dab` |
+| **Swift 6.1+** | Xcode or Command Line Tools (`xcode-select --install`) |
 | **Node.js 20+** | **Claude only** — spawns the Claude sidecar; not needed for Codex/Grok |
 | Backend CLIs, installed & logged in | **Claude Code** (`claude` login or `ANTHROPIC_API_KEY`); **Codex** CLI; **Grok** CLI as needed. Resolved from `PATH`, then the usual user bin dirs (`~/.local/bin`, `~/.dab/bin`, `~/.cargo/bin`, `~/.grok/bin`, Homebrew) — a service started with a minimal `PATH` still finds them |
 | **Discord bot token** | Step 1 below |
 
 ---
 
-## Step 1 — Create a Discord bot
+## Step 1 — Create a Discord bot and get its token
 
-About 5 minutes.
+About 3 minutes. The only thing you need out of this step is **the token** — Step 3 builds the server invite link for you.
 
 1. Open the **[Discord Developer Portal](https://discord.com/developers/applications)** → **New Application** → name it (e.g. `my-agent-bot`) → **Create**.
-2. **Bot** tab → **Reset Token** → copy the token and store it safely.
-   - ⚠️ The token is a password. If it leaks, **Reset Token** immediately.
+2. **Bot** tab (left sidebar) → **Reset Token** → copy the token it shows.
+   - Discord shows a token **exactly once**. Viewing it again means resetting again, which immediately invalidates the old one.
+   - ⚠️ **Not the OAuth2 tab's Client Secret.** A bot token is a ~70-char string in three dot-separated parts; a client secret is 32 chars with no dots. dab never uses the client secret.
+   - The token is a password. If it leaks, **Reset Token** immediately.
 3. Same **Bot** tab, under **Privileged Gateway Intents**:
-   - ✅ **MESSAGE CONTENT INTENT** — **required**
+   - ✅ **MESSAGE CONTENT INTENT** — **required** (without it the bot cannot read messages)
    - ✅ **SERVER MEMBERS INTENT** — recommended (role checks)
    - Save Changes.
-4. **OAuth2** → copy **Client ID (Application ID)**.
-5. **OAuth2 → URL Generator**:
-   - **Scopes**: `bot`, `applications.commands`
-   - **Bot Permissions**: `Manage Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Add Reactions`, `Manage Messages`
-   - `Manage Messages` is only used to pin the task panel (Features → Task panel). Without it the panel still works, as an ordinary message — the bot says so once and offers a one-click fix.
-   - Open the generated URL and invite the bot to your server.
+
+You don't need to invite the bot yet. Step 3 generates an invite URL with every required permission baked in — and if you already invited it, it just lists the server for you to pick.
 
 ---
 
-## Step 2 — Install & run
-
-### macOS (recommended — Homebrew)
+## Step 2 — Install (macOS)
 
 ```bash
 brew tap 10000DOO/discord-agent-bridge
 brew install 10000DOO/discord-agent-bridge/dab
 ```
 
-Builds `dab` from source and npm-installs the Claude sidecar alongside it — no separate `npm install` step. Needs Node.js 20+ and Swift 6.1+ already on `PATH` (see Prerequisites above); the formula only checks for them, it won't install or upgrade either.
+Builds `dab` from source and installs the Claude sidecar alongside it — no separate `npm install`. Node.js 20+ and Swift 6.1+ must already be present (see Prerequisites); the formula only checks for them.
 
-Secrets (`DISCORD_BOT_TOKEN` etc.) live in `~/.dab/env` (0600) — same file the manual install below uses:
-
-```bash
-mkdir -p ~/.dab && touch ~/.dab/env && chmod 600 ~/.dab/env
-$EDITOR ~/.dab/env
-# DISCORD_BOT_TOKEN=...
-```
-
-Run once in the foreground:
-
-```bash
-dab
-```
-
-Or run as a background service that auto-restarts on crash/reboot (launchd, via `brew services`):
-
-```bash
-brew services start dab      # start
-brew services list           # check status
-brew services restart dab    # after editing ~/.dab/env
-brew services stop dab       # stop
-```
-
-Logs: `$(brew --prefix)/var/log/dab.log` / `dab.error.log`.
-
-Update:
-
-```bash
-brew update
-brew upgrade 10000DOO/discord-agent-bridge/dab
-brew services restart dab   # only needed if running as a service — brew upgrade alone doesn't restart it
-```
-
-The in-Discord `/update` command (see Features → Auto-update below) does **not** work for a Homebrew install — it looks for a `swift/scripts/install.sh` checkout, which a Homebrew install doesn't have. Always use `brew upgrade` for this install method.
-
-> ⚠️ **Don't run two instances with the same bot token at the same time.** `dab` (foreground, `brew services`, or the manual/from-source install below) all read the same `DISCORD_BOT_TOKEN`. Starting a second instance with that token opens a second gateway connection to the same bot account — it won't crash, it'll just run alongside the first one and cause duplicate/conflicting replies. Pick exactly one install method per bot token.
-
-### macOS (manual — from source)
+<details>
+<summary>Build from source instead of Homebrew</summary>
 
 ```bash
 git clone https://github.com/10000DOO/discord-agent-bridge.git
 cd discord-agent-bridge
-
-# Claude sidecar deps (skip if you only use Codex/Grok)
-npm install
-
-bash swift/scripts/install.sh
-# first install copies swift/deploy/env.example → ~/.dab/env (0600)
+npm install                      # Claude sidecar only (skip if you use Codex/Grok only)
+bash swift/scripts/install.sh    # build + register a launchd agent for login
 ```
 
-Edit secrets (token lives **only** here — never in the plist):
+The in-Discord `/update` command only works with this install method. Homebrew installs use `brew upgrade`.
 
-```bash
-$EDITOR ~/.dab/env
-# DISCORD_BOT_TOKEN=...
-```
-
-Reload after editing env:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.discord-agent-bridge.plist
-launchctl load -w ~/Library/LaunchAgents/com.discord-agent-bridge.plist
-```
-
-Service helpers (after install):
-
-```bash
-dab service status    # or: ~/.dab/bin/dab service status
-dab service restart
-```
-
-Update: from Discord, `/update` checks the release registry and rebuilds/restarts automatically (Features → Auto-update below). To do it manually instead:
-
-```bash
-cd discord-agent-bridge   # repo root
-git pull
-bash swift/scripts/install.sh   # rebuild + reload the LaunchAgent
-```
-
-Uninstall (keeps `~/.dab/env` and logs):
-
-```bash
-bash swift/scripts/uninstall.sh
-```
-
-### Linux (systemd --user)
-
-```bash
-bash swift/scripts/install-linux.sh
-# edit ~/.dab/env, then:
-systemctl --user restart discord-agent-bridge
-systemctl --user status discord-agent-bridge
-```
-
-Update: `git pull && bash swift/scripts/install-linux.sh` (or `/update` from Discord).
-
-Uninstall: `bash swift/scripts/uninstall-linux.sh`
-
-### Windows (Task Scheduler / onlogon)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File swift/scripts/install-windows.ps1
-# edit %USERPROFILE%\.dab\env
-schtasks /Run /TN discord-agent-bridge
-```
-
-Update: `git pull` then re-run `install-windows.ps1` (or `/update` from Discord).
-
-Uninstall: `install-windows.ps1 -Uninstall`
-
-### One-shot (no service)
-
-From the **repo root** (Claude sidecar resolves paths relative to the checkout):
-
-```bash
-export DISCORD_BOT_TOKEN=your_bot_token
-# optional: DAB_CWD, DAB_PERM_MODE, DAB_TURN_TIMEOUT_SEC, DAB_DEV_GUILD_ID
-swift run --package-path swift dab
-```
-
-On success:
-
-```text
-ready: username=<bot> id=<snowflake> app=<application id>
-```
+</details>
 
 ---
 
-## Step 3 — Use it in Discord
+## Step 3 — Connect it with one command: `dab --setup`
+
+```bash
+dab --setup
+```
+
+Answer the prompts and you're done. No files to locate and edit, no server id to hunt down.
+
+```text
+$ dab --setup
+
+dab 설정을 시작합니다. 물어보는 대로 답하면 나머지는 알아서 처리합니다.
+
+1) 봇 토큰을 붙여넣고 엔터를 누르세요. (입력은 화면에 보이지 않습니다)
+   Discord Developer Portal → 내 애플리케이션 → 왼쪽 [Bot] 탭 → [Reset Token]
+   ⚠️ OAuth2 탭의 Client Secret 이 아닙니다 — 점(.)이 2개 들어간 70자 내외 문자열입니다.
+
+   확인 중…
+   ✓ 확인 완료 — 봇 이름: my-agent-bot
+
+2) 이 봇을 쓸 서버를 고릅니다.
+
+   이 봇이 들어가 있는 서버가 없습니다. 아래 주소를 열어 서버에 초대해 주세요:
+
+   https://discord.com/api/oauth2/authorize?client_id=…&scope=bot%20applications.commands&permissions=…
+
+   초대를 마쳤으면 엔터를 누르세요. (건너뛰려면 s 입력)
+
+   ✓ my-team
+
+저장했습니다 → /Users/me/.dab/env
+
+백그라운드 서비스를 재시작해서 지금 적용할까요? [Y/n]
+
+끝났습니다. 디스코드의 my-team 서버에서 /setup 을 쳐보세요.
+```
+
+> The CLI speaks Korean, matching `dab service`'s existing output.
+
+What the wizard handles for you:
+
+- **Verifies the token on the spot.** A truncated paste or a Client Secret is caught before anything is saved; on success it prints the bot's name so you can see which bot you just wired up.
+- **Builds the invite URL.** Every required permission is already baked in — no picking checkboxes in the OAuth2 URL Generator.
+- **Lists the servers your bot is in and lets you pick one.** No Developer Mode, no right-click-copy-id. This is what makes slash commands register **instantly** — without it Discord propagates them globally, which takes up to an hour.
+- **Writes `~/.dab/env` (0600).** Existing lines and comments are preserved; only the relevant keys are updated.
+
+Running plain `dab` with no token saved starts the same wizard. Re-run `dab --setup` any time to switch bots.
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `✗ 이건 봇 토큰이 아닙니다` | You pasted the OAuth2 tab's **Client Secret**. Use **Bot** tab → **Reset Token** |
+| `✗ 디스코드가 거절했습니다` | The token expired (you pressed Reset Token again) or the paste was truncated. Issue a fresh one |
+| Bot is online but `/setup` isn't listed | You skipped the server at step 2 (up to 1h wait). Re-run `dab --setup` and pick it for instant registration |
+| Bot stays offline | Check that **MESSAGE CONTENT INTENT** (Step 1) is enabled |
+| You have a `~/.discord-agent-bridge/config.json` | Leftover from the TypeScript bridge. `~/.dab/env` now takes precedence, so it's harmless |
+| Token may have leaked | Developer Portal → Bot → **Reset Token**, then re-run `dab --setup` |
+
+### Keep it running
+
+```bash
+brew services start dab      # start (auto-restarts on crash/reboot)
+brew services list           # status
+brew services restart dab    # after changing settings
+brew services stop dab       # stop
+```
+
+Logs: `$(brew --prefix)/var/log/dab.log` · `dab.error.log`
+(Source installs: `dab service status` / `dab service restart`, logs in `~/.dab/logs/agent.out.log`)
+
+A successful connection logs:
+
+```text
+ready: username=<bot> id=<snowflake> app=<application id>
+registered setup, config, agent, ... to guild <server id>
+```
+
+Update:
+
+```bash
+brew upgrade 10000DOO/discord-agent-bridge/dab
+brew services restart dab   # only if running as a service
+```
+
+> ⚠️ **Don't run two instances with the same bot token.** Foreground `dab`, `brew services`, and a source install all read the same token. A second instance won't crash — it just runs alongside the first and causes duplicate or conflicting replies.
+
+---
+
+## Step 4 — Use it in Discord
 
 Typical flow: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel.
 
@@ -349,7 +324,7 @@ The same `autoUpdate.enabled` switch also keeps the **backend runtimes** current
 | `servers/<guildId>.json` | Per-server auth, defaults, presets, notifications |
 | `swift-state.json` | Session bindings (versioned) |
 
-Prefer putting the Discord token in **`~/.dab/env`** for service installs. First-run can also use env / argv only until config exists.
+The Discord token belongs in **`~/.dab/env`** — that is what `dab --setup` writes and what `dab` loads on every start, service or foreground. Token lookup order: `DISCORD_BOT_TOKEN` / `DISCORD_TOKEN` in the process env (which `~/.dab/env` populates) → first CLI argument → `config.json`'s `discord.token` as a last-resort fallback for old TypeScript-era installs.
 
 ### Environment variables
 
@@ -429,6 +404,50 @@ swift build --package-path swift --scratch-path /tmp/dab-ci
 Backend smokes (`sidecar` / `codex` / `grok`) are best-effort and skip cleanly when a CLI is missing.
 
 Live Discord token is **not** required for build/test. Gateway connect and real agent runs need credentials and are manual.
+
+---
+
+## Other operating systems — Linux / Windows
+
+The guide above is macOS-first. Step 1 (create the bot) and Step 3 (`dab --setup`) are identical everywhere; only installation and service registration differ.
+
+### Linux (systemd --user)
+
+```bash
+git clone https://github.com/10000DOO/discord-agent-bridge.git
+cd discord-agent-bridge
+npm install                              # Claude sidecar only (skip for Codex/Grok only)
+bash swift/scripts/install-linux.sh
+dab --setup                              # token → server → saved
+systemctl --user restart discord-agent-bridge
+```
+
+Status/logs: `systemctl --user status discord-agent-bridge` · `journalctl --user -u discord-agent-bridge -f`
+Update: `git pull && bash swift/scripts/install-linux.sh` (or `/update` in Discord)
+Uninstall: `bash swift/scripts/uninstall-linux.sh`
+
+### Windows (Task Scheduler / onlogon)
+
+```powershell
+git clone https://github.com/10000DOO/discord-agent-bridge.git
+cd discord-agent-bridge
+npm install
+powershell -ExecutionPolicy Bypass -File swift\scripts\install-windows.ps1
+dab --setup
+schtasks /Run /TN discord-agent-bridge
+```
+
+Settings live in `%USERPROFILE%\.dab\env`.
+Update: `git pull`, then re-run `install-windows.ps1` (or `/update` in Discord)
+Uninstall: `install-windows.ps1 -Uninstall`
+
+### One-shot (no service)
+
+```bash
+dab
+```
+
+Reads `~/.dab/env` directly, so no environment setup is needed. With no token saved, the setup wizard starts automatically.
 
 ---
 
