@@ -200,8 +200,8 @@ public actor ConfigStore {
         let existing = loadServerConfig(guildId: guildId)
         // Mutate the loaded value instead of re-listing every field (mirrors addServerPreset /
         // patchNotifications). A field-by-field rebuild silently drops sections added later:
-        // that is how the 5-minute redmine poller's `lastCheckedAt` write used to wipe
-        // `orchestration`, orphaning every set's category id.
+        // that is how the 5-minute redmine poller's `lastCheckedAt` write used to wipe whole
+        // sections it never touched.
         var next = existing ?? ServerConfig(guildId: guildId)
         next.version = existing?.version ?? CONFIG_VERSION
         next.guildId = guildId
@@ -407,7 +407,7 @@ public actor ConfigStore {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         try rejectNulls(
             in: root,
-            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities", "redmine", "orchestration"],
+            checking: ["version", "guildId", "auth", "defaults", "limits", "locale", "auditChannelId", "favorites", "presets", "channels", "notifications", "capabilities", "redmine"],
             allowing: ["auditChannelId"]
         )
 
