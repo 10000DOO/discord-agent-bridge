@@ -206,7 +206,6 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 | `/stop-all` | Admin | Hard-stop every bound session |
 | `/doc path:` | Execute+ | Share a workspace markdown file into a document thread |
 | `/diff` | Execute+ | Open a thread with this folder's uncommitted changes (file picker + expand all) |
-| `/orchestration` | Execute+ | Turn this session channel into an orchestration lead (Claude only) — see below |
 | `/redmine` | Execute+ | Modal (URL / API key / project) to connect Redmine notifications |
 | `/redmine-issue-select` | Execute+ | Pick a New/Doing Redmine issue from a dropdown and kick a session off it |
 | `/command` | Execute+ | Run a slash command this channel's backend itself advertises (autocomplete + prompt modal) |
@@ -215,7 +214,7 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 
 Commands register under their bare name, with no prefix. `/setup`, `/config`, `/stop-all`, and `/update` need the admin tier (or Discord's Administrator permission); everything else needs execute or higher. `/setup` has a one-time bootstrap exception: on a guild with no admins configured yet, whoever runs it first claims admin.
 
-Commands that act on *this channel's* session (`/model`, `/effort`, `/mode`, `/clear`, `/stop`, `/orchestration`) reply "no session" unless the channel is bound.
+Commands that act on *this channel's* session (`/model`, `/effort`, `/mode`, `/clear`, `/stop`) reply "no session" unless the channel is bound.
 
 A few backend commands only exist inside the CLI's own interactive screen, so asking for them over the protocol returns a one-line summary or "isn't available in this environment" — for those (`/status`, `/mcp`, `/memory`, `/skills`, `/plugin` on Claude; `/context` on Grok) the bridge rebuilds the screen from the live session's own facts (version, cwd, model, permission mode, MCP servers, skills/plugins, memory files) and posts that instead. When a fact never arrived, the backend's original text passes through unchanged — nothing is invented.
 
@@ -269,18 +268,6 @@ GFM tables and fenced `mermaid` blocks become PNG attachments when:
 Implementation: **headless Chrome CLI** screenshots of local HTML (not an in-process browser runtime). Failures fall back to raw markdown. Caps: ~15s timeout, size/cell limits, limited concurrency.
 
 Env overrides: `DAB_RENDER=0|1`, `DAB_MERMAID_JS`, `DAB_CHROMIUM_CACHE`, `PUPPETEER_EXECUTABLE_PATH` / `CHROME_PATH`.
-
-### Orchestration mode (Claude only)
-
-`/orchestration` promotes the current session channel into a **lead** channel that can hand work to module channels of its own.
-
-Running it opens a card with four dropdowns — model and effort for the lead, model and effort for the modules it spawns — plus **Start / Cancel**. Nothing is touched until Start. On Start the bot:
-
-1. Zips the project's existing `.claude/` as a backup, then installs the orchestration role manuals and skills into it (skills whose name already exists globally or in the project are left alone and reported).
-2. Creates (or reuses) a Discord category for this lead and renames/moves the channel into it.
-3. Restarts the channel's session in orchestration mode with the chosen lead model/effort; module channels the lead opens later inherit the module model/effort.
-
-The lead and its modules talk over MCP tools the install provides (`send_order` / `report`), with a default cap of 50 instruction↔report round trips. Re-running the command on a channel that is already a lead resets it to a fresh context and cleans up the previous run's module channels. Requires the channel to be bound to the **Claude** backend — the card refuses to open otherwise, and it is rejected in control-plane channels.
 
 ### Redmine integration
 
