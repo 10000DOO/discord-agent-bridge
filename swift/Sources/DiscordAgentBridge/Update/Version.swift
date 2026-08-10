@@ -88,5 +88,5 @@ public func readAppVersion() -> String {
 
 public enum AppVersion {
     /// Mirrors TS package.json version when the Swift port tracks the same release line.
-    public static let defaultValue = "3.5.0"
+    public static let defaultValue = "3.6.0"
 }
