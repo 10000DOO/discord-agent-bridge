@@ -201,7 +201,7 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 | `/mode perm` | Execute+ | Switch permission mode (session kept) |
 | `/model` | Execute+ | Switch model (autocomplete from provider catalog) |
 | `/effort` | Execute+ | Switch reasoning effort (autocomplete) |
-| `/clear` | Execute+ | Fresh conversation, same folder/settings (on an orchestrator channel, its module sessions are cleared too) |
+| `/clear` | Execute+ | Fresh conversation, same folder/settings |
 | `/stop` | Execute+ | Hard-stop this channel’s session |
 | `/stop-all` | Admin | Hard-stop every bound session |
 | `/doc path:` | Execute+ | Share a workspace markdown file into a document thread |
@@ -343,7 +343,7 @@ dab service restart     # macOS launchd restart
 dab sidecar-smoke       # Claude sidecar protocol handshake
 dab codex-smoke         # Codex app-server initialize (exit 0 if CLI missing)
 dab grok-smoke          # Grok ACP smoke (exit 0 if CLI missing)
-dab attach-mcp          # stdio MCP server (file attach / doc share / order / report tools)
+dab attach-mcp          # stdio MCP server (file attach / doc share tools)
 ```
 
 Only `dab` with no subcommand boots the gateway; every subcommand above runs and exits.

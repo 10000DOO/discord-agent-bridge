@@ -199,7 +199,7 @@ brew services restart dab   # 서비스로 켜둔 경우에만 필요
 | `/mode perm` | execute+ | 권한 모드 전환 (세션 유지) |
 | `/model` | execute+ | 모델 전환 (프로바이더 카탈로그 자동완성) |
 | `/effort` | execute+ | 추론 강도 전환 (자동완성) |
-| `/clear` | execute+ | 동일 폴더/설정으로 새 대화 (오케스트레이터 채널이면 하위 모듈 세션도 함께 비움) |
+| `/clear` | execute+ | 동일 폴더/설정으로 새 대화 |
 | `/stop` | execute+ | 이 채널 세션 hard-stop |
 | `/stop-all` | 관리자 | 모든 바인딩 세션 hard-stop |
 | `/doc path:` | execute+ | 작업 공간 마크다운을 문서 스레드로 공유 |
@@ -341,7 +341,7 @@ dab service restart     # macOS launchd 재시작
 dab sidecar-smoke       # Claude 사이드카 프로토콜 핸드셰이크
 dab codex-smoke         # Codex app-server initialize (CLI 없으면 exit 0)
 dab grok-smoke          # Grok ACP 스모크 (CLI 없으면 exit 0)
-dab attach-mcp          # stdio MCP 서버 (파일 첨부 / 문서 공유 / 지시 / 보고 도구)
+dab attach-mcp          # stdio MCP 서버 (파일 첨부 / 문서 공유 도구)
 ```
 
 서브커맨드 없이 `dab`만 실행할 때만 게이트웨이에 접속합니다. 위 서브커맨드는 모두 실행 후 종료합니다.
