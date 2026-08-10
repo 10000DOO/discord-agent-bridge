@@ -80,22 +80,14 @@ gen_run_script() {
 # launchd runs THIS, not dab directly: PATH + cwd are set here (see install.sh header).
 export PATH="$HOME/.dab/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.grok/bin:$HOME/.cargo/bin:/usr/bin:/bin:\$PATH"
 export NVM_DIR="$HOME/.nvm"
-install_node_dir=$INSTALL_NODE_DIR_LITERAL
-nvm_node=""
-if [ -s "\$NVM_DIR/nvm.sh" ]; then
-  . "\$NVM_DIR/nvm.sh"
-  nvm_node="\$(nvm which default 2>/dev/null || true)"
-  if [ ! -x "\$nvm_node" ]; then
-    nvm_node="\$(nvm which node 2>/dev/null || true)"
-  fi
-  if [ -x "\$nvm_node" ]; then
-    export PATH="\$(dirname "\$nvm_node"):\$PATH"
-  fi
-fi
-# A missing nvm alias must not select an unrelated system Node. Use the executable directory
-# captured at install time when it remains valid, while preserving the inherited PATH otherwise.
-if [ ! -x "\$nvm_node" ] && [ -x "\$install_node_dir/node" ]; then
-  export PATH="\$install_node_dir:\$PATH"
+# Node lookup is shared with the Homebrew wrapper and the self-update script — one rule set for
+# every install method (scripts/find-node.sh). The directory captured at install time is handed
+# over as the last-resort fallback, preserving the previous behaviour for machines with no
+# version manager. Resolving here (not at install time) is what survives an `nvm install`.
+export DAB_NODE_FALLBACK_DIR=$INSTALL_NODE_DIR_LITERAL
+resolved_node="\$(/bin/bash "$REPO_ROOT/scripts/find-node.sh" 2>/dev/null || true)"
+if [ -x "\$resolved_node" ]; then
+  export PATH="\$(dirname "\$resolved_node"):\$PATH"
 fi
 # Marker for auto-update restart strategy (supervised → exit only; supervisor relaunches).
 export DAB_SUPERVISED=1

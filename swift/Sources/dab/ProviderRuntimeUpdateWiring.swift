@@ -1402,8 +1402,33 @@ private func updateClaudeRuntime() async -> ProviderRuntimeUpdateItem {
     )
 }
 
+/// Non-nil when this install's Claude SDK is owned by someone else, so the in-place staging
+/// below must not run at all.
+///
+/// Homebrew is that case: the SDK lives in the keg's `libexec/node_modules`, which the formula
+/// installs and `brew upgrade dab` replaces wholesale. Writing into a keg is wrong twice over —
+/// the next upgrade silently reverts it, and the rollback boundary would straddle two owners.
+///
+/// Reported as `.unsupported`, the same status Codex/Grok use for an installation whose rollback
+/// boundary we do not own. Before this existed the Homebrew path fell through to `findRepoRoot()`,
+/// which searches upward from the process cwd — `/` under `brew services` — and so failed on every
+/// single run, logging `Claude project root not found` forever (docs/node-discovery-and-homebrew-sdk-check.md 3-2).
+func claudeSdkRuntimeUnmanagedReason(
+    env: [String: String] = ProcessInfo.processInfo.environment
+) -> ProviderRuntimeUpdateItem? {
+    guard isHomebrewInstall(env: env) else { return nil }
+    return ProviderRuntimeUpdateItem(
+        provider: .claude,
+        status: .unsupported,
+        detail: "Claude SDK is owned by the Homebrew formula; it updates with `brew upgrade dab`"
+    )
+}
+
 /// Stage package manifest/lock/dependencies, validate a real SDK import, then promote with rollback.
 private func updateClaudeSdkRuntime() async -> ProviderRuntimeUpdateItem {
+    if let item = claudeSdkRuntimeUnmanagedReason() {
+        return item
+    }
     guard let root = findRepoRoot() else {
         return ProviderRuntimeUpdateItem(provider: .claude, status: .failed, detail: "Claude project root not found")
     }

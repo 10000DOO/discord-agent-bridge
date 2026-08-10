@@ -635,6 +635,26 @@ struct ProviderRuntimeUpdateWiringTests {
         try FileManager.default.createSymbolicLink(atPath: shim.path, withDestinationPath: "../downloads/grok-0.2.114-macos-aarch64")
         return (root, home, shim)
     }
+
+    // A Homebrew keg owns its own `libexec/node_modules`, so the in-place SDK staging must never
+    // start there — `brew upgrade dab` replaces the whole keg. Before this branch existed the
+    // Homebrew path fell through to `findRepoRoot()`, which searches upward from the process cwd
+    // (`/` under `brew services`) and therefore failed on literally every run, logging
+    // "Claude project root not found" every check forever.
+    @Test func homebrewInstallReportsSdkUnmanagedInsteadOfFailing() {
+        let item = claudeSdkRuntimeUnmanagedReason(env: ["DAB_INSTALL_METHOD": "homebrew"])
+
+        #expect(item?.status == .unsupported)
+        #expect(item?.provider == .claude)
+        #expect(item?.detail?.contains("brew upgrade dab") == true)
+    }
+
+    // The source install still owns its checkout, so a missing repo root there is a real failure
+    // and must keep reaching the existing `.failed` branch.
+    @Test func sourceInstallLeavesSdkRuntimeCheckAlone() {
+        #expect(claudeSdkRuntimeUnmanagedReason(env: [:]) == nil)
+        #expect(claudeSdkRuntimeUnmanagedReason(env: ["DAB_INSTALL_METHOD": "source"]) == nil)
+    }
 }
 
 private actor RuntimeCheckPause {
