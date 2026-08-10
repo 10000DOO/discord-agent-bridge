@@ -19,9 +19,8 @@ func redmineKickoffPromptText(issue: RedmineIssueDTO) -> String {
 /// Runs a bot-authored prompt through one full turn and delivers the reply — the shared pipeline
 /// behind every programmatic turn drive. Bots are ignored by `handleMessageCreate`
 /// (docs/redmine-session-confirm-kickoff.md), so this is the only way to make a channel's session
-/// advance without a human typing. Extracted from `runRedmineKickoffPrompt` (WO-3,
-/// design_orchestration_module_agents.md) so the orchestration module-agent flow (WO-5) can reuse
-/// the exact same UX pipeline instead of hand-copying it again.
+/// advance without a human typing. Extracted from `runRedmineKickoffPrompt` (WO-3) so any other
+/// programmatic turn drive can reuse the exact same UX pipeline instead of hand-copying it again.
 ///
 /// Mirrors the essential `runAndReply` progress UX (⏳/✅/❌, interrupt control, StreamStatusHost,
 /// IdleWatchdog) so a bot-authored prompt still looks "alive".
@@ -29,12 +28,9 @@ func redmineKickoffPromptText(issue: RedmineIssueDTO) -> String {
 /// Callers should fire-and-forget this when they need the interaction ack to return immediately.
 ///
 /// Returns whether the prompt was durably posted (or `true` when `postPrompt` is false — nothing
-/// to confirm). `OrchestrationHost.order`/`.report` await only up to this point before answering
-/// their own caller: the message post is bounded (a few retried Discord calls), but the turn
-/// itself is not, so it stays fire-and-forget below this line — same reason `order()` never
-/// blocks its caller on a module's turn. Before this, `order`/`report` fired the whole function
-/// as an untracked `Task` and answered "delivered" immediately, so a post that failed (or a
-/// process restart before this ran at all) was never seen by anyone.
+/// to confirm). A caller that needs to answer its own caller should await only up to this point:
+/// the message post is bounded (a few retried Discord calls), but the turn itself is not, so it
+/// stays fire-and-forget below this line.
 @discardableResult
 func runInjectedTurn(
     client: any DiscordClient,

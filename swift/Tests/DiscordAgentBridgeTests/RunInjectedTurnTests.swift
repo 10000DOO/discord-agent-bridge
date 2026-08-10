@@ -4,7 +4,7 @@ import DiscordBM
 @testable import DiscordAgentBridge
 @testable import dab
 
-// WO-3 (design_orchestration_module_agents.md): `runInjectedTurn` is the pipeline extracted out of
+// WO-3: `runInjectedTurn` is the pipeline extracted out of
 // `runRedmineKickoffPrompt`. `postPrompt: false` is new behavior (Redmine's own call always passes
 // `true`), so it needs its own coverage — `RedmineKickoffPromptTests`/`TurnDeliveryTests` are left
 // untouched on purpose (WO-3 completion condition: they must still pass unmodified).

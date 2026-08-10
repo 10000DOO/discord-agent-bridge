@@ -96,8 +96,6 @@ public enum I18n {
         "cmd.stop.done": "세션을 중지했어요.",
         "cmd.stopAll.done": "모든 세션을 중지했어요 ({count}개).",
         "cmd.clear.done": "대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했습니다.",
-        "cmd.clear.doneWithModules":
-            "대화 컨텍스트를 비웠어요. 같은 폴더·설정으로 새 세션을 시작했고, 하위 모듈 세션 {count}개도 함께 비웠습니다.",
         "cmd.clear.public": "🧹 이 채널 대화 컨텍스트를 비웠어요. 이전 맥락은 이어지지 않습니다.",
         "cmd.close.done": "세션을 종료하고 보관했어요.",
         "cmd.resume.none": "재개할 수 있는 세션이 없어요. 새로 시작하려면 `/agent start` 를 사용하세요.",
@@ -591,43 +589,6 @@ public enum I18n {
         // R3 WO-17: SessionPersist.swift
         "session.fallbackNotice": "⚠️ 이전 세션 복구 실패 — 새 세션으로 시작합니다.",
 
-        // design_orchestration_project_scoped_command.md §4.9: project-scoped /orchestration
-        "orchestration.wrongChannel":
-            "이 명령어는 세션 채널(프로젝트 폴더가 연결된 채널)에서만 사용할 수 있습니다.",
-        "orchestration.project.installFailed": "오케스트레이션 설치에 실패했어요: {errors}",
-        "orchestration.project.installed":
-            "프로젝트 `.claude/`(CLAUDE.md + agents/ + skills/)를 `{cwd}` 기준으로 설치했어요.",
-        "orchestration.project.freshContextNotice":
-            "다음 메시지부터 이 채널은 새 세션으로 다시 연결되고, 프로젝트 설정(`.claude/`)만 적용돼요.",
-        "orchestration.project.backedUp": "이전 설정을 `{path}`로 백업했어요.",
-
-        // design_orchestration_module_agents.md WO-1: set category + lead-channel move/rename
-        "orchestration.category.moved":
-            "`{category}` 카테고리로 이동하고 채널 이름을 `{channel}`로 바꿨어요.",
-        "orchestration.category.failed":
-            "⚠️ 카테고리 이동에 실패했어요. 채널은 그대로 유지돼요.",
-        "orchestration.restart.modulesClosed":
-            "이전 오케스트레이션의 모듈 채널 {n}개를 정리했어요.",
-
-        // design_orchestration_module_agents.md WO-10: start spec card (drop down 4 + 시작/취소)
-        "orchestration.wizard.title": "오케스트레이션 시작 스펙",
-        "orchestration.wizard.description":
-            "총괄과 모듈 담당자가 쓸 모델·추론정도를 고르세요. `시작`을 누르기 전에는 아무 것도 만들어지지 않아요.",
-        "orchestration.wizard.omodel": "총괄 모델",
-        "orchestration.wizard.oeffort": "총괄 추론정도",
-        "orchestration.wizard.mmodel": "모듈 공통 모델",
-        "orchestration.wizard.meffort": "모듈 공통 추론정도",
-        "orchestration.wizard.tag.lead": "총괄",
-        "orchestration.wizard.tag.module": "모듈",
-        "orchestration.wizard.cancelled": "오케스트레이션 시작을 취소했어요.",
-        "orchestration.wizard.confirmed": "확정된 스펙으로 오케스트레이션을 준비하고 있어요…",
-        "orchestration.wizard.backendNotClaude":
-            "이 채널의 백엔드가 Claude가 아니어서 오케스트레이션을 시작할 수 없어요. `/mode backend claude`로 바꾼 뒤 다시 시도하세요.",
-        "orchestration.wizard.sessionMissing": "카드 세션이 없어요. `/orchestration`을 다시 실행해 주세요.",
-        "orchestration.wizard.appliedSpec":
-            "총괄 모델·추론정도를 `{model}` / {effort}로 적용했어요. 모듈 채널은 `{moduleModel}` / {moduleEffort}로 시작돼요.",
-        "orchestration.wizard.appliedSpecFailed":
-            "⚠️ 총괄 모델·추론정도(`{model}` / {effort}) 적용에는 실패했어요. 세션은 정상적으로 시작됐으니 `/model`·`/effort`로 다시 설정해 주세요.",
         // Keep at or under 32 scalars (§8-1 C15 house rule for user-facing Korean surfaces).
         // WO-9: says only what is actually known. The list is missing for two reasons that look
         // identical from here (no session yet / warm-up still running), and telling a channel that
@@ -671,8 +632,6 @@ public enum I18n {
         "cmd.stopAll.done": "Stopped all sessions ({count}).",
         "cmd.clear.done":
             "Cleared conversation context. Started a fresh session with the same folder and settings.",
-        "cmd.clear.doneWithModules":
-            "Cleared conversation context and started a fresh session with the same folder and settings. Also cleared {count} module session(s).",
         "cmd.clear.public":
             "🧹 Cleared this channel's conversation context. Prior context will not carry over.",
         "cmd.close.done": "Closed the session and archived it.",
@@ -1151,42 +1110,6 @@ public enum I18n {
         // R3 WO-17: SessionPersist.swift
         "session.fallbackNotice": "⚠️ Failed to restore the previous session — starting a new one.",
 
-        // design_orchestration_project_scoped_command.md §4.9: project-scoped /orchestration
-        "orchestration.wrongChannel":
-            "This command can only be used in a session channel bound to a project folder.",
-        "orchestration.project.installFailed": "Failed to install orchestration: {errors}",
-        "orchestration.project.installed":
-            "Installed the project `.claude/` (CLAUDE.md + agents/ + skills/) under `{cwd}`.",
-        "orchestration.project.freshContextNotice":
-            "From the next message, this channel reconnects with a fresh session using only the project's `.claude/` settings.",
-        "orchestration.project.backedUp": "Backed up the previous configuration to `{path}`.",
-
-        "orchestration.category.moved":
-            "Moved into the `{category}` category and renamed the channel to `{channel}`.",
-        "orchestration.category.failed":
-            "⚠️ Failed to move the category. The channel stays as-is.",
-        "orchestration.restart.modulesClosed":
-            "Cleaned up {n} module channel(s) from the previous orchestration run.",
-
-        // design_orchestration_module_agents.md WO-10: start spec card (4 dropdowns + Start/Cancel)
-        "orchestration.wizard.title": "Orchestration start spec",
-        "orchestration.wizard.description":
-            "Pick the model/effort the lead and modules will use. Nothing is created until you press Start.",
-        "orchestration.wizard.omodel": "Lead model",
-        "orchestration.wizard.oeffort": "Lead effort",
-        "orchestration.wizard.mmodel": "Module model (shared)",
-        "orchestration.wizard.meffort": "Module effort (shared)",
-        "orchestration.wizard.tag.lead": "Lead",
-        "orchestration.wizard.tag.module": "Module",
-        "orchestration.wizard.cancelled": "Cancelled starting orchestration.",
-        "orchestration.wizard.confirmed": "Setting up orchestration with the confirmed spec…",
-        "orchestration.wizard.backendNotClaude":
-            "This channel's backend isn't Claude, so orchestration can't start. Switch with `/mode backend claude` and try again.",
-        "orchestration.wizard.sessionMissing": "No card session found. Run `/orchestration` again.",
-        "orchestration.wizard.appliedSpec":
-            "Applied lead model/effort `{model}` / {effort}. Module channels will start at `{moduleModel}` / {moduleEffort}.",
-        "orchestration.wizard.appliedSpecFailed":
-            "⚠️ Failed to apply the lead model/effort (`{model}` / {effort}). The session started fine — set them again with `/model`/`/effort`.",
         "run.noSession": "Loading the command list — reopen /command in a moment",
         "run.modal.label": "Prompt (optional, multi-line)",
         "run.modal.placeholder": "Anything to pass to the command. Submit it empty to run the command on its own.",

@@ -169,56 +169,6 @@ struct SessionStoreTests {
         #expect(obj["version"] as? Int == STATE_VERSION)
     }
 
-    // WO-11 (design_orchestration_module_agents.md D18): a file written before the field rename
-    // carries the legacy key `projectSettingSourcesOnly` — it must still decode into the renamed
-    // `orchestrationSession` field so a channel that already had orchestration mode on doesn't
-    // lose that state across the upgrade.
-    @Test func orchestrationSessionDecodesFromLegacyKeyOnOldJSON() async throws {
-        let url = tempStoreURL()
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-
-        let fixture: [String: Any] = [
-            "version": 2,
-            "channels": [
-                "c1": [
-                    "backend": "claude", "cwd": "/ws", "guildId": "g", "updatedAt": "t", "archived": false,
-                    "projectSettingSourcesOnly": true,
-                ] as [String: Any],
-            ] as [String: Any],
-        ]
-        try JSONSerialization.data(withJSONObject: fixture).write(to: url)
-
-        let s = SessionStore(fileURL: url)
-        await s.load()
-        #expect(await s.binding(channelId: "c1")?.orchestrationSession == true)
-    }
-
-    // WO-2 (design_orchestration_module_agents.md): a pre-orchestrationRole file (keys absent)
-    // must decode with all three new fields defaulted to nil.
-    @Test func orchestrationFieldsDefaultNilOnLegacyJSON() async throws {
-        let url = tempStoreURL()
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-
-        let fixture: [String: Any] = [
-            "version": 2,
-            "channels": [
-                "c1": [
-                    "backend": "claude", "cwd": "/ws", "guildId": "g", "updatedAt": "t", "archived": false,
-                ] as [String: Any],
-            ] as [String: Any],
-        ]
-        try JSONSerialization.data(withJSONObject: fixture).write(to: url)
-
-        let s = SessionStore(fileURL: url)
-        await s.load()
-        let got = await s.binding(channelId: "c1")
-        #expect(got?.orchestrationRole == nil)
-        #expect(got?.orchestratorChannelId == nil)
-        #expect(got?.moduleName == nil)
-    }
-
     @Test func markArchivedSoftDeletesWithoutRemoving() async throws {
         let url = tempStoreURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -531,8 +481,7 @@ struct SessionStoreTests {
                 permissionProfile: "prof",
                 projectAuth: acl,
                 createdAt: "C0",
-                updatedAt: "T0",
-                orchestrationSession: true
+                updatedAt: "T0"
             )
         )
         let generation = await s.binding(channelId: "c1")!.lifecycleGeneration
@@ -552,43 +501,9 @@ struct SessionStoreTests {
         let got = await s.binding(channelId: "c1")
         #expect(got?.projectAuth == acl)
         #expect(got?.permissionProfile == "prof")
-        #expect(got?.orchestrationSession == true)
         #expect(got?.backendSessionId == "sess-1")
         #expect(got?.model == "m")
         #expect(got?.createdAt == "C0")
-    }
-
-    /// A backend-id callback firing right after `/orchestration` sets a channel's role must not
-    /// wipe that role back to nil (orchestrationRole/orchestratorChannelId/moduleName are
-    /// binding-resident, same as projectAuth above).
-    @Test func persistSessionCarriesOrchestrationRole() async throws {
-        let url = tempStoreURL()
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-
-        let s = SessionStore(fileURL: url)
-        try await s.upsert(
-            channelId: "c1",
-            PersistedSession(
-                backend: .claude,
-                cwd: "/ws",
-                guildId: "g1",
-                updatedAt: "T0",
-                orchestrationRole: "agent",
-                orchestratorChannelId: "lead-1",
-                moduleName: "core"
-            )
-        )
-        let generation = await s.binding(channelId: "c1")!.lifecycleGeneration
-        await persistSession(
-            store: s, backend: .claude, channelId: "c1", guildId: "g1", ownerId: "u1",
-            cwd: "/ws", model: "m", effort: "high", permMode: "default", backendSessionId: "sess-1",
-            lifecycleGeneration: generation
-        )
-        let got = await s.binding(channelId: "c1")
-        #expect(got?.orchestrationRole == "agent")
-        #expect(got?.orchestratorChannelId == "lead-1")
-        #expect(got?.moduleName == "core")
-        #expect(got?.backendSessionId == "sess-1")
     }
 
     @Test func persistSessionKeepsBindingWorkspaceOverBridgeFallback() async throws {
