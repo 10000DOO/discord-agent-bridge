@@ -410,8 +410,7 @@ public actor DabSessionBridge {
         )
         let params = SessionStartParams(
             cwd: cwdValue, guildId: guildId, channelId: channelId, ownerId: ownerId,
-            model: model, effort: effort, permMode: perm, config: sessionCfg, env: sessionEnv,
-            orchestrationSession: persisted?.orchestrationSession ?? false
+            model: model, effort: effort, permMode: perm, config: sessionCfg, env: sessionEnv
         )
 
         // Resume the stored backend session if we have one; on failure fall back to a fresh start (F5).
@@ -482,18 +481,6 @@ public actor DabSessionBridge {
                 },
                 onFileShare: { path in
                     try await DocumentShareHost.shared.share(channelId: shareChannelId, path: path)
-                },
-                // host.orchestration.order / .report (WO-5) → OrchestrationHost, same
-                // shareChannelId capture as onFileAttach/onFileShare above.
-                onOrchestrationOrder: { module, path, text in
-                    let decision = await OrchestrationHost.shared.order(
-                        fromChannelId: shareChannelId, module: module, path: path, text: text
-                    )
-                    return orchestrationDecisionText(decision)
-                },
-                onOrchestrationReport: { text in
-                    let decision = await OrchestrationHost.shared.report(fromChannelId: shareChannelId, text: text)
-                    return orchestrationDecisionText(decision)
                 }
             )
         )

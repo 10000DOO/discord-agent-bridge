@@ -68,11 +68,6 @@ public struct SessionStartParams: Sendable, Equatable {
     public var permMode: String
     public var config: SessionConfig?
     public var env: [String: String?]?
-    /// Orchestration-role session flag (design_orchestration_module_agents.md R12/D18): when
-    /// true, the sidecar removes the subagent-launch tool from the model's context
-    /// (`disallowedTools`). Renamed from `projectSettingSourcesOnly` (D18) — no on-disk
-    /// backward-compat needed here since this is a live sidecar RPC param, not persisted state.
-    public var orchestrationSession: Bool
 
     public struct SessionConfig: Sendable, Equatable {
         public var allowedTools: [String]?
@@ -99,8 +94,7 @@ public struct SessionStartParams: Sendable, Equatable {
         effort: String? = nil,
         permMode: String,
         config: SessionConfig? = nil,
-        env: [String: String?]? = nil,
-        orchestrationSession: Bool = false
+        env: [String: String?]? = nil
     ) {
         self.cwd = cwd
         self.guildId = guildId
@@ -111,7 +105,6 @@ public struct SessionStartParams: Sendable, Equatable {
         self.permMode = permMode
         self.config = config
         self.env = env
-        self.orchestrationSession = orchestrationSession
     }
 
     public func asParams() -> [String: JSONValue] {
@@ -144,7 +137,6 @@ public struct SessionStartParams: Sendable, Equatable {
             }
             p["env"] = .object(e)
         }
-        if orchestrationSession { p["orchestrationSession"] = .bool(true) }
         return p
     }
 }
