@@ -96,6 +96,9 @@ struct DabMain {
             log.warn("redmine: failed to ensure DAB_REDMINE_KEY_SECRET: \(error)")
         }
 
+        // Must precede any Discord HTTP call (see DiscordPacer.swift for why 100, not 50).
+        bootRateLimitTuning()
+
         let bot = await BotGatewayManager(
             token: token,
             intents: [.guilds, .guildMessages, .messageContent]
@@ -158,7 +161,8 @@ struct DabMain {
 
         // Wire the permission-button presenter once: the gate (library) posts Allow / Always-Allow /
         // Deny to the prompt's channel via the Discord client. Set before events flow.
-        let client = bot.client
+        // Every Discord write goes through the pacer from here on — `bot.client` is not used raw.
+        let client: any DiscordClient = PacedDiscordClient(inner: bot.client)
         await PermissionGate.shared.setPresenter { prompt in
             await postPermissionButtons(client: client, prompt: prompt)
         }
@@ -239,10 +243,10 @@ struct DabMain {
                     switch event.data {
                     case .messageCreate, .interactionCreate:
                         Task {
-                            await EventHandler(event: event, client: bot.client).handleAsync()
+                            await EventHandler(event: event, client: client).handleAsync()
                         }
                     default:
-                        await EventHandler(event: event, client: bot.client).handleAsync()
+                        await EventHandler(event: event, client: client).handleAsync()
                     }
                 }
                 log.warn("[DAB-DIAG-PROC-EXIT] event stream ended")
@@ -4089,31 +4093,39 @@ func finalizeInterruptControlMessage(
 
 // MARK: - answer delivery (S3)
 
+/// The answer body is the one thing a user cannot recover from a dropped send — the cost footer or
+/// the usage panel going missing is cosmetic, a lost answer is the whole turn. It used to be the
+/// only Discord write in the turn pipeline on a bare `createMessage`, so a single transient failure
+/// threw straight out of `deliverAnswer`'s chunk loop and discarded the rest of the answer. C14's
+/// `createMessageWithRetry` (already used by every neighbouring write) covers it now; `nil` means
+/// the retry budget ran out, and throwing preserves `deliverTurnPush`'s ❌ / "delivery failed"
+/// handling. `DiscordPacer` is what keeps us off the rate-limit path in the first place — this is
+/// the net under it for network blips and Discord 5xx.
+struct AnswerSendFailed: Error {}
+
 /// Map `DeliverPayload` → DiscordBM createMessage (text and/or PNG attachment).
 func emitDeliverPayload(
     client: any DiscordClient,
     channelId: ChannelSnowflake,
     payload: DeliverPayload
 ) async throws {
+    let message: Payloads.CreateMessage
     if let name = payload.fileName, let data = payload.fileData {
         var buf = ByteBufferAllocator().buffer(capacity: data.count)
         buf.writeBytes(data)
-        _ = try await client.createMessage(
-            channelId: channelId,
-            payload: Payloads.CreateMessage(
-                content: payload.content,
-                allowed_mentions: .init(parse: []),
-                files: [RawFile(data: buf, filename: name)],
-                attachments: [Payloads.Attachment(index: 0, filename: name)]
-            )
+        message = Payloads.CreateMessage(
+            content: payload.content,
+            allowed_mentions: .init(parse: []),
+            files: [RawFile(data: buf, filename: name)],
+            attachments: [Payloads.Attachment(index: 0, filename: name)]
         )
+    } else if let content = payload.content {
+        message = .init(content: content, allowed_mentions: .init(parse: []))
+    } else {
         return
     }
-    if let content = payload.content {
-        _ = try await client.createMessage(
-            channelId: channelId,
-            payload: .init(content: content, allowed_mentions: .init(parse: []))
-        )
+    guard await createMessageWithRetry(client: client, channelId: channelId, payload: message) != nil else {
+        throw AnswerSendFailed()
     }
 }
 
