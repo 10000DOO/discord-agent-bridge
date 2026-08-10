@@ -196,7 +196,7 @@ public struct AutoUpdaterDeps: Sendable {
         restart: (@Sendable (RestartRequest) async -> RestartResult)? = nil,
         homebrewTrigger: (@Sendable (String, String) -> Bool)? = nil,
         isHomebrewInstall: @escaping @Sendable () -> Bool = {
-            ProcessInfo.processInfo.environment["DAB_INSTALL_METHOD"] == "homebrew"
+            DiscordAgentBridge.isHomebrewInstall()
         },
         messages: UpdateMessages = .korean,
         onLog: @escaping @Sendable (String) -> Void = { _ in }

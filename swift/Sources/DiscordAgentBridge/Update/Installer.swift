@@ -44,6 +44,21 @@ public func launchdPlistPath(home: String = NSHomeDirectory()) -> String {
     (home as NSString).appendingPathComponent("Library/LaunchAgents/com.discord-agent-bridge.plist")
 }
 
+/// `brew services` writes its own LaunchAgent under Homebrew's label, not install.sh's.
+public func homebrewServicePlistPath(home: String = NSHomeDirectory()) -> String {
+    (home as NSString).appendingPathComponent("Library/LaunchAgents/homebrew.mxcl.dab.plist")
+}
+
+/// True when this process came from a Homebrew keg — the tap's `bin/dab` wrapper exports
+/// `DAB_INSTALL_METHOD=homebrew`. Everything that inspects, restarts, or advises about the
+/// background service must branch on this: a Homebrew install has neither the
+/// `com.discord-agent-bridge` LaunchAgent nor the `swift/scripts/install.sh` checkout that the
+/// source-install path assumes, so answering from those alone reports a running service as
+/// absent and points the user at a file they do not have.
+public func isHomebrewInstall(env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    env["DAB_INSTALL_METHOD"] == "homebrew"
+}
+
 /// systemd --user unit path for the Swift dab service (TS `service/systemd.ts` `systemdUnitPath`).
 /// Old-install fallback signal for `detectRestartStrategy` on Linux — not full service support (H4, held back).
 public func systemdUnitPath(home: String = NSHomeDirectory()) -> String {

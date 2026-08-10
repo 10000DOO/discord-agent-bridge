@@ -117,6 +117,43 @@ import Foundation
         #expect(shown.contains("oauth2/authorize"))       // the invite link was generated for them
     }
 
+    /// A Homebrew install has no checkout, so naming install.sh sends the user after a file that
+    /// does not exist on their machine — the whole point of threading the install method here.
+    @Test func closingGuidanceNamesTheServiceTheInstallActuallyUses() async throws {
+        func transcriptOfWizard(isHomebrew: Bool) async throws -> String {
+            let envURL = FileManager.default.temporaryDirectory.appendingPathComponent("dab-env-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: envURL) }
+            let secrets = LockedBox<[String]>(["MTUy.GhX9kq.aBcDeF"])
+            let lines = LockedBox<[String]>([""])
+            let transcript = LockedBox<[String]>([])
+            let deps = SetupWizardDeps(
+                output: { line in transcript.withLock { $0.append(line) } },
+                readLine: { lines.withLock { $0.isEmpty ? nil : $0.removeFirst() } },
+                readSecret: { secrets.withLock { $0.isEmpty ? nil : $0.removeFirst() } },
+                httpGet: { url, _ in
+                    if url.path.hasSuffix("/users/@me") {
+                        return (Data(#"{"id":"999","username":"my-agent-bot"}"#.utf8), 200)
+                    }
+                    return (Data(#"[{"id":"777","name":"my-team"}]"#.utf8), 200)
+                },
+                envFileURL: envURL,
+                serviceInstalled: { false },
+                restartService: { false },
+                isHomebrew: isHomebrew
+            )
+            _ = await runSetupWizard(deps: deps, offerService: true)
+            return transcript.withLock { $0.joined(separator: "\n") }
+        }
+
+        let brew = try await transcriptOfWizard(isHomebrew: true)
+        #expect(brew.contains("brew services start dab"))
+        #expect(!brew.contains("install.sh"))
+
+        let source = try await transcriptOfWizard(isHomebrew: false)
+        #expect(source.contains("bash swift/scripts/install.sh"))
+        #expect(!source.contains("brew services"))
+    }
+
     @Test func eofDuringTokenEntryAbortsWithoutWriting() async {
         let envURL = FileManager.default.temporaryDirectory.appendingPathComponent("dab-env-\(UUID().uuidString)")
         let deps = SetupWizardDeps(

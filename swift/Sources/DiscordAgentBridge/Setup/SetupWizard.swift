@@ -146,6 +146,9 @@ public struct SetupWizardDeps: Sendable {
     public var envFileURL: URL
     public var serviceInstalled: @Sendable () -> Bool
     public var restartService: @Sendable () async -> Bool
+    /// Decides which service the closing guidance names — `brew services start dab` vs the
+    /// install.sh a Homebrew user has no checkout for.
+    public var isHomebrew: Bool
 
     public init(
         output: @escaping @Sendable (String) -> Void = { print($0) },
@@ -154,9 +157,13 @@ public struct SetupWizardDeps: Sendable {
         httpGet: @escaping SetupHTTPGet = defaultSetupHTTPGet,
         envFileURL: URL = RedmineKeySecret.defaultEnvFileURL(),
         serviceInstalled: @escaping @Sendable () -> Bool = {
-            FileManager.default.fileExists(atPath: launchdPlistPath(home: NSHomeDirectory()))
+            let plist = isHomebrewInstall()
+                ? homebrewServicePlistPath(home: NSHomeDirectory())
+                : launchdPlistPath(home: NSHomeDirectory())
+            return FileManager.default.fileExists(atPath: plist)
         },
-        restartService: @escaping @Sendable () async -> Bool = { await runServiceCommand(["restart"]) }
+        restartService: @escaping @Sendable () async -> Bool = { await runServiceCommand(["restart"]) },
+        isHomebrew: Bool = isHomebrewInstall()
     ) {
         self.output = output
         self.readLine = readLine
@@ -165,6 +172,7 @@ public struct SetupWizardDeps: Sendable {
         self.envFileURL = envFileURL
         self.serviceInstalled = serviceInstalled
         self.restartService = restartService
+        self.isHomebrew = isHomebrew
     }
 }
 
@@ -218,7 +226,7 @@ public func runSetupWizard(deps: SetupWizardDeps = SetupWizardDeps(), offerServi
             }
         } else {
             out("")
-            out("백그라운드 서비스로 항상 켜두려면: bash swift/scripts/install.sh")
+            out("백그라운드 서비스로 항상 켜두려면: \(deps.isHomebrew ? "brew services start dab" : "bash swift/scripts/install.sh")")
             out("지금 바로 써보려면: dab")
         }
     }
