@@ -80,6 +80,12 @@ public enum I18n {
         // Auth / router
         "auth.denied": "권한이 없습니다: {reason}",
         "auth.denied.bare": "권한이 없습니다.",
+        "config.load.failed": """
+            ⚠️ **설정 파일을 읽지 못해 무시하고 기본값으로 실행 중입니다.**
+            봇은 정상 동작하고 업데이트도 됩니다 — 권한도 그대로 전원 관리자입니다.
+            읽지 못한 이유: `{error}`
+            고치실 때: 파일은 `{path}` 입니다. 이 상태에서 `/config`로 값을 저장하면 그 파일이 기본값으로 덮어써집니다.
+            """,
         "router.noSession": "이 채널에 바인딩된 세션이 없습니다. `/agent start`로 시작하세요.",
         "router.turn.queued": "대기열에 추가했어요 (#{depth}).",
         "cmd.error": "명령을 처리하지 못했어요: {error}",
@@ -616,6 +622,12 @@ public enum I18n {
     private static let en: [String: String] = [
         "auth.denied": "Permission denied: {reason}",
         "auth.denied.bare": "Permission denied.",
+        "config.load.failed": """
+            ⚠️ **The configuration file could not be read, so it is being ignored and defaults are in use.**
+            The bot runs normally and updates still work — everyone is still an admin.
+            Why it could not be read: `{error}`
+            To fix it: the file is `{path}`. Saving anything from `/config` in this state overwrites that file with the defaults.
+            """,
         "router.noSession": "No session bound to this channel. Run `/agent start` first.",
         "router.turn.queued": "Queued (#{depth}).",
         "cmd.error": "Could not process the command: {error}",

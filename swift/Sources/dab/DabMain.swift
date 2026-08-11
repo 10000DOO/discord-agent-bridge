@@ -72,20 +72,21 @@ struct DabMain {
         // still wins, so an explicit `export` in the caller's shell stays authoritative.
         loadDabEnvFile()
 
-        // A present config.json is authoritative for decode/validation errors — surface those
-        // instead of silently booting past a broken file. Its token, though, is the LAST resort
-        // (see DiscordToken.resolve): a leftover config.json from the TS bridge must not shadow
-        // the ~/.dab/env token this build documents everywhere.
-        let config: AppConfig?
-        if await ConfigStore.shared.exists() {
-            do {
-                config = try await ConfigStore.shared.load()
-            } catch {
-                fputs("Failed to load config: \(error)\n", stderr)
-                exit(1)
-            }
-        } else {
-            config = nil
+        // An unreadable config.json NEVER stops boot (see ConfigBootRecovery.swift): it is ignored,
+        // the process runs on defaults, and the reason is logged here plus posted to every control
+        // channel from onReady. A file that cannot be read must not be able to strand a machine on
+        // an old build — updates have to keep working. Its token is the LAST resort anyway
+        // (see DiscordToken.resolve): a leftover config.json from the TS bridge must not shadow the
+        // ~/.dab/env token this build documents everywhere.
+        let bootOutcome = await resolveBootConfig(
+            exists: await ConfigStore.shared.exists(),
+            path: await ConfigStore.shared.configPath.path,
+            load: { try await ConfigStore.shared.load() }
+        )
+        let config = bootOutcome.config
+        if let warning = bootOutcome.warning {
+            log.warn("ignoring unreadable config.json; booting on defaults: \(warning)")
+            await BootWarningRegistry.shared.set(warning)
         }
         var resolvedToken = DiscordToken.resolve(configToken: config?.discord.token)
         if resolvedToken == nil {
@@ -358,6 +359,11 @@ struct EventHandler: GatewayEventHandler {
         }
         // WO-10: resume per-guild Redmine pollers for guilds that already have a saved config.
         await restoreRedminePollers(client: client)
+        // A config.json we could not read no longer stops boot (ConfigBootRecovery.swift) — say so
+        // where an operator will actually see it. Taken once, so a reconnect does not repeat it.
+        if let warning = await BootWarningRegistry.shared.take() {
+            await announceToControlChannels(client: client, text: warning)
+        }
     }
 
     /// G-P1-07: auto-provision channel structure on every guild the bot is in (fires after Ready
