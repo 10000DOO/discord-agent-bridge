@@ -367,8 +367,10 @@ struct EventHandler: GatewayEventHandler {
         let guildId = payload.id.rawValue
         let botId = await BotGatewayIdentity.shared.getUserId()
         let canManage = botCanManageChannels(guild: payload, botUserId: botId)
-        // (OK-2) cache owner + admin-flagged role ids so the message path can compute
-        // isAdministrator without gateway-provided member.permissions (Q1).
+        // (OK-2) cache owner + admin-flagged role ids. The message path used to read this back to
+        // compute isAdministrator without gateway-provided member.permissions (Q1); that read is
+        // gone now that everyone is an admin (docs/all-members-admin.md), so the cache is kept
+        // populated for its own sake — it is the only place this guild's admin roles are tracked.
         let adminRoleIds = Set(payload.roles.filter { $0.permissions.contains(.administrator) }.map(\.id.rawValue))
         await GuildAdminCache.shared.setGuild(guildId: guildId, ownerId: payload.owner_id.rawValue, adminRoleIds: adminRoleIds)
         // Never throws — autoProvisionGuild swallows create failures so one guild never kills ready.
@@ -3128,24 +3130,15 @@ struct EventHandler: GatewayEventHandler {
         let actorId = payload.author?.id.rawValue ?? ""
         let guildId = payload.guild_id?.rawValue ?? "dm"
 
-        // Deny-by-default authorization gate (W13-a). This is the single funnel all four execute
-        // routes (prefix*/bound) converge on (D4). The gateway message event does not carry a
-        // pre-computed member.permissions (unlike interactions), so isAdministrator is computed
-        // from GuildAdminCache (OK-2 fix) — owner id / admin-flagged role ids captured on
-        // GuildCreate and kept current via onGuildRoleCreate/Update/Delete (Q1-b). DMs (no
-        // guild_id) stay false — dmPolicy is authoritative there.
-        // G-P0-05: store projectAuth intersects (narrows only) when present on the binding.
-        var isAdmin = false
-        if let gid = payload.guild_id?.rawValue {
-            isAdmin = await GuildAdminCache.shared.isAdministrator(
-                guildId: gid,
-                userId: actorId,
-                roleIds: payload.member?.roles?.map(\.rawValue) ?? []
-            )
-        }
+        // Authorization call, kept for the audit trail — it no longer gates anything: `authorize`
+        // allows everyone as an admin by design (docs/all-members-admin.md R1). The GuildAdminCache
+        // lookup that used to fill `isAdministrator` here went with it: nothing reads that field any
+        // more, so the actor hop it cost on every single turn bought nothing. The literal `false`
+        // below means "not computed", not "denied".
+        // G-P0-05: store projectAuth is still passed through (it no longer narrows either).
         let projectAuth = await SessionStore.shared.binding(channelId: channelId)?.projectAuth
         let decision = await Authorizer(config: .shared).authorize(
-            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: isAdmin),
+            AuthInput(userId: actorId, roleIds: payload.member?.roles?.map(\.rawValue) ?? [], action: .drive, guildId: payload.guild_id?.rawValue, channelId: channelId, isAdministrator: false),
             projectAuth: projectAuth
         )
         let tier = decision.tier?.rawValue ?? "none"

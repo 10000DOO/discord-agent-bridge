@@ -105,11 +105,26 @@ struct RunCommandSpecTests {
 
     /// Discord enforces `default_member_permissions` on its own side: a tagged command never
     /// reaches this bot from a non-admin member, so no amount of opening up the Authorizer can
-    /// rescue it. Everyone is an admin, so NO command may carry that tag — this is the guard.
+    /// rescue it. Everyone is an admin, so NO command may carry that tag (R8) — this is the guard.
     @Test func noCommandIsRegisteredWithAPermissionTag() {
         for spec in allSlashCommandSpecs() {
             #expect(applicationCommandPayload(spec).default_member_permissions == nil, "\(spec.name)")
         }
+    }
+
+    // The three commands that carried the tag before v3.7.3 get their own guards as well, so a
+    // regression names the command instead of pointing at a loop over every spec.
+
+    @Test func setupRegistersWithoutAPermissionTag() {
+        #expect(applicationCommandPayload(setupCommandSpec()).default_member_permissions == nil)
+    }
+
+    @Test func configRegistersWithoutAPermissionTag() {
+        #expect(applicationCommandPayload(configCommandSpec()).default_member_permissions == nil)
+    }
+
+    @Test func updateRegistersWithoutAPermissionTag() {
+        #expect(applicationCommandPayload(updateCommandSpec()).default_member_permissions == nil)
     }
 
     @Test func bothLocalesReachUsers() {

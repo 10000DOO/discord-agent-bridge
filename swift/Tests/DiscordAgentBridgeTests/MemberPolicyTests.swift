@@ -137,6 +137,25 @@ struct MemberPolicyTests {
         }
     }
 
+    /// Kept from the old suite: a real Discord Administrator used to be the escape hatch that beat
+    /// a `none` override. The outcome is unchanged — but now it holds for everyone, admin or not,
+    /// so the second half asserts the plain member gets the same answer (R1/R7).
+    @Test func actualDiscordAdministratorAndPlainMemberBothBeatNoneOverride() async throws {
+        let dir = memberPolicyDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = memberPolicyStore(dir)
+        try await store.save(memberPolicyConfig())
+        try await store.setServerMemberTierOverride(guildId: "guild", userId: "owner", tier: .none)
+        let authorizer = Authorizer(config: store)
+
+        let asAdministrator = await authorizer.authorize(memberInput("owner", action: .admin, isAdministrator: true))
+        #expect(asAdministrator.allowed)
+        #expect(asAdministrator.tier == .admin)
+
+        let asPlainMember = await authorizer.authorize(memberInput("owner", action: .admin, isAdministrator: false))
+        #expect(asPlainMember.allowed)
+        #expect(asPlainMember.tier == .admin)
+    }
+
     @Test func serverDefaultAndSingleUserStoreHelpersPreserveExistingFields() async throws {
         let dir = memberPolicyDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = memberPolicyStore(dir)

@@ -173,8 +173,8 @@ brew services restart dab   # only if running as a service
 
 Typical flow: **`/setup` → `/config` → `/agent start`**, then normal messages in the session channel.
 
-1. **`/setup`** (admin) — control channel, sessions category, status channel (reuses existing).
-2. **`/config`** (admin) — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides.
+1. **`/setup`** — control channel, sessions category, status channel (reuses existing).
+2. **`/config`** — role tiers, defaults (backend / model / effort / perm), locale, notifications, image/Chromium render, per-user access overrides. Of these, the **access values (role tiers, per-user overrides) are stored and displayed only — they block nobody**; see "Auth & multi-server" below.
 3. **`/agent start`** — wizard: **folder → [preset if any] → backend → model → effort → permission**. After `/setup`, can create an A4D `<random-id>-<folder>-proj` channel under the sessions category and bind it.
 4. In a bound channel, **send normal messages** — plain text goes to the channel's own backend. Message prefixes send one turn to a specific backend instead:
 
@@ -212,7 +212,9 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 | `/command-list` | Execute+ | List every slash command this channel's backend supports |
 | `/update` | Admin | Check for a newer release and offer install / restart |
 
-Commands register under their bare name, with no prefix. The **tier column above filters nothing in this build** — every member of a guild the bot is in (present and future) is unconditionally an admin, and admin is the only tier. No configuration can narrow that (see "Auth & multi-server" below).
+Commands register under their bare name, with no prefix. The **tier column above filters nothing in this build** — every member of a guild the bot is in (present and future) is unconditionally an admin, and admin is the only tier. No configuration can narrow that (see "Auth & multi-server" below). The column is kept only to say whether a command touches the whole server (admin) or just this channel (execute+); it has nothing to do with who may run it. `/setup`'s old one-time bootstrap exception — "on a guild with no admins yet, whoever runs it first claims admin" — is meaningless now: everyone is an admin from the start.
+
+Before v3.7.3, `/setup`, `/config` and `/update` were locked with Discord's own command permission (`default_member_permissions`), so non-admin members **could not even see them in the command list**. They now register without that lock and are visible to everyone. Two things remain outside the bot's control: ① command registration is global, so Discord can take up to an hour to propagate it to every guild (a command missing right after an upgrade is not a fault), and ② a guild where someone already edited per-command permissions under **Server Settings → Integrations → this bot** keeps that override server-side. If a command stays hidden, clear its override on that screen.
 
 Commands that act on *this channel's* session (`/model`, `/effort`, `/mode`, `/clear`, `/stop`) reply "no session" unless the channel is bound.
 
