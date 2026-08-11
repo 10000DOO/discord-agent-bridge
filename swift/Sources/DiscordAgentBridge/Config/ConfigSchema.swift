@@ -68,9 +68,10 @@ public struct GlobalAuth: Codable, Sendable, Equatable {
         self.dmPolicy = dmPolicy
     }
 
-    /// Fail-secure default used only when the whole config cannot be read. A decoded legacy
-    /// config without the new field is normalized to `.admin` by `applyDefaults` instead.
-    public static let empty = GlobalAuth(memberDefaultTier: .none)
+    /// Default used when the whole config cannot be read. Everyone is admin regardless of what
+    /// this says (see Authorizer), so it reports `.admin` rather than advertising a member tier
+    /// the bot no longer honors — the /config panel reads this value for display.
+    public static let empty = GlobalAuth(memberDefaultTier: .admin)
 }
 
 public struct Profile: Codable, Sendable, Equatable {

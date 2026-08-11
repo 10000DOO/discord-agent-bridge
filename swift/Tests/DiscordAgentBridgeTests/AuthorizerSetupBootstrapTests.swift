@@ -108,31 +108,31 @@ struct AuthorizerSetupBootstrapTests {
     }
 
     /// End-to-end: DabMain.swift wires exactly this sequence around /setup (the executable `dab`
-    /// target has no test target of its own — WO-1/WO-2 test the library calls it wires up the
-    /// same way). An unauthorized actor on a never-bootstrapped guild bypasses the gate, /setup
-    /// "succeeds", and the actor is committed as admin — after which they (and only they) hold
-    /// admin via the normal role/user allowlist path, with no special-casing left behind.
-    @Test func bootstrapAllowsFirstActorThenGrantsAdminGoingForward() async throws {
+    /// target has no test target of its own). The eligibility flag still tracks whether a guild has
+    /// ever had an admin recorded — that bookkeeping is what `/setup` writes — but the gate it used
+    /// to bypass no longer denies anyone, before or after the bootstrap.
+    @Test func bootstrapBookkeepingRunsWhileAccessIsOpenThroughout() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let authz = authorizer(dir)
         let actor = AuthInput(userId: "first-user", roleIds: [], action: .admin, guildId: "g1", channelId: "c1")
 
-        // Pre-check: nobody is admin anywhere, so bootstrap fires for this actor on this guild.
         #expect(await authz.isSetupBootstrapEligible(guildId: "g1") == true)
-        #expect(await authz.authorize(actor).allowed == false) // the normal gate alone would deny
+        let before = await authz.authorize(actor)
+        #expect(before.allowed == true)
+        #expect(before.tier == .admin)
 
-        // /setup "succeeds" → DabMain commits the actor as this guild's first admin.
+        // /setup "succeeds" → DabMain commits the actor as this guild's first recorded admin.
         try await store(dir).addServerAdminUserId(guildId: "g1", userId: "first-user")
+        #expect(await authz.isSetupBootstrapEligible(guildId: "g1") == false)
 
-        // Now the normal gate grants them admin without any bootstrap special-casing.
-        let result = await authz.authorize(actor)
-        #expect(result.allowed == true)
-        #expect(result.tier == .admin)
+        let after = await authz.authorize(actor)
+        #expect(after.allowed == true)
+        #expect(after.tier == .admin)
     }
 
-    /// Once a guild has ANY admin (role or user), the bootstrap special case must never fire
-    /// again for a different actor — otherwise anyone could grab admin at any time.
-    @Test func secondActorIsDeniedOnceGuildAlreadyHasAnAdmin() async throws {
+    /// A guild that already recorded an admin stops being bootstrap-eligible, and every other
+    /// member of it is an admin anyway.
+    @Test func otherMembersAreAdminOnceGuildAlreadyHasAnAdmin() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try await store(dir).addServerAdminUserId(guildId: "g1", userId: "first-user")
         let authz = authorizer(dir)
@@ -140,7 +140,7 @@ struct AuthorizerSetupBootstrapTests {
         #expect(await authz.isSetupBootstrapEligible(guildId: "g1") == false)
         let other = AuthInput(userId: "second-user", roleIds: [], action: .admin, guildId: "g1", channelId: "c1")
         let result = await authz.authorize(other)
-        #expect(result.allowed == false)
-        #expect(result.reason?.contains("fail-secure") == true)
+        #expect(result.allowed == true)
+        #expect(result.tier == .admin)
     }
 }

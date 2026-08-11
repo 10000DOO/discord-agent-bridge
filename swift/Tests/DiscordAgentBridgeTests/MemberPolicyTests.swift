@@ -56,7 +56,9 @@ struct MemberPolicyTests {
         }
     }
 
-    @Test func invalidGlobalConfigFailsSecureWithoutPartialAuthOrAdminMigration() async throws {
+    /// An invalid global config still refuses to partially decode its auth block — but that no
+    /// longer costs anyone access, because authorization does not consult it.
+    @Test func invalidGlobalConfigDoesNotPartiallyDecodeAuthAndStillGrantsAdmin() async throws {
         let dir = memberPolicyDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let invalidConfig: [String: Any] = [
@@ -69,8 +71,11 @@ struct MemberPolicyTests {
         let store = memberPolicyStore(dir)
         #expect(await store.loadAuth() == .empty)
         let authorizer = Authorizer(config: store)
-        #expect(!(await authorizer.authorize(memberInput("legacy-admin", action: .admin))).allowed)
-        #expect(!(await authorizer.authorize(memberInput("ordinary-member", action: .read))).allowed)
+        for userId in ["legacy-admin", "ordinary-member"] {
+            let result = await authorizer.authorize(memberInput(userId, action: .admin))
+            #expect(result.allowed)
+            #expect(result.tier == .admin)
+        }
     }
 
     @Test func defaultAdminOutranksLegacyExecuteAndReadOnlyGrants() async throws {
@@ -92,7 +97,9 @@ struct MemberPolicyTests {
         }
     }
 
-    @Test func overrideBeatsLegacyRoleAndUserGrantsAndNoneBlocksCompletely() async throws {
+    /// Saved exceptions — including `none`, the one that used to mean "completely blocked" — are
+    /// persisted for the /config panel to display, and ignored when access is decided.
+    @Test func savedOverridesIncludingNoneCannotDowngradeOrBlockAnyone() async throws {
         let dir = memberPolicyDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = memberPolicyStore(dir)
         try await store.save(AppConfig(
@@ -109,44 +116,25 @@ struct MemberPolicyTests {
         ))
         let authorizer = Authorizer(config: store)
 
-        let readOnly = await authorizer.authorize(memberInput("legacy-user", roles: ["legacy-admin"], action: .drive))
-        #expect(!readOnly.allowed)
-        #expect(readOnly.tier == .readOnly)
-        let execute = await authorizer.authorize(memberInput("execute", action: .drive))
-        #expect(execute.allowed)
-        #expect(execute.tier == .execute)
-        let blocked = await authorizer.authorize(memberInput("blocked", roles: ["legacy-admin"], action: .read))
-        #expect(!blocked.allowed)
-        #expect(blocked.reason?.contains("explicitly blocked") == true)
+        for userId in ["legacy-user", "execute", "blocked"] {
+            let result = await authorizer.authorize(memberInput(userId, roles: ["legacy-admin"], action: .admin))
+            #expect(result.allowed)
+            #expect(result.tier == .admin)
+        }
     }
 
-    @Test func serverDefaultOverridesGlobalFallbackWithoutLeakingToOtherGuilds() async throws {
+    @Test func serverDefaultTierCannotNarrowAnyGuild() async throws {
         let dir = memberPolicyDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = memberPolicyStore(dir)
         try await store.save(memberPolicyConfig(defaultTier: .none))
         try await store.setServerMemberDefaultTier(guildId: "guild", tier: .execute)
         let authorizer = Authorizer(config: store)
 
-        let inGuild = await authorizer.authorize(memberInput("member", action: .drive))
-        #expect(inGuild.allowed)
-        #expect(inGuild.tier == .execute)
-        let otherGuild = await authorizer.authorize(memberInput("member", action: .read, guildId: "other"))
-        #expect(!otherGuild.allowed)
-    }
-
-    @Test func actualDiscordAdministratorBypassesNoneOverride() async throws {
-        let dir = memberPolicyDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = memberPolicyStore(dir)
-        try await store.save(memberPolicyConfig())
-        try await store.setServerMemberTierOverride(guildId: "guild", userId: "owner", tier: .none)
-
-        let result = await Authorizer(config: store).authorize(memberInput(
-            "owner",
-            action: .admin,
-            isAdministrator: true
-        ))
-        #expect(result.allowed)
-        #expect(result.tier == .admin)
+        for guildId in ["guild", "other"] {
+            let result = await authorizer.authorize(memberInput("member", action: .admin, guildId: guildId))
+            #expect(result.allowed)
+            #expect(result.tier == .admin)
+        }
     }
 
     @Test func serverDefaultAndSingleUserStoreHelpersPreserveExistingFields() async throws {

@@ -1685,22 +1685,16 @@ struct EventHandler: GatewayEventHandler {
         )
     }
 
-    /// Interactions usually carry the computed Administrator permission. The cache additionally
-    /// preserves the guild-owner bypass when that field is unavailable or Discord omits it.
+    /// Everyone is an admin (see Authorizer's file header), so the panels and buttons that used to
+    /// be gated on Discord's own Administrator permission — `/config`, the update prompt, the
+    /// session cards — are open to every member too. Kept as a function so the call sites, the
+    /// audit records and the `isAdministrator` field they feed all keep their shape.
     private func hasDiscordAdministrator(
         _ payload: Interaction,
         guildId: String?,
         userId: String
     ) async -> Bool {
-        if payload.member?.permissions?.contains(.administrator) == true {
-            return true
-        }
-        guard let guildId else { return false }
-        return await GuildAdminCache.shared.isAdministrator(
-            guildId: guildId,
-            userId: userId,
-            roleIds: payload.member?.roles.map(\.rawValue) ?? []
-        )
+        true
     }
 
     /// W16-b: drive the open `/config` panel. Owner-gated. Roles batch until Save;

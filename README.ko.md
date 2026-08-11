@@ -2,7 +2,7 @@
 
 🌐 **한국어** | [English](README.md)
 
-> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and more — per channel. Role-based access, multi-server, extensible.
+> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and more — per channel. Open access for every member, multi-server, extensible.
 
 **Discord 채널 하나에 Claude Code · Codex · Grok(또는 custom 백엔드)을 붙여 쓰는 셀프호스팅 봇입니다.**
 
@@ -15,7 +15,7 @@
 - 🏠 **완전 셀프호스팅.** 봇이 내 PC에서 돕니다. 코드·세션·CLI 토큰이 밖으로 나가지 않습니다.
 - 📱 **책상 앞에 없어도 됩니다.** 폰 Discord로 작업을 던지면 스트리밍 응답, 툴 로그, 권한 승인 버튼이 채널에 뜹니다.
 - 🗂️ **채널 하나 = 프로젝트 하나 = 세션 하나.** 채널마다 작업 폴더 · 백엔드 · 모델 · 추론 강도 · 권한 모드가 따로 붙습니다.
-- 👥 **팀 관전 친화적.** 같은 채널을 보는 사람은 세션 진행을 그대로 봅니다. 3단계 역할(admin / execute / read-only)로 실행 권한만 통제합니다.
+- 👥 **팀 관전 친화적.** 같은 채널을 보는 사람은 세션 진행을 그대로 봅니다. 서버 멤버는 전원 관리자이고, 실행 권한 제한은 없습니다.
 - 🔀 **Claude ⇄ Codex ⇄ Grok (및 custom) 즉시 전환.** 세션 바인딩 후 `/mode` 등으로 백엔드를 바꿉니다.
 - ⚙️ **터미널과 동등한 기능.** 프로젝트 `.claude/` · `.codex/` 설정을 그대로 써서 서브에이전트 · 스킬 · 훅 · MCP · 플러그인 명령이 CLI와 같이 동작합니다.
 - 💾 **세션 프리셋.** 백엔드/모델/추론/권한 조합을 길드 단위로 저장해 두고, 다음엔 폴더만 고르면 시작할 수 있습니다.
@@ -210,7 +210,7 @@ brew services restart dab   # 서비스로 켜둔 경우에만 필요
 | `/command-list` | execute+ | 이 채널의 백엔드가 지원하는 명령 전체 목록 |
 | `/update` | 관리자 | 새 릴리스 확인 후 설치·재시작 제안 |
 
-모든 명령은 접두사 없이 그대로 등록됩니다. `/setup` · `/config` · `/stop-all` · `/update`는 관리자 티어(또는 디스코드 Administrator 권한)가 필요하고, 나머지는 execute 이상이면 됩니다. `/setup`에는 최초 1회 예외가 있습니다 — 관리자가 아직 하나도 설정되지 않은 서버에서는 먼저 실행한 사람이 관리자를 가져갑니다.
+모든 명령은 접두사 없이 그대로 등록됩니다. 위 표의 **권한 열은 현재 빌드에서는 아무 것도 걸러내지 않습니다** — 봇이 들어간 서버의 모든 멤버(지금 있는 사람 + 앞으로 초대될 사람)가 무조건 관리자이고, 등급은 관리자 하나뿐입니다. 설정으로도 이걸 좁힐 수 없습니다(아래 "인가 & 멀티 서버" 참고).
 
 **이 채널의 세션**을 대상으로 하는 명령(`/model` · `/effort` · `/mode` · `/clear` · `/stop`)은 채널이 바인딩되지 않았으면 "세션 없음"으로 응답합니다.
 
@@ -277,9 +277,10 @@ API 키는 `DAB_REDMINE_KEY_SECRET`으로 암호화해서 저장하며, 이 값�
 
 ### 인가 & 멀티 서버
 
-- 전역 config + 길드별 `servers/<guildId>.json` 오버라이드 (global → server → 채널 바인딩 3계층).
-- 역할 티어 + 선택적 **유저 ID** 티어; 멤버 기본 티어와 예외는 `/config` Access.
-- DM 정책, 감사 로그 채널, 파일 작업 경로 confinement.
+- **모두가 관리자입니다.** 봇이 들어간 모든 서버의 모든 멤버 — 지금 있는 사람과 앞으로 초대될 사람 전부 — 가 무조건 관리자 등급이고, 모든 명령을 쓸 수 있습니다. (DM 메시지는 인가와 무관하게 예전처럼 무시됩니다 — 세션은 서버 채널에서만 돕니다.)
+- 등급은 관리자 하나뿐입니다. 역할 티어, 유저 ID 티어, 멤버 기본 티어, 개인 예외(`/config` Access), 프로젝트별 접근 목록, DM 정책 — 이 값들은 여전히 저장·표시되지만 **접근을 좁히지 못합니다**. 개인을 `none`(완전 차단)으로 저장해도 차단되지 않습니다.
+- 전역 config + 길드별 `servers/<guildId>.json` 오버라이드 (global → server → 채널 바인딩 3계층)는 접근 외 설정(기본값·로케일·프리셋 등)에 그대로 적용됩니다.
+- 감사 로그 채널, 파일 작업 경로 confinement는 그대로 동작합니다.
 
 ### 자동 업데이트
 

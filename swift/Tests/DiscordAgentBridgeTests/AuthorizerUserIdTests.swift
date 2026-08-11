@@ -57,56 +57,33 @@ private func input(
     AuthInput(userId: userId, roleIds: [], action: action, guildId: guildId, channelId: "c1")
 }
 
-@Suite("Authorizer user-id tiers")
+// The user-id allowlists still load and persist, but they no longer decide anything: every user
+// id gets the admin tier whether it is listed, listed at a lower tier, or absent entirely.
+@Suite("Authorizer user-id tiers (all admin)")
 struct AuthorizerUserIdTests {
-    @Test func adminUserIdWithNoRoleGrantsAdminForEveryAction() async throws {
+    @Test func listedAtAnyTierOrNotListedAtAllYieldsAdmin() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, adminUsers: [ADMIN_USER])
+        try writeAuthConfig(dir, adminUsers: [ADMIN_USER], executeUsers: [EXEC_USER], readOnlyUsers: [READ_USER])
         let authz = authorizer(dir)
-        for action in [AuthAction.admin, .drive, .runCommand, .read] {
-            let r = await authz.authorize(input(userId: ADMIN_USER, action: action))
-            #expect(r.allowed == true)
-            #expect(r.tier == .admin)
+        for userId in [ADMIN_USER, EXEC_USER, READ_USER, "stranger"] {
+            for action in [AuthAction.admin, .drive, .runCommand, .read] {
+                let r = await authz.authorize(input(userId: userId, action: action))
+                #expect(r.allowed == true)
+                #expect(r.tier == .admin)
+            }
         }
     }
 
-    @Test func executeUserIdWithNoRoleMayDriveAndRunButNotAdmin() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, executeUsers: [EXEC_USER])
-        let authz = authorizer(dir)
-        #expect(await authz.authorize(input(userId: EXEC_USER, action: .drive)).allowed == true)
-        #expect(await authz.authorize(input(userId: EXEC_USER, action: .runCommand)).allowed == true)
-        #expect(await authz.authorize(input(userId: EXEC_USER, action: .read)).allowed == true)
-        let denied = await authz.authorize(input(userId: EXEC_USER, action: .admin))
-        #expect(denied.allowed == false)
-        #expect(denied.tier == .execute)
-    }
-
-    @Test func readOnlyUserIdWithNoRoleMayReadButNotDriveRunAdmin() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, readOnlyUsers: [READ_USER])
-        let authz = authorizer(dir)
-        #expect(await authz.authorize(input(userId: READ_USER, action: .read)).allowed == true)
-        #expect(await authz.authorize(input(userId: READ_USER, action: .drive)).allowed == false)
-        #expect(await authz.authorize(input(userId: READ_USER, action: .runCommand)).allowed == false)
-        #expect(await authz.authorize(input(userId: READ_USER, action: .admin)).allowed == false)
-    }
-
-    @Test func unknownUserIdWithNoRoleDeniedFailSecure() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, executeUsers: [EXEC_USER])
-        let r = await authorizer(dir).authorize(input(userId: "stranger", action: .read))
-        #expect(r.allowed == false)
-        #expect(r.reason?.contains("fail-secure") == true)
-    }
-
-    /// Server layer's adminUserIds widens for that guild only, even though global has none.
-    @Test func serverAdminUserIdsWidenGlobalForThatGuildOnly() async throws {
+    /// The server layer used to widen for one guild only; now every guild is already fully open.
+    @Test func serverUserListsChangeNothingForAnyGuild() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeAuthConfig(dir) // global grants nobody anything
         try writeServerAuth(dir, guildId: "g1", adminUsers: [ADMIN_USER])
         let authz = authorizer(dir)
-        #expect(await authz.authorize(input(userId: ADMIN_USER, action: .admin, guildId: "g1")).allowed == true)
-        #expect(await authz.authorize(input(userId: ADMIN_USER, action: .admin, guildId: "g2")).allowed == false)
+        for guildId in ["g1", "g2"] {
+            let r = await authz.authorize(input(userId: "stranger", action: .admin, guildId: guildId))
+            #expect(r.allowed == true)
+            #expect(r.tier == .admin)
+        }
     }
 }

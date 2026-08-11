@@ -76,215 +76,105 @@ private func input(
     )
 }
 
-@Suite("Authorizer")
+// Open access is hardcoded: authorize() grants the admin tier to every actor for every action,
+// in guilds and in DMs, whatever the configuration says. These tests pin that down from the
+// directions access used to be narrowed — allowlists, member overrides, project ACLs, dmPolicy —
+// and assert none of them bite any more.
+@Suite("Authorizer (everyone is admin)")
 struct AuthorizerTests {
-    @Test func failSecureEmptyAllowlistsDenyEveryoneEvenRead() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir)
-        let r = await authorizer(dir).authorize(input(roleIds: [ADMIN_ROLE], action: .read))
-        #expect(r.allowed == false)
-        #expect(r.reason?.contains("fail-secure") == true)
+    private func expectAdmin(_ r: AuthResult) {
+        #expect(r.allowed == true)
+        #expect(r.tier == .admin)
+        #expect(r.reason == nil)
     }
 
-    @Test func adminTierAllowedEveryAction() async throws {
+    @Test func everyActionAllowedWithNoConfigAtAll() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, admin: [ADMIN_ROLE])
         let authz = authorizer(dir)
         for action in [AuthAction.admin, .drive, .runCommand, .read] {
-            let r = await authz.authorize(input(roleIds: [ADMIN_ROLE], action: action))
-            #expect(r.allowed == true)
-            #expect(r.tier == .admin)
+            expectAdmin(await authz.authorize(input(roleIds: [], action: action)))
         }
     }
 
-    @Test func executeTierMayDriveAndRunButNotAdmin() async throws {
+    @Test func emptyAllowlistsNoLongerDenyAnyone() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
+        try writeAuthConfig(dir) // grants nobody anything, memberDefaultTier "none"
         let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .drive)).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .runCommand)).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .read)).allowed == true)
-        let denied = await authz.authorize(input(roleIds: [EXEC_ROLE], action: .admin))
-        #expect(denied.allowed == false)
-        #expect(denied.tier == .execute)
+        for action in [AuthAction.admin, .drive, .runCommand, .read] {
+            expectAdmin(await authz.authorize(input(roleIds: ["role-stranger"], action: action)))
+        }
     }
 
-    @Test func readOnlyTierMayReadButNotDriveRunAdmin() async throws {
+    @Test func lowerTierRolesStillGetAdmin() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, readOnly: [READ_ROLE])
+        try writeAuthConfig(dir, execute: [EXEC_ROLE], readOnly: [READ_ROLE])
         let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [READ_ROLE], action: .read)).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [READ_ROLE], action: .drive)).allowed == false)
-        #expect(await authz.authorize(input(roleIds: [READ_ROLE], action: .runCommand)).allowed == false)
-        #expect(await authz.authorize(input(roleIds: [READ_ROLE], action: .admin)).allowed == false)
+        expectAdmin(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .admin)))
+        expectAdmin(await authz.authorize(input(roleIds: [READ_ROLE], action: .admin)))
     }
 
-    @Test func unknownOrNoRoleDeniedFailSecure() async throws {
+    @Test func perProjectAclNoLongerNarrows() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [], action: .read)).allowed == false)
-        #expect(await authz.authorize(input(roleIds: ["role-stranger"], action: .read)).allowed == false)
+        let acl = ProjectAuth(allowedRoleIds: ["role-project"], allowedUserIds: ["u-owner"])
+        let r = await authorizer(dir).authorize(input(userId: "stranger", roleIds: [], action: .drive), projectAuth: acl)
+        expectAdmin(r)
     }
 
-    @Test func perProjectAclNarrowsTierClearedActor() async throws {
+    /// G-P0-05 shape: a stored per-project ACL reaches authorize() and is ignored there.
+    @Test func projectAuthFromStoreRowIsIgnored() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let acl = ProjectAuth(allowedRoleIds: ["role-project"], allowedUserIds: [])
-        let denied = await authorizer(dir).authorize(input(roleIds: [EXEC_ROLE], action: .drive), projectAuth: acl)
-        #expect(denied.allowed == false)
-        #expect(denied.reason?.contains("projectAuth") == true)
-        #expect(denied.tier == .execute)
-    }
-
-    @Test func perProjectAclAdmitsMatchingRoleOrUser() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let authz = authorizer(dir)
-        let byRole = ProjectAuth(allowedRoleIds: [EXEC_ROLE], allowedUserIds: [])
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .drive), projectAuth: byRole).allowed == true)
-        let byUser = ProjectAuth(allowedRoleIds: ["role-other"], allowedUserIds: ["u1"])
-        #expect(await authz.authorize(input(userId: "u1", roleIds: [EXEC_ROLE], action: .drive), projectAuth: byUser).allowed == true)
-    }
-
-    /// G-P0-05: store-shaped ACL → authorize (DabMain loads PersistedSession.projectAuth).
-    @Test func projectAuthFromStoreRowNarrowsAndAdmits() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let storeURL = dir.appendingPathComponent("swift-state.json")
-        let store = SessionStore(fileURL: storeURL)
+        let store = SessionStore(fileURL: dir.appendingPathComponent("swift-state.json"))
         let acl = ProjectAuth(allowedRoleIds: ["role-project"], allowedUserIds: ["u-owner"])
         try await store.upsert(
             channelId: "c1",
-            PersistedSession(
-                backend: .claude,
-                cwd: "/ws",
-                guildId: "g1",
-                projectAuth: acl,
-                updatedAt: "t"
-            )
+            PersistedSession(backend: .claude, cwd: "/ws", guildId: "g1", projectAuth: acl, updatedAt: "t")
         )
         let fromStore = await store.binding(channelId: "c1")?.projectAuth
         #expect(fromStore == acl)
-        let authz = authorizer(dir)
-        let denied = await authz.authorize(
-            input(userId: "stranger", roleIds: [EXEC_ROLE], action: .drive, channelId: "c1"),
+        expectAdmin(await authorizer(dir).authorize(
+            input(userId: "stranger", roleIds: [], action: .drive, channelId: "c1"),
             projectAuth: fromStore
-        )
-        #expect(denied.allowed == false)
-        #expect(denied.reason?.contains("projectAuth") == true)
-        let admitted = await authz.authorize(
-            input(userId: "u-owner", roleIds: [EXEC_ROLE], action: .drive, channelId: "c1"),
-            projectAuth: fromStore
-        )
-        #expect(admitted.allowed == true)
-        #expect(admitted.tier == .execute)
+        ))
     }
 
-    @Test func nilProjectAuthDoesNotNarrow() async throws {
+    @Test func dmAllowedRegardlessOfDmPolicy() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let r = await authorizer(dir).authorize(input(roleIds: [EXEC_ROLE], action: .drive), projectAuth: nil)
-        #expect(r.allowed == true)
+        try writeAuthConfig(dir, dmPolicy: "deny")
+        expectAdmin(await authorizer(dir).authorize(
+            input(roleIds: [], action: .admin, guildId: nil, channelId: nil)
+        ))
     }
 
-    @Test func dmDeniedByDefault() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, admin: [ADMIN_ROLE])
-        let r = await authorizer(dir).authorize(input(roleIds: [ADMIN_ROLE], action: .read, guildId: nil, channelId: nil))
-        #expect(r.allowed == false)
-        #expect(r.reason?.contains("dmPolicy=deny") == true)
-    }
-
-    @Test func dmAllowedWhenPolicyAllowAndTierClears() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, admin: [ADMIN_ROLE], dmPolicy: "allow")
-        let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [ADMIN_ROLE], action: .admin, guildId: nil, channelId: nil)).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [], action: .read, guildId: nil, channelId: nil)).allowed == false)
-    }
-
-    @Test func administratorWithNoRoleAuthorizedAsAdmin() async throws {
+    @Test func nonAdministratorMemberIsAdmin() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeAuthConfig(dir)
-        let authz = authorizer(dir)
-        for action in [AuthAction.admin, .drive, .runCommand, .read] {
-            let r = await authz.authorize(input(roleIds: [], action: action, isAdministrator: true))
-            #expect(r.allowed == true)
-            #expect(r.tier == .admin)
-        }
+        expectAdmin(await authorizer(dir).authorize(
+            input(roleIds: [], action: .admin, isAdministrator: false)
+        ))
     }
 
-    @Test func nonAdminWithNoRoleDenied() async throws {
+    @Test func memberTierOverrideIncludingNoneCannotBlock() async throws {
+        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let cfgStore = store(dir)
+        try await cfgStore.setServerMemberTierOverride(guildId: "g1", userId: "blocked", tier: .none)
+        expectAdmin(await authorizer(dir).authorize(input(userId: "blocked", roleIds: [], action: .admin)))
+    }
+
+    @Test func serverLayerNarrowingHasNoEffectOnAnyGuild() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try writeAuthConfig(dir)
-        let r = await authorizer(dir).authorize(input(roleIds: [], action: .read, isAdministrator: false))
-        #expect(r.allowed == false)
-        #expect(r.reason?.contains("fail-secure") == true)
-    }
-
-    @Test func configuredRolesWorkForNonAdministrator() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .drive)).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .admin)).allowed == false)
-    }
-
-    @Test func administratorBypassesNarrowingProjectAcl() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        let acl = ProjectAuth(allowedRoleIds: ["role-project"], allowedUserIds: [])
-        let r = await authorizer(dir).authorize(input(roleIds: [], action: .drive, isAdministrator: true), projectAuth: acl)
-        #expect(r.allowed == true)
-        #expect(r.tier == .admin)
-    }
-
-    @Test func deniedDmNotRescuedByAdministratorFlag() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir)
-        let r = await authorizer(dir).authorize(input(roleIds: [], action: .read, guildId: nil, channelId: nil, isAdministrator: true))
-        #expect(r.allowed == false)
-        #expect(r.reason?.contains("dmPolicy=deny") == true)
-    }
-
-    // W15-a: server auth layer (TS auth.test.ts)
-
-    @Test func serverExecuteRolesWidenGlobalForThatGuildOnly() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir) // global grants nobody execute
         try writeServerAuth(dir, guildId: "g1", execute: [EXEC_ROLE])
         let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .drive, guildId: "g1")).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .drive, guildId: "g2")).allowed == false)
+        expectAdmin(await authz.authorize(input(roleIds: [], action: .admin, guildId: "g1")))
+        expectAdmin(await authz.authorize(input(roleIds: [], action: .admin, guildId: "g2")))
     }
 
-    @Test func serverAuthOneTierDoesNotClearGlobalOtherTier() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, admin: [ADMIN_ROLE])
-        try writeServerAuth(dir, guildId: "g1", execute: [EXEC_ROLE])
-        let authz = authorizer(dir)
-        #expect(await authz.authorize(input(roleIds: [ADMIN_ROLE], action: .admin)).allowed == true)
-        #expect(await authz.authorize(input(roleIds: [EXEC_ROLE], action: .drive)).allowed == true)
-    }
-
-    @Test func absentServerFieldFallsThroughToGlobal() async throws {
-        let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
-        try writeAuthConfig(dir, execute: [EXEC_ROLE])
-        // Server file with empty auth object — execute falls through.
-        let servers = dir.appendingPathComponent("servers", isDirectory: true)
-        try FileManager.default.createDirectory(at: servers, withIntermediateDirectories: true)
-        try JSONSerialization.data(withJSONObject: ["version": 1, "guildId": "g1"] as [String: Any])
-            .write(to: servers.appendingPathComponent("g1.json"))
-        #expect(await authorizer(dir).authorize(input(roleIds: [EXEC_ROLE], action: .drive)).allowed == true)
-    }
-
-    @Test func corruptGlobalConfigFailSecureDeny() async throws {
+    @Test func corruptGlobalConfigStillGrantsAdmin() async throws {
         let dir = tempBaseDir(); defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data("}{ not json".utf8).write(to: dir.appendingPathComponent("config.json"))
-        let r = await authorizer(dir).authorize(input(roleIds: [ADMIN_ROLE], action: .read))
-        #expect(r.allowed == false)
+        expectAdmin(await authorizer(dir).authorize(input(roleIds: [], action: .admin)))
     }
 }
 

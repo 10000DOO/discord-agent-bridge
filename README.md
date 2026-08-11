@@ -2,7 +2,7 @@
 
 🌐 [한국어](README.ko.md) | **English**
 
-> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and custom backends — per channel. Role-based access, multi-server, extensible.
+> Self-hosted Discord bot that runs AI coding agents — Claude Code, Codex, Grok, and custom backends — per channel. Open access for every member, multi-server, extensible.
 
 **A self-hosted Discord bot that puts Claude Code, Codex, or Grok into a Discord channel, running on your own machine.**
 
@@ -15,7 +15,7 @@ The product is a **Swift** binary (`dab`). Claude Code still uses a thin **Node 
 - 🏠 **Fully self-hosted.** The bot runs on your PC. Code, sessions, and CLI tokens stay on your machine.
 - 📱 **Not tied to your desk.** Start a task from Discord on your phone — streaming output, tool logs, and permission prompts land in the channel.
 - 🗂️ **One channel = one project = one session.** Each channel binds its own folder, backend, model, effort, and permission mode.
-- 👥 **Team-friendly.** Anyone in the channel can watch the session. A 3-tier role system (admin / execute / read-only) controls who can run things.
+- 👥 **Team-friendly.** Anyone in the channel can watch the session. Every server member is an admin, so there are no run restrictions.
 - 🔀 **Claude ⇄ Codex ⇄ Grok (and custom) on the fly.** Switch backends with `/mode` when a session is bound.
 - ⚙️ **Same power as the terminal.** Project `.claude/` / `.codex/` configs are used as-is — subagents, skills, hooks, MCP, and plugin commands behave like the CLI.
 - 💾 **Session presets.** Save backend/model/effort/perm combos per guild and restart sessions in two steps (folder → preset).
@@ -212,7 +212,7 @@ Prefixes only work in a channel that is **already bound** — an unbound channel
 | `/command-list` | Execute+ | List every slash command this channel's backend supports |
 | `/update` | Admin | Check for a newer release and offer install / restart |
 
-Commands register under their bare name, with no prefix. `/setup`, `/config`, `/stop-all`, and `/update` need the admin tier (or Discord's Administrator permission); everything else needs execute or higher. `/setup` has a one-time bootstrap exception: on a guild with no admins configured yet, whoever runs it first claims admin.
+Commands register under their bare name, with no prefix. The **tier column above filters nothing in this build** — every member of a guild the bot is in (present and future) is unconditionally an admin, and admin is the only tier. No configuration can narrow that (see "Auth & multi-server" below).
 
 Commands that act on *this channel's* session (`/model`, `/effort`, `/mode`, `/clear`, `/stop`) reply "no session" unless the channel is bound.
 
@@ -279,9 +279,10 @@ API keys are encrypted at rest with `DAB_REDMINE_KEY_SECRET` — generated into 
 
 ### Auth & multi-server
 
-- Global config + per-guild `servers/<guildId>.json` overrides (3-layer: global → server → channel binding).
-- Role tiers and optional **user-id** tier grants; member default tier + per-member exceptions in `/config` Access.
-- DM policy, audit log channel, path confinement for file ops.
+- **Everyone is an admin.** Every member of every guild the bot is in — those there now and anyone invited later — holds the admin tier unconditionally and can run every command. (DM messages are still ignored regardless of authorization — sessions only run in guild channels.)
+- Admin is the only tier. Role tiers, user-id grants, the member default tier, per-member exceptions (`/config` Access), per-project access lists and dmPolicy are all still stored and displayed, but **none of them can narrow access** — saving a member as `none` ("blocked") does not block them.
+- Global config + per-guild `servers/<guildId>.json` overrides (3-layer: global → server → channel binding) still apply to everything other than access: defaults, locale, presets, and so on.
+- Audit log channel and path confinement for file ops work as before.
 
 ### Auto-update
 
