@@ -425,7 +425,6 @@ struct DocumentShareHostAndSpecTests {
         #expect(doc.options.map(\.name) == ["path"])
         #expect(doc.options[0].required == true)
         #expect(doc.options[0].choices.isEmpty)
-        #expect(doc.requiresAdministrator == false)
     }
 
     @Test func allSpecsIncludesDoc() {

@@ -103,9 +103,13 @@ struct RunCommandSpecTests {
         #expect(option?.choices.isEmpty == true)
     }
 
-    @Test func notAdminGated() {
-        // Anyone who can drive the channel can run a backend command (drive tier, not admin).
-        #expect(runCommandSpec().requiresAdministrator == false)
+    /// Discord enforces `default_member_permissions` on its own side: a tagged command never
+    /// reaches this bot from a non-admin member, so no amount of opening up the Authorizer can
+    /// rescue it. Everyone is an admin, so NO command may carry that tag — this is the guard.
+    @Test func noCommandIsRegisteredWithAPermissionTag() {
+        for spec in allSlashCommandSpecs() {
+            #expect(applicationCommandPayload(spec).default_member_permissions == nil, "\(spec.name)")
+        }
     }
 
     @Test func bothLocalesReachUsers() {

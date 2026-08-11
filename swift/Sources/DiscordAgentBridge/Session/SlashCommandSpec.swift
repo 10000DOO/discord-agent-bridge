@@ -86,21 +86,20 @@ public struct SlashCommandSpec: Sendable, Equatable {
     /// Top-level options when the command has no subcommands (e.g. `/model`, `/effort`).
     public var options: [Option]
     public var subcommands: [Subcommand]
-    /// When true, register with Discord `default_member_permissions = Administrator`
-    /// (TS `/setup` / `/config` gate — hides the command from non-admins in the client UI).
-    public var requiresAdministrator: Bool
+    // There is deliberately no per-command permission flag. Everyone is an admin (see
+    // Authorizer's file header), and a `default_member_permissions` tag would make Discord
+    // itself hide the command from non-admins before the request ever reached this bot — a gate
+    // no code change here could open. Every command registers unrestricted.
     public init(
         name: String,
         description: LocalizedText,
         options: [Option] = [],
-        subcommands: [Subcommand] = [],
-        requiresAdministrator: Bool = false
+        subcommands: [Subcommand] = []
     ) {
         self.name = name
         self.description = description
         self.options = options
         self.subcommands = subcommands
-        self.requiresAdministrator = requiresAdministrator
     }
 }
 
@@ -212,12 +211,11 @@ public func stopAllCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(name: "stop-all", description: LocalizedText(ko: "모든 에이전트 세션을 중지합니다", en: "Stop all agent sessions"))
 }
 
-/// `/setup` — A4D guild channel structure (admin; TS `setDefaultMemberPermissions(Administrator)`).
+/// `/setup` — A4D guild channel structure. Open to every member, like everything else.
 public func setupCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "setup",
-        description: LocalizedText(ko: "제어 채널과 세션 카테고리를 만듭니다", en: "Create the agent control channel and sessions category (unnecessary if the channels already exist)"),
-        requiresAdministrator: true
+        description: LocalizedText(ko: "제어 채널과 세션 카테고리를 만듭니다", en: "Create the agent control channel and sessions category (unnecessary if the channels already exist)")
     )
 }
 
@@ -248,21 +246,19 @@ public func diffCommandSpec() -> SlashCommandSpec {
     )
 }
 
-/// `/config` — role tiers + defaults panel (admin; TS `setDefaultMemberPermissions(Administrator)`).
+/// `/config` — defaults + panel (W16-b). Open to every member, like everything else.
 public func configCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "config",
-        description: LocalizedText(ko: "이 서버의 역할 등급과 기본값을 설정합니다", en: "Configure role tiers and defaults for this server"),
-        requiresAdministrator: true
+        description: LocalizedText(ko: "이 서버의 역할 등급과 기본값을 설정합니다", en: "Configure role tiers and defaults for this server")
     )
 }
 
-/// `/update` — check registry for a newer stable version (admin; W16-h).
+/// `/update` — check registry for a newer stable version (W16-h). Open to every member.
 public func updateCommandSpec() -> SlashCommandSpec {
     SlashCommandSpec(
         name: "update",
-        description: LocalizedText(ko: "새 discord-agent-bridge 버전을 확인합니다", en: "Check for a new discord-agent-bridge version"),
-        requiresAdministrator: true
+        description: LocalizedText(ko: "새 discord-agent-bridge 버전을 확인합니다", en: "Check for a new discord-agent-bridge version")
     )
 }
 

@@ -492,10 +492,9 @@ struct ConfigPanelTests {
         #expect((global.render?.enabled ?? true) == true)
     }
 
-    @Test func configCommandSpecRequiresAdministrator() {
+    @Test func configCommandSpecIsRegisteredAndOpenToEveryMember() {
         let spec = configCommandSpec()
         #expect(spec.name == "config")
-        #expect(spec.requiresAdministrator)
         #expect(allSlashCommandSpecs().contains { $0.name == "config" })
     }
 

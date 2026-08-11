@@ -9,7 +9,11 @@ import NIOCore
 /// - Empty `subcommands` + non-empty `options` → top-level string options (`/model`, `/effort`).
 /// - Non-empty `subcommands` → subcommand group (`/agent`, `/mode`).
 func applicationCommandPayload(_ spec: SlashCommandSpec) -> Payloads.ApplicationCommandCreate {
-    let adminPerms: [Permission]? = spec.requiresAdministrator ? [.administrator] : nil
+    // `default_member_permissions` stays nil for EVERY command. Discord enforces that tag itself:
+    // a tagged command is hidden from, and unusable by, non-admin members before the interaction
+    // is ever sent to this bot, so it cannot be opened up from our side. Everyone is an admin here
+    // (see Authorizer), so nothing may be tagged.
+    let adminPerms: [Permission]? = nil
     // Only the top-level name is prefixed (`/agent start`) — see dabCommandPrefix.
     let name = dabCommandName(spec.name)
     if !spec.subcommands.isEmpty {

@@ -42,7 +42,6 @@ struct SlashHelpMessageTests {
         let spec = helpCommandSpec()
         #expect(spec.options.isEmpty)
         #expect(spec.subcommands.isEmpty)
-        #expect(spec.requiresAdministrator == false)
     }
 
     // MARK: - Grouping (only what the protocol actually tells us)
