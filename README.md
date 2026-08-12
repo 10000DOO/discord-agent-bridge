@@ -74,7 +74,7 @@ npm install                      # Claude sidecar only (skip if you use Codex/Gr
 bash swift/scripts/install.sh    # build + register a launchd agent for login
 ```
 
-The in-Discord `/update` command only works with this install method. Homebrew installs use `brew upgrade`.
+The in-Discord `/update` command works with either install method; it just takes a different route (see [Auto-update](#auto-update)). This one runs `install.sh` and restarts the launchd agent in place.
 
 </details>
 
@@ -288,7 +288,16 @@ API keys are encrypted at rest with `DAB_REDMINE_KEY_SECRET` — generated into 
 
 ### Auto-update
 
-`/update` checks the release registry; with confirmation, runs the platform install path and restarts the service (e.g. `install.sh` + launchctl on macOS). Toggle via `autoUpdate.enabled` in config. **Needs a full repo checkout** (the manual/from-source install above) — it does not work for a Homebrew install; use `brew upgrade` instead (see Homebrew install steps above).
+`/update` checks the release registry and, once you confirm, installs and restarts the service for you. Toggle via `autoUpdate.enabled` in config. Which route it takes depends on how `dab` was installed, and the two never mix — a Homebrew install is never driven through the source path (that dual route used to cause double restarts against the wrong install root):
+
+| Install method | What `/update` does |
+|---|---|
+| Homebrew | Hands off to the tap's `homebrew-self-update.sh`, which runs `brew upgrade` → stop/start the service → verify it came back → roll back if it did not. Running `brew upgrade dab` yourself does the same thing. |
+| From source | Runs the platform install path and restarts the service in place (`install.sh` + launchctl on macOS). Needs the full repo checkout. |
+
+A Homebrew install whose tap script is missing or cannot be launched is told so and left alone rather than falling through to the source path — reinstall the tap in that case. Either way the prompt posts once per new stable version, and a version already installed is never offered again.
+
+Restarting drops whatever turn was in flight, but not your conversations: each channel's session id is persisted and resumed on its next message, so an update continues the thread rather than starting over.
 
 The same `autoUpdate.enabled` switch also keeps the **backend runtimes** current. Once an hour the bot checks the Claude Agent SDK, the Codex CLI and the Grok CLI and upgrades whichever is behind — npm-global installs and Homebrew casks are supported; any other install layout reports `unsupported` and is left alone. A swap only starts when no turn is running anywhere, and new turns wait just for its duration. After a swap the runtime restarts and its model catalog is probed; a broken upgrade rolls back. One `dab` process at a time does this (cross-process lock file), and an update interrupted by a kill is rolled forward or back on the next boot. Results go to the log as `provider-runtime: …` lines, not to Discord.
 
