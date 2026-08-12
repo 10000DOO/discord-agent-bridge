@@ -4229,7 +4229,7 @@ func runSidecarSmoke() async {
 
     let client: ClaudeSidecarClient
     do {
-        client = try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 30_000)
+        client = try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 30_000, environment: claudeChildEnvironment())
     } catch {
         fputs("dab sidecar-smoke: spawn failed: \(error)\n", stderr)
         exit(1)

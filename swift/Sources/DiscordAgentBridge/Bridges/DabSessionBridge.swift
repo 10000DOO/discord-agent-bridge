@@ -23,7 +23,7 @@ public actor DabSessionBridge {
         makeClient: @escaping @Sendable () throws -> ClaudeSidecarClient = {
             let spawn = resolveClaudeSidecarSpawn()
             log.info("spawning claude sidecar: \(spawn.command) \(spawn.args.joined(separator: " "))")
-            return try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000)
+            return try ClaudeSidecarClient(spawn: spawn, requestTimeoutMs: 120_000, environment: claudeChildEnvironment())
         },
         turnTimeoutOverrideNs: UInt64? = nil,
         gate: PermissionGate = .shared,

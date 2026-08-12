@@ -126,19 +126,16 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
     /// not ported (out of scope for this build).
     static func wellKnownUserBinDirs(
         homeDir: String,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        listDir: (String) -> [String] = { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }
     ) -> [String] {
-        // nvm exports NVM_BIN as the active version's bin dir directly; fall back to the `current`
-        // symlink nvm maintains under ~/.nvm when the var isn't set (e.g. launchd/systemd spawn).
-        let nvmBin = env["NVM_BIN"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(homeDir)/.nvm/current/bin"
         // fnm exports FNM_DIR as its root data dir; the active version lives under aliases/default.
         let fnmDir = env["FNM_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(homeDir)/.local/share/fnm"
         let fnmBin = "\(fnmDir)/aliases/default/bin"
         let voltaBin = "\(homeDir)/.volta/bin"
         let common = [
             "\(homeDir)/.local/bin", "\(homeDir)/.grok/bin", "\(homeDir)/.cargo/bin",
-            nvmBin, fnmBin, voltaBin,
-        ]
+        ] + nvmBinDirs(homeDir: homeDir, env: env, listDir: listDir) + [fnmBin, voltaBin]
         #if os(macOS)
         return common + ["/opt/homebrew/bin", "/usr/local/bin"]
         #elseif os(Linux)
@@ -146,6 +143,46 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         #else
         return common
         #endif
+    }
+
+    /// nvm's bin dir candidates, most specific first. `NVM_BIN` is authoritative when a shell
+    /// exported it, but a launchd/systemd spawn has neither that nor `NVM_DIR`, so fall back the
+    /// way `scripts/find-node.sh:93-103` does: the `default` alias, then the newest installed
+    /// version. `<nvm>/current/bin` stays last — nvm-sh never creates that symlink (only some
+    /// setups do), which is why relying on it alone resolved nothing on a Homebrew nvm install.
+    private static func nvmBinDirs(
+        homeDir: String,
+        env: [String: String],
+        listDir: (String) -> [String]
+    ) -> [String] {
+        if let exported = env["NVM_BIN"], !exported.isEmpty { return [exported] }
+        let nvmDir = env["NVM_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(homeDir)/.nvm"
+        let versionsDir = "\(nvmDir)/versions/node"
+        let installed = listDir(versionsDir).filter { $0.hasPrefix("v") }
+        var dirs: [String] = []
+        // The alias file holds either a bare/`v`-prefixed version or another alias name ("lts/*").
+        // Only the direct forms are resolvable without running nvm itself; the rest fall through
+        // to the newest-installed scan below.
+        if let alias = try? String(contentsOfFile: "\(nvmDir)/alias/default", encoding: .utf8) {
+            let want = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+            let version = want.hasPrefix("v") ? want : "v\(want)"
+            if installed.contains(version) { dirs.append("\(versionsDir)/\(version)/bin") }
+        }
+        for version in installed.sorted(by: isNewerNodeVersionDir) {
+            let dir = "\(versionsDir)/\(version)/bin"
+            if !dirs.contains(dir) { dirs.append(dir) }
+        }
+        dirs.append("\(nvmDir)/current/bin")
+        return dirs
+    }
+
+    /// Descending semver order over `vX.Y.Z` directory names (falls back to reverse lexical when
+    /// a name does not parse, so an unexpected entry still gets a stable position).
+    private static func isNewerNodeVersionDir(_ a: String, _ b: String) -> Bool {
+        guard let va = parseVersion(String(a.dropFirst())), let vb = parseVersion(String(b.dropFirst())) else {
+            return a > b
+        }
+        return compareVersions(va, vb) > 0
     }
 
     private static func readLines(

@@ -92,4 +92,97 @@ struct WellKnownUserBinDirsTests {
         #expect(dirs.contains("/Users/alice/.fnm/aliases/default/bin"))
         #expect(!dirs.contains("/Users/alice/.nvm/current/bin"))
     }
+
+    // A launchd/systemd spawn exports neither NVM_BIN nor NVM_DIR. `current/bin` alone resolved
+    // nothing there because nvm-sh does not create that symlink, so the `default` alias and the
+    // installed-version scan have to carry it (mirrors scripts/find-node.sh:93-103).
+    @Test func nvmDefaultAliasResolvesWithoutNvmBin() throws {
+        let root = try makeFakeNvm(versions: ["v20.11.0", "v24.12.0"], defaultAlias: "20.11.0")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let dirs = ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: "/Users/alice", env: ["NVM_DIR": root])
+        // The alias wins over the newer install, and both stay ahead of the legacy symlink.
+        let nvmDirs = dirs.filter { $0.hasPrefix(root) }
+        #expect(nvmDirs == [
+            "\(root)/versions/node/v20.11.0/bin",
+            "\(root)/versions/node/v24.12.0/bin",
+            "\(root)/current/bin",
+        ])
+    }
+
+    @Test func newestInstalledVersionLeadsWhenAliasIsUnresolvable() throws {
+        // "lts/*" points at another alias — not resolvable without running nvm itself.
+        let root = try makeFakeNvm(versions: ["v9.1.0", "v24.12.0", "v20.11.0"], defaultAlias: "lts/*")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let dirs = ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: "/Users/alice", env: ["NVM_DIR": root])
+        let nvmDirs = dirs.filter { $0.hasPrefix(root) }
+        // Semver order, not lexical — v9.1.0 must not outrank v24.12.0.
+        #expect(nvmDirs == [
+            "\(root)/versions/node/v24.12.0/bin",
+            "\(root)/versions/node/v20.11.0/bin",
+            "\(root)/versions/node/v9.1.0/bin",
+            "\(root)/current/bin",
+        ])
+    }
+
+    @Test func nvmDirsKeepTheirSlotInTheOverallOrder() throws {
+        let root = try makeFakeNvm(versions: ["v24.12.0"], defaultAlias: nil)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let dirs = ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: "/Users/alice", env: ["NVM_DIR": root])
+        #expect(dirs.prefix(3) == ["/Users/alice/.local/bin", "/Users/alice/.grok/bin", "/Users/alice/.cargo/bin"])
+        #expect(dirs[3] == "\(root)/versions/node/v24.12.0/bin")
+        #expect(dirs.suffix(2) == ["/opt/homebrew/bin", "/usr/local/bin"])
+    }
+
+    /// Real temp tree — the alias file read is a plain `String(contentsOfFile:)` inside the
+    /// resolver, so a fake `listDir` alone would not exercise it.
+    private func makeFakeNvm(versions: [String], defaultAlias: String?) throws -> String {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "dab-nvm-\(UUID().uuidString)"
+        for version in versions {
+            try fm.createDirectory(atPath: "\(root)/versions/node/\(version)/bin", withIntermediateDirectories: true)
+        }
+        if let defaultAlias {
+            try fm.createDirectory(atPath: "\(root)/alias", withIntermediateDirectories: true)
+            try Data("\(defaultAlias)\n".utf8).write(to: URL(fileURLWithPath: "\(root)/alias/default"))
+        }
+        return root
+    }
+}
+
+// Claude had no PATH augmentation at all until this suite's subject was wired in — a launchd
+// `brew services` spawn left every stdio MCP server unresolvable. Mirrors GrokSpawnTests.
+@Suite("claudeChildEnvironment")
+struct ClaudeChildEnvironmentTests {
+    @Test func prependsWellKnownDirsOntoExistingPath() {
+        let env = claudeChildEnvironment(
+            baseEnv: ["PATH": "/usr/bin:/bin", "OTHER": "kept"],
+            homeDir: "/Users/alice"
+        )
+        #expect(env["OTHER"] == "kept")
+        let dirs = env["PATH"]?.split(separator: ":").map(String.init) ?? []
+        #expect(dirs.suffix(2) == ["/usr/bin", "/bin"])
+        #expect(dirs.contains("/Users/alice/.local/bin"))
+        #expect(dirs.contains("/opt/homebrew/bin"))
+    }
+
+    @Test func doesNotDuplicateADirAlreadyOnPath() {
+        let env = claudeChildEnvironment(
+            baseEnv: ["PATH": "/Users/alice/.cargo/bin:/usr/bin"],
+            homeDir: "/Users/alice"
+        )
+        let dirs = env["PATH"]?.split(separator: ":").map(String.init) ?? []
+        #expect(dirs.filter { $0 == "/Users/alice/.cargo/bin" }.count == 1)
+    }
+
+    // The launchd case the fix exists for: a bare supervisor PATH must still gain the user dirs.
+    @Test func augmentsEvenABareLaunchdPath() {
+        let env = claudeChildEnvironment(
+            baseEnv: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "NVM_BIN": "/Users/alice/.nvm/versions/node/v24.12.0/bin"],
+            homeDir: "/Users/alice"
+        )
+        let dirs = env["PATH"]?.split(separator: ":").map(String.init) ?? []
+        #expect(dirs.first == "/Users/alice/.local/bin")
+        #expect(dirs.contains("/Users/alice/.nvm/versions/node/v24.12.0/bin"))
+        #expect(dirs.suffix(4) == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    }
 }

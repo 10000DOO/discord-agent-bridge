@@ -11,6 +11,33 @@ public struct SidecarSpawn: Sendable, Equatable {
     }
 }
 
+/**
+ Build the child-process environment for the spawned Claude sidecar: prepend the well-known
+ user/local bin dirs (`ProcessSidecarTransport.wellKnownUserBinDirs`, `Sidecar/Transport.swift`)
+ onto `PATH` so everything the sidecar starts underneath itself — the Claude CLI and every stdio
+ MCP server that CLI spawns — can find user-local CLIs even when the supervisor's own `PATH` is
+ bare. A `brew services` launchd spawn gets exactly `/usr/bin:/bin:/usr/sbin:/sbin`, so without
+ this no user-scope MCP server resolves at all. Mirrors `codexChildEnvironment`
+ (`Codex/CodexSpawn.swift`) and `grokChildEnvironment` (`Grok/GrokSpawn.swift`). Existing `PATH`
+ entries are kept in place and never duplicated.
+ */
+public func claudeChildEnvironment(
+    baseEnv: [String: String] = ProcessInfo.processInfo.environment,
+    homeDir: String = NSHomeDirectory()
+) -> [String: String] {
+    let existing = (baseEnv["PATH"] ?? "").split(separator: ":").map(String.init)
+    var seen = Set(existing)
+    var prepend: [String] = []
+    for dir in ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: homeDir, env: baseEnv) {
+        guard !dir.isEmpty, !seen.contains(dir) else { continue }
+        seen.insert(dir)
+        prepend.append(dir)
+    }
+    var env = baseEnv
+    env["PATH"] = (prepend + existing).joined(separator: ":")
+    return env
+}
+
 /// Locate the monorepo root (parent of `swift/` or directory with package.json + src/sidecar).
 public func findRepoRoot(
     startingAt start: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
