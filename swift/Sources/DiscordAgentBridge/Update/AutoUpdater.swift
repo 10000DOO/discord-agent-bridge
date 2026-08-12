@@ -292,7 +292,8 @@ public actor AutoUpdater {
         await withCheckedContinuation { checkWaiters.append($0) }
     }
 
-    /// One check cycle. Never throws. Re-posts prompt for a newer stable until dismissed.
+    /// One check cycle. Never throws. Posts the prompt once per newer stable (auto-marked
+    /// dismissed after a successful post), so the same version is not re-posted every check.
     @discardableResult
     public func checkNow(post: Bool = true) async -> UpdateCheckResult {
         activeChecks += 1
@@ -323,7 +324,15 @@ public actor AutoUpdater {
         }
         if post {
             do {
-                pendingControlChannelPrompt = !(try await deps.postPrompt(latest))
+                let posted = try await deps.postPrompt(latest)
+                pendingControlChannelPrompt = !posted
+                // Notify once per version: after a successful post, record it as dismissed so the
+                // hourly check does not re-post the same version. A newer stable still notifies
+                // (dismissedVersion matches this exact version only). Skip when the prompt was not
+                // actually shown (no control channel yet) so the pending retry can post it once.
+                if posted {
+                    await deps.writeMeta(AutoUpdateMetaPatch(dismissedVersion: latest))
+                }
             } catch {
                 deps.onLog("auto-update: failed to post prompt: \(error)")
                 pendingControlChannelPrompt = true

@@ -21,12 +21,29 @@ struct AutoUpdaterCheckTests {
         #expect(h.metaBox.withLock { $0 }.lastCheckAt == 1_000_000)
     }
 
-    @Test func repostsUntilDismissed() async {
+    @Test func postsOncePerVersionThenSilent() async {
         let h = UpdateHarness()
-        _ = await h.updater.checkNow()
-        _ = await h.updater.checkNow()
-        _ = await h.updater.checkNow()
-        #expect(h.postsBox.withLock { $0 } == ["1.1.0", "1.1.0", "1.1.0"])
+        let r1 = await h.updater.checkNow()
+        let r2 = await h.updater.checkNow()
+        let r3 = await h.updater.checkNow()
+        #expect(r1.kind == .available)
+        #expect(r2.kind == .dismissed)
+        #expect(r3.kind == .dismissed)
+        // Same version is posted exactly once, then auto-marked dismissed.
+        #expect(h.postsBox.withLock { $0 } == ["1.1.0"])
+        #expect(h.metaBox.withLock { $0 }.dismissedVersion == "1.1.0")
+    }
+
+    @Test func reNotifiesOnNewerVersion() async {
+        let calls = LockedBox(0)
+        let h = UpdateHarness(fetchLatest: {
+            let n = calls.withLock { $0 += 1; return $0 }
+            return n >= 3 ? "1.2.0" : "1.1.0"
+        })
+        _ = await h.updater.checkNow()  // posts 1.1.0, auto-dismiss
+        _ = await h.updater.checkNow()  // same version → silent
+        _ = await h.updater.checkNow()  // newer 1.2.0 → posts again
+        #expect(h.postsBox.withLock { $0 } == ["1.1.0", "1.2.0"])
     }
 
     @Test func silentWhenNotNewer() async {
