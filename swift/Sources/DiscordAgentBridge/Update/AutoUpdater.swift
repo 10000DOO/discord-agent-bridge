@@ -294,8 +294,13 @@ public actor AutoUpdater {
 
     /// One check cycle. Never throws. Posts the prompt once per newer stable (auto-marked
     /// dismissed after a successful post), so the same version is not re-posted every check.
+    ///
+    /// `ignoreDismissed` is for the manual `/update` path. Dismissal exists to stop *unsolicited*
+    /// repeats, so it must not silence a check the operator asked for by typing the command —
+    /// especially since the auto-mark above dismisses versions nobody ever declined, and
+    /// `dismissedVersion` has no clear signal (patch nil = unchanged).
     @discardableResult
-    public func checkNow(post: Bool = true) async -> UpdateCheckResult {
+    public func checkNow(post: Bool = true, ignoreDismissed: Bool = false) async -> UpdateCheckResult {
         activeChecks += 1
         defer {
             activeChecks -= 1
@@ -319,7 +324,7 @@ public actor AutoUpdater {
             return UpdateCheckResult(kind: .upToDate, currentVersion: current, latestVersion: latest)
         }
         let meta = await deps.readMeta()
-        if latest == meta.dismissedVersion {
+        if !ignoreDismissed, latest == meta.dismissedVersion {
             return UpdateCheckResult(kind: .dismissed, currentVersion: current, latestVersion: latest)
         }
         if post {

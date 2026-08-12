@@ -77,6 +77,32 @@ struct AutoUpdaterCheckTests {
         #expect(h.postsBox.withLock { $0 }.isEmpty)
     }
 
+    @Test func manualCheckStillReportsAutoDismissedVersion() async {
+        let h = UpdateHarness()
+        _ = await h.updater.checkNow()  // posts once, auto-marks 1.1.0 dismissed
+        #expect(h.metaBox.withLock { $0 }.dismissedVersion == "1.1.0")
+        // /update path: the operator asked, so the auto-mark must not hide the version — the
+        // reply needs .available to carry the install buttons.
+        let r = await h.updater.checkNow(post: false, ignoreDismissed: true)
+        #expect(r.kind == .available)
+        #expect(r.latestVersion == "1.1.0")
+        // Still a check, not a notification: no extra control-channel post.
+        #expect(h.postsBox.withLock { $0 } == ["1.1.0"])
+    }
+
+    @Test func manualCheckStillReportsUserDismissedVersion() async {
+        let h = UpdateHarness()
+        h.metaBox.withLock { $0.dismissedVersion = "1.1.0" }
+        let r = await h.updater.checkNow(post: false, ignoreDismissed: true)
+        #expect(r.kind == .available)
+        #expect(h.postsBox.withLock { $0 }.isEmpty)
+        // The dismissal itself survives — the scheduled check stays silent.
+        #expect(h.metaBox.withLock { $0 }.dismissedVersion == "1.1.0")
+        let scheduled = await h.updater.checkNow()
+        #expect(scheduled.kind == .dismissed)
+        #expect(h.postsBox.withLock { $0 }.isEmpty)
+    }
+
     @Test func retriesWhenControlChannelExistsButPromptSendFails() async {
         let h = UpdateHarness(postPromptAvailable: false)
         _ = await h.updater.checkNow()

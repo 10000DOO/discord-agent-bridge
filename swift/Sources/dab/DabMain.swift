@@ -1320,7 +1320,10 @@ struct EventHandler: GatewayEventHandler {
             )
             guard updateDeferred != nil else { return }
             // post:false — we reply here with embed+buttons instead of fanning out to control channels.
-            let result = await updater.checkNow(post: false)
+            // ignoreDismissed:true — the scheduled check auto-marks a version dismissed once it has
+            // notified, so without this an operator who typed /update would be told "dismissed" and
+            // get no install button for a version they never declined.
+            let result = await updater.checkNow(post: false, ignoreDismissed: true)
             let text = formatUpdateCheckReply(result)
             if result.kind == .available, let latest = result.latestVersion {
                 let (embedSpec, rows) = buildUpdatePrompt(version: latest, currentVersion: result.currentVersion)
