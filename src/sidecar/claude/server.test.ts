@@ -238,6 +238,43 @@ describe('SidecarServer with fake session factory', () => {
     await h.endInput();
   });
 
+  it('accepts an attachment-only send (empty text + files), rejects empty text alone', async () => {
+    const turns: TurnInput[] = [];
+    const { createSession } = makeFakeSessionFactory({
+      onSend: async (turn, ctx) => {
+        turns.push(turn);
+        ctx.emit({ kind: 'turn_complete' });
+      },
+    });
+
+    const h = await startServer({ createSession });
+    const startRes = await h.rpc('session.start', {
+      cwd: '/tmp/ws',
+      guildId: 'g1',
+      channelId: 'c1',
+      permMode: 'default',
+    });
+    const handle = (startRes.result as { session: string }).session;
+
+    const withFile = await h.rpc('session.send', {
+      session: handle,
+      text: '',
+      files: [{ path: '/tmp/ws/.dab-attachments/x/report.pdf', mime: 'application/pdf' }],
+    });
+    expect(withFile.error).toBeUndefined();
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({
+      text: '',
+      files: [{ path: '/tmp/ws/.dab-attachments/x/report.pdf', mime: 'application/pdf' }],
+    });
+
+    const bare = await h.rpc('session.send', { session: handle, text: '' });
+    expect(bare.error?.code).toBe('invalid_request');
+    expect(turns).toHaveLength(1);
+
+    await h.endInput();
+  });
+
   it('session.permission round-trip via requestPermission', async () => {
     // Mirror real ClaudeSession: send() returns after queueing; permission is async.
     const { createSession } = makeFakeSessionFactory({

@@ -357,7 +357,6 @@ export class SidecarServer {
       }
       case 'session.send': {
         const handle = sessionHandle(env, params);
-        const text = requireString(params, 'text');
         const filesRaw = params.files;
         let files: { path: string; mime?: string }[] | undefined;
         if (Array.isArray(filesRaw)) {
@@ -368,6 +367,15 @@ export class SidecarServer {
               ...(typeof f.mime === 'string' ? { mime: f.mime } : {}),
             }))
             .filter((f) => f.path.length > 0);
+        }
+        // Attachment-only turns (drag a file, hit enter) carry no text: routeDecision
+        // already accepts them, and buildClaudeUserContent handles empty text (image
+        // blocks / `Attached file:` hints). Only a turn with neither is malformed.
+        const text = optionalString(params, 'text') ?? '';
+        if (text.length === 0 && (files === undefined || files.length === 0)) {
+          throw Object.assign(new Error('missing or invalid params.text'), {
+            code: 'invalid_request',
+          });
         }
         await this.bridge.send(handle, text, files);
         return { ok: true };
