@@ -44,37 +44,45 @@ public struct BrowserImageRendererDeps: Sendable {
     }
 }
 
-/// Locate mermaid.min.js: env `DAB_MERMAID_JS` → repo node_modules → `~/.dab/render/`.
+/// Locate mermaid.min.js: env `DAB_MERMAID_JS` → repo node_modules → next to the running
+/// binary → `~/.dab/render/`.
 // Keep `mermaid` in package.json even though no JS/TS imports it — this reads dist/mermaid.min.js off disk (regressed once in b0ae0e8, don't remove again).
 public func resolveMermaidJsPath(
     env: [String: String] = ProcessInfo.processInfo.environment,
     cwd: String = FileManager.default.currentDirectoryPath,
+    executableDir: String? = Bundle.main.executableURL?
+        .resolvingSymlinksInPath().deletingLastPathComponent().path,
     fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
 ) -> String? {
     if let p = env["DAB_MERMAID_JS"], !p.isEmpty, fileExists(p) { return p }
-    // Walk up from cwd for monorepo / package root.
-    var dir = URL(fileURLWithPath: cwd, isDirectory: true)
-    let fm = FileManager.default
-    for _ in 0..<12 {
-        let candidate = dir
-            .appendingPathComponent("node_modules/mermaid/dist/mermaid.min.js", isDirectory: false)
-            .path
-        if fileExists(candidate) { return candidate }
-        if let root = findRepoRoot(startingAt: dir) {
-            let fromRoot = root
-                .appendingPathComponent("node_modules/mermaid/dist/mermaid.min.js")
+    // Walk up for monorepo / package root.
+    func walkUp(from start: String) -> String? {
+        var dir = URL(fileURLWithPath: start, isDirectory: true)
+        for _ in 0..<12 {
+            let candidate = dir
+                .appendingPathComponent("node_modules/mermaid/dist/mermaid.min.js", isDirectory: false)
                 .path
-            if fileExists(fromRoot) { return fromRoot }
+            if fileExists(candidate) { return candidate }
+            if let root = findRepoRoot(startingAt: dir) {
+                let fromRoot = root
+                    .appendingPathComponent("node_modules/mermaid/dist/mermaid.min.js")
+                    .path
+                if fileExists(fromRoot) { return fromRoot }
+            }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
         }
-        let parent = dir.deletingLastPathComponent()
-        if parent.path == dir.path { break }
-        dir = parent
+        return nil
     }
+    if let hit = walkUp(from: cwd) { return hit }
+    // Homebrew keg / any packaged install: node_modules sits beside the binary
+    // (libexec/dab-bin + libexec/node_modules). A launchd-started service has cwd `/`,
+    // so the cwd walk above can never reach it.
+    if let executableDir, let hit = walkUp(from: executableDir) { return hit }
     let bundled = (NSHomeDirectory() as NSString)
         .appendingPathComponent(".dab/render/mermaid.min.js")
     if fileExists(bundled) { return bundled }
-    // Silence unused when fm only used for existence via fileExists.
-    _ = fm
     return nil
 }
 

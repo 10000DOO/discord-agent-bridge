@@ -169,6 +169,20 @@ struct BrowserImageRendererTests {
         #expect(launched.withLock { $0 } == false)
     }
 
+    /// Homebrew keg layout: cwd is `/` under launchd, node_modules sits beside the binary.
+    @Test func mermaidJsFoundNextToBinaryWhenCwdHasNone() {
+        let keg = "/opt/homebrew/Cellar/dab/9.9.9/libexec"
+        let bundled = "\(keg)/node_modules/mermaid/dist/mermaid.min.js"
+        let found = resolveMermaidJsPath(
+            env: [:],
+            cwd: "/",
+            executableDir: keg,
+            fileExists: { $0 == bundled }
+        )
+        #expect(found == bundled)
+        #expect(resolveMermaidJsPath(env: [:], cwd: "/", executableDir: nil, fileExists: { $0 == bundled }) == nil)
+    }
+
     @Test func realChromeTableScreenshotWhenAvailable() async throws {
         guard let chrome = findChrome() else { return }
         let r = BrowserImageRenderer(executablePath: chrome)
