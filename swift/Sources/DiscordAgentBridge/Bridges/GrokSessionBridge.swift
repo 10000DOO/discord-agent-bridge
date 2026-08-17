@@ -78,6 +78,17 @@ public actor GrokSessionBridge {
 
     private struct Channel {
         let client: GrokAcpClient
+        /// Spawn flags this child was launched with. Grok has no live setModel/setEffort, so a
+        /// `/model` or `/effort` that lands on the binding only takes effect on a respawn:
+        /// `ensureChannel` compares this against the current config and relaunches (session/load
+        /// keeps the conversation) instead of silently answering with the old model.
+        let spawnKey: String
+    }
+
+    /// Spawn-time fields only (`-m` / `--reasoning-effort` in `resolveGrokSpawn`). permMode is
+    /// deliberately excluded: `/perm` changing `--always-approve` mid-session is a separate call.
+    private func spawnKey(_ config: SessionConfig?) -> String {
+        "\(config?.model ?? "")|\(config?.effort ?? "")"
     }
 
     /// channelId (snowflake string) → grok client (holds its own sessionId)
@@ -310,18 +321,19 @@ public actor GrokSessionBridge {
     }
 
     private func ensureChannel(channelId: String, config: SessionConfig?, ownerId: String?, guildId: String) async throws -> Channel {
-        // Reuse a live client; a closed one (crashed/EOF) is dropped and respawned
-        // (mirrors CodexSessionBridge.ensureChannel).
+        // Reuse a live client; a closed one (crashed/EOF) or one spawned with stale model/effort
+        // flags is dropped and respawned (mirrors CodexSessionBridge.ensureChannel).
         if let existing = channels[channelId] {
-            if !existing.client.isClosed {
+            if !existing.client.isClosed, existing.spawnKey == spawnKey(config) {
                 return existing
             }
             await existing.client.close()
             channels[channelId] = nil
         }
         let epoch = stopEpoch[channelId] ?? 0
-        // ponytail: model/effort/bypass are baked at spawn from the FIRST turn's config (TS parity —
-        // Grok has no live setModel/setEffort). A later /perm change would need a respawn (W11-c+).
+        // ponytail: model/effort/bypass are spawn flags (Grok has no live setModel/setEffort), so a
+        // changed model/effort respawns via `spawnKey` above. A later /perm change still needs a
+        // manual respawn (W11-c+).
         let persisted = await store.binding(channelId: channelId)
         let cwdValue = persisted?.cwd ?? cwd
         var startedFresh = persisted?.backendSessionId == nil
@@ -411,7 +423,7 @@ public actor GrokSessionBridge {
             throw AcpClientError("session stopped")
         }
 
-        let channel = Channel(client: client)
+        let channel = Channel(client: client, spawnKey: spawnKey(effectiveConfig))
         channels[channelId] = channel
         // F7: capture the grok session id + live context.
         await persistSession(store: store, backend: .grok, channelId: channelId, guildId: guildId, ownerId: ownerId, cwd: cwdValue, model: effectiveConfig?.model, effort: effectiveConfig?.effort, permMode: effectiveConfig?.permMode, backendSessionId: client.sessionId, lifecycleGeneration: persisted?.lifecycleGeneration, contextGenerationStartedAt: startedFresh ? iso8601Now() : nil)

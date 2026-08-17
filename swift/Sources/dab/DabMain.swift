@@ -785,20 +785,10 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, I18n.t("cmd.model.missingValue"))
                 return
             }
-            // C4-c: only Claude/.custom sessions expose a live setModel (TS
-            // sessionOrchestrator.ts:389 `if (typeof session.setModel !== 'function') return
-            // 'unsupported'` — codex/grok never do), so report unsupported up front instead of
-            // letting updateBinding persist a model field the backend never reads.
-            let modelStoreRow = await SessionStore.shared.binding(channelId: channelId)
-            let modelRegRow = await SessionRegistry.shared.binding(channelId: channelId)
-            guard let modelBackend = modelStoreRow?.backend ?? modelRegRow?.backend else {
-                try await respondEphemeral(payload, noSession)
-                return
-            }
-            guard modelBackend == .claude || modelBackend == .custom else {
-                try await respondEphemeral(payload, I18n.t("cmd.model.unsupported"))
-                return
-            }
+            // Every backend reads the bound model, just at a different moment: Claude/.custom
+            // through a live setModel, Codex as a per-turn `turnStart` param
+            // (CodexSessionBridge.executeTurn), Grok as a spawn flag the next turn respawns for
+            // (GrokSessionBridge.spawnKey). So persist for all of them and let the binding win.
             let modelResult = await life.updateBinding(
                 channelId: channelId, patch: BindingPatch(model: value),
                 actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd
@@ -818,18 +808,8 @@ struct EventHandler: GatewayEventHandler {
                 try await respondEphemeral(payload, I18n.t("cmd.effort.missingValue"))
                 return
             }
-            // C4-c: Grok sessions never expose live effort switching (TS acpSession.ts —
-            // setModel/setEffort intentionally absent); Claude/.custom/Codex do.
-            let effortStoreRow = await SessionStore.shared.binding(channelId: channelId)
-            let effortRegRow = await SessionRegistry.shared.binding(channelId: channelId)
-            guard let effortBackend = effortStoreRow?.backend ?? effortRegRow?.backend else {
-                try await respondEphemeral(payload, noSession)
-                return
-            }
-            guard effortBackend != .grok else {
-                try await respondEphemeral(payload, I18n.t("cmd.effort.unsupported"))
-                return
-            }
+            // Same as `/model`: Grok's `--reasoning-effort` is a spawn flag, so the binding wins on
+            // the next turn's respawn rather than being rejected here.
             let effortResult = await life.updateBinding(
                 channelId: channelId, patch: BindingPatch(effort: value),
                 actorId: actorId, guildId: guildId, roleTier: tier, defaultCwd: stubCwd

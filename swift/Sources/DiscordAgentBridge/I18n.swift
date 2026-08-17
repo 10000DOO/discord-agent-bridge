@@ -127,12 +127,9 @@ public enum I18n {
         "cmd.perm.switched": "권한 설정을 바꿨어요: {perm}",
         "cmd.model.switched":
             "이 세션의 모델을 바꿨어요: {model} (다음 응답부터 적용, 대화는 유지)",
-        "cmd.model.unsupported":
-            "이 백엔드는 세션 중 모델 변경을 지원하지 않아요 (Claude만 가능).",
         "cmd.model.failed": "모델 변경에 실패했어요. 터미널 로그를 확인해 주세요.",
         "cmd.effort.switched":
             "이 세션의 추론 강도를 바꿨어요: {effort} (다음 응답부터 적용, 대화는 유지)",
-        "cmd.effort.unsupported": "이 백엔드는 세션 중 추론 강도 변경을 지원하지 않아요.",
         "cmd.effort.failed": "추론 강도 변경에 실패했어요. 터미널 로그를 확인해 주세요.",
 
         // Interrupt
@@ -670,13 +667,9 @@ public enum I18n {
         "cmd.perm.switched": "Updated permission settings: {perm}",
         "cmd.model.switched":
             "Switched this session’s model to {model} (applies from the next turn; conversation kept).",
-        "cmd.model.unsupported":
-            "This backend does not support switching the model mid-session (Claude only).",
         "cmd.model.failed": "Failed to switch the model. Check the terminal logs.",
         "cmd.effort.switched":
             "Switched this session’s reasoning effort to {effort} (applies from the next turn; conversation kept).",
-        "cmd.effort.unsupported":
-            "This backend does not support switching the reasoning effort mid-session.",
         "cmd.effort.failed": "Failed to switch the reasoning effort. Check the terminal logs.",
 
         "cmd.interrupt.button": "⏹️ Stop",

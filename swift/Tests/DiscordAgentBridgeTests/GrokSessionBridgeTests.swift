@@ -394,6 +394,20 @@ struct GrokSessionBridgeTests {
         #expect(spawn.args.contains("--reasoning-effort") && spawn.args.contains("high"))
     }
 
+    // `/model` (and `/effort`) only patch the binding; since Grok bakes them into the spawn, the
+    // next turn must relaunch with the new flags — and reuse the live child when nothing changed.
+    @Test func changedModelRespawnsWithNewFlags() async throws {
+        let spy = LockedBox<[SessionConfig?]>([])
+        let (bridge, _) = makeGrokBridge(configSpy: spy)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-4"))
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-4"))
+        #expect(spy.withLock { $0.count } == 1)
+        _ = try await bridge.runTurn(channelId: "c", text: "hi", config: SessionConfig(backend: .grok, model: "grok-4-fast"))
+        let got = spy.withLock { $0 }
+        #expect(got.count == 2)
+        #expect(got.last??.model == "grok-4-fast")
+    }
+
     // W14: stop closes + drops live map; interrupt dropClient but store keeps resume id for reload.
     @Test func stopClosesAndDropsChannel() async throws {
         let (bridge, made) = makeGrokBridge()
