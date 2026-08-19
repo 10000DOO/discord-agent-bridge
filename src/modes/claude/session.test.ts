@@ -823,12 +823,20 @@ describe('ClaudeSession — SDK message mapping', () => {
     await session.stop();
   });
 
-  it('setEffort() rejects a non-runtime level (max) and never calls applyFlagSettings', async () => {
+  it('setEffort() applies max mid-session (applyFlagSettings takes the full domain)', async () => {
     const { ctx } = makeCtx();
     const { queryFn, state } = fakeQueryFn([], { stallForever: true });
     const session = new ClaudeSession(ctx, { queryFn });
-    // 'max' is settable only at session start (options.effort), not via applyFlagSettings.
-    await expect(session.setEffort('max')).rejects.toThrow(/Unsupported runtime effort/);
+    await session.setEffort('max');
+    expect(state.flagSettingsCalls).toEqual([{ effortLevel: 'max' }]);
+    await session.stop();
+  });
+
+  it('setEffort() rejects a level outside the effort domain and never calls applyFlagSettings', async () => {
+    const { ctx } = makeCtx();
+    const { queryFn, state } = fakeQueryFn([], { stallForever: true });
+    const session = new ClaudeSession(ctx, { queryFn });
+    await expect(session.setEffort('turbo')).rejects.toThrow(/Unsupported runtime effort/);
     expect(state.flagSettingsCalls).toEqual([]);
     await session.stop();
   });

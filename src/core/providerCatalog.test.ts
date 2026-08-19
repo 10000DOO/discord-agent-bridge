@@ -328,15 +328,17 @@ describe('reasoning-effort choices (per-backend)', () => {
 });
 
 describe('runtime reasoning-effort choices (/effort — live session)', () => {
-  it('the Claude runtime set is {low,medium,high,xhigh} — max excluded (start-only)', () => {
-    expect([...CLAUDE_RUNTIME_EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh']);
-    expect((CLAUDE_RUNTIME_EFFORT_LEVELS as readonly string[]).includes('max')).toBe(false);
+  // applyFlagSettings takes the full EffortLevel domain: 'max' IS settable mid-session
+  // (session-scoped, never persisted to a settings file).
+  it('the Claude runtime set is the full effort domain — max included', () => {
+    expect([...CLAUDE_RUNTIME_EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect([...CLAUDE_RUNTIME_EFFORT_LEVELS]).toEqual([...CLAUDE_EFFORT_LEVELS]);
   });
 
-  it('isClaudeRuntimeEffort accepts the four runtime levels and rejects max/garbage', () => {
+  it('isClaudeRuntimeEffort accepts every runtime level (incl. max) and rejects garbage', () => {
     expect(isClaudeRuntimeEffort('low')).toBe(true);
     expect(isClaudeRuntimeEffort('xhigh')).toBe(true);
-    expect(isClaudeRuntimeEffort('max')).toBe(false);
+    expect(isClaudeRuntimeEffort('max')).toBe(true);
     expect(isClaudeRuntimeEffort('')).toBe(false);
     expect(isClaudeRuntimeEffort('turbo')).toBe(false);
   });
@@ -355,14 +357,15 @@ describe('runtime reasoning-effort choices (/effort — live session)', () => {
     expect(runtimeEffortChoicesFor('claude').map((c) => c.value)).toEqual([...CLAUDE_RUNTIME_EFFORT_LEVELS]);
   });
 
-  it('runtimeEffortChoicesFor: Claude ∩ the model’s supportedEffortLevels, always excluding max', () => {
-    // A model that reports low/medium/max → the ∩ with {low,medium,high,xhigh} drops max.
+  it('runtimeEffortChoicesFor: Claude ∩ the model’s supportedEffortLevels, in runtime-list order', () => {
     expect(runtimeEffortChoicesFor('claude', ['low', 'medium', 'max']).map((c) => c.value)).toEqual([
       'low',
       'medium',
+      'max',
     ]);
-    // Even if the model reports max, it is never offered at runtime.
-    expect(runtimeEffortChoicesFor('claude', ['high', 'max']).map((c) => c.value)).toEqual(['high']);
+    // A model that supports max keeps it at runtime; one that does not never sees it.
+    expect(runtimeEffortChoicesFor('claude', ['high', 'max']).map((c) => c.value)).toEqual(['high', 'max']);
+    expect(runtimeEffortChoicesFor('claude', ['low', 'high']).map((c) => c.value)).toEqual(['low', 'high']);
   });
 
   it('runtimeEffortChoicesFor: Codex uses supported when non-empty; empty/undefined → fallback', () => {

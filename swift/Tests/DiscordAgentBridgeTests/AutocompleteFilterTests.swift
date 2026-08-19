@@ -44,8 +44,8 @@ struct AutocompleteFilterTests {
     }
 
     @Test func effortRuntimeChoicesPassThroughFilter() {
-        // Claude runtime set (max excluded at catalog layer); filter only trims by query.
-        let efforts = choices(["low", "medium", "high", "xhigh"])
+        // Claude runtime set (narrowed at the catalog layer); filter only trims by query.
+        let efforts = choices(["low", "medium", "high", "xhigh", "max"])
         // "med" uniquely hits medium; "hi" would also match xhigh (contains).
         #expect(filterAutocompleteChoices(efforts, query: "med") == [
             AutocompleteChoice(name: "medium", value: "medium"),
@@ -53,6 +53,6 @@ struct AutocompleteFilterTests {
         #expect(filterAutocompleteChoices(efforts, query: "xhi") == [
             AutocompleteChoice(name: "xhigh", value: "xhigh"),
         ])
-        #expect(filterAutocompleteChoices(efforts, query: "").map(\.value) == ["low", "medium", "high", "xhigh"])
+        #expect(filterAutocompleteChoices(efforts, query: "").map(\.value) == ["low", "medium", "high", "xhigh", "max"])
     }
 }

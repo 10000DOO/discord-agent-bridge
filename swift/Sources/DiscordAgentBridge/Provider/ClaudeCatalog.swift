@@ -63,7 +63,7 @@ public struct ClaudeCatalogSnapshot: Sendable, Equatable {
                 ModelChoice(value: "auto", label: "auto (model-classified)"),
             ],
             effortLevels: ["low", "medium", "high", "xhigh", "max"],
-            runtimeEffortLevels: ["low", "medium", "high", "xhigh"],
+            runtimeEffortLevels: ["low", "medium", "high", "xhigh", "max"],
             defaultEffort: "high"
         )
     }

@@ -113,20 +113,18 @@ export const CLAUDE_EFFORT_LEVELS = [
 ] as const satisfies readonly EffortLevel[];
 
 // Claude effort levels settable at RUNTIME on a live session via
-// query.applyFlagSettings({ effortLevel }). This is the SDK's Settings.effortLevel
-// domain, which EXCLUDES 'max' — 'max' is only settable at session start via
-// options.effort, not mid-session. Drives the /effort autocomplete for a Claude channel
-// and guards the Claude session's setEffort (see modes/claude/session.ts).
-export const CLAUDE_RUNTIME_EFFORT_LEVELS = [
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-] as const satisfies readonly EffortLevel[];
+// query.applyFlagSettings({ effortLevel }) — the FULL EffortLevel domain, 'max' included.
+// applyFlagSettings widens the persisted Settings.effortLevel type on purpose: 'max' is
+// session-scoped and never written to a settings file, which is the only reason the
+// persisted type omits it (see sdk.d.ts applyFlagSettings). Kept as its own name because
+// the claude.catalog RPC carries a separate runtime list to the Swift host; for Claude it
+// currently equals the start-time list. Drives the /effort autocomplete for a Claude
+// channel and guards the Claude session's setEffort (see modes/claude/session.ts).
+export const CLAUDE_RUNTIME_EFFORT_LEVELS = CLAUDE_EFFORT_LEVELS;
 export type ClaudeRuntimeEffort = (typeof CLAUDE_RUNTIME_EFFORT_LEVELS)[number];
 
 // True when `value` is a Claude effort level settable at runtime (the applyFlagSettings
-// domain — 'max' excluded). Narrows the string so it can be passed to the SDK.
+// domain). Narrows the string so it can be passed to the SDK.
 export function isClaudeRuntimeEffort(value: string): value is ClaudeRuntimeEffort {
   return (CLAUDE_RUNTIME_EFFORT_LEVELS as readonly string[]).includes(value);
 }
@@ -166,12 +164,11 @@ export function effortChoicesFor(backend: string, supported?: readonly string[])
   return levels.map((e) => ({ value: e, label: e }));
 }
 
-// The reasoning-effort option list for the LIVE `/effort` command, keyed by backend.
-// Unlike effortChoicesFor (the wizard's start-time list, which for Claude includes
-// 'max'), this returns only levels that can be changed mid-session: Codex → supported
-// levels when non-empty, else CODEX_EFFORT_LEVELS; Claude → the runtime-settable set
-// {low,medium,high,xhigh}, further narrowed to the chosen model's supportedEffortLevels
-// (∩) when reported. 'max' is never offered here because query.applyFlagSettings cannot set it.
+// The reasoning-effort option list for the LIVE `/effort` command, keyed by backend:
+// levels that can be changed mid-session. Codex → supported levels when non-empty, else
+// CODEX_EFFORT_LEVELS; Claude → the runtime-settable set, narrowed to the chosen model's
+// supportedEffortLevels (∩) when reported. Differs from effortChoicesFor (the wizard's
+// start-time list) only in that narrowing: ∩ here, model levels verbatim there.
 export function runtimeEffortChoicesFor(backend: string, supported?: readonly string[]): ModelChoice[] {
   if (backend === 'codex') {
     const levels = supported && supported.length > 0 ? supported : CODEX_EFFORT_LEVELS;

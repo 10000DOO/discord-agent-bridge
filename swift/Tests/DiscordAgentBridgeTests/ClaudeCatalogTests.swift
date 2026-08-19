@@ -12,7 +12,7 @@ private func liveSnapshot() -> ClaudeCatalogSnapshot {
         ],
         permissionModes: [ModelChoice(value: "default", label: "default (ask each time)")],
         effortLevels: ["low", "medium", "high", "xhigh", "max"],
-        runtimeEffortLevels: ["low", "medium", "high", "xhigh"],
+        runtimeEffortLevels: ["low", "medium", "high", "xhigh", "max"],
         defaultEffort: "high"
     )
 }
@@ -32,7 +32,7 @@ struct ClaudeCatalogSnapshotTests {
         #expect(fb.permissionModes.first?.label == "default (ask each time)")
         #expect(fb.permissionModes.last?.label == "auto (model-classified)")
         #expect(fb.effortLevels == ["low", "medium", "high", "xhigh", "max"])
-        #expect(fb.runtimeEffortLevels == ["low", "medium", "high", "xhigh"])
+        #expect(fb.runtimeEffortLevels == ["low", "medium", "high", "xhigh", "max"])
         #expect(fb.defaultEffort == "high")
     }
 
@@ -68,12 +68,13 @@ struct ClaudeCatalogTests {
         let cat = ClaudeCatalog(probe: { snap })
         // Warm the cache first (the sync effort methods read the cached snapshot).
         _ = await cat.models(configured: nil)
-        // No model levels → full start list (max included), runtime list (max excluded).
+        // No model levels → both lists are the snapshot's own list.
         #expect(cat.effortChoices(modelLevels: nil) == choices(["low", "medium", "high", "xhigh", "max"]))
-        #expect(cat.runtimeEffortChoices(modelLevels: nil) == choices(["low", "medium", "high", "xhigh"]))
-        // Model levels narrow: start keeps them verbatim (max stays), runtime intersects (max dropped).
+        #expect(cat.runtimeEffortChoices(modelLevels: nil) == choices(["low", "medium", "high", "xhigh", "max"]))
+        // Model levels narrow: start keeps them verbatim, runtime intersects the runtime base.
         #expect(cat.effortChoices(modelLevels: ["high", "max"]) == choices(["high", "max"]))
-        #expect(cat.runtimeEffortChoices(modelLevels: ["high", "max"]) == choices(["high"]))
+        #expect(cat.runtimeEffortChoices(modelLevels: ["high", "max"]) == choices(["high", "max"]))
+        #expect(cat.runtimeEffortChoices(modelLevels: ["high", "turbo"]) == choices(["high"]))
     }
 
     // Before any async method warms the cache, the sync effort methods fall back to the
@@ -81,7 +82,7 @@ struct ClaudeCatalogTests {
     @Test func effortChoicesBeforeWarmUseFallback() {
         let cat = ClaudeCatalog(probe: { liveSnapshot() })
         #expect(cat.effortChoices(modelLevels: nil) == choices(["low", "medium", "high", "xhigh", "max"]))
-        #expect(cat.runtimeEffortChoices(modelLevels: nil) == choices(["low", "medium", "high", "xhigh"]))
+        #expect(cat.runtimeEffortChoices(modelLevels: nil) == choices(["low", "medium", "high", "xhigh", "max"]))
     }
 
     @Test func probeRunsOncePerOpenAcrossMethods() async {
