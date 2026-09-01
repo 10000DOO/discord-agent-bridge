@@ -1,6 +1,7 @@
 import DiscordAgentBridge
 import DiscordBM
 import Foundation
+import Logging
 import Dispatch
 import NIOCore
 
@@ -27,6 +28,17 @@ private func tempDiagWrite(_ s: String) {
 struct DabMain {
     static func main() async {
         let args = Array(CommandLine.arguments.dropFirst())
+        // DiscordBM logs every reconnect trigger at .debug — a nil/goingAway/unexpectedServerError
+        // close, the failed-ping reconnect, the web-socket error path — and swift-log's default
+        // handler stops at .info. That is exactly why a five-hour, 1000-connection reconnect storm
+        // left nothing in the log but the ready notices. This opens it up for one run.
+        if ProcessInfo.processInfo.environment["DAB_GATEWAY_DEBUG"] == "1" {
+            LoggingSystem.bootstrap { label in
+                var handler = StreamLogHandler.standardError(label: label)
+                handler.logLevel = .debug
+                return handler
+            }
+        }
         // C12: CLI entry points, mirroring src/cli.ts's `--version`/`--setup` (`service <sub>`
         // is out of scope here — C13). Checked via `args.first` like the smoke-test
         // subcommands below, since argv[1] doubles as the fallback token position.
@@ -324,6 +336,16 @@ struct EventHandler: GatewayEventHandler {
         // WO-5: the re-authorization link the pin-permission notice offers is built from this.
         await BotGatewayIdentity.shared.setApplicationId(payload.application.id.rawValue)
         signalSuccessorReadyIfRequested()
+        // Everything below is boot-only, and DiscordBM re-fires READY on every re-IDENTIFY. A
+        // reconnect needs none of it: slash commands stay registered server-side, the binding store
+        // is already loaded, and the agent processes are local and never noticed the gateway. The
+        // log line is the point as much as the skip is — a reconnect used to be invisible above
+        // debug level, which is how a five-hour reconnect loop went unnoticed until Discord
+        // revoked the token.
+        guard await BotGatewayIdentity.shared.claimBootSequence() else {
+            log.info("ready: reconnect — boot sequence already ran, skipping")
+            return
+        }
         log.info("auto-provision will run on GuildCreate for \(payload.guilds.count) guild stub(s)")
         await registerAgentCommand(appId: payload.application.id, guildIds: payload.guilds.map(\.id.rawValue))
         await restoreSessionBindings()

@@ -135,10 +135,24 @@ actor BotGatewayIdentity {
     /// when a permission it lacks blocks something (task panel pinning, R9).
     private var applicationId: String?
 
+    /// READY fires again on every gateway re-IDENTIFY, not only at boot, and the boot sequence
+    /// behind it (slash-command registration, resumeAll, updater/poller tasks) is not written to be
+    /// run twice: every reconnect re-registered 17 slash commands, re-probed the provider CLIs and
+    /// started another Redmine poller. Harmless at a normal reconnect rate, ruinous during the
+    /// reconnect loop the zstd bug caused (see swift/patches/) — hundreds of command registrations
+    /// against Discord's daily limit. Actor-isolated, so the test-and-set cannot race two READYs.
+    private var didClaimBootSequence = false
+
     func setUserId(_ id: String) { userId = id }
     func getUserId() -> String? { userId }
     func setApplicationId(_ id: String) { applicationId = id }
     func getApplicationId() -> String? { applicationId }
+    /// True exactly once per process — for the first READY. Every later READY is a reconnect.
+    func claimBootSequence() -> Bool {
+        if didClaimBootSequence { return false }
+        didClaimBootSequence = true
+        return true
+    }
 }
 
 /// Resolve Manage Channels for the bot from a full GuildCreate payload.

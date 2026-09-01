@@ -1,0 +1,42 @@
+Fix DiscordBM 1.16.2's zstd stream decompressor throwing on any gateway payload
+that needs more output space than its first allocation guess.
+
+decompressStreamingChunk() checks "input not fully consumed" BEFORE it checks
+"output buffer is full", so the normal grow-and-continue case — ZSTD_decompressStream
+stopping because the output buffer filled up — is misread as a corrupt frame and
+throws DecompressionError.incompleteFrame. That throw escapes the gateway's inbound
+loop, swift-websocket closes the connection with 1011/unexpectedServerError and no
+reason, and DiscordBM reconnects. The first allocation is max(4096, 8 * compressed
+bytes), and JSON compresses far better than 8x under zstd, so once a guild's
+GUILD_CREATE payload crosses that ratio EVERY connection dies a few seconds after
+READY — an endless reconnect loop that Discord answers by revoking the bot token.
+
+Order the checks so a full output buffer means "grow and continue", and keep the
+incompleteFrame guard for the case it was meant for: input left over while output
+space remains.
+
+diff --git a/Sources/DiscordGateway/ZstdDecompressorWSExtension.swift b/Sources/DiscordGateway/ZstdDecompressorWSExtension.swift
+index 188948f..4cfa6b9 100644
+--- a/Sources/DiscordGateway/ZstdDecompressorWSExtension.swift
++++ b/Sources/DiscordGateway/ZstdDecompressorWSExtension.swift
+@@ -166,15 +166,15 @@ final class ZstdStreamingDecompressor {
+                     throw DecompressionError.decompressionError(description: description)
+                 }
+ 
++                if output.pos == output.size {
++                    return .continue(newOffset: input.pos)
++                }
++
+                 if input.pos < input.size {
+                     throw DecompressionError.incompleteFrame
+                 }
+ 
+-                if output.pos < output.size {
+-                    return .ok
+-                } else {
+-                    return .continue(newOffset: input.pos)
+-                }
++                return .ok
+             }
+         }
+ 

@@ -179,6 +179,10 @@ command -v npm >/dev/null 2>&1 || { log "FATAL: npm is required to build the Typ
 [ -f "$BUILT_SIDECAR" ] || { log "FATAL: build produced no $BUILT_SIDECAR" >&2; exit 1; }
 
 log "== build (release) =="
+# DiscordBM 1.16.2 의 zstd 압축 해제 버그를 고친 뒤 빌드한다(swift/patches/ 참고). resolve 가
+# 의존성을 새로 받아오면서 로컬 수정을 지우므로 resolve 를 먼저 돌리고 패치를 입힌다.
+swift package --package-path "$SWIFT_DIR" resolve
+bash "$SWIFT_DIR/scripts/patch-deps.sh"
 swift build -c release --package-path "$SWIFT_DIR"
 [ -x "$BUILT_BIN" ] || { log "FATAL: build produced no $BUILT_BIN" >&2; exit 1; }
 
