@@ -9,6 +9,7 @@ import type {
 import { ClaudeSession, type QueryFn } from './session.js';
 import type { SendFileCallback, ShareDocumentCallback } from './mcpFileTool.js';
 import { CLAUDE_PERMISSION_MODES, claudeCatalog } from '../../core/providerCatalog.js';
+import { resolveUsableClaudeExecutable } from '../../core/resolveCli.js';
 import {
   ClaudeSidecarClient,
   resolveClaudeSidecarSpawn,
@@ -106,9 +107,11 @@ export class ClaudeMode implements AgentMode {
     if (this.deps.useSidecar) {
       return this.openViaSidecar(sessionCtx, { env });
     }
+    const claudeExecutable = await resolveUsableClaudeExecutable();
     return new ClaudeSession(sessionCtx, {
       ...this.sessionDeps(ctx),
       ...(env !== undefined ? { env } : {}),
+      ...(claudeExecutable !== undefined ? { claudeExecutable } : {}),
     });
   }
 
@@ -117,9 +120,11 @@ export class ClaudeMode implements AgentMode {
     if (this.deps.useSidecar) {
       return this.openViaSidecar(sessionCtx, { env, resumeId: sessionId });
     }
+    const claudeExecutable = await resolveUsableClaudeExecutable();
     return new ClaudeSession(sessionCtx, {
       ...this.sessionDeps(ctx),
       ...(env !== undefined ? { env } : {}),
+      ...(claudeExecutable !== undefined ? { claudeExecutable } : {}),
       resumeId: sessionId,
     });
   }

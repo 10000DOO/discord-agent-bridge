@@ -8,6 +8,7 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Logger, ModeCatalog, ModelChoice, PermMode } from './contracts.js';
+import { resolveUsableClaudeExecutable } from './resolveCli.js';
 import {
   CODEX_EFFORT_FALLBACK,
   codexConfigSource,
@@ -254,7 +255,9 @@ function claudeModelChoices(models: ModelInfo[]): ModelChoice[] {
 async function fetchClaudeModels(queryFn: QueryFn, logger?: Logger): Promise<ModelChoice[]> {
   let q: Query | null = null;
   try {
-    q = queryFn({ prompt: emptyPrompt() });
+    // Probe the same CLI a session will run so the model list matches it.
+    const claudeExecutable = await resolveUsableClaudeExecutable();
+    q = queryFn({ prompt: emptyPrompt(), ...(claudeExecutable !== undefined ? { options: { pathToClaudeCodeExecutable: claudeExecutable } } : {}) });
     const models = await withTimeout(q.supportedModels(), SUPPORTED_MODELS_TIMEOUT_MS);
     const choices = claudeModelChoices(
       models.filter((m): m is ModelInfo => Boolean(m && typeof m.value === 'string' && m.value.length > 0))

@@ -11,6 +11,7 @@ import type {
   SessionPermMode,
 } from '../../core/contracts.js';
 import { ClaudeSession, type ClaudeSessionDeps } from '../../modes/claude/session.js';
+import { resolveUsableClaudeExecutable } from '../../core/resolveCli.js';
 import type { ListSessionsFn } from '../../modes/claude/index.js';
 import type { ShareResult } from '../../discord/documentShare.js';
 import { listSessions as realListSessions, type Options, type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
@@ -101,18 +102,19 @@ export class SessionBridge {
   }
 
   async start(params: SessionStartParams): Promise<{ session: string; backendSessionId: string | null }> {
-    return this.openSession(params);
+    return this.openSession(params, undefined, await resolveUsableClaudeExecutable());
   }
 
   async resume(
     params: SessionResumeParams,
   ): Promise<{ session: string; backendSessionId: string | null }> {
-    return this.openSession(params, params.backendSessionId);
+    return this.openSession(params, params.backendSessionId, await resolveUsableClaudeExecutable());
   }
 
   private openSession(
     params: SessionStartParams,
     resumeId?: string,
+    claudeExecutable?: string,
   ): { session: string; backendSessionId: string | null } {
     const handle = `s-${++this.handleSeq}`;
     const live: LiveSession = {
@@ -129,6 +131,7 @@ export class SessionBridge {
     const sessionDeps: ClaudeSessionDeps = {
       ...(resumeId !== undefined ? { resumeId } : {}),
       ...(params.env !== undefined ? { env: params.env as Options['env'] } : {}),
+      ...(claudeExecutable !== undefined ? { claudeExecutable } : {}),
       ...(requestHost
         ? {
             sendFile: async (absPath: string, filename?: string) => {

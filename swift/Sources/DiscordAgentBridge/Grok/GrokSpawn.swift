@@ -63,7 +63,9 @@ public func grokChildEnvironment(
     baseEnv: [String: String] = ProcessInfo.processInfo.environment,
     homeDir: String = NSHomeDirectory()
 ) -> [String: String] {
-    let existing = (baseEnv["PATH"] ?? "").split(separator: ":").map(String.init)
+    // Windows env blocks usually spell it "Path"; write back to the key the base env already uses.
+    let pathKey = baseEnv["PATH"] == nil && baseEnv["Path"] != nil ? "Path" : "PATH"
+    let existing = (baseEnv[pathKey] ?? "").split(separator: pathListSeparator).map(String.init)
     var seen = Set(existing)
     var prepend: [String] = []
     for dir in ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: homeDir, env: baseEnv) {
@@ -72,6 +74,6 @@ public func grokChildEnvironment(
         prepend.append(dir)
     }
     var env = baseEnv
-    env["PATH"] = (prepend + existing).joined(separator: ":")
+    env[pathKey] = (prepend + existing).joined(separator: String(pathListSeparator))
     return env
 }

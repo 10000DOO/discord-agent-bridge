@@ -354,7 +354,9 @@ public actor DabSessionBridge {
                     "custom backend alias contains --dangerously-skip-permissions but permMode is not bypassPermissions source=\(resolved.source ?? "?")"
                 )
             }
-            var merged = ProcessInfo.processInfo.environment
+            // Same PATH-augmented base as the sidecar itself, so a launchd-bare PATH still finds
+            // node / MCP servers for custom sessions (the alias overlay only sets ANTHROPIC_* keys).
+            var merged = claudeChildEnvironment()
             for (k, v) in resolved.env { merged[k] = v }
             sessionEnv = merged.mapValues { Optional.some($0) }
             if let m = resolved.env["ANTHROPIC_MODEL"], !m.isEmpty {

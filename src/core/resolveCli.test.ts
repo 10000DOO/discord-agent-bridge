@@ -6,6 +6,8 @@ import {
   resolveCliCommand,
   wellKnownUserBinDirs,
   augmentPath,
+  resolveClaudeExecutable,
+  cliVersionAtLeast,
   type ResolveCliOptions,
 } from './resolveCli.js';
 
@@ -281,5 +283,47 @@ describe('resolveCliCommand', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('resolveClaudeExecutable', () => {
+  const base = { env: {}, homeDir: '/home/alice', platform: 'linux' as const, execPath: '/opt/node/bin/node', listDir: () => [] };
+
+  it('returns undefined when nothing is installed (SDK keeps its bundled CLI)', () => {
+    expect(resolveClaudeExecutable({ ...base, pathExists: () => false })).toBeUndefined();
+  });
+
+  it('returns the native installer path, prefers the running node bin over older nvm versions, and unwraps .js / Windows .cmd', () => {
+    const native = path.join('/home/alice', '.local', 'bin', 'claude');
+    expect(resolveClaudeExecutable({ ...base, pathExists: (p) => p === native, realpath: (p) => p })).toBe(native);
+
+    const nvmNode = path.join('/home/alice', '.nvm', 'versions', 'node');
+    const running = path.join(nvmNode, 'v20.1.0', 'bin', 'claude');
+    const newest = path.join(nvmNode, 'v22.0.0', 'bin', 'claude');
+    const both = new Set([running, newest]);
+    const nvm = { ...base, execPath: path.join(nvmNode, 'v20.1.0', 'bin', 'node'), listDir: () => ['v9.0.0', 'v22.0.0', 'v20.1.0'], pathExists: (p: string) => both.has(p), realpath: (p: string) => p };
+    expect(resolveClaudeExecutable(nvm)).toBe(running);
+    expect(resolveClaudeExecutable({ ...nvm, execPath: '/usr/bin/node' })).toBe(newest);
+
+    const cliJs = '/opt/node/lib/node_modules/@anthropic-ai/claude-code/cli.js';
+    expect(resolveClaudeExecutable({ ...base, pathExists: (p) => p === path.join('/opt/node/bin', 'claude'), realpath: () => cliJs })).toBe(cliJs);
+
+    const npmDir = path.join('C:\\Users\\alice\\AppData\\Roaming', 'npm');
+    const exe = path.join(npmDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+    const win = new Set([path.join(npmDir, 'claude.cmd'), exe]);
+    expect(resolveClaudeExecutable({ ...base, platform: 'win32', homeDir: 'C:\\Users\\alice', env: { APPDATA: 'C:\\Users\\alice\\AppData\\Roaming' }, pathExists: (p) => win.has(p) })).toBe(exe);
+  });
+});
+
+describe('cliVersionAtLeast', () => {
+  it('compares X.Y.Z numerically against the bundled version; unparsable or missing → false', () => {
+    expect(cliVersionAtLeast('2.1.284 (Claude Code)\n', '2.1.284')).toBe(true);
+    expect(cliVersionAtLeast('2.2.0 (Claude Code)', '2.1.284')).toBe(true);
+    expect(cliVersionAtLeast('10.0.0', '9.9.9')).toBe(true);
+    expect(cliVersionAtLeast('2.1.99 (Claude Code)', '2.1.284')).toBe(false);
+    expect(cliVersionAtLeast('2.0.77 (Claude Code)', '2.1.284')).toBe(false);
+    expect(cliVersionAtLeast('', '2.1.284')).toBe(false);
+    expect(cliVersionAtLeast('oops', '2.1.284')).toBe(false);
+    expect(cliVersionAtLeast('2.1.284', undefined)).toBe(false);
   });
 });

@@ -1,5 +1,12 @@
 import Foundation
 
+/// PATH list separator for the host OS (`;` on Windows, where drive letters contain `:`).
+#if os(Windows)
+let pathListSeparator: Character = ";"
+#else
+let pathListSeparator: Character = ":"
+#endif
+
 /// Resolved spawn command for the Claude sidecar process.
 public struct SidecarSpawn: Sendable, Equatable {
     public var command: String
@@ -25,7 +32,9 @@ public func claudeChildEnvironment(
     baseEnv: [String: String] = ProcessInfo.processInfo.environment,
     homeDir: String = NSHomeDirectory()
 ) -> [String: String] {
-    let existing = (baseEnv["PATH"] ?? "").split(separator: ":").map(String.init)
+    // Windows env blocks usually spell it "Path"; write back to the key the base env already uses.
+    let pathKey = baseEnv["PATH"] == nil && baseEnv["Path"] != nil ? "Path" : "PATH"
+    let existing = (baseEnv[pathKey] ?? "").split(separator: pathListSeparator).map(String.init)
     var seen = Set(existing)
     var prepend: [String] = []
     for dir in ProcessSidecarTransport.wellKnownUserBinDirs(homeDir: homeDir, env: baseEnv) {
@@ -34,7 +43,7 @@ public func claudeChildEnvironment(
         prepend.append(dir)
     }
     var env = baseEnv
-    env["PATH"] = (prepend + existing).joined(separator: ":")
+    env[pathKey] = (prepend + existing).joined(separator: String(pathListSeparator))
     return env
 }
 

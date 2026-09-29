@@ -49,6 +49,9 @@ export interface ClaudeSessionDeps {
   // Optional full env override for the SDK subprocess. Used by the `custom` backend
   // to inject env vars extracted from shell aliases without affecting other modes.
   env?: Options['env'];
+  // Installed Claude Code CLI to run (resolveUsableClaudeExecutable, awaited by the async
+  // caller so this constructor never spawns); absent → the SDK's bundled CLI.
+  claudeExecutable?: string;
 }
 
 // A terminal result must never wait indefinitely on the SDK's optional context
@@ -157,6 +160,7 @@ export class ClaudeSession implements ModeSession {
     const permissionMode = toSdkPermissionMode(ctx.permMode);
     const options: Options = {
       cwd: ctx.cwd,
+      ...(deps.claudeExecutable !== undefined ? { pathToClaudeCodeExecutable: deps.claudeExecutable } : {}),
       // Pin the model's write target to the selected folder. The SDK forwards `cwd`
       // to the CLI subprocess (verified: process.cwd() and the init `cwd` both equal
       // ctx.cwd), but with an unqualified prompt like "create test.txt" the model

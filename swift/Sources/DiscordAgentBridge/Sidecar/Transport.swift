@@ -111,7 +111,7 @@ public final class ProcessSidecarTransport: SidecarTransport, @unchecked Sendabl
         if command.contains("/") {
             return command
         }
-        let pathDirs = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
+        let pathDirs = (env["PATH"] ?? env["Path"] ?? "/usr/bin:/bin").split(separator: pathListSeparator).map(String.init)
         for dir in pathDirs + wellKnownUserBinDirs(homeDir: homeDir, env: env) {
             let candidate = URL(fileURLWithPath: dir).appendingPathComponent(command)
             if isExecutable(candidate.path) {
